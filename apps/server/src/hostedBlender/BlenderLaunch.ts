@@ -47,14 +47,19 @@ export const helperArguments = (launch: BlenderLaunch): ReadonlyArray<string> =>
   String(launch.mcpPort),
 ];
 
-/** The helper's environment: T3's own variables never reach labwc or Blender. */
+/**
+ * The helper's environment. T3's own variables never reach labwc or Blender, and neither do
+ * `BLENDER_USER_*` overrides that could point a hosted Blender back at desktop settings.
+ */
 export const helperEnvironment = (
   parent: Readonly<Record<string, string | undefined>>,
 ): Record<string, string> =>
   Object.fromEntries(
     Object.entries(parent).filter(
       (entry): entry is [string, string] =>
-        entry[1] !== undefined && !entry[0].startsWith("T3CODE_"),
+        entry[1] !== undefined &&
+        !entry[0].startsWith("T3CODE_") &&
+        !entry[0].startsWith("BLENDER_USER_"),
     ),
   );
 

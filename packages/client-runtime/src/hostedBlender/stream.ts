@@ -39,6 +39,8 @@ export interface HostedBlenderStreamClient {
 }
 
 const ACK = JSON.stringify({ type: "ack" });
+// As the device stream's decoder: past this many queued chunks the decoder has fallen behind.
+const SOFT_DECODE_QUEUE = 8;
 const decodeServerMessage = Schema.decodeUnknownOption(
   Schema.fromJsonString(HostedBlenderStreamServerMessage),
 );
@@ -66,6 +68,9 @@ export function createHostedBlenderStreamClient(
   let configuring = false;
   let size: { readonly width: number; readonly height: number } | null = null;
   let live = false;
+  // The server sends the next frame only after an ack, so holding it while the decoder is
+  // configured or behind keeps every delta's reference frame and bounds the decode queue.
+  let ackOwed = false;
   let rate = { start: 0, frames: 0, bytes: 0 };
 
   const closeDecoder = () => {
@@ -74,6 +79,14 @@ export function createHostedBlenderStreamClient(
     } catch {}
     decoder = null;
     configuring = false;
+    ackOwed = false;
+  };
+
+  const sendAck = () => {
+    if (!ackOwed || configuring || socket?.readyState !== WebSocket.OPEN) return;
+    if ((decoder?.decodeQueueSize ?? 0) > SOFT_DECODE_QUEUE) return;
+    ackOwed = false;
+    socket.send(ACK);
   };
 
   const countFrame = (bytes: number) => {
@@ -108,6 +121,7 @@ export function createHostedBlenderStreamClient(
     }));
     if (socket !== ws) return;
     if (!support.supported) {
+      configuring = false;
       stopped = true;
       events.onStatus("unsupported");
       ws.close();
@@ -130,21 +144,26 @@ export function createHostedBlenderStreamClient(
         if (decoder === next) reconnect();
       },
     });
+    next.addEventListener("dequeue", sendAck);
     next.configure(config);
     decoder = next;
     configuring = false;
     decode(data, true, pts);
+    sendAck();
   };
 
   const onFrame = (ws: WebSocket, raw: ArrayBuffer) => {
     const packet = parseSemuPacket(raw);
     const timestamp = packet.timestamp ?? 0;
     countFrame(raw.byteLength);
-    if (decoder?.state === "configured")
-      return decode(packet.data, packet.isKey ?? false, timestamp);
-    if (configuring || packet.isKey === false) return;
-    const scanned = scanAccessUnit(packet.data);
-    if (!scanned.isKey || scanned.sps === null) return;
+    ackOwed = true;
+    if (decoder?.state === "configured") {
+      decode(packet.data, packet.isKey ?? false, timestamp);
+      return sendAck();
+    }
+    const scanned = packet.isKey === false ? null : scanAccessUnit(packet.data);
+    // Without a decoder only a keyframe with its SPS can start one.
+    if (configuring || !scanned?.isKey || scanned.sps === null) return sendAck();
     void configure(ws, scanned.sps, packet.data, timestamp);
   };
 
@@ -175,7 +194,6 @@ export function createHostedBlenderStreamClient(
       if (socket !== ws) return;
       if (event.data instanceof ArrayBuffer) {
         failures = 0;
-        ws.send(ACK);
         onFrame(ws, event.data);
         return;
       }

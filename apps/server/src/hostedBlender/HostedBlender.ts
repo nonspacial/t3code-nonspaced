@@ -22,6 +22,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import type { PlatformError } from "effect/PlatformError";
 import * as Queue from "effect/Queue";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
@@ -35,6 +36,7 @@ import * as ServerConfig from "../config.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { threadWorkspaceRoot } from "../project/threadWorkspaceRoot.ts";
+import { isWithinRoot } from "../workspace/KnownWorkspaces.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import {
   displaySize,
@@ -62,11 +64,15 @@ const QUIT_TIMEOUT = Duration.seconds(20);
 const CONTROL_CONNECT_ATTEMPTS = 150;
 // A start that shows no viewport window by then has failed (a broken file, no encoder).
 const START_TIMEOUT = Duration.seconds(90);
+const HELPER_QUIT_TIMEOUT = Duration.seconds(10);
+const CONTROL_REPLY_TIMEOUT = Duration.seconds(5);
 
 // T3's control add-on speaks JSON lines on its private socket; see controlAddon.ts.
 const ControlMessage = Schema.Union([
   Schema.Struct({ type: Schema.Literal("hello"), pid: Schema.Int }),
   Schema.Struct({ type: Schema.Literal("state"), filepath: Schema.String, dirty: Schema.Boolean }),
+  Schema.Struct({ type: Schema.Literal("saving") }),
+  Schema.Struct({ type: Schema.Literal("saved") }),
   Schema.Struct({ type: Schema.Literal("quitFailed"), reason: Schema.Literal("saveFailed") }),
 ]);
 const decodeControlMessage = Schema.decodeUnknownOption(Schema.fromJsonString(ControlMessage));
@@ -128,7 +134,8 @@ interface Instance {
   lastKeyframeRequest: number;
   helper: (command: HelperCommand) => Effect.Effect<void>;
   control: ((line: string) => Effect.Effect<void>) | null;
-  quitFailed: Deferred.Deferred<void> | null;
+  /** What the add-on says while `quit` waits on a save. */
+  saveReplies: Queue.Queue<"saving" | "saved" | "quitFailed"> | null;
   fiber: Fiber.Fiber<void> | null;
   /** Set by `quit`, so stopping a Blender that is still starting doesn't read as a failed start. */
   quitting: boolean;
@@ -289,8 +296,10 @@ const make = Effect.gen(function* () {
         if (instance.dirty === message.value.dirty) return;
         instance.dirty = message.value.dirty;
         return yield* publishNow();
+      case "saving":
+      case "saved":
       case "quitFailed":
-        if (instance.quitFailed) yield* Deferred.succeed(instance.quitFailed, undefined);
+        if (instance.saveReplies) yield* Queue.offer(instance.saveReplies, message.value.type);
         return;
     }
   });
@@ -341,6 +350,19 @@ const make = Effect.gen(function* () {
     if (stats) yield* broadcast(instance, stats);
   });
 
+  // Links are skipped, so nothing in the copy leads back to the desktop Blender's files.
+  // Each folder level shares the first-use copy's span.
+  const copyWithoutLinks: (from: string, to: string) => Effect.Effect<void, PlatformError> =
+    Effect.fnUntraced(function* (from: string, to: string) {
+      yield* fileSystem.makeDirectory(to, { recursive: true });
+      for (const entry of yield* fileSystem.readDirectory(from)) {
+        const source = path.join(from, entry);
+        const info = yield* fileSystem.lstat(source);
+        if (info.type === "Directory") yield* copyWithoutLinks(source, path.join(to, entry));
+        else if (info.type === "File") yield* fileSystem.copyFile(source, path.join(to, entry));
+      }
+    });
+
   /** T3's own copy of the user's newest Blender settings, made on first use. */
   const ensureUserResources = userResourcesLock.withPermits(1)(
     Effect.gen(function* () {
@@ -356,7 +378,7 @@ const make = Effect.gen(function* () {
       if (version === undefined) {
         yield* fileSystem.makeDirectory(partial, { recursive: true });
       } else {
-        yield* fileSystem.copy(path.join(source, version), partial);
+        yield* copyWithoutLinks(path.join(source, version), partial);
       }
       yield* fileSystem.rename(partial, target);
       return target;
@@ -366,16 +388,15 @@ const make = Effect.gen(function* () {
   const run = Effect.fn("HostedBlender.run")(
     function* (instance: Instance, tools: { readonly helper: string; readonly blender: string }) {
       yield* Effect.annotateCurrentSpan({ threadId: instance.threadId });
-      const stateDir = path.join(
-        rootDir,
-        "threads",
-        instance.threadId.replaceAll(/[^A-Za-z0-9_-]/g, "_"),
-      );
-      yield* fileSystem.makeDirectory(stateDir, { recursive: true });
+      // Everything a launch writes (labwc config, Blender's TMPDIR) goes when it ends.
+      const launchesDir = path.join(rootDir, "launches");
+      yield* fileSystem.makeDirectory(launchesDir, { recursive: true });
+      const stateDir = yield* fileSystem.makeTempDirectoryScoped({ directory: launchesDir });
       const addonPath = path.join(stateDir, "t3_control.py");
       yield* fileSystem.writeFileString(addonPath, CONTROL_ADDON_SOURCE);
       const userResources = yield* ensureUserResources;
-      // Unix socket paths are capped near 108 bytes, so the socket lives in a short private dir.
+      // Unix socket paths are capped near 108 bytes, so the control socket and the helper's
+      // Wayland runtime live in a short private dir.
       const controlDir = yield* fileSystem.makeTempDirectoryScoped({
         directory: environment.XDG_RUNTIME_DIR || "/tmp",
         prefix: "t3hb-",
@@ -383,6 +404,10 @@ const make = Effect.gen(function* () {
       yield* fileSystem.chmod(controlDir, 0o700);
       const controlSocket = path.join(controlDir, "control.sock");
       const mcpPort = yield* net.reserveLoopbackPort();
+      // The file `open` checked must still be that file, not a link swapped in since.
+      if ((yield* fileSystem.realPath(instance.blendPath)) !== instance.blendPath) {
+        return yield* Effect.logWarning("hosted Blender's file changed before it started");
+      }
 
       const handle = yield* Effect.acquireRelease(
         spawner.spawn(
@@ -400,7 +425,7 @@ const make = Effect.gen(function* () {
             }),
             {
               cwd: stateDir,
-              env: helperEnvironment(environment),
+              env: { ...helperEnvironment(environment), XDG_RUNTIME_DIR: controlDir },
               stdin: { stream: "pipe", endOnDone: false },
               stdout: "pipe",
               stderr: "pipe",
@@ -409,7 +434,18 @@ const make = Effect.gen(function* () {
             },
           ),
         ),
-        (child) => child.kill().pipe(Effect.ignore),
+        // Asked to quit, the helper stops Blender and labwc and removes its runtime itself;
+        // killing its process group would take its labwc watchdog down first.
+        (child) =>
+          Stream.run(
+            Stream.encodeText(Stream.make(encodeHelperCommand({ type: "quit" }))),
+            child.stdin,
+          ).pipe(
+            Effect.andThen(child.exitCode),
+            Effect.timeout(HELPER_QUIT_TIMEOUT),
+            Effect.catch(() => child.kill()),
+            Effect.ignore,
+          ),
       );
       const stdinLock = yield* Semaphore.make(1);
       instance.helper = (command) =>
@@ -419,6 +455,14 @@ const make = Effect.gen(function* () {
           )
           .pipe(Effect.ignore);
 
+      // Blender and labwc write here; unread, it would pile up in memory for the whole session.
+      yield* handle.stderr.pipe(
+        Stream.decodeText(),
+        Stream.splitLines,
+        Stream.runForEach((line) => Effect.logDebug("hosted Blender output", { line })),
+        Effect.ignore,
+        Effect.forkScoped,
+      );
       const reader = new HelperPacketReader();
       yield* handle.stdout.pipe(
         Stream.runForEach((chunk) =>
@@ -502,9 +546,9 @@ const make = Effect.gen(function* () {
       fileSystem.realPath(root),
       fileSystem.realPath(resolved.absolutePath),
     ]).pipe(Effect.mapError(() => new HostedBlenderError({ reason: "fileNotFound" })));
-    const inside = path.relative(real[0], real[1]);
-    if (inside.startsWith("..") || path.isAbsolute(inside))
+    if (!isWithinRoot(path, real[1], real[0])) {
       return yield* new HostedBlenderError({ reason: "notInWorkspace" });
+    }
     const stat = yield* fileSystem
       .stat(real[1])
       .pipe(Effect.mapError(() => new HostedBlenderError({ reason: "fileNotFound" })));
@@ -514,6 +558,10 @@ const make = Effect.gen(function* () {
     if (existing) {
       if (existing.relativePath === resolved.relativePath) return;
       return yield* new HostedBlenderError({ reason: "otherFileOpen" });
+    }
+    // One file is open in at most one hosted Blender, whichever thread opened it.
+    if ([...instances.values()].some((other) => other.blendPath === real[1])) {
+      return yield* new HostedBlenderError({ reason: "openInAnotherThread" });
     }
     const instance: Instance = {
       threadId,
@@ -530,7 +578,7 @@ const make = Effect.gen(function* () {
       lastKeyframeRequest: 0,
       helper: () => Effect.void,
       control: null,
-      quitFailed: null,
+      saveReplies: null,
       fiber: null,
       quitting: false,
     };
@@ -550,24 +598,39 @@ const make = Effect.gen(function* () {
       if (!failedStarts.delete(threadId)) return;
       return yield* publishNow();
     }
-    instance.quitting = true;
-    if (instance.control === null) {
+    const control = instance.control;
+    const forceQuit = Effect.gen(function* () {
+      instance.quitting = true;
       if (instance.fiber) yield* Fiber.interrupt(instance.fiber);
+    });
+    const saveFailed = new HostedBlenderError({ reason: "saveFailed" });
+    if (!save) {
+      // Quit without saving: Blender may be stopped however it takes.
+      if (control === null) return yield* forceQuit;
+      instance.quitting = true;
+      yield* control(`${encodeControlCommand({ type: "quit", save })}\n`);
+      const ended = yield* Deferred.await(instance.ended).pipe(Effect.timeoutOption(QUIT_TIMEOUT));
+      if (Option.isNone(ended)) yield* forceQuit;
       return;
     }
-    const quitFailed = yield* Deferred.make<void>();
-    instance.quitFailed = quitFailed;
-    yield* instance.control(`${encodeControlCommand({ type: "quit", save })}\n`);
+    // Save and quit never stops Blender before the add-on says the file is saved.
+    if (control === null) return yield* saveFailed;
+    const replies = yield* Queue.unbounded<"saving" | "saved" | "quitFailed">();
+    instance.saveReplies = replies;
+    yield* control(`${encodeControlCommand({ type: "quit", save })}\n`);
+    const started = yield* Queue.take(replies).pipe(Effect.timeoutOption(CONTROL_REPLY_TIMEOUT));
+    if (Option.isNone(started) || started.value === "quitFailed") return yield* saveFailed;
+    // However long a big file takes, the save finishes or fails before Blender quits.
     const outcome = yield* Effect.raceFirst(
-      Deferred.await(instance.ended).pipe(Effect.as("quit" as const)),
-      Deferred.await(quitFailed).pipe(Effect.as("saveFailed" as const)),
-    ).pipe(Effect.timeoutOption(QUIT_TIMEOUT));
-    if (Option.isNone(outcome)) {
-      if (instance.fiber) yield* Fiber.interrupt(instance.fiber);
-      return;
+      Queue.take(replies),
+      Deferred.await(instance.ended).pipe(Effect.as("ended" as const)),
+    );
+    if (outcome === "quitFailed" || outcome === "saving") return yield* saveFailed;
+    instance.quitting = true;
+    if (outcome === "saved") {
+      const ended = yield* Deferred.await(instance.ended).pipe(Effect.timeoutOption(QUIT_TIMEOUT));
+      if (Option.isNone(ended)) yield* forceQuit;
     }
-    if (outcome.value === "saveFailed")
-      return yield* new HostedBlenderError({ reason: "saveFailed" });
   });
 
   const threadState: HostedBlender["Service"]["threadState"] = (threadId) =>

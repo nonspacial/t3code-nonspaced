@@ -49,13 +49,15 @@ describe("helperArguments", () => {
   });
 });
 
-it("never passes T3's own variables, such as the thread id, to the helper", () => {
+it("passes neither T3's own variables nor Blender folder overrides to the helper", () => {
   expect(
     helperEnvironment({
       PATH: "/usr/bin",
       HOME: "/home/me",
       T3CODE_THREAD_ID: "thread-1",
       T3CODE_AUTH_TOKEN: "secret",
+      BLENDER_USER_CONFIG: "/home/me/.config/blender/5.3/config",
+      BLENDER_USER_SCRIPTS: "/home/me/scripts",
       UNSET: undefined,
     }),
   ).toEqual({ PATH: "/usr/bin", HOME: "/home/me" });

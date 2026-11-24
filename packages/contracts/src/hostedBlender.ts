@@ -66,6 +66,7 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "notBlendFile",
       "fileNotFound",
       "otherFileOpen",
+      "openInAnotherThread",
       "saveFailed",
     ]),
   },
@@ -86,6 +87,8 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "The file was not found.";
       case "otherFileOpen":
         return "This thread's hosted Blender already has another file open. Quit it first.";
+      case "openInAnotherThread":
+        return "This file is already open in another thread's hosted Blender.";
       case "saveFailed":
         return "Blender could not save the file.";
     }

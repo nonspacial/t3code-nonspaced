@@ -83,16 +83,24 @@ def _save():
     window = _main_window()
     if not bpy.data.filepath or window is None:
         return False
-    with bpy.context.temp_override(window=window):
-        return "FINISHED" in bpy.ops.wm.save_mainfile()
+    try:
+        with bpy.context.temp_override(window=window):
+            return "FINISHED" in bpy.ops.wm.save_mainfile()
+    except Exception as error:  # noqa: BLE001 - a failed save is reported, never a crash
+        print("T3 control add-on: save failed:", error, file=sys.stderr)
+        return False
 
 
 def _handle(command):
     kind = command.get("type")
     if kind == "quit":
-        if command.get("save") and bpy.data.is_dirty and not _save():
-            _send({"type": "quitFailed", "reason": "saveFailed"})
-            return
+        if command.get("save"):
+            # Answered before the save, which blocks Blender for as long as a big file takes.
+            _send({"type": "saving"})
+            if not _save():
+                _send({"type": "quitFailed", "reason": "saveFailed"})
+                return
+            _send({"type": "saved"})
         window = _main_window()
         with bpy.context.temp_override(window=window):
             bpy.ops.wm.quit_blender()
@@ -139,6 +147,7 @@ def _tick():
 
 def _assign_mcp_port():
     # The copied settings may enable the official MCP add-on on the desktop Blender's port.
+    # Its autostart timer fires after this script runs, so these settings win.
     if MCP_PORT is None:
         return
     preferences = bpy.context.preferences
@@ -147,6 +156,9 @@ def _assign_mcp_port():
             if hasattr(addon.preferences, "port"):
                 addon.preferences.port = int(MCP_PORT)
                 addon.preferences.host = "localhost"
+            # Its code-execution listener stays off until T3 can turn away other OS users.
+            if hasattr(addon.preferences, "use_autostart"):
+                addon.preferences.use_autostart = False
     try:
         preferences.is_dirty = False
     except AttributeError:

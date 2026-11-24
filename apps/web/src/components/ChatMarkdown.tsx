@@ -959,8 +959,9 @@ function useChatMarkdownState(
           : path;
       const openFile = () =>
         useRightPanelStore.getState().openFile(threadRef, target, fileLinkMeta.line);
-      if (isBlendFile(target)) void openBlendLink(threadRef, target, panelRoot, openFile);
-      else openFile();
+      if (isBlendFile(target)) {
+        void openBlendLink({ threadRef, path: target, workspaceRoot: panelRoot, openFile });
+      } else openFile();
     };
     if (
       fileLinkMeta.workspaceLookupPath === null ||

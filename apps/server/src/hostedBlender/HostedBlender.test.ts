@@ -25,6 +25,7 @@ import * as HiddenDisplayBinary from "./HiddenDisplayBinary.ts";
 import * as HostedBlender from "./HostedBlender.ts";
 
 const threadId = ThreadId.make("thread-hosted-blender");
+const otherThreadId = ThreadId.make("thread-same-workspace");
 
 interface Host {
   readonly platform?: NodeJS.Platform;
@@ -47,7 +48,7 @@ const layerFor = (host: Host) =>
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadShell: (id) =>
             Effect.succeed(
-              id === threadId
+              id === threadId || id === otherThreadId
                 ? ({ worktreePath: host.workspaceRoot, projectId: "project" } as never)
                 : null,
             ),
@@ -85,15 +86,21 @@ const tempDir = (prefix: string) =>
 const firstState = (service: HostedBlender.HostedBlender["Service"]) =>
   service.threadState(threadId).pipe(Stream.runHead, Effect.map(Option.getOrThrow));
 
-/** A PATH holding stand-ins for Blender and labwc, for the checks that never start them. */
-const fakeTools = (dir: string) => {
+/** A PATH holding stand-ins for Blender, labwc and the helper, which never start Blender. */
+const fakeTools = (dir: string, helper = "exit 1") => {
   const bin = NodePath.join(dir, "bin");
   NodeFS.mkdirSync(bin, { recursive: true });
-  for (const name of ["blender", "labwc", "helper"]) {
-    NodeFS.writeFileSync(NodePath.join(bin, name), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  for (const [name, body] of [
+    ["blender", "exit 1"],
+    ["labwc", "exit 1"],
+    ["helper", helper],
+  ]) {
+    NodeFS.writeFileSync(NodePath.join(bin, name!), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
   }
   return bin;
 };
+// Stays "starting" until the server asks it to quit, as a helper waiting on Blender does.
+const WAITING_HELPER = 'while read line; do case "$line" in *quit*) exit 0;; esac; done';
 
 describe("HostedBlender availability", () => {
   it.effect("is not available on hosts other than Linux", () =>
@@ -154,6 +161,9 @@ describe("HostedBlender.open", () => {
       expect(yield* reason("models/missing.blend")).toBe("fileNotFound");
       expect(yield* reason("a.blend", ThreadId.make("other-thread"))).toBe("threadNotFound");
       assert.deepStrictEqual(yield* firstState(service), { status: "stopped" });
+      // A name that merely starts with dots is still inside the workspace.
+      NodeFS.writeFileSync(NodePath.join(workspace, "..draft.blend"), "");
+      yield* service.open({ threadId, relativePath: "..draft.blend" });
     }).pipe(Effect.scoped),
   );
 
@@ -186,6 +196,55 @@ describe("HostedBlender.open", () => {
       yield* awaitStatus("stopped");
     }).pipe(Effect.scoped),
   );
+
+  it.live("keeps a file in one hosted Blender and never force-quits one asked to save", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("lifecycle");
+      const bin = fakeTools(dir, WAITING_HELPER);
+      const workspace = NodePath.join(dir, "work");
+      const runtime = NodePath.join(dir, "run");
+      NodeFS.mkdirSync(workspace, { recursive: true });
+      NodeFS.mkdirSync(runtime);
+      NodeFS.writeFileSync(NodePath.join(workspace, "cube.blend"), "");
+      const service = yield* serviceFor(
+        layerFor({
+          env: {
+            PATH: bin,
+            XDG_RUNTIME_DIR: runtime,
+          },
+          helper: NodePath.join(bin, "helper"),
+          workspaceRoot: workspace,
+          baseDir: dir,
+        }),
+      );
+      const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+      yield* service.threadState(threadId).pipe(
+        Stream.runForEach((state) => Queue.offer(states, state)),
+        Effect.forkScoped,
+      );
+      const awaitStatus = (status: HostedBlenderThreadState["status"]) =>
+        Queue.take(states).pipe(Effect.repeat({ until: (state) => state.status === status }));
+      yield* awaitStatus("stopped");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitStatus("starting");
+
+      const elsewhere = yield* service
+        .open({ threadId: otherThreadId, relativePath: "cube.blend" })
+        .pipe(Effect.flip);
+      expect(elsewhere.reason).toBe("openInAnotherThread");
+
+      // Blender can't be asked to save yet, so it keeps running instead of losing changes.
+      const unsaved = yield* service.quit({ threadId, save: true }).pipe(Effect.flip);
+      expect(unsaved.reason).toBe("saveFailed");
+      yield* service.quit({ threadId, save: false });
+      yield* awaitStatus("stopped");
+
+      // Each launch's runtime, temporary and control folders go with it.
+      const launches = NodePath.join(dir, "userdata", "hosted-blender", "launches");
+      expect(NodeFS.readdirSync(runtime)).toEqual([]);
+      expect(NodeFS.existsSync(launches) ? NodeFS.readdirSync(launches) : []).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
 });
 
 // A real hosted Blender: only on a Linux host with Blender, labwc and a built helper.
@@ -215,11 +274,14 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
         "--python-expr",
         `import bpy; bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(blendPath)})`,
       ]);
-      // Empty settings to copy, so the developer's own Blender config is never read.
+      // Settings of its own to copy, so the developer's Blender config is never read. The link
+      // back out stands for one into desktop settings, which the copy must not keep.
       const configHome = NodePath.join(dir, "config");
-      NodeFS.mkdirSync(NodePath.join(configHome, "blender", "5.3", "config"), {
-        recursive: true,
-      });
+      const settings = NodePath.join(configHome, "blender", "5.3");
+      NodeFS.mkdirSync(NodePath.join(settings, "config", "nested"), { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(settings, "config", "nested", "note.txt"), "kept");
+      NodeFS.mkdirSync(NodePath.join(dir, "desktop-scripts"));
+      NodeFS.symlinkSync(NodePath.join(dir, "desktop-scripts"), NodePath.join(settings, "scripts"));
       const service = yield* serviceFor(
         layerFor({
           env: {
@@ -243,7 +305,13 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
 
       yield* awaitStatus("stopped");
       yield* service.open({ threadId, relativePath: "models/cube.blend" });
-      assert.deepStrictEqual(yield* awaitStatus("running"), {
+      const running = yield* awaitStatus("running");
+      const userResources = NodePath.join(dir, "userdata", "hosted-blender", "user-resources");
+      expect(
+        NodeFS.readFileSync(NodePath.join(userResources, "config", "nested", "note.txt"), "utf8"),
+      ).toBe("kept");
+      expect(NodeFS.existsSync(NodePath.join(userResources, "scripts"))).toBe(false);
+      assert.deepStrictEqual(running, {
         status: "running",
         relativePath: "models/cube.blend",
         dirty: false,
@@ -294,7 +362,13 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
       expect(argv).toContain("--online-mode");
       expect(Number(argv[argv.indexOf("--t3-mcp-port") + 1])).not.toBe(9876);
 
-      yield* service.quit({ threadId, save: false });
+      // A save Blender can't write leaves it running, with the error for the pane.
+      NodeFS.chmodSync(NodePath.join(workspace, "models"), 0o555);
+      const refused = yield* service.quit({ threadId, save: true }).pipe(Effect.flip);
+      NodeFS.chmodSync(NodePath.join(workspace, "models"), 0o755);
+      expect(refused.reason).toBe("saveFailed");
+      expect((yield* firstState(service)).status).toBe("running");
+      yield* service.quit({ threadId, save: true });
       yield* awaitStatus("stopped");
     }).pipe(Effect.scoped),
   );

@@ -47,10 +47,11 @@ const semu = (key: boolean, accessUnit: number[]) => {
 const keyframe = semu(true, [0, 0, 0, 1, 0x67, 0x64, 0x00, 0x1f, 0, 0, 0, 1, 0x65, 0x88]);
 const delta = semu(false, [0, 0, 0, 1, 0x41, 0x9a]);
 
-it("decodes the stream from its first keyframe, acks every frame, and sizes the display", async () => {
+it("acks a frame only once the decoder has taken it, and sizes the display", async () => {
   FakeSocket.instances = [];
   const decoded: string[] = [];
   let output: VideoFrameOutputCallback | undefined;
+  let decoderInstance: (EventTarget & { decodeQueueSize: number }) | undefined;
   const configured = Promise.withResolvers<VideoDecoderConfig>();
   vi.stubGlobal("WebSocket", FakeSocket);
   vi.stubGlobal(
@@ -64,11 +65,14 @@ it("decodes the stream from its first keyframe, acks every frame, and sizes the 
   );
   vi.stubGlobal(
     "VideoDecoder",
-    class {
+    class extends EventTarget {
       static isConfigSupported = async () => ({ supported: true });
       state = "unconfigured";
+      decodeQueueSize = 0;
       constructor(init: VideoDecoderInit) {
+        super();
         output = init.output;
+        decoderInstance = this;
       }
       configure(config: VideoDecoderConfig) {
         this.state = "configured";
@@ -101,17 +105,28 @@ it("decodes the stream from its first keyframe, acks every frame, and sizes the 
   expect(socket.url).toBe("wss://t3/blender/ws?threadId=thread-1");
   client.resize(1600.4, 900);
   socket.open();
-  socket.receive(delta);
+  const ack = JSON.stringify({ type: "ack" });
+  const acks = () => socket.sent.filter((message) => message === ack).length;
+  expect(socket.sent).toEqual([JSON.stringify({ type: "resize", width: 1600, height: 900 })]);
+
+  // The keyframe's ack waits for the decoder, so no delta arrives while it is configured.
   socket.receive(keyframe);
+  expect(acks()).toBe(0);
   expect((await configured.promise).codec).toBe("avc1.64001f");
+  await vi.waitFor(() => expect(acks()).toBe(1));
+  expect(decoded).toEqual(["key"]);
+
+  // A decoder that falls behind holds the ack until it catches up.
+  decoderInstance!.decodeQueueSize = 9;
   socket.receive(delta);
   expect(decoded).toEqual(["key", "delta"]);
+  expect(acks()).toBe(1);
+  decoderInstance!.decodeQueueSize = 0;
+  decoderInstance!.dispatchEvent(new Event("dequeue"));
+  expect(acks()).toBe(2);
+
   output?.({ displayWidth: 1600, displayHeight: 900, close: vi.fn() } as unknown as VideoFrame);
   expect(present).toHaveBeenCalledOnce();
-  expect(socket.sent).toEqual([
-    JSON.stringify({ type: "resize", width: 1600, height: 900 }),
-    ...Array.from({ length: 3 }, () => JSON.stringify({ type: "ack" })),
-  ]);
 
   socket.closeWith(HOSTED_BLENDER_STREAM_STOPPED_CLOSE_CODE);
   expect(statuses).toEqual(["connecting", "live", "stopped"]);
