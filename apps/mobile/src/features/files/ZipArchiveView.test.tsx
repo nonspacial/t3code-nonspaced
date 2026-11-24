@@ -134,7 +134,13 @@ vi.mock("../../components/ui/useBarInset", () => ({
 vi.mock("../../components/ui/AppSymbol", () => ({ SymbolView: () => null }));
 vi.mock("../../components/ui/Progress", () => ({ Progress: () => null }));
 vi.mock("../../components/PierreEntryIcon", () => ({ PierreEntryIcon: () => null }));
-vi.mock("../../components/ui/FilePreviewModal", () => ({ FilePreviewModal: () => null }));
+vi.mock("../../components/ui/FilePreviewModal", () => ({
+  FilePreviewModal: () => <p>native viewer open</p>,
+}));
+vi.mock("./ModelFileFacts", () => ({ BlendFileFacts: () => <p>blend facts</p> }));
+vi.mock("../../state/projects", () => ({
+  projectEnvironment: { readBlendAttachmentPreview: () => null },
+}));
 vi.mock("../../lib/copyTextWithHaptic", () => ({}));
 vi.mock("./SourceFileSurface", () => ({
   SourceFileSurface: (props: { readonly contents: string }) => <pre>{props.contents}</pre>,
@@ -250,6 +256,37 @@ it("opens a ZIP chat attachment as a browsable archive on the attachment file sc
     (button) => button.textContent === "Add to chat",
   );
   expect(add?.disabled).toBe(false);
+});
+
+it("opens a .blend attachment's facts, and its file viewer from the menu", async () => {
+  const screen = setup();
+  await act(async () =>
+    screen.root.render(
+      <AttachmentFileScreen
+        route={{
+          params: {
+            environmentId: "environment-1",
+            threadId: "thread-1",
+            attachmentId: "attachment-1",
+            name: "rig.blend",
+            mimeType: "application/octet-stream",
+            sizeBytes: "200",
+          },
+        }}
+      />,
+    ),
+  );
+  const openViewer = () =>
+    Array.from(screen.container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Open in file viewer",
+    );
+  await screen.settle(() => {
+    expect(screen.container.textContent).toContain("blend facts");
+    expect(openViewer()).toBeDefined();
+  });
+  expect(screen.container.textContent).not.toContain("native viewer open");
+  await act(async () => openViewer()!.click());
+  await screen.settle(() => expect(screen.container.textContent).toContain("native viewer open"));
 });
 
 it("keeps the ZIP filter and archive open when native Back closes a selected entry", async () => {

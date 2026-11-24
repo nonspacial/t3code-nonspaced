@@ -8,7 +8,6 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Cause from "effect/Cause";
 import {
   filePreviewKind,
-  isBlendPreviewPath,
   modelPreviewFormat,
   officePreviewKind,
   FILE_TEXT_PREVIEW_MAX_BYTES,
@@ -140,8 +139,7 @@ export function AttachmentFilePreview(props: {
   const attachmentId =
     props.asset && "attachmentId" in props.asset ? props.asset.attachmentId : undefined;
   // Facts are read on the server, so only an uploaded attachment has them.
-  const blendAttachmentId =
-    attachmentId !== undefined && isBlendPreviewPath(props.name) ? attachmentId : null;
+  const blendAttachmentId = attachmentId !== undefined && kind === "blend" ? attachmentId : null;
   const gt = useGT();
   const messages = useMessages();
   const { copyToClipboard, isCopied } = useCopyToClipboard({

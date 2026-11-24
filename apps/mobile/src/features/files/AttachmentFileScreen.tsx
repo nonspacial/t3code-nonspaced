@@ -243,15 +243,6 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
   const refresh = useRefreshAssetUrl(environmentId, resource);
   const capabilities = useEnvironmentServerConfig(environmentId)?.environment.capabilities;
 
-  if (blendFacts) {
-    return (
-      <View className="flex-1 bg-sheet">
-        <AppBar title={params.name} subtitle={subtitle} onBack={handleBack} menus={[fileMenu]} />
-        <BlendFileFacts name={params.name} query={blendPreview} />
-      </View>
-    );
-  }
-
   if (document.kind === "archive" && isZipFile(params) && !document.error) {
     const threadDraftKey =
       environmentId && params.threadId
@@ -282,18 +273,22 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
   return (
     <View className="flex-1 bg-sheet">
       <AppBar title={params.name} subtitle={subtitle} onBack={handleBack} menus={[fileMenu]} />
-      <AttachmentDocumentBody
-        document={document}
-        name={params.name}
-        environmentId={environmentId}
-        htmlRender={params.htmlRender === "1"}
-        nativeViewer={nativeViewer}
-        nativeError={nativeError}
-        onOpenNative={() => {
-          setNativeViewer((current) => (current === null ? null : "open"));
-          setNativeOpen(true);
-        }}
-      />
+      {blendFacts ? (
+        <BlendFileFacts name={params.name} query={blendPreview} />
+      ) : (
+        <AttachmentDocumentBody
+          document={document}
+          name={params.name}
+          environmentId={environmentId}
+          htmlRender={params.htmlRender === "1"}
+          nativeViewer={nativeViewer}
+          nativeError={nativeError}
+          onOpenNative={() => {
+            setNativeViewer((current) => (current === null ? null : "open"));
+            setNativeOpen(true);
+          }}
+        />
+      )}
       {nativeOpen && nativeSource ? (
         <FilePreviewModal
           source={nativeSource}

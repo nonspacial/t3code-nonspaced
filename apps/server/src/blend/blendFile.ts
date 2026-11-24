@@ -51,6 +51,8 @@ export interface BlendReadLimits {
   readonly maxScannedBytes: number;
   readonly maxKeptBytes: number;
   readonly maxBlocks: number;
+  /** Names, types, structs and fields in the struct layouts together. */
+  readonly maxSdnaEntries: number;
 }
 
 // Large production scenes run to a few GB and some hundred thousand blocks.
@@ -58,6 +60,8 @@ const DEFAULT_LIMITS: BlendReadLimits = {
   maxScannedBytes: 8 * 1024 * 1024 * 1024,
   maxKeptBytes: 64 * 1024 * 1024,
   maxBlocks: 4_000_000,
+  // Blender 5's layouts hold about 35 thousand.
+  maxSdnaEntries: 500_000,
 };
 // Blender saves 128 px thumbnails; anything much larger is not one, and would bloat the RPC.
 const MAX_THUMBNAIL_SIDE = 256;
@@ -263,7 +267,10 @@ interface Sdna {
 }
 
 /** Struct layouts from the DNA1 block, as they were in the Blender that saved the file. */
-function parseSdna(data: Uint8Array, header: Header): Sdna {
+// Each kept block costs a view and an object even when empty; charged against the kept bytes.
+const KEPT_BLOCK_OVERHEAD_BYTES = 256;
+
+function parseSdna(data: Uint8Array, header: Header, maxEntries: number): Sdna {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   let offset = 0;
   const damaged = () => new BlendFileFormatError({ problem: "damaged" });
@@ -293,11 +300,6 @@ function parseSdna(data: Uint8Array, header: Header): Sdna {
     if (value < 0 || value * itemBytes > data.byteLength - offset) throw damaged();
     return value;
   };
-  const indexInto = <A>(table: ReadonlyArray<A>) => {
-    const value = table[short()];
-    if (value === undefined) throw damaged();
-    return value;
-  };
   const strings = (total: number) =>
     Array.from({ length: total }, () => {
       const end = data.indexOf(0, offset);
@@ -308,37 +310,57 @@ function parseSdna(data: Uint8Array, header: Header): Sdna {
     });
   expect("SDNA");
   expect("NAME");
-  const names = strings(count(1));
+  let entries = 0;
+  const charge = (added: number) => {
+    entries += added;
+    if (entries > maxEntries) throw new BlendFileFormatError({ problem: "too_large" });
+    return added;
+  };
+  const names = strings(charge(count(1)));
   expect("TYPE");
-  const types = strings(count(1));
+  const types = strings(charge(count(1)));
   expect("TLEN");
   need(types.length * 2);
   const lengths = types.map(() => short());
   expect("STRC");
-  const structs = Array.from({ length: count(4) }, () => {
-    const type = indexInto(types);
+  // Fields share a few thousand names, so each is parsed once.
+  const parsedNames: Array<
+    { readonly name: string; readonly pointer: boolean; readonly items: number } | undefined
+  > = [];
+  const nameAt = (index: number) => {
+    const cached = parsedNames[index];
+    if (cached) return cached;
+    const rawName = names[index];
+    if (rawName === undefined) throw damaged();
+    const parsed = {
+      name: rawName.replace(/^[(*]+/, "").replace(/[)[].*$/, ""),
+      pointer: rawName.startsWith("*") || rawName.startsWith("(*"),
+      items: [...rawName.matchAll(/\[(\d+)\]/g)].reduce(
+        (product, match) => product * Number(match[1]),
+        1,
+      ),
+    };
+    parsedNames[index] = parsed;
+    return parsed;
+  };
+  const structs = Array.from({ length: charge(count(4)) }, () => {
+    const typeIndex = short();
+    const type = types[typeIndex];
+    const declaredSize = lengths[typeIndex];
+    if (type === undefined || declaredSize === undefined) throw damaged();
     need(2);
-    const fieldCount = short();
+    const fieldCount = charge(short());
     need(fieldCount * 4);
     let fieldOffset = 0;
     const fields = Array.from({ length: fieldCount }, () => {
       const fieldTypeIndex = short();
       const fieldType = types[fieldTypeIndex];
-      const rawName = indexInto(names);
+      const { name, pointer, items } = nameAt(short());
       if (fieldType === undefined) throw damaged();
-      const pointer = rawName.startsWith("*") || rawName.startsWith("(*");
-      const items = [...rawName.matchAll(/\[(\d+)\]/g)].reduce(
-        (product, match) => product * Number(match[1]),
-        1,
-      );
       const size = (pointer ? header.pointerSize : (lengths[fieldTypeIndex] ?? 0)) * items;
-      if (!Number.isSafeInteger(fieldOffset + size)) throw damaged();
-      const field = {
-        name: rawName.replace(/^[(*]+/, "").replace(/[)[].*$/, ""),
-        type: fieldType,
-        offset: fieldOffset,
-        size,
-      };
+      // Every field sits inside the struct's declared length.
+      if (!Number.isSafeInteger(size) || fieldOffset + size > declaredSize) throw damaged();
+      const field = { name, type: fieldType, offset: fieldOffset, size };
       fieldOffset += size;
       return field;
     });
@@ -398,7 +420,7 @@ async function readBlocks(source: ByteSource, header: Header, limits: BlendReadL
       continue;
     }
     if (length > MAX_KEPT_BLOCK_BYTES) throw new BlendFileFormatError({ problem: "damaged" });
-    keptBytes += length;
+    keptBytes += length + KEPT_BLOCK_OVERHEAD_BYTES;
     if (keptBytes > limits.maxKeptBytes) throw tooLarge();
     const data = await source.read(length);
     if (data.byteLength < length) throw new BlendFileFormatError({ problem: "ends_early" });
@@ -436,10 +458,11 @@ export async function readBlendFile(
   const source = await openSource(filePath);
   try {
     const header = await readHeader(source);
-    const { kept, counts } = await readBlocks(source, header, { ...DEFAULT_LIMITS, ...limits });
+    const resolved = { ...DEFAULT_LIMITS, ...limits };
+    const { kept, counts } = await readBlocks(source, header, resolved);
     const dna = kept.find((block) => block.code === "DNA1");
     if (!dna) throw new BlendFileFormatError({ problem: "damaged" });
-    const sdna = parseSdna(dna.data, header);
+    const sdna = parseSdna(dna.data, header, resolved.maxSdnaEntries);
     const typeOf = (block: Block) => sdna.structs[block.sdnaIndex]?.type ?? "";
     const view = (block: Block) =>
       new DataView(block.data.buffer, block.data.byteOffset, block.data.byteLength);

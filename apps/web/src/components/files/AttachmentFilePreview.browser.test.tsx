@@ -1422,11 +1422,12 @@ it("keeps an attachment URL when the parent passes a fresh asset object for the 
   }
 });
 
+// A README-like name would otherwise be read as text.
 it("shows an uploaded .blend attachment's scene facts instead of no preview", async () => {
   refresh.mockResolvedValue("https://example.test/rig.blend");
   await using screen = await render(
     <AttachmentFilePreview
-      name="rig.blend"
+      name="README.blend"
       mimeType="application/octet-stream"
       sizeBytes={1024}
       asset={{ environmentId: EnvironmentId.make("test"), attachmentId: "rig" }}

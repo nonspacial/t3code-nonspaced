@@ -152,5 +152,27 @@ describe("readBlendFile", () => {
     await corrupt((copy) => copy.writeInt32LE(0x7fffffff, at("SDNANAME") + 8));
     // The first struct naming a type that does not exist.
     await corrupt((copy) => copy.writeUInt16LE(0xffff, at("STRC") + 8));
+    // The first struct with fields declared 1 byte long, so they run past its end.
+    await corrupt((copy) => {
+      let struct = at("STRC") + 8;
+      while (copy.readUInt16LE(struct + 2) === 0) struct += 4;
+      copy.writeUInt16LE(1, at("TLEN") + 4 + copy.readUInt16LE(struct) * 2);
+    });
+    // Real layouts have some tens of thousands of entries; a cap below that refuses this one.
+    await expect(
+      readBlendFile(fixture("bracket-5.blend"), { maxSdnaEntries: 1000 }),
+    ).rejects.toThrow("too large");
+  });
+
+  it("charges each kept block a fixed cost, so millions of empty ones cannot pile up", async () => {
+    const header = new TextEncoder().encode("BLENDER-v405");
+    const empty = new Uint8Array(24);
+    empty.set(new TextEncoder().encode("ID"));
+    const end = new Uint8Array(24);
+    end.set(new TextEncoder().encode("ENDB"));
+    const bytes = Buffer.concat([header, ...Array.from({ length: 1000 }, () => empty), end]);
+    await withTempFile(bytes, async (path) => {
+      await expect(readBlendFile(path, { maxKeptBytes: 10_000 })).rejects.toThrow("too large");
+    });
   });
 });

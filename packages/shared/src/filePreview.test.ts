@@ -14,6 +14,16 @@ import {
 } from "./filePreview.ts";
 
 describe("workspace file previews", () => {
+  it("classifies a .blend by name before its MIME type or a README-like name", () => {
+    for (const file of [
+      { name: "README.blend", mimeType: "application/octet-stream" },
+      { name: "rig.blend1", mimeType: "text/plain" },
+      { name: "rig.BLEND", mimeType: "application/x-blender" },
+    ]) {
+      expect(filePreviewKind(file)).toBe("blend");
+    }
+  });
+
   it.each([
     ["zip", "archive", "application/zip"],
     ["jar", "archive", "application/java-archive"],
