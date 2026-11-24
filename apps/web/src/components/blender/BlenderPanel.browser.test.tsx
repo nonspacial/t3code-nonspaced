@@ -11,11 +11,16 @@ import { expect, it, vi } from "vite-plus/test";
 import { toastManager } from "~/components/ui/toast";
 import { installKeyboardCapture } from "~/lib/keyboardCapture";
 
+import { HiddenThreadContext } from "../chat/backgroundThread";
+
 import { act, render } from "../../../test/render";
 
 const stream = vi.hoisted(() => ({
   events: null as HostedBlenderStreamEvents | null,
   sent: [] as HostedBlenderViewerMessage[],
+  sizes: [] as Array<readonly [number, number]>,
+  visible: [] as boolean[],
+  clients: 0,
   access: { httpBase: "https://t3", wsBase: "wss://t3/blender", credentials: false, query: {} },
   state: { status: "running", relativePath: "models/hero.blend", dirty: false } as unknown,
   setup: null as unknown,
@@ -29,9 +34,14 @@ vi.mock(import("@t3tools/client-runtime/hosted-blender/stream"), async (original
     events: HostedBlenderStreamEvents,
   ) => {
     stream.events = events;
+    stream.clients += 1;
     events.onStatus("live");
     return {
-      resize: () => undefined,
+      resize: (width: number, height: number) => stream.sizes.push([width, height]),
+      // Like the real client, a repeat says nothing.
+      setVisible: (visible: boolean) => {
+        if (stream.visible.at(-1) !== visible) stream.visible.push(visible);
+      },
       send: (message: HostedBlenderViewerMessage) => stream.sent.push(message),
       stop: () => undefined,
     };
@@ -52,7 +62,7 @@ vi.mock(import("~/state/hostedBlender"), async (original) => ({
   useHostedBlenderStreamAccess: (() => stream.access) as never,
 }));
 
-import { BlenderPanel } from "./BlenderPanel";
+import { BlenderPanel, FloatingBlender } from "./BlenderPanel";
 
 const threadRef = {
   environmentId: EnvironmentId.make("environment-1"),
@@ -63,6 +73,9 @@ const control = (next: HostedBlenderControl) => act(() => stream.events?.onContr
 /** The app installs keyboard capture at startup; each test starts with a fresh stream. */
 const startup = (): Disposable => {
   stream.sent = [];
+  stream.sizes = [];
+  stream.visible = [];
+  stream.clients = 0;
   stream.events = null;
   return { [Symbol.dispose]: installKeyboardCapture() };
 };
@@ -271,4 +284,68 @@ it("warns in the status strip when the server has no usable GPU", async () => {
       stream.setup = null;
     }
   }
+});
+
+it("sizes the display in real pixels, and says when the window hides the pane", async () => {
+  using _app = startup();
+  await using screen = await render(
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible />
+    </div>,
+  );
+  const viewport = screen.getByLabelText("Blender viewport").element() as HTMLElement;
+  const ratio = window.devicePixelRatio || 1;
+  await vi.waitFor(() =>
+    expect(stream.sizes.at(-1)).toEqual([
+      viewport.clientWidth * ratio,
+      viewport.clientHeight * ratio,
+    ]),
+  );
+  expect(stream.visible).toEqual([true]);
+
+  const visibility = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState")!;
+  let state: DocumentVisibilityState = "hidden";
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+  try {
+    document.dispatchEvent(new Event("visibilitychange"));
+    state = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+  } finally {
+    Object.defineProperty(document, "visibilityState", visibility);
+  }
+  expect(stream.visible).toEqual([true, false, true]);
+});
+
+it("floats watch-only: no size for the display, no control, and the frame size for its layout", async () => {
+  using _app = startup();
+  const frameSizes: unknown[] = [];
+  await using screen = await render(
+    <div style={{ height: 180, width: 320 }}>
+      <FloatingBlender threadRef={threadRef} onFrameSize={(size) => frameSizes.push(size)} />
+    </div>,
+  );
+  await control({ canOperate: true, controller: "unclaimed" });
+  await screen.getByLabelText("Blender viewport").click();
+  expect(stream.sent).toEqual([]);
+  expect(stream.sizes).toEqual([]);
+  expect(stream.visible).toEqual([true]);
+  expect(frameSizes).toEqual([{ width: 1046, height: 1336 }]);
+});
+
+it("is off screen while Settings or Usage cover its thread, though the window is visible", async () => {
+  using _app = startup();
+  const pane = (hidden: boolean) => (
+    <HiddenThreadContext value={hidden}>
+      <div style={{ height: 400, width: 600 }}>
+        <BlenderPanel threadRef={threadRef} visible />
+      </div>
+    </HiddenThreadContext>
+  );
+  await using screen = await render(pane(true));
+  await expect.element(screen.getByLabelText("Blender viewport")).toBeInTheDocument();
+  expect(stream.visible.at(-1)).toBe(false);
+  await screen.rerender(pane(false));
+  expect(stream.visible.at(-1)).toBe(true);
+  // The stream stays connected throughout, so control and the decoder survive.
+  expect(stream.clients).toBe(1);
 });

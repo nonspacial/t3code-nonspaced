@@ -5,8 +5,10 @@ import { previewPdfAssetUrl } from "@t3tools/shared/preview";
 import { useEnvironmentHttpBaseUrl } from "~/state/environments";
 import { PanelRightIcon, PictureInPicture2, XIcon } from "lucide-react";
 import {
+  lazy,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  Suspense,
   useEffect,
   useEffectEvent,
   useRef,
@@ -113,6 +115,14 @@ const useHeldSourceSize = create<{
   readonly source: PreviewMiniPlayerSize;
 } | null>(() => null);
 
+// Before its first frame, the Blender player assumes the hidden display's starting size.
+const BLENDER_DEFAULT_SOURCE_SIZE = { width: 1280, height: 720 } as const;
+// A phone in control can make the display tall; the float still leaves most of the chat clear.
+const BLENDER_MAX_HEIGHT_RATIO = 0.45;
+const FloatingBlender = lazy(() =>
+  import("../blender/BlenderPanel").then((module) => ({ default: module.FloatingBlender })),
+);
+
 const NO_DEVICE_SCREEN_ATOM = Atom.make<DeviceScreenSize | null>(null).pipe(
   Atom.withLabel("device-stream-screen:none"),
 );
@@ -186,6 +196,14 @@ export function useThreadPreviewCanvasSource(
       ? state.source
       : null,
   );
+  const blenderSize = useStreamedSourceSize((state) =>
+    threadRef &&
+    source?.kind === "blender" &&
+    sourceKey !== null &&
+    state?.key === streamedSourceKey(threadRef, sourceKey)
+      ? state.viewport
+      : null,
+  );
   if (!miniPlayer || !source || sourceKey === null) return null;
   if (source.kind === "browser" && !browser.snapshot) return null;
   return {
@@ -197,26 +215,85 @@ export function useThreadPreviewCanvasSource(
       heldSource ??
       (source.kind === "browser"
         ? browser.sourceSize
-        : resolveDeviceMiniPlayerSourceSize(source.platform, screen)),
+        : source.kind === "device"
+          ? resolveDeviceMiniPlayerSourceSize(source.platform, screen)
+          : (blenderSize ?? BLENDER_DEFAULT_SOURCE_SIZE)),
+    ...(source.kind === "blender" ? { maxHeightRatio: BLENDER_MAX_HEIGHT_RATIO } : {}),
   };
 }
 
 export function ThreadPreviewMiniPlayer({ threadRef, miniPlayer }: Props) {
   const { source } = miniPlayer;
-  return source.kind === "browser" ? (
-    <BrowserMiniPlayer
-      key={source.tabId}
+  switch (source.kind) {
+    case "browser":
+      return (
+        <BrowserMiniPlayer
+          key={source.tabId}
+          threadRef={threadRef}
+          tabId={source.tabId}
+          miniPlayer={miniPlayer}
+        />
+      );
+    case "device":
+      return (
+        <DeviceMiniPlayer
+          key={previewMiniPlayerSourceKey(source)}
+          threadRef={threadRef}
+          source={source}
+          miniPlayer={miniPlayer}
+        />
+      );
+    case "blender":
+      return <BlenderMiniPlayer threadRef={threadRef} miniPlayer={miniPlayer} />;
+  }
+}
+
+/**
+ * The thread's hosted Blender, floating over chat while the agent works. It only watches:
+ * taking control and sizing the display belong to the right panel's pane.
+ */
+function BlenderMiniPlayer({ threadRef, miniPlayer }: Props) {
+  const gt = useGT();
+  const viewportKey = streamedSourceKey(threadRef, previewMiniPlayerSourceKey(miniPlayer.source));
+  const streamed = useStreamedSourceSize((state) =>
+    state?.key === viewportKey ? state.viewport : null,
+  );
+  const openInPanel = () => {
+    usePreviewMiniPlayerStore.getState().close(threadRef);
+    useRightPanelStore.getState().open(threadRef, "blender");
+  };
+  return (
+    <MiniPlayerShell
       threadRef={threadRef}
-      tabId={source.tabId}
       miniPlayer={miniPlayer}
-    />
-  ) : (
-    <DeviceMiniPlayer
-      key={previewMiniPlayerSourceKey(source)}
-      threadRef={threadRef}
-      source={source}
-      miniPlayer={miniPlayer}
-    />
+      sourceSize={streamed ?? BLENDER_DEFAULT_SOURCE_SIZE}
+      label={gt("Floating Blender preview")}
+      onOpenInPanel={openInPanel}
+    >
+      {() => (
+        <div
+          className="pointer-events-auto absolute inset-0 overflow-hidden rounded-[inherit]"
+          style={{ zIndex: PREVIEW_MINI_PLAYER_WEBVIEW_Z_INDEX }}
+        >
+          <Suspense fallback={null}>
+            <FloatingBlender
+              threadRef={threadRef}
+              onFrameSize={(viewport) =>
+                useStreamedSourceSize.setState(
+                  (state) =>
+                    state?.key === viewportKey &&
+                    state.viewport.width === viewport.width &&
+                    state.viewport.height === viewport.height
+                      ? state
+                      : { key: viewportKey, viewport },
+                  true,
+                )
+              }
+            />
+          </Suspense>
+        </div>
+      )}
+    </MiniPlayerShell>
   );
 }
 
