@@ -41,6 +41,7 @@ import { HttpServer } from "effect/http";
 
 import { ProviderWorkspaceMissingError } from "../provider/Errors.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as HostedBlenderAgents from "../hostedBlender/HostedBlenderAgents.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -688,6 +689,7 @@ function layerTest(input: {
   readonly releaseRecorded?: Deferred.Deferred<void>;
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
   readonly projectServiceLayer?: Layer.Layer<ProjectService.ProjectService>;
+  readonly hostedBlenderAgentsLayer?: Layer.Layer<HostedBlenderAgents.HostedBlenderAgents>;
   readonly installationGateLayer?: Layer.Layer<ProviderInstallationGate.ProviderInstallationGate>;
 }) {
   const layerConfiguredEventSink =
@@ -788,6 +790,7 @@ function layerTest(input: {
           input.installationGateLayer ?? ProviderInstallationGate.layer,
           ...(input.serverSettingsLayer === undefined ? [] : [input.serverSettingsLayer]),
           ...(input.projectServiceLayer === undefined ? [] : [input.projectServiceLayer]),
+          ...(input.hostedBlenderAgentsLayer === undefined ? [] : [input.hostedBlenderAgentsLayer]),
         ),
       ),
     ),
@@ -862,6 +865,7 @@ function runBrowserAccessScenario(input: {
   readonly createThread?: boolean;
   readonly projectExists?: boolean;
   readonly delegatedBy?: ThreadId;
+  readonly hostedBlenderAgentsLayer?: Layer.Layer<HostedBlenderAgents.HostedBlenderAgents>;
 }) {
   return Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
@@ -911,6 +915,9 @@ function runBrowserAccessScenario(input: {
           idleTimeoutMs: 1_000,
           mcpConfigs,
           projectServiceLayer: layerProjectService,
+          ...(input.hostedBlenderAgentsLayer === undefined
+            ? {}
+            : { hostedBlenderAgentsLayer: input.hostedBlenderAgentsLayer }),
           serverSettingsLayer: ServerSettings.layerTest({
             enableAgentBrowserAccess: input.enableAgentBrowserAccess,
             ...(input.enableAgentDeviceAccess === undefined
@@ -6090,6 +6097,43 @@ it.effect(
       });
       assert.isFalse(denied?.capabilities?.has("device"));
     }),
+);
+
+it.effect("ProviderSessionManagerV2 gives the session its hosted Blender MCP when it starts", () =>
+  Effect.gen(function* () {
+    const launch = {
+      command: "/home/user/.local/bin/blender-mcp",
+      blenderPath: "/usr/bin/blender",
+      hostedPort: 41001,
+      masterPort: 41002,
+      tmpDir: "/tmp/t3hb-mcp",
+    };
+    const asked: Array<string> = [];
+    const agentsLayer = (given: typeof launch | undefined) =>
+      Layer.mock(HostedBlenderAgents.HostedBlenderAgents)({
+        sessionLaunch: ({ driver }) =>
+          Effect.sync(() => {
+            asked.push(driver);
+            return given;
+          }),
+      });
+    const withBlender = yield* runBrowserAccessScenario({
+      enableAgentBrowserAccess: true,
+      projectOverride: true,
+      hostedBlenderAgentsLayer: agentsLayer(launch),
+    });
+    assert.deepEqual(withBlender?.hostedBlender, launch);
+    assert.isTrue(withBlender?.capabilities?.has("hosted-blender"));
+    assert.deepEqual(asked, ["codex"]);
+
+    const without = yield* runBrowserAccessScenario({
+      enableAgentBrowserAccess: true,
+      projectOverride: true,
+      hostedBlenderAgentsLayer: agentsLayer(undefined),
+    });
+    assert.isUndefined(without?.hostedBlender);
+    assert.isFalse(without?.capabilities?.has("hosted-blender"));
+  }),
 );
 
 it.effect("ProviderSessionManagerV2 withholds device tools while device support is off", () =>

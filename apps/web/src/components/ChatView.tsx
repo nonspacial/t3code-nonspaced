@@ -205,6 +205,7 @@ import {
   usePreviewMiniPlayerStore,
 } from "../previewMiniPlayerStore";
 import { decideFloatingBlender } from "./blender/floatingBlender";
+import { agentWorkingInBlender, workingInBlenderBannerItem } from "./blender/workingInBlender";
 import { useHostedBlenderState } from "../state/hostedBlender";
 import { threadPullRequestPanelTarget } from "./pullRequest/pullRequestDetail.logic";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
@@ -2868,6 +2869,14 @@ export default function ChatView(props: ChatViewProps) {
       freshSessionPending && activePendingApproval === null
         ? [freshSessionBannerItem(() => disarmFreshSession(routeThreadKey), messages)]
         : [];
+    const workingInBlenderItems = agentWorkingInBlender(timelineEntries, activeRunningTurnId)
+      ? [
+          workingInBlenderBannerItem(
+            { onStop: canInterruptRunningThread ? () => void onInterruptStable() : null },
+            messages,
+          ),
+        ]
+      : [];
     const heldSendItems = composerSendHeld
       ? [
           heldComposerSendBannerItem(
@@ -2885,6 +2894,7 @@ export default function ChatView(props: ChatViewProps) {
         ...usageLimitsItems,
         ...projectCloneItems,
         ...freshSessionItems,
+        ...workingInBlenderItems,
         ...heldSendItems,
         ...systemComposerBannerItems,
       ];
@@ -2897,6 +2907,7 @@ export default function ChatView(props: ChatViewProps) {
       ...usageLimitsItems,
       ...projectCloneItems,
       ...freshSessionItems,
+      ...workingInBlenderItems,
       ...heldSendItems,
       ...systemComposerBannerItems,
       branchMismatchBannerItem(

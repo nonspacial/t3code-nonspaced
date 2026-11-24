@@ -6,7 +6,7 @@ import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, expect, it } from "@effect/vitest";
-import { type HostedBlenderThreadState, ThreadId } from "@t3tools/contracts";
+import { type HostedBlenderThreadState, type RuntimeMode, ThreadId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import * as Context from "effect/Context";
@@ -23,6 +23,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as ProjectService from "../project/ProjectService.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as HostedBlender from "./HostedBlender.ts";
+import * as HostedBlenderAgents from "./HostedBlenderAgents.ts";
 import * as HostedBlenderSetup from "./HostedBlenderSetup.ts";
 
 const threadId = ThreadId.make("thread-hosted-blender");
@@ -35,6 +36,9 @@ interface Host {
   readonly env: NodeJS.ProcessEnv;
   readonly workspaceRoot: string;
   readonly baseDir: string;
+  readonly runtimeMode?: RuntimeMode;
+  /** The thread's agent session holds the hosted Blender MCP on this port. */
+  readonly agentPort?: number;
 }
 
 const blenderOnPath = (env: NodeJS.ProcessEnv) =>
@@ -49,7 +53,7 @@ const readinessFor = (host: Host): HostedBlenderSetup.HostedBlenderReadiness => 
   const blender = blenderOnPath(host.env);
   return host.helper == null || blender === undefined
     ? { status: "notSetUp", missing: ["helper"] }
-    : { status: "ok", helper: host.helper, blender };
+    : { status: "ok", helper: host.helper, blender, blenderMcp: null };
 };
 
 const layerFor = (host: Host) =>
@@ -70,11 +74,18 @@ const layerFor = (host: Host) =>
           getThreadShell: (id) =>
             Effect.succeed(
               id === threadId || id === otherThreadId
-                ? ({ worktreePath: host.workspaceRoot, projectId: "project" } as never)
+                ? ({
+                    worktreePath: host.workspaceRoot,
+                    projectId: "project",
+                    runtimeMode: host.runtimeMode ?? "approval-required",
+                  } as never)
                 : null,
             ),
         }),
         Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(HostedBlenderAgents.HostedBlenderAgents)({
+          listenerPort: () => Effect.succeed(host.agentPort ?? null),
+        }),
         WorkspacePaths.layer,
         NetService.layer,
         ServerConfig.layerTest(host.workspaceRoot, host.baseDir),
@@ -1016,6 +1027,72 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
       expect((yield* firstState(service)).status).toBe("running");
       yield* service.quit({ threadId, save: true });
       yield* awaitStatus("stopped");
+    }).pipe(Effect.scoped),
+  );
+});
+
+// Records Blender's command line, then shows the viewport window and waits to be asked to quit.
+const ARGS_HELPER = String.raw`
+import json, os, struct, sys
+with open(os.environ["STANDIN_ARGS"], "w") as log:
+    log.write("\n".join(sys.argv[1:]))
+def event(value):
+    data = json.dumps(value).encode()
+    sys.stdout.buffer.write(struct.pack(">IB", len(data) + 1, 1) + data)
+    sys.stdout.buffer.flush()
+event({"type": "ready", "capture": "extImageCopyCapture", "target": "window",
+       "encoder": "x264enc", "width": 1280, "height": 720, "cursorTracking": True})
+event({"type": "windowCaptured", "title": "3D Viewport"})
+for line in sys.stdin:
+    if '"quit"' in line:
+        break
+`;
+
+describe("Agent access at launch", () => {
+  const launchArgs = Effect.fn(function* (host: Pick<Host, "runtimeMode" | "agentPort">) {
+    const dir = yield* tempDir("agent-access");
+    const bin = fakeTools(dir);
+    NodeFS.writeFileSync(NodePath.join(bin, "helper"), `#!${python}\n${ARGS_HELPER}`, {
+      mode: 0o755,
+    });
+    const runtime = NodePath.join(dir, "run");
+    NodeFS.mkdirSync(runtime);
+    NodeFS.writeFileSync(NodePath.join(dir, "cube.blend"), "");
+    const argsLog = NodePath.join(dir, "args.log");
+    const service = yield* serviceFor(
+      layerFor({
+        env: { PATH: bin, XDG_RUNTIME_DIR: runtime, STANDIN_ARGS: argsLog },
+        helper: NodePath.join(bin, "helper"),
+        workspaceRoot: dir,
+        baseDir: dir,
+        ...host,
+      }),
+    );
+    yield* service.open({ threadId, relativePath: "cube.blend" });
+    yield* service.threadState(threadId).pipe(
+      Stream.filter((state) => state.status === "running"),
+      Stream.runHead,
+    );
+    const args = NodeFS.readFileSync(argsLog, "utf8").split("\n");
+    yield* service.quit({ threadId, save: false });
+    return args;
+  });
+
+  it.live("starts the Blender Lab listener on the port the thread's agent session holds", () =>
+    Effect.gen(function* () {
+      const args = yield* launchArgs({ agentPort: 41234 });
+      expect(args).toContain("--t3-mcp-listen");
+      expect(args[args.indexOf("--t3-mcp-port") + 1]).toBe("41234");
+      expect(yield* launchArgs({})).not.toContain("--t3-mcp-listen");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("lets embedded scripts follow the user's setting only in full-access threads", () =>
+    Effect.gen(function* () {
+      expect(yield* launchArgs({ runtimeMode: "full-access" })).not.toContain("--disable-autoexec");
+      for (const runtimeMode of ["approval-required", "auto-accept-edits", "auto"] as const) {
+        expect(yield* launchArgs({ runtimeMode })).toContain("--disable-autoexec");
+      }
     }).pipe(Effect.scoped),
   );
 });

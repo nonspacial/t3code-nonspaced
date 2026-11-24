@@ -9,6 +9,32 @@ import {
 } from "./BlenderLaunch.ts";
 
 describe("helperArguments", () => {
+  const launch = {
+    stateDir: "/state/thread-1",
+    userResources: "/state/user-resources",
+    blender: "/usr/bin/blender",
+    addonPath: "/state/thread-1/t3_control.py",
+    blendPath: "/work/models/hero.blend",
+    controlSocket: "/run/user/1000/t3hb-1/control.sock",
+    mcpPort: 41234,
+    width: 1280,
+    height: 720,
+  };
+
+  it("leaves embedded scripts to the user's own setting only when auto-run is allowed", () => {
+    expect(helperArguments({ ...launch, autoRun: true })).not.toContain("--disable-autoexec");
+    expect(helperArguments({ ...launch, autoRun: false })).toContain("--disable-autoexec");
+  });
+
+  it("asks the control add-on to start the agent listener only when told to", () => {
+    expect(helperArguments({ ...launch, mcpListen: true }).slice(-3)).toEqual([
+      "--t3-mcp-port",
+      "41234",
+      "--t3-mcp-listen",
+    ]);
+    expect(helperArguments(launch)).not.toContain("--t3-mcp-listen");
+  });
+
   it("runs Blender online, without embedded scripts, with the control add-on and its own ports", () => {
     expect(
       helperArguments({

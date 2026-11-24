@@ -49,6 +49,7 @@ import { SessionControl } from "../preview/SessionControl.ts";
 import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
 import { type ControlConnection, requestSave, type SaveReply } from "./ControlSave.ts";
 import { HeldInput } from "./HeldInput.ts";
+import * as HostedBlenderAgents from "./HostedBlenderAgents.ts";
 import * as HostedBlenderSetup from "./HostedBlenderSetup.ts";
 import {
   encodeHelperCommand,
@@ -196,6 +197,7 @@ const make = Effect.gen(function* () {
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
   const environment = yield* HostProcess.Environment;
   const homeDirectory = yield* HostProcess.HomeDirectory;
+  const agents = yield* Effect.serviceOption(HostedBlenderAgents.HostedBlenderAgents);
   const lookupContext = yield* Effect.context<
     | FileSystem.FileSystem
     | Path.Path
@@ -587,7 +589,16 @@ const make = Effect.gen(function* () {
       });
       yield* fileSystem.chmod(controlDir, 0o700);
       const controlSocket = path.join(controlDir, "control.sock");
-      const mcpPort = yield* net.reserveLoopbackPort();
+      const agentPort = Option.isSome(agents)
+        ? yield* agents.value.listenerPort(instance.threadId)
+        : null;
+      const mcpPort = agentPort ?? (yield* net.reserveLoopbackPort());
+      const runtimeMode = yield* ThreadManagementService.ThreadManagementService.pipe(
+        Effect.flatMap((threads) => threads.getThreadShell(instance.threadId)),
+        Effect.map((shell) => shell?.runtimeMode),
+        Effect.orElseSucceed(() => undefined),
+        Effect.provideContext(lookupContext),
+      );
       // The file `open` checked must still be that file, not a link swapped in since.
       if ((yield* fileSystem.realPath(instance.blendPath)) !== instance.blendPath) {
         return yield* Effect.logWarning("hosted Blender's file changed before it started");
@@ -605,6 +616,8 @@ const make = Effect.gen(function* () {
               blendPath: instance.blendPath,
               controlSocket,
               mcpPort,
+              mcpListen: agentPort !== null,
+              autoRun: runtimeMode === "full-access",
               ...INITIAL_SIZE,
             }),
             {

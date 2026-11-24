@@ -30,6 +30,18 @@ Each thread has one hosted Blender with one file open. To open a different file,
 
 Once a file is open, a link to that `.blend` in the chat opens the Blender pane. Links to other `.blend` files open the file preview.
 
+## Agents in a hosted Blender
+
+With **Allow agents to start hosted Blenders** on, Claude and Codex threads can work in a hosted Blender. Other providers aren't supported yet. A thread picks it up when its agent session next starts, such as in a new thread.
+
+Ask the agent to change a `.blend`, say `models/hero.blend`. It doesn't edit that file: T3 Code copies it to `models/hero.wip-<id>.blend` beside it, where links to other files still work, and opens the copy in the thread's hosted Blender. The agent edits the copy, and posts a link to it when it's done or when you ask to watch; the link opens the Blender pane, and a link with a view moves your viewport window to what it points at. The copy stays in your project after the thread ends. To have the agent work in your own Blender instead, say so.
+
+What the agent may do without asking follows the thread's access mode. In **Full access** it uses every Blender tool freely. In the other modes it reads the scene, takes screenshots and searches the docs freely, and asks before it runs code or writes files. In Plan mode it can only look. Changing the mode applies from the next turn.
+
+While the agent is running something in Blender, the composer says **Working in Blender**, with **Stop** to stop the turn.
+
+A hosted Blender you opened yourself before the agent's session started can't take the agent's calls; the agent quits it, saving first, and starts it again.
+
 ## Watching
 
 The pane opens view-only. The status strip shows who's in control, the stream's size, frame rate, bitrate and encoder, and how much memory Blender is using.
@@ -63,7 +75,7 @@ Closing the pane leaves Blender running; open it again from the file preview or 
 
 ## Its settings
 
-The first time a hosted Blender starts, T3 Code copies your newest Blender settings (from `~/.config/blender`) into a copy of its own, so your preferences and add-ons come along. Links in your settings folder aren't copied, and changes a hosted Blender makes stay in its copy. Each hosted Blender keeps its own temporary files and add-on ports, so it never clashes with a Blender you're running. Python scripts embedded in `.blend` files don't run in a hosted Blender.
+The first time a hosted Blender starts, T3 Code copies your newest Blender settings (from `~/.config/blender`) into a copy of its own, so your preferences and add-ons come along. Links in your settings folder aren't copied, and changes a hosted Blender makes stay in its copy. Each hosted Blender keeps its own temporary files and add-on ports, so it never clashes with a Blender you're running. Python scripts embedded in `.blend` files follow your **Auto Run Python Scripts** preference only in Full access threads; in every other mode they never run.
 
 ## Where it works
 

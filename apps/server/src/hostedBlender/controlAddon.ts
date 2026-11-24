@@ -19,6 +19,7 @@ def _option(name):
 
 SOCKET_PATH = _option("--t3-control")
 MCP_PORT = _option("--t3-mcp-port")
+MCP_LISTEN = "--t3-mcp-listen" in (sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
 TICK = 0.1
 
 
@@ -145,26 +146,32 @@ def _tick():
     return TICK
 
 
-def _disable_mcp_addon():
-    # The copied settings may enable the official MCP add-on, whose code-execution listener
-    # stays off until T3 can turn away other OS users. Its saved port becomes T3's for this
-    # instance, and disabling it for the session (not in the settings) runs its unregister,
-    # which cancels the autostart timer it registered before this script ran.
+def _is_mcp_addon(name):
+    return name.startswith("bl_ext.") and name.endswith(".mcp")
+
+
+def _setup_mcp_addon():
+    # The official MCP add-on runs agent code, so it listens only for a thread whose agent
+    # session uses it (--t3-mcp-listen), on the port T3 assigned. Otherwise disabling it for
+    # the session (not in the settings) runs its unregister, which cancels the autostart timer
+    # it registered before this script ran. T3's wrapper for the listener belongs here.
     import addon_utils
 
     preferences = bpy.context.preferences
-    names = [
-        name
-        for name in preferences.addons.keys()
-        if name.startswith("bl_ext.") and name.endswith(".mcp")
-    ]
+    names = [name for name in preferences.addons.keys() if _is_mcp_addon(name)]
+    if MCP_LISTEN and not names:
+        installed = [module.__name__ for module in addon_utils.modules() if _is_mcp_addon(module.__name__)]
+        for name in installed[:1]:
+            addon_utils.enable(name, default_set=False)
+            names.append(name)
     for name in names:
-        addon = preferences.addons[name]
-        if MCP_PORT is not None and addon.preferences is not None:
+        addon = preferences.addons.get(name)
+        if addon is not None and MCP_PORT is not None and addon.preferences is not None:
             if hasattr(addon.preferences, "port"):
                 addon.preferences.port = int(MCP_PORT)
                 addon.preferences.host = "localhost"
-        addon_utils.disable(name, default_set=False)
+        if not MCP_LISTEN:
+            addon_utils.disable(name, default_set=False)
     try:
         preferences.is_dirty = False
     except AttributeError:
@@ -202,7 +209,7 @@ def _on_load_post(*_args):
 
 
 def register():
-    _disable_mcp_addon()
+    _setup_mcp_addon()
     if SOCKET_PATH is not None:
         _State.server = _listen()
         bpy.app.timers.register(_tick, first_interval=TICK, persistent=True)

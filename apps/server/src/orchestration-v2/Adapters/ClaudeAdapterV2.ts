@@ -36,6 +36,7 @@ import {
   type ClaudeLedgerUsage,
   type ClaudeModelLedger,
 } from "../../provider/ClaudeTurnTokenUsage.ts";
+import { claudeHostedBlenderOverrides } from "../../provider/hostedBlenderMcp.ts";
 import { toMcpElicitationResponse } from "../../provider/CodexMcpElicitation.ts";
 import {
   type CanUseTool,
@@ -224,6 +225,7 @@ import {
 import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
 import {
   T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
+  T3_CODE_HOSTED_BLENDER_INSTRUCTIONS_WITH_TOOL_SEARCH,
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
 } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
@@ -2478,6 +2480,8 @@ export function makeClaudeQueryOptions(input: {
   readonly agentFeedback?: AgentFeedbackMode;
   /** The thread's T3 MCP session holds the `device` capability. */
   readonly deviceToolsAvailable?: boolean;
+  /** T3 gave the session its hosted Blender MCP servers. */
+  readonly hostedBlenderToolsAvailable?: boolean;
   readonly tools?: ClaudeAgentSdkQueryTools;
   readonly allowedTools?: ReadonlyArray<string>;
   readonly disallowedTools?: ReadonlyArray<string>;
@@ -2647,6 +2651,9 @@ export function makeClaudeQueryOptions(input: {
               CLAUDE_SEND_TO_USER_INSTRUCTIONS +
               (deviceInstructions
                 ? `\n${T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH}\n`
+                : "") +
+              (input.hostedBlenderToolsAvailable === true
+                ? `\n${T3_CODE_HOSTED_BLENDER_INSTRUCTIONS_WITH_TOOL_SEARCH}\n`
                 : "")),
         ...launchAppendSystemPrompt,
       ].join("\n\n"),
@@ -2792,8 +2799,11 @@ export function claudeMcpQueryOverrides(input: {
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
   readonly readOnlySandbox: boolean;
   readonly allowedTools?: ReadonlyArray<string>;
+  /** The thread's modes, which decide what the hosted Blender servers pre-approve. */
+  readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
 }): {
   readonly allowedTools?: ReadonlyArray<string>;
+  readonly disallowedTools?: ReadonlyArray<string>;
   readonly mcpServers?: ClaudeQueryOptions["mcpServers"];
 } {
   const session = input.mcpSession;
@@ -2803,8 +2813,18 @@ export function claudeMcpQueryOverrides(input: {
   const mcpAllowedTools = input.readOnlySandbox
     ? CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS
     : [CLAUDE_T3_MCP_TOOL_WILDCARD];
+  const blender = claudeHostedBlenderOverrides(
+    session.hostedBlender,
+    input.runtimePolicy ?? {
+      runtimeMode: "approval-required",
+      ...(input.readOnlySandbox ? { sandboxPolicy: { type: "readOnly" } } : {}),
+    },
+  );
   return {
-    allowedTools: Array.from(new Set([...(input.allowedTools ?? []), ...mcpAllowedTools])),
+    allowedTools: Array.from(
+      new Set([...(input.allowedTools ?? []), ...mcpAllowedTools, ...blender.allowedTools]),
+    ),
+    ...(blender.disallowedTools.length === 0 ? {} : { disallowedTools: blender.disallowedTools }),
     mcpServers: {
       "t3-code": {
         type: "http",
@@ -2814,6 +2834,7 @@ export function claudeMcpQueryOverrides(input: {
         },
         timeout: CLAUDE_T3_MCP_TOOL_TIMEOUT_MS,
       },
+      ...blender.mcpServers,
     },
   };
 }
@@ -3869,6 +3890,7 @@ export function claudeEffectiveQueryPolicyKey(
   queryPolicy: ClaudeRuntimeQueryPolicy,
   mcpOverrides: {
     readonly allowedTools?: ReadonlyArray<string>;
+    readonly disallowedTools?: ReadonlyArray<string>;
     readonly mcpServers?: ClaudeQueryOptions["mcpServers"];
   },
   // Folders are fixed when a query starts, so a changed list needs a new one.
@@ -3876,6 +3898,7 @@ export function claudeEffectiveQueryPolicyKey(
 ): string {
   return JSON.stringify({
     workspace,
+    disallowedTools: mcpOverrides.disallowedTools,
     runtimePolicy: claudeRuntimeQueryPolicyKey({
       ...queryPolicy,
       ...(mcpOverrides.allowedTools === undefined
@@ -13447,6 +13470,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             );
           const mcpOverrides = claudeMcpQueryOverrides({
             mcpSession,
+            runtimePolicy: turnInput.runtimePolicy,
             readOnlySandbox:
               sandboxPolicyKindForClaudeRuntimePolicy(turnInput.runtimePolicy) === "readOnly",
             ...(queryPolicy.allowedTools === undefined
@@ -13662,7 +13686,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ...(mcpOverrides.mcpServers === undefined
               ? {}
               : { mcpServers: mcpOverrides.mcpServers }),
+            ...(mcpOverrides.disallowedTools === undefined
+              ? {}
+              : { disallowedTools: mcpOverrides.disallowedTools }),
             deviceToolsAvailable: mcpSession?.capabilities?.has("device") === true,
+            hostedBlenderToolsAvailable: mcpSession?.hostedBlender !== undefined,
             permissionMode: queryPolicy.permissionMode,
             ...(queryPolicy.allowDangerouslySkipPermissions === undefined
               ? {}

@@ -303,6 +303,25 @@ describe("HostedBlenderSetup", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("hands agents the official Blender MCP, never the third-party one", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir;
+      const host = fakeHost(dir);
+      const official = consoleScript(NodePath.join(dir, "tools", "blender-mcp"), "blmcp");
+      const lookalike = consoleScript(
+        NodePath.join(dir, "other", "blender-mcp"),
+        "blender_mcp.server",
+      );
+      const readinessWith = Effect.fnUntraced(function* (blenderMcpPath: string) {
+        const service = yield* serviceFor({ host, home: dir, blenderMcpPath });
+        yield* service.ensureChecked;
+        return Option.getOrThrow(yield* Stream.runHead(service.readiness));
+      });
+      expect(yield* readinessWith(official)).toMatchObject({ status: "ok", blenderMcp: official });
+      expect(yield* readinessWith(lookalike)).toMatchObject({ status: "ok", blenderMcp: null });
+    }).pipe(Effect.scoped),
+  );
+
   it.live("tells the third-party blender-mcp from Blender Lab's", () =>
     Effect.gen(function* () {
       const dir = yield* tempDir;
@@ -356,6 +375,7 @@ describe("HostedBlenderSetup", () => {
         status: "ok",
         helper: host.helper,
         blender: host.blender,
+        blenderMcp: null,
       });
 
       NodeFS.rmSync(NodePath.join(host.bin, "gst-inspect-1.0"));

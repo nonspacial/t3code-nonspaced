@@ -807,6 +807,88 @@ describe("ClaudeAdapterV2 MCP query overrides", () => {
     assert.equal(keyFor("/repos/api"), keyFor("/repos/api"));
   });
 
+  describe("hosted Blender MCP", () => {
+    const hostedBlender = {
+      command: "/home/user/.local/bin/blender-mcp",
+      blenderPath: "/usr/bin/blender",
+      hostedPort: 41001,
+      masterPort: 41002,
+      tmpDir: "/tmp/t3hb-mcp",
+    };
+    const threadId = ThreadId.make("thread-claude-hosted-blender");
+    const withBlender = { ...mcpSessionFor(threadId), hostedBlender };
+    const policyFor = (
+      runtimeMode: "approval-required" | "auto-accept-edits" | "auto" | "full-access",
+      interactionMode: "default" | "plan" = "default",
+    ) =>
+      ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode,
+        interactionMode,
+        cwd: "/workspace",
+      });
+    const overridesFor = (runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
+      ClaudeAdapterV2.claudeMcpQueryOverrides({
+        mcpSession: withBlender,
+        readOnlySandbox: false,
+        runtimePolicy,
+      });
+
+    it("adds blender-hosted and blender-master beside t3-code, leaving the user's blender alone", () => {
+      const servers = overridesFor(policyFor("full-access")).mcpServers ?? {};
+      assert.deepEqual(Object.keys(servers), ["t3-code", "blender-hosted", "blender-master"]);
+      assert.deepInclude(servers["blender-master"], {
+        type: "stdio",
+        command: hostedBlender.command,
+        env: {
+          BLENDER_MCP_PORT: "41002",
+          BLENDER_PATH: "/usr/bin/blender",
+          TMPDIR: "/tmp/t3hb-mcp",
+        },
+      });
+      assert.deepEqual(
+        Object.keys(
+          ClaudeAdapterV2.claudeMcpQueryOverrides({
+            mcpSession: mcpSessionFor(threadId),
+            readOnlySandbox: false,
+            runtimePolicy: policyFor("full-access"),
+          }).mcpServers ?? {},
+        ),
+        ["t3-code"],
+      );
+    });
+
+    it.each(["approval-required", "auto-accept-edits", "auto", "full-access"] as const)(
+      "follows the thread's mode in %s",
+      (runtimeMode) => {
+        const overrides = overridesFor(policyFor(runtimeMode));
+        const allowed = overrides.allowedTools ?? [];
+        assert.equal(allowed.includes("mcp__blender-hosted__*"), runtimeMode === "full-access");
+        assert.equal(
+          allowed.includes("mcp__blender-hosted__get_objects_summary"),
+          runtimeMode !== "full-access",
+        );
+        assert.notInclude(allowed, "mcp__blender-hosted__execute_blender_code");
+        assert.isUndefined(overrides.disallowedTools);
+      },
+    );
+
+    it("refuses Blender's write tools in plan mode", () => {
+      const overrides = overridesFor(policyFor("full-access", "plan"));
+      assert.notInclude(overrides.allowedTools ?? [], "mcp__blender-hosted__*");
+      assert.include(overrides.disallowedTools ?? [], "mcp__blender-hosted__execute_blender_code");
+    });
+
+    it("starts a new query when the mode crosses full access or plan", () => {
+      const keyFor = (policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
+        ClaudeAdapterV2.claudeEffectiveQueryPolicyKey(
+          ClaudeAdapterV2.claudeRuntimeQueryPolicyForRuntimePolicy(policy),
+          overridesFor(policy),
+        );
+      assert.notEqual(keyFor(policyFor("full-access")), keyFor(policyFor("auto")));
+      assert.notEqual(keyFor(policyFor("auto")), keyFor(policyFor("auto", "plan")));
+    });
+  });
+
   it("matches the read-only allowlist to the orchestrator toolkit annotations", () => {
     const readOnlyToolNames = [
       ...Object.values(OrchestratorToolkit.tools),
@@ -943,6 +1025,7 @@ describe("ClaudeAdapterV2 T3 tool instructions", () => {
   const options = (input: {
     readonly mcp: boolean;
     readonly deviceToolsAvailable: boolean;
+    readonly hostedBlenderToolsAvailable?: boolean;
     readonly agentFeedback?: "off" | "on-request" | "auto";
   }) =>
     ClaudeAdapterV2.makeClaudeQueryOptions({
@@ -957,11 +1040,30 @@ describe("ClaudeAdapterV2 T3 tool instructions", () => {
         ? { mcpServers: { "t3-code": { type: "http" as const, url: "http://127.0.0.1/mcp" } } }
         : {}),
       deviceToolsAvailable: input.deviceToolsAvailable,
+      hostedBlenderToolsAvailable: input.hostedBlenderToolsAvailable ?? false,
       agentFeedback: input.agentFeedback ?? "off",
       environment: {},
     });
   const append = (input: Parameters<typeof options>[0]) =>
     (options(input).systemPrompt as { readonly append?: string }).append ?? "";
+
+  it("gives a session with the hosted Blender MCP its instructions and the ToolSearch line", () => {
+    const text = append({
+      mcp: true,
+      deviceToolsAvailable: false,
+      hostedBlenderToolsAvailable: true,
+    });
+    assert.include(text, "## T3 Code hosted Blender");
+    assert.include(text, "`blender_start` with the path of the file the user wants changed");
+    assert.include(text, "#view=");
+    assert.include(text, "bpy.ops.ed.undo_push");
+    assert.include(text, "select:mcp__t3-code__blender_start");
+    assert.notInclude(append({ mcp: true, deviceToolsAvailable: false }), "hosted Blender");
+    assert.notInclude(
+      append({ mcp: false, deviceToolsAvailable: false, hostedBlenderToolsAvailable: true }),
+      "hosted Blender",
+    );
+  });
 
   it("gives a session with device access the device block and the ToolSearch line to load it", () => {
     const text = append({ mcp: true, deviceToolsAvailable: true });

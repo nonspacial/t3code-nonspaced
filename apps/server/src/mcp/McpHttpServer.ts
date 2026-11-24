@@ -99,6 +99,8 @@ import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 import * as IssuesHandlers from "./toolkits/issues/handlers.ts";
 import { IssuesToolkit } from "./toolkits/issues/tools.ts";
 import * as DeviceHandlers from "./toolkits/device/handlers.ts";
+import * as HostedBlenderHandlers from "./toolkits/hostedBlender/handlers.ts";
+import { HostedBlenderToolkit } from "./toolkits/hostedBlender/tools.ts";
 import {
   DeviceScreenshotTool,
   DeviceScreenshotToolkit,
@@ -1477,6 +1479,11 @@ export const layerDeviceToolkit = Layer.mergeAll(
   layerDeviceScreenshotRegistration,
 );
 
+export const layerHostedBlenderToolkit = toolkitRegistration(
+  HostedBlenderToolkit,
+  HostedBlenderHandlers.layer,
+);
+
 /**
  * `McpServer` for in-process calls, which provide `McpInvocationContext`
  * around `callTool` as the auth middleware does for each /mcp request.
@@ -1522,6 +1529,7 @@ export const layerTools = Layer.mergeAll(
   layerPullRequestsToolkit,
   layerIssuesToolkit,
   layerDeviceToolkit,
+  layerHostedBlenderToolkit,
   layerHtmlToolkit,
   layerMessageToolkit,
 );
