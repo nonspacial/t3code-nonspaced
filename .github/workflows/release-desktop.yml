@@ -222,7 +222,8 @@ jobs:
           path: |
             native/kde-snap-shot/target/${{ inputs.rust_target }}/release/t3-kde-snap-shot
             native/hyprland-snap-shot/target/${{ inputs.rust_target }}/release/t3-hyprland-snap-shot
-          key: linux-capture-helpers-${{ inputs.rust_target }}-${{ hashFiles('native/kde-snap-shot/Cargo.lock', 'native/kde-snap-shot/Cargo.toml', 'native/kde-snap-shot/src/**', 'native/hyprland-snap-shot/Cargo.lock', 'native/hyprland-snap-shot/Cargo.toml', 'native/hyprland-snap-shot/src/**', 'native/hyprland-snap-shot/protocols/**') }}
+            native/hidden-display/target/${{ inputs.rust_target }}/release/t3-hidden-display
+          key: linux-capture-helpers-${{ inputs.rust_target }}-${{ hashFiles('native/kde-snap-shot/Cargo.lock', 'native/kde-snap-shot/Cargo.toml', 'native/kde-snap-shot/src/**', 'native/hyprland-snap-shot/Cargo.lock', 'native/hyprland-snap-shot/Cargo.toml', 'native/hyprland-snap-shot/src/**', 'native/hyprland-snap-shot/protocols/**', 'native/hidden-display/Cargo.lock', 'native/hidden-display/Cargo.toml', 'native/hidden-display/src/**') }}
 
       # Every Linux build makes electron-builder fetch the AppImage runtime, FPM
       # for the deb, and the 7-Zip that unpacks FPM from GitHub releases. It
@@ -442,6 +443,22 @@ jobs:
         shell: bash
         run: command -v patchelf || { sudo apt-get update && sudo apt-get install -y patchelf; }
 
+      # Built here as well as in the desktop build so the CLI archive, built first, ships it.
+      - name: Stage hidden display for the CLI archive
+        if: inputs.cli_archive && inputs.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="native/hidden-display/target/${{ inputs.rust_target }}/release/t3-hidden-display"
+          if [[ ! -x "$binary" ]]; then
+            sudo apt-get update
+            sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgbm-dev libxkbcommon-dev
+            cargo build --locked --release --manifest-path native/hidden-display/Cargo.toml --target "${{ inputs.rust_target }}"
+          fi
+          target_dir="$RUNNER_TEMP/cli-hidden-display/${{ inputs.resource_key }}"
+          mkdir -p "$target_dir"
+          cp "$binary" "$target_dir/t3-hidden-display"
+
       - name: Build CLI archive
         id: build_cli
         if: inputs.cli_archive
@@ -462,6 +479,9 @@ jobs:
         run: |
           set -euo pipefail
           extra_args=()
+          if [[ "${{ inputs.platform }}" == "linux" ]]; then
+            extra_args+=(--hidden-display-dir "$RUNNER_TEMP/cli-hidden-display")
+          fi
           if [[ "${{ inputs.platform }}" == "mac" ]]; then
             if [[ -n "${APPLE_API_KEY:-}" ]]; then
               key_dir="$(mktemp -d "$RUNNER_TEMP/t3-cli-notary.XXXXXXXX")"
@@ -506,7 +526,8 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsecret-1-dev pkg-config libgtk-3-0t64 libnss3 libasound2t64 libgbm1
+          sudo apt-get install -y libsecret-1-dev pkg-config libgtk-3-0t64 libnss3 libasound2t64 libgbm1 \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgbm-dev libxkbcommon-dev
           if ! command -v magick >/dev/null 2>&1 && ! command -v convert >/dev/null 2>&1; then
               sudo apt-get install -y imagemagick
           fi

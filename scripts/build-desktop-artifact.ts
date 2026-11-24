@@ -349,6 +349,16 @@ export const LINUX_DESKTOP_BUILD_PREREQUISITES = [
     packages: ["libsecret-1-dev", "pkg-config"],
   },
   { id: "imagemagick", description: "ImageMagick", packages: ["imagemagick"] },
+  {
+    id: "gstreamer",
+    description: "GStreamer, GBM and xkbcommon development headers (hidden display helper)",
+    packages: [
+      "libgstreamer1.0-dev",
+      "libgstreamer-plugins-base1.0-dev",
+      "libgbm-dev",
+      "libxkbcommon-dev",
+    ],
+  },
 ] as const;
 
 export class LinuxDesktopBuildPrerequisitesMissingError extends Schema.TaggedError<LinuxDesktopBuildPrerequisitesMissingError>()(
@@ -1111,6 +1121,10 @@ export const LINUX_CAPTURE_EXTRA_RESOURCES = [
   {
     from: "apps/desktop/prod-resources/kde-capture",
     to: "kde-capture",
+  },
+  {
+    from: "apps/desktop/prod-resources/hidden-display",
+    to: "hidden-display",
   },
   {
     from: "apps/desktop/gnome-extension",
@@ -1952,6 +1966,20 @@ export const preflightLinuxDesktopBuild = Effect.fn("preflightLinuxDesktopBuild"
         ChildProcess.make("pkg-config", ["--exists", "libsecret-1"]),
         "libsecret",
       ),
+      gstreamer: reuseCaptureHelpers
+        ? Effect.succeed(true)
+        : desktopBuildProbeSucceeds(
+            ChildProcess.make("pkg-config", [
+              "--exists",
+              "gstreamer-1.0",
+              "gstreamer-app-1.0",
+              "gstreamer-video-1.0",
+              "gstreamer-allocators-1.0",
+              "gbm",
+              "xkbcommon",
+            ]),
+            "gstreamer",
+          ),
       imagemagick: Effect.all([
         desktopBuildProbeSucceeds(ChildProcess.make("magick", ["-version"]), "magick"),
         desktopBuildProbeSucceeds(ChildProcess.make("convert", ["-version"]), "convert"),
@@ -2300,8 +2328,10 @@ export const verifyPackagedBundleIsSelfContained = Effect.fn("verifyPackagedBund
   },
 );
 
-export const stageLinuxCaptureHelper = Effect.fn("stageLinuxCaptureHelper")(function* (input: {
-  readonly backend: "kde" | "hyprland";
+/** Builds `native/<crate>` into `resources/<destination>/t3-<crate>`. */
+export const stageLinuxNativeHelper = Effect.fn("stageLinuxNativeHelper")(function* (input: {
+  readonly crate: "kde-snap-shot" | "hyprland-snap-shot" | "hidden-display";
+  readonly destination: string;
   readonly repoRoot: string;
   readonly stageResourcesDir: string;
   readonly arch: typeof BuildArch.Type;
@@ -2316,9 +2346,9 @@ export const stageLinuxCaptureHelper = Effect.fn("stageLinuxCaptureHelper")(func
   );
   const binaryPath = path.join(
     input.repoRoot,
-    `native/${input.backend}-snap-shot/target`,
+    `native/${input.crate}/target`,
     rustTarget!,
-    `release/t3-${input.backend}-snap-shot`,
+    `release/t3-${input.crate}`,
   );
   if (!reuseHelpers) {
     const spawnCommand = yield* resolveSpawnCommand("cargo", [
@@ -2326,7 +2356,7 @@ export const stageLinuxCaptureHelper = Effect.fn("stageLinuxCaptureHelper")(func
       "--locked",
       "--release",
       "--manifest-path",
-      path.join(input.repoRoot, `native/${input.backend}-snap-shot/Cargo.toml`),
+      path.join(input.repoRoot, `native/${input.crate}/Cargo.toml`),
       "--target",
       rustTarget!,
     ]);
@@ -2336,7 +2366,7 @@ export const stageLinuxCaptureHelper = Effect.fn("stageLinuxCaptureHelper")(func
         shell: spawnCommand.shell,
       }),
       {
-        label: `cargo build ${input.backend} capture helper (${rustTarget})`,
+        label: `cargo build ${input.crate} (${rustTarget})`,
         verbose: input.verbose,
       },
     );
@@ -2348,12 +2378,12 @@ export const stageLinuxCaptureHelper = Effect.fn("stageLinuxCaptureHelper")(func
       arch: input.arch,
     });
   }
-  const destination = path.join(input.stageResourcesDir, `${input.backend}-capture`);
+  const destination = path.join(input.stageResourcesDir, input.destination);
   yield* fs.makeDirectory(destination, { recursive: true });
-  const executable = path.join(destination, `t3-${input.backend}-snap-shot`);
+  const executable = path.join(destination, `t3-${input.crate}`);
   yield* fs.copyFile(binaryPath, executable);
   yield* fs.chmod(executable, 0o755);
-  if (input.backend === "hyprland") {
+  if (input.crate === "hyprland-snap-shot") {
     // The official protocol XML includes the BSD notices required with binary distribution.
     yield* fs.copy(
       path.join(input.repoRoot, "native/hyprland-snap-shot/protocols"),
@@ -3861,9 +3891,14 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     verbose: options.verbose,
   });
   if (options.platform === "linux") {
-    for (const backend of ["kde", "hyprland"] as const)
-      yield* stageLinuxCaptureHelper({
-        backend,
+    for (const [crate, destination] of [
+      ["kde-snap-shot", "kde-capture"],
+      ["hyprland-snap-shot", "hyprland-capture"],
+      ["hidden-display", "hidden-display"],
+    ] as const)
+      yield* stageLinuxNativeHelper({
+        crate,
+        destination,
         repoRoot,
         stageResourcesDir,
         arch: options.arch,
