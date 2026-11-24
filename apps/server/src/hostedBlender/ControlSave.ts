@@ -35,9 +35,16 @@ export const requestSave = Effect.fn("HostedBlender.requestSave")(function* (inp
       () => Queue.poll(input.replies).pipe(Effect.map(Option.getOrElse(() => "lost" as const))),
     ),
   );
-  const started = yield* input.connection
-    .write(input.command)
-    .pipe(Effect.andThen(next), Effect.raceFirst(lost), Effect.timeoutOption(input.replyTimeout));
+  // Closure only unblocks a stuck write; every reply is read through `next`, queue first.
+  const started = yield* input.connection.write(input.command).pipe(
+    Effect.as("written" as const),
+    Effect.raceFirst(lost),
+    Effect.filterOrElse(
+      (written) => written === "lost",
+      () => next,
+    ),
+    Effect.timeoutOption(input.replyTimeout),
+  );
   if (Option.isNone(started) || started.value !== "saving") return false;
   return (yield* next) === "saved";
 });
