@@ -45,7 +45,7 @@ function pane() {
 }
 
 // A binary STL with two facets whose normals are all zero, as many exporters write them.
-function stl() {
+function stl(scale = 1) {
   const view = new DataView(new ArrayBuffer(84 + 2 * 50));
   view.setUint32(80, 2, true);
   const facets = [
@@ -54,7 +54,7 @@ function stl() {
   ];
   facets.forEach((vertices, facet) =>
     vertices.forEach((value, index) =>
-      view.setFloat32(84 + facet * 50 + 12 + index * 4, value, true),
+      view.setFloat32(84 + facet * 50 + 12 + index * 4, value * scale, true),
     ),
   );
   return view.buffer;
@@ -114,13 +114,80 @@ it("renders a model in the browser and lists what it measured", async () => {
   await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
   expect(mint).not.toHaveBeenCalled();
 
-  // A viewer forces its WebGL context lost when it goes, so the next one needs its own canvas.
-  await screen.rerender(preview(modelUrl(stl())));
-  await expect.element(screen.getByText("Loading 3D model…")).toBeVisible();
+  // A new version loads into the same viewer, so its WebGL context stays.
+  const canvas = screen.container.querySelector("canvas");
+  await screen.rerender(preview(modelUrl(stl(2))));
+  await expect.element(screen.getByText("20 × 10 × 40 mm")).toBeVisible();
   await expect.element(screen.getByText("STL · rendered in the browser")).toBeVisible();
   const canvases = screen.container.querySelectorAll("canvas");
   expect(canvases).toHaveLength(1);
+  expect(canvases[0]).toBe(canvas);
   expect(canvases[0]?.getContext("webgl2")?.isContextLost()).toBe(false);
+});
+
+it("starts a new 3D view on Reload after the first one could not start", async () => {
+  setup();
+  const preview = (src: string, onRefresh: () => void) => (
+    <ModelFilePreview
+      src={src}
+      name="bracket.stl"
+      format="stl"
+      sizeBytes={0}
+      companions={null}
+      onRefresh={onRefresh}
+    />
+  );
+  const refuse = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+  const reload = () => void screen.rerender(preview(modelUrl(stl()), reload));
+  await using screen = await render(preview(modelUrl(stl()), reload), pane());
+  await expect.element(screen.getByText(/3D previews need WebGL/)).toBeVisible();
+
+  refuse.mockRestore();
+  await userEvent.click(screen.getByRole("button", { name: "Reload model" }));
+  await expect.element(screen.getByRole("img", { name: "3D view of bracket.stl" })).toBeVisible();
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+});
+
+it("keeps the shown model while a new version downloads, and after one that fails", async () => {
+  setup();
+  const preview = (src: string, pending = false) => (
+    <ModelFilePreview
+      src={src}
+      name="bracket.stl"
+      format="stl"
+      sizeBytes={0}
+      companions={null}
+      onRefresh={() => {}}
+      updatingChip={<p>bracket.stl changed · updating…</p>}
+      pendingChip={pending ? <p>Converting the next save…</p> : undefined}
+    />
+  );
+  await using screen = await render(preview(modelUrl(stl())), pane());
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+
+  const slow = "https://example.test/slow.stl";
+  const { promise: download, resolve: finishDownload } = Promise.withResolvers<Response>();
+  const realFetch = globalThis.fetch;
+  using _fetch = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation((input, init) => (input === slow ? download : realFetch(input, init)));
+  await screen.rerender(preview(slow));
+  await expect.element(screen.getByText("bracket.stl changed · updating…")).toBeVisible();
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+  finishDownload(new Response(stl(2)));
+  await expect.element(screen.getByText("20 × 10 × 40 mm")).toBeVisible();
+  await expect.element(screen.getByText("STL · rendered in the browser")).toBeVisible();
+
+  const broken = modelUrl("not a model");
+  await screen.rerender(preview(broken));
+  await expect.element(screen.getByText("Couldn't load the new version")).toBeVisible();
+  await expect.element(screen.getByText("20 × 10 × 40 mm")).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Reset view" })).toBeVisible();
+
+  // Work on the next version outranks the last one's failure.
+  await screen.rerender(preview(broken, true));
+  await expect.element(screen.getByText("Converting the next save…")).toBeVisible();
+  await expect.element(screen.getByText("Couldn't load the new version")).not.toBeInTheDocument();
 });
 
 it("signs each file a glTF references beside it and names the ones it cannot read", async () => {
@@ -192,6 +259,68 @@ it("asks before parsing a very large model", async () => {
   await expect.element(screen.getByText("Large model")).toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: "Load model" }));
   await expect.element(screen.getByText("STL · rendered in the browser")).toBeVisible();
+});
+
+it("asks over the shown model before loading a very large new version", async () => {
+  setup();
+  const preview = (src: string, sizeBytes: number) => (
+    <ModelFilePreview
+      src={src}
+      name="scan.stl"
+      format="stl"
+      sizeBytes={sizeBytes}
+      companions={null}
+      onRefresh={() => {}}
+    />
+  );
+  await using screen = await render(preview(modelUrl(stl()), 0), pane());
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+  const canvas = screen.container.querySelector("canvas");
+
+  // Known to be large before it downloads.
+  await screen.rerender(preview(modelUrl(stl(2)), MODEL_CONFIRM_BYTES + 1));
+  await expect.element(screen.getByRole("button", { name: "Load model" })).toBeVisible();
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Keep this version" }));
+  await expect.element(screen.getByText("A newer version is available")).toBeVisible();
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+  await userEvent.click(screen.getByText("A newer version is available"));
+  await userEvent.click(screen.getByRole("button", { name: "Load model" }));
+  await expect.element(screen.getByText("20 × 10 × 40 mm")).toBeVisible();
+  expect(screen.container.querySelector("canvas")).toBe(canvas);
+});
+
+it("asks over the shown model when a new version turns out large as it downloads", async () => {
+  setup();
+  const preview = (src: string) => (
+    <ModelFilePreview
+      src={src}
+      name="scan.stl"
+      format="stl"
+      sizeBytes={0}
+      companions={null}
+      onRefresh={() => {}}
+    />
+  );
+  await using screen = await render(preview(modelUrl(stl())), pane());
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+  const canvas = screen.container.querySelector("canvas");
+
+  const large = "https://example.test/large.stl";
+  const realFetch = globalThis.fetch;
+  using _fetch = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) =>
+    input === large
+      ? Promise.resolve(
+          new Response(stl(2), {
+            headers: { "content-length": String(MODEL_CONFIRM_BYTES + 1) },
+          }),
+        )
+      : realFetch(input, init),
+  );
+  await screen.rerender(preview(large));
+  await expect.element(screen.getByRole("button", { name: "Load model" })).toBeVisible();
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+  expect(screen.container.querySelector("canvas")).toBe(canvas);
 });
 
 const environmentId = EnvironmentId.make("environment-1");
