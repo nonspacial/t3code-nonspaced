@@ -5,6 +5,7 @@ import {
   isAudioPreviewFile,
   isMarkdownPreviewFile,
   needsWorkspaceFileContents,
+  readsBlendAttachmentFacts,
   resolveFileLinkPath,
   resolveWorkspaceRelativeFilePath,
 } from "./filePath";
@@ -76,5 +77,15 @@ describe("workspace preview classifiers", () => {
     ]) {
       expect(isMarkdownPreviewFile(path)).toBe(true);
     }
+  });
+});
+
+describe("readsBlendAttachmentFacts", () => {
+  it("reads facts for an uploaded .blend, not a local draft or another format", () => {
+    const uploaded = { name: "rig.blend", hasEnvironment: true, local: false };
+    expect(readsBlendAttachmentFacts(uploaded)).toBe(true);
+    expect(readsBlendAttachmentFacts({ ...uploaded, local: true })).toBe(false);
+    expect(readsBlendAttachmentFacts({ ...uploaded, hasEnvironment: false })).toBe(false);
+    expect(readsBlendAttachmentFacts({ ...uploaded, name: "statue.glb" })).toBe(false);
   });
 });

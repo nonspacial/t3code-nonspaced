@@ -2,7 +2,6 @@ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { blendFactRows } from "@t3tools/client-runtime/model/blend-facts";
 import { type EnvironmentId, isBlendPreviewError } from "@t3tools/contracts";
-import { fileBasename } from "@t3tools/shared/path";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { T, useGT, useMessages } from "gt-react";
@@ -17,29 +16,44 @@ import { filePreviewReadErrorMessage } from "./filePreviewMode";
 import { FileSurfaceFailure, FileSurfaceLoading } from "./fileSurfaceChrome";
 import { PreviewAction, PreviewFacts, PreviewStatusChip } from "./previewChrome";
 
+export type BlendFileSource =
+  | {
+      readonly kind: "file";
+      readonly cwd: string;
+      /** Workspace-relative, or an absolute host path, as for a file read. */
+      readonly relativePath: string;
+      readonly workspaceMutationId: string | null;
+      readonly refreshRevision: number;
+    }
+  | { readonly kind: "attachment"; readonly attachmentId: string };
+
 /** A `.blend`'s saved thumbnail and scene facts, read on its environment without Blender. */
 export function BlendFilePreview(props: {
   readonly environmentId: EnvironmentId;
-  readonly cwd: string;
-  /** Workspace-relative, or an absolute host path, as for a file read. */
-  readonly relativePath: string;
-  readonly workspaceMutationId: string | null;
-  readonly refreshRevision: number;
+  readonly name: string;
+  readonly source: BlendFileSource;
 }) {
   const gt = useGT();
   const messages = useMessages();
-  const query = projectEnvironment.readBlendPreview({
-    environmentId: props.environmentId,
-    input: { cwd: props.cwd, relativePath: props.relativePath },
-  });
-  const atom = revisionedQuery(query, props.workspaceMutationId, {
-    detail: String(props.refreshRevision),
-  });
+  const { environmentId, source, name } = props;
+  const atom =
+    source.kind === "file"
+      ? revisionedQuery(
+          projectEnvironment.readBlendPreview({
+            environmentId,
+            input: { cwd: source.cwd, relativePath: source.relativePath },
+          }),
+          source.workspaceMutationId,
+          { detail: String(source.refreshRevision) },
+        )
+      : projectEnvironment.readBlendAttachmentPreview({
+          environmentId,
+          input: { attachmentId: source.attachmentId },
+        });
   const result = useAtomValue(atom);
   const refresh = useAtomRefresh(atom);
   const preview = AsyncResult.getOrElse(result, () => null);
   const cause = result._tag === "Failure" ? Cause.squash(result.cause) : null;
-  const name = fileBasename(props.relativePath);
 
   return (
     <div className="relative min-h-0 flex-1 overflow-hidden bg-radial from-background to-muted to-90%">
@@ -104,17 +118,19 @@ export function BlendFilePreview(props: {
         <PreviewFacts
           title={<T>Scene details</T>}
           rows={blendFactRows(preview, messages).map(
-            ({ label, values }) =>
+            ({ label, values, paths }) =>
               [
                 label,
-                values.length === 1 ? (
+                !paths ? (
                   values[0]
                 ) : (
-                  <ul className="flex flex-col">
+                  <ul
+                    key="paths"
+                    className="flex flex-col gap-0.5 text-start whitespace-normal break-all"
+                  >
                     {values.map((value) => (
-                      <li key={value} className="truncate">
-                        {value}
-                      </li>
+                      // Blender keeps one library per path, so saved paths are unique.
+                      <li key={value}>{value}</li>
                     ))}
                   </ul>
                 ),

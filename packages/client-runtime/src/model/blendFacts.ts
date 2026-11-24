@@ -1,5 +1,4 @@
 import type { BlendPreview } from "@t3tools/contracts";
-import { fileBasename } from "@t3tools/shared/path";
 import { mFallback, msg } from "gt-i18n";
 import type { MFunctionType } from "gt-i18n/types";
 
@@ -9,6 +8,8 @@ export interface BlendFactRow {
   readonly label: string;
   /** One value, or one per linked file. */
   readonly values: ReadonlyArray<string>;
+  /** Paths, shown whole one per line rather than truncated. */
+  readonly paths?: true;
 }
 
 /** The scene facts web and mobile list for a `.blend`. */
@@ -36,13 +37,12 @@ export function blendFactRows(
   rows.push(row(resolve(msg("Meshes")), preview.meshes.toLocaleString()));
   rows.push(row(resolve(msg("Materials")), preview.materials.toLocaleString()));
   if (preview.libraries.length > 0)
-    rows.push(
-      row(
-        resolve(msg("Linked files")),
-        // `//` starts a path relative to the .blend.
-        ...preview.libraries.map((library) => fileBasename(library.replace(/^\/\//, ""))),
-      ),
-    );
+    rows.push({
+      label: resolve(msg("Linked files")),
+      // As saved: `//` starts a path relative to the .blend, as Blender shows it.
+      values: preview.libraries,
+      paths: true,
+    });
   rows.push(
     row(
       resolve(msg("Size", { $context: "file size" })),

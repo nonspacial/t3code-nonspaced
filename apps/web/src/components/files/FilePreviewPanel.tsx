@@ -1811,10 +1811,14 @@ export default function FilePreviewPanel({
             <BlendFilePreview
               key={`${environmentId}:${cwd}:${relativePath}`}
               environmentId={environmentId}
-              cwd={cwd}
-              relativePath={relativePath}
-              workspaceMutationId={workspaceMutationId}
-              refreshRevision={fileRefreshRevision}
+              name={relativePath.split(/[\\/]/).at(-1) || relativePath}
+              source={{
+                kind: "file",
+                cwd,
+                relativePath,
+                workspaceMutationId,
+                refreshRevision: fileRefreshRevision,
+              }}
             />
           ) : relativePath &&
             absolutePath &&

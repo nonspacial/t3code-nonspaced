@@ -5797,6 +5797,7 @@
   "98de7fbcf514dac7": "Le chemin demandé est en dehors de l’espace de travail.",
   "fa347e700afd8d04": "Le chemin pointe vers un emplacement en dehors de l’espace de travail.",
   "22738c009abc434a": "This file is not a Blender file, or it is damaged.",
+  "458554b0a4245572": "This Blender file is too large to read its details.",
   "2d6da78ecabfd210": "Impossible d’accéder au dossier de l’espace de travail.",
   "fdf4cf5389fb7848": "Impossible d’accéder au fichier ou de le lire. Il est peut-être absent ou inaccessible.",
   "40d67da2e98bb2ff": "Chargement du fichier",

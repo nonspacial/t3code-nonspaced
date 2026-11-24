@@ -34,6 +34,8 @@ export interface BlendFileFacts {
 
 interface ByteSource {
   readonly byteLength: number;
+  /** Skipping a compressed file still inflates what it skips. */
+  readonly compressed: boolean;
   /** Exactly `length` bytes, or fewer where the file ends. */
   readonly read: (length: number) => Promise<Uint8Array>;
   readonly skip: (length: number) => Promise<boolean>;
@@ -42,6 +44,21 @@ interface ByteSource {
 
 // Blocks this reader keeps in memory are small; the largest, DNA1, is a few hundred KB.
 const MAX_KEPT_BLOCK_BYTES = 16 * 1024 * 1024;
+
+/** Bounds on one read, so a hostile file or a decompression bomb cannot exhaust the server. */
+export interface BlendReadLimits {
+  /** Bytes walked in a compressed file, skipped blocks included. */
+  readonly maxScannedBytes: number;
+  readonly maxKeptBytes: number;
+  readonly maxBlocks: number;
+}
+
+// Large production scenes run to a few GB and some hundred thousand blocks.
+const DEFAULT_LIMITS: BlendReadLimits = {
+  maxScannedBytes: 8 * 1024 * 1024 * 1024,
+  maxKeptBytes: 64 * 1024 * 1024,
+  maxBlocks: 4_000_000,
+};
 // Blender saves 128 px thumbnails; anything much larger is not one, and would bloat the RPC.
 const MAX_THUMBNAIL_SIDE = 256;
 const KEPT_CODES = new Set(["TEST", "GLOB", "SC", "LI", "ID", "DNA1"]);
@@ -49,7 +66,9 @@ const KEPT_CODES = new Set(["TEST", "GLOB", "SC", "LI", "ID", "DNA1"]);
 /** The file is not a .blend, or is damaged; any other failure is an I/O error. */
 export class BlendFileFormatError extends Schema.TaggedError<BlendFileFormatError>()(
   "BlendFileFormatError",
-  { problem: Schema.Literals(["not_blend", "unknown_header", "ends_early", "damaged"]) },
+  {
+    problem: Schema.Literals(["not_blend", "unknown_header", "ends_early", "damaged", "too_large"]),
+  },
 ) {
   override get message(): string {
     switch (this.problem) {
@@ -61,6 +80,8 @@ export class BlendFileFormatError extends Schema.TaggedError<BlendFileFormatErro
         return "This .blend file ends early.";
       case "damaged":
         return "This .blend file is damaged.";
+      case "too_large":
+        return "This .blend file is too large to read its details.";
     }
   }
 }
@@ -82,6 +103,7 @@ async function fileSource(handle: NodeFSP.FileHandle, start: number): Promise<By
   let position = start;
   return {
     byteLength: size,
+    compressed: false,
     read: async (length) => {
       const buffer = new Uint8Array(Math.max(0, Math.min(length, size - position)));
       let offset = 0;
@@ -125,6 +147,7 @@ function streamSource(
   };
   return {
     byteLength,
+    compressed: true,
     read: async (length) => {
       while (pending.byteLength < length && (await fill())) {}
       const out = pending.subarray(0, length);
@@ -249,18 +272,34 @@ function parseSdna(data: Uint8Array, header: Header): Sdna {
     if (ascii(data.subarray(offset, offset + 4)) !== tag) throw damaged();
     offset += 4;
   };
+  const need = (bytes: number) => {
+    if (offset + bytes > data.byteLength) throw damaged();
+  };
   const int = () => {
+    need(4);
     const value = view.getInt32(offset, header.littleEndian);
     offset += 4;
     return value;
   };
   const short = () => {
+    need(2);
     const value = view.getUint16(offset, header.littleEndian);
     offset += 2;
     return value;
   };
-  const strings = (count: number) =>
-    Array.from({ length: count }, () => {
+  /** A count of items at least `itemBytes` long each, which must fit in what is left. */
+  const count = (itemBytes: number) => {
+    const value = int();
+    if (value < 0 || value * itemBytes > data.byteLength - offset) throw damaged();
+    return value;
+  };
+  const indexInto = <A>(table: ReadonlyArray<A>) => {
+    const value = table[short()];
+    if (value === undefined) throw damaged();
+    return value;
+  };
+  const strings = (total: number) =>
+    Array.from({ length: total }, () => {
       const end = data.indexOf(0, offset);
       if (end === -1) throw damaged();
       const value = ascii(data.subarray(offset, end));
@@ -269,27 +308,34 @@ function parseSdna(data: Uint8Array, header: Header): Sdna {
     });
   expect("SDNA");
   expect("NAME");
-  const names = strings(int());
+  const names = strings(count(1));
   expect("TYPE");
-  const types = strings(int());
+  const types = strings(count(1));
   expect("TLEN");
+  need(types.length * 2);
   const lengths = types.map(() => short());
   expect("STRC");
-  const structs = Array.from({ length: int() }, () => {
-    const type = types[short()] ?? "";
+  const structs = Array.from({ length: count(4) }, () => {
+    const type = indexInto(types);
+    need(2);
+    const fieldCount = short();
+    need(fieldCount * 4);
     let fieldOffset = 0;
-    const fields = Array.from({ length: short() }, () => {
-      const fieldType = short();
-      const rawName = names[short()] ?? "";
+    const fields = Array.from({ length: fieldCount }, () => {
+      const fieldTypeIndex = short();
+      const fieldType = types[fieldTypeIndex];
+      const rawName = indexInto(names);
+      if (fieldType === undefined) throw damaged();
       const pointer = rawName.startsWith("*") || rawName.startsWith("(*");
-      const count = [...rawName.matchAll(/\[(\d+)\]/g)].reduce(
+      const items = [...rawName.matchAll(/\[(\d+)\]/g)].reduce(
         (product, match) => product * Number(match[1]),
         1,
       );
-      const size = (pointer ? header.pointerSize : (lengths[fieldType] ?? 0)) * count;
+      const size = (pointer ? header.pointerSize : (lengths[fieldTypeIndex] ?? 0)) * items;
+      if (!Number.isSafeInteger(fieldOffset + size)) throw damaged();
       const field = {
         name: rawName.replace(/^[(*]+/, "").replace(/[)[].*$/, ""),
-        type: types[fieldType] ?? "",
+        type: fieldType,
         offset: fieldOffset,
         size,
       };
@@ -317,11 +363,17 @@ function parseSdna(data: Uint8Array, header: Header): Sdna {
   };
 }
 
-async function readBlocks(source: ByteSource, header: Header) {
+async function readBlocks(source: ByteSource, header: Header, limits: BlendReadLimits) {
   const headerSize = header.largeBlocks ? 32 : header.pointerSize === 8 ? 24 : 20;
   const kept: Block[] = [];
   const counts = new Map<string, number>();
+  let blocks = 0;
+  let scanned = 0;
+  let keptBytes = 0;
+  const tooLarge = () => new BlendFileFormatError({ problem: "too_large" });
   for (;;) {
+    blocks += 1;
+    if (blocks > limits.maxBlocks) throw tooLarge();
     const bytes = await source.read(headerSize);
     if (bytes.byteLength < headerSize) throw new BlendFileFormatError({ problem: "ends_early" });
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -337,12 +389,17 @@ async function readBlocks(source: ByteSource, header: Header) {
       header.pointerSize === 8 ? view.getBigUint64(8, le) : BigInt(view.getUint32(8, le));
     if (!Number.isSafeInteger(length) || length < 0)
       throw new BlendFileFormatError({ problem: "damaged" });
+    // Checked before the payload is read or inflated, so a block claiming terabytes costs nothing.
+    scanned += headerSize + length;
+    if (source.compressed && scanned > limits.maxScannedBytes) throw tooLarge();
     counts.set(code, (counts.get(code) ?? 0) + 1);
     if (!KEPT_CODES.has(code)) {
       if (!(await source.skip(length))) throw new BlendFileFormatError({ problem: "ends_early" });
       continue;
     }
     if (length > MAX_KEPT_BLOCK_BYTES) throw new BlendFileFormatError({ problem: "damaged" });
+    keptBytes += length;
+    if (keptBytes > limits.maxKeptBytes) throw tooLarge();
     const data = await source.read(length);
     if (data.byteLength < length) throw new BlendFileFormatError({ problem: "ends_early" });
     kept.push({ code, sdnaIndex, oldPointer, data });
@@ -372,11 +429,14 @@ function readThumbnail(block: Block | undefined, header: Header): BlendFileFacts
   return { width, height, rgba };
 }
 
-export async function readBlendFile(filePath: string): Promise<BlendFileFacts> {
+export async function readBlendFile(
+  filePath: string,
+  limits: Partial<BlendReadLimits> = {},
+): Promise<BlendFileFacts> {
   const source = await openSource(filePath);
   try {
     const header = await readHeader(source);
-    const { kept, counts } = await readBlocks(source, header);
+    const { kept, counts } = await readBlocks(source, header, { ...DEFAULT_LIMITS, ...limits });
     const dna = kept.find((block) => block.code === "DNA1");
     if (!dna) throw new BlendFileFormatError({ problem: "damaged" });
     const sdna = parseSdna(dna.data, header);

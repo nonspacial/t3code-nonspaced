@@ -3104,7 +3104,10 @@ export const layerWsRpc = (
               if (cause._tag === "BlendFileFormatError")
                 return new BlendPreviewError({
                   relativePath: input.relativePath,
-                  failure: "unreadable_blend_file",
+                  failure:
+                    cause.problem === "too_large"
+                      ? "blend_file_too_large"
+                      : "unreadable_blend_file",
                   cause,
                 });
               const { failure, resolvedPath, operation } = projectFileFailureContext(cause);
@@ -3116,6 +3119,22 @@ export const layerWsRpc = (
                 cause,
               });
             }),
+          ),
+        [WS_METHODS.assetsReadBlendPreview]: (input) =>
+          blendPreview.readAttachment(input).pipe(
+            Effect.mapError(
+              (cause) =>
+                new BlendPreviewError({
+                  relativePath: input.attachmentId,
+                  failure:
+                    cause._tag === "BlendAttachmentNotFoundError"
+                      ? "path_not_file"
+                      : cause.problem === "too_large"
+                        ? "blend_file_too_large"
+                        : "unreadable_blend_file",
+                  cause,
+                }),
+            ),
           ),
         [WS_METHODS.projectsWriteFile]: (input) =>
           workspaceFileSystem.writeFile(input).pipe(

@@ -5777,6 +5777,7 @@
   "98de7fbcf514dac7": "요청한 경로가 작업 영역 밖에 있습니다.",
   "fa347e700afd8d04": "경로가 작업 영역 밖의 위치를 가리킵니다.",
   "22738c009abc434a": "This file is not a Blender file, or it is damaged.",
+  "458554b0a4245572": "This Blender file is too large to read its details.",
   "2d6da78ecabfd210": "작업 영역 폴더에 액세스할 수 없습니다.",
   "fdf4cf5389fb7848": "파일에 액세스하거나 읽을 수 없습니다. 없거나 액세스할 수 없는 파일일 수 있습니다.",
   "40d67da2e98bb2ff": "파일 불러오는 중",

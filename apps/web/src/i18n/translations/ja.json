@@ -5779,6 +5779,7 @@
   "98de7fbcf514dac7": "要求されたパスはワークスペースの外にあります。",
   "fa347e700afd8d04": "このパスはワークスペース外の場所を指しています。",
   "22738c009abc434a": "This file is not a Blender file, or it is damaged.",
+  "458554b0a4245572": "This Blender file is too large to read its details.",
   "2d6da78ecabfd210": "ワークスペースのフォルダーにアクセスできませんでした。",
   "fdf4cf5389fb7848": "ファイルにアクセスできないか、読み取れませんでした。存在しないか、アクセスできない可能性があります。",
   "40d67da2e98bb2ff": "ファイルを読み込んでいます",

@@ -118,6 +118,18 @@ export function isModelFactsFile(path: string): boolean {
   return isBlendPreviewPath(path) || modelPreviewFormat({ name: path }) !== null;
 }
 
+/**
+ * An uploaded `.blend` attachment shows the facts the server reads from it. A local draft has
+ * nothing on the server yet, so it keeps the document viewer.
+ */
+export function readsBlendAttachmentFacts(input: {
+  readonly name: string;
+  readonly hasEnvironment: boolean;
+  readonly local: boolean;
+}): boolean {
+  return input.hasEnvironment && !input.local && isBlendPreviewPath(input.name);
+}
+
 export function needsWorkspaceFileContents(input: {
   readonly relativePath: string | null;
   readonly metadataKind: FilesystemEntryMetadata["kind"] | undefined;

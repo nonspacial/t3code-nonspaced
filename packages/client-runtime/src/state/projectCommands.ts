@@ -177,6 +177,12 @@ export function createProjectEnvironmentAtoms<R, E>(
       staleTimeMs: 30_000,
       idleTtlMs: 5 * 60_000,
     }),
+    readBlendAttachmentPreview: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:projects:read-blend-attachment-preview",
+      tag: WS_METHODS.assetsReadBlendPreview,
+      staleTimeMs: 30_000,
+      idleTtlMs: 5 * 60_000,
+    }),
     optimisticFile: (target: OptimisticProjectFileTarget) =>
       optimisticFileFamily(optimisticProjectFileKey(target)),
     create: createEnvironmentCommand(runtime, {

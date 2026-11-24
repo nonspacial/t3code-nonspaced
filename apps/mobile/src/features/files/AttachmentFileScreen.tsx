@@ -23,6 +23,10 @@ import { scopedThreadKey } from "../../lib/scopedEntities";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { isZipFile, ZipArchiveView } from "./ZipArchiveView";
 import { AttachmentDocumentBody, nativeViewerKind } from "./AttachmentDocumentBody";
+import { readsBlendAttachmentFacts } from "./filePath";
+import { BlendFileFacts } from "./ModelFileFacts";
+import { useEnvironmentQuery } from "../../state/query";
+import { projectEnvironment } from "../../state/projects";
 
 export type AttachmentFileRouteParams = {
   readonly environmentId?: string;
@@ -61,8 +65,21 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
     environmentId,
     attachment: localAttachment,
   });
+  const blendFacts = readsBlendAttachmentFacts({
+    name: params.name,
+    hasEnvironment: environmentId !== null,
+    local: localAttachment !== null,
+  });
+  const blendPreview = useEnvironmentQuery(
+    blendFacts && environmentId !== null
+      ? projectEnvironment.readBlendAttachmentPreview({
+          environmentId,
+          input: { attachmentId: params.attachmentId },
+        })
+      : null,
+  );
   const [nativeOpen, setNativeOpen] = useState(false);
-  const nativeKind = nativeViewerKind(document.kind);
+  const nativeKind = blendFacts ? null : nativeViewerKind(document.kind);
   const [nativeViewer, setNativeViewer] = useState<"pending" | "open" | "unavailable" | null>(
     nativeKind ? "pending" : null,
   );
@@ -225,6 +242,15 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
         : gt("Attachment");
   const refresh = useRefreshAssetUrl(environmentId, resource);
   const capabilities = useEnvironmentServerConfig(environmentId)?.environment.capabilities;
+
+  if (blendFacts) {
+    return (
+      <View className="flex-1 bg-sheet">
+        <AppBar title={params.name} subtitle={subtitle} onBack={handleBack} menus={[fileMenu]} />
+        <BlendFileFacts name={params.name} query={blendPreview} />
+      </View>
+    );
+  }
 
   if (document.kind === "archive" && isZipFile(params) && !document.error) {
     const threadDraftKey =

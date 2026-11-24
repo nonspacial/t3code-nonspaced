@@ -482,13 +482,19 @@ import {
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
-import { BlendPreview, BlendPreviewError, BlendPreviewInput } from "./blendPreview.ts";
+import {
+  BlendAttachmentPreviewInput,
+  BlendPreview,
+  BlendPreviewError,
+  BlendPreviewInput,
+} from "./blendPreview.ts";
 
 export const WS_METHODS = {
   projectsListEntries: "projects.listEntries",
   projectsListIgnoredFiles: "projects.listIgnoredFiles",
   projectsReadFile: "projects.readFile",
   projectsReadBlendPreview: "projects.readBlendPreview",
+  assetsReadBlendPreview: "assets.readBlendPreview",
   projectsSearchContents: "projects.searchContents",
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
@@ -1661,6 +1667,12 @@ const WsProjectsReadBlendPreviewRpc = Rpc.make(WS_METHODS.projectsReadBlendPrevi
   error: Schema.Union([BlendPreviewError, EnvironmentAuthorizationError]),
 });
 
+const WsAssetsReadBlendPreviewRpc = Rpc.make(WS_METHODS.assetsReadBlendPreview, {
+  payload: BlendAttachmentPreviewInput,
+  success: BlendPreview,
+  error: Schema.Union([BlendPreviewError, EnvironmentAuthorizationError]),
+});
+
 const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
   payload: ProjectWriteFileInput,
   success: ProjectWriteFileResult,
@@ -2622,6 +2634,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsListIgnoredFilesRpc,
   WsProjectsReadFileRpc,
   WsProjectsReadBlendPreviewRpc,
+  WsAssetsReadBlendPreviewRpc,
   WsProjectsSearchContentsRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsEnsureScratchRpc,

@@ -110,4 +110,47 @@ describe("readBlendFile", () => {
       },
     );
   });
+
+  it("stops at its limits on total size, kept bytes and block count", async () => {
+    // A tiny zstd file that inflates to a 64 MB block: a decompression bomb.
+    const header = new TextEncoder().encode("BLENDER-v405");
+    const blockHeader = new Uint8Array(24);
+    blockHeader.set(new TextEncoder().encode("DATA"));
+    new DataView(blockHeader.buffer).setInt32(4, 64 * 1024 * 1024, true);
+    const bomb = NodeZlib.zstdCompressSync(
+      Buffer.concat([header, blockHeader, new Uint8Array(64 * 1024 * 1024)]),
+    );
+    expect(bomb.byteLength).toBeLessThan(64 * 1024);
+    await withTempFile(bomb, async (path) => {
+      await expect(readBlendFile(path, { maxScannedBytes: 1024 * 1024 })).rejects.toThrow(
+        "too large",
+      );
+    });
+    const limits = [{ maxScannedBytes: 64 * 1024 }, { maxKeptBytes: 64 * 1024 }, { maxBlocks: 50 }];
+    for (const limit of limits) {
+      await expect(readBlendFile(fixture("bracket-5.blend"), limit)).rejects.toThrow("too large");
+    }
+    // Skipping costs nothing in an uncompressed file, so only its kept bytes and blocks count.
+    await withTempFile(await uncompressed("bracket-5.blend"), async (path) => {
+      await expect(readBlendFile(path, { maxScannedBytes: 64 * 1024 })).resolves.toMatchObject({
+        objects: 4,
+      });
+    });
+  });
+
+  it("refuses struct layouts whose counts or indices do not fit the block", async () => {
+    const bytes = await uncompressed("bracket-5.blend");
+    const at = (tag: string) => Buffer.from(bytes).indexOf(tag);
+    const corrupt = async (edit: (copy: Buffer) => void) => {
+      const copy = Buffer.from(bytes);
+      edit(copy);
+      await withTempFile(copy, async (path) => {
+        await expect(readBlendFile(path)).rejects.toThrow("damaged");
+      });
+    };
+    // A name count far past the block's end.
+    await corrupt((copy) => copy.writeInt32LE(0x7fffffff, at("SDNANAME") + 8));
+    // The first struct naming a type that does not exist.
+    await corrupt((copy) => copy.writeUInt16LE(0xffff, at("STRC") + 8));
+  });
 });

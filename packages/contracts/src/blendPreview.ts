@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { NonNegativeInt } from "./baseSchemas.ts";
+import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ProjectFileFailure, ProjectFileOperation, ProjectReadFileInput } from "./project.ts";
 
 /** Like a file read: a workspace-relative path, or an absolute host path read in place. */
@@ -9,6 +9,12 @@ export const BlendPreviewInput = Schema.Struct({
   relativePath: ProjectReadFileInput.fields.relativePath,
 });
 export type BlendPreviewInput = typeof BlendPreviewInput.Type;
+
+/** An uploaded attachment, by the same id its asset URL is minted from. */
+export const BlendAttachmentPreviewInput = Schema.Struct({
+  attachmentId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+});
+export type BlendAttachmentPreviewInput = typeof BlendAttachmentPreviewInput.Type;
 
 export const BlendPreviewThumbnail = Schema.Struct({
   width: NonNegativeInt,
@@ -45,7 +51,7 @@ export type BlendPreview = typeof BlendPreview.Type;
 
 export const BlendPreviewFailure = Schema.Union([
   ProjectFileFailure,
-  Schema.Literal("unreadable_blend_file"),
+  Schema.Literals(["unreadable_blend_file", "blend_file_too_large"]),
 ]);
 export type BlendPreviewFailure = typeof BlendPreviewFailure.Type;
 
@@ -60,9 +66,14 @@ export class BlendPreviewError extends Schema.TaggedError<BlendPreviewError>()(
   },
 ) {
   override get message(): string {
-    return this.failure === "unreadable_blend_file"
-      ? `'${this.relativePath}' is not a .blend file, or it is damaged.`
-      : `Could not read '${this.relativePath}' (${this.failure}).`;
+    switch (this.failure) {
+      case "unreadable_blend_file":
+        return `'${this.relativePath}' is not a .blend file, or it is damaged.`;
+      case "blend_file_too_large":
+        return `'${this.relativePath}' is too large to read its details.`;
+      default:
+        return `Could not read '${this.relativePath}' (${this.failure}).`;
+    }
   }
 }
 

@@ -79,5 +79,31 @@ describe("BlendPreview", () => {
         expect(missing._tag).toBe("WorkspaceFileSystemOperationError");
       }).pipe(Effect.scoped),
     );
+
+    it.effect("reads an uploaded attachment by id, as its asset URL would find it", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const config = yield* ServerConfig.ServerConfig;
+        const attachmentId = "pending-0b6f2a4e-6c1d-4f8e-9a3b-2d5e7f9a1c3b-blend";
+        yield* fileSystem.makeDirectory(config.attachmentsDir, { recursive: true });
+        yield* fileSystem.copyFile(
+          path.join(import.meta.dirname, "fixtures", "bracket-5.blend"),
+          path.join(config.attachmentsDir, `${attachmentId}.blend`),
+        );
+        const blendPreview = yield* BlendPreview.BlendPreview;
+        const preview = yield* blendPreview.readAttachment({ attachmentId });
+        expect(preview).toMatchObject({ relativePath: attachmentId, objects: 4 });
+        for (const missing of [
+          "pending-0b6f2a4e-6c1d-4f8e-9a3b-000000000000-blend",
+          "../../etc/passwd",
+        ]) {
+          const error = yield* blendPreview
+            .readAttachment({ attachmentId: missing })
+            .pipe(Effect.flip);
+          expect(error._tag).toBe("BlendAttachmentNotFoundError");
+        }
+      }),
+    );
   });
 });

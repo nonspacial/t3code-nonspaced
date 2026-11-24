@@ -5798,6 +5798,7 @@
   "98de7fbcf514dac7": "The requested path is outside the workspace.",
   "fa347e700afd8d04": "The path resolves to a location outside the workspace.",
   "22738c009abc434a": "This file is not a Blender file, or it is damaged.",
+  "458554b0a4245572": "This Blender file is too large to read its details.",
   "2d6da78ecabfd210": "The workspace folder could not be accessed.",
   "fdf4cf5389fb7848": "The file could not be accessed or read. It may be missing or inaccessible.",
   "40d67da2e98bb2ff": "Loading file",
