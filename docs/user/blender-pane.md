@@ -76,7 +76,9 @@ Tap the stream, or choose **Take control** (**Take over** while another device h
 | Long-press           | Right-click |
 | **Z** in the toolbar | Shading pie |
 
-Choose **Done** to give control back. Closing Blender's screen gives it back too and leaves Blender running; the power button quits it, offering to save first. Typing on a phone isn't supported yet.
+Choose **Done** to give control back. Closing Blender's screen gives it back too and leaves Blender running; **Quit Blender** in its ⋯ menu quits it, offering to save first. Typing on a phone isn't supported yet.
+
+Setting up hosted Blender happens in **Settings › Blender** on the web or desktop. If it's switched off, not yet checked or missing something, the phone says so.
 
 ## Its settings
 

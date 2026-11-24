@@ -5,12 +5,7 @@ import {
   VIEW_ONLY,
 } from "@t3tools/client-runtime/hosted-blender/stream";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
-import {
-  EnvironmentId,
-  type HostedBlenderRequirement,
-  type HostedBlenderThreadState,
-  ThreadId,
-} from "@t3tools/contracts";
+import { EnvironmentId, type HostedBlenderThreadState, ThreadId } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { msg, useGT, useMessages } from "gt-react-native";
 import { type ReactNode, type RefObject, useEffect, useReducer, useRef, useState } from "react";
@@ -43,6 +38,7 @@ import {
   initialBlenderViewer,
 } from "./blender-stream-document";
 import { BlenderStreamWebView, type BlenderStreamRef } from "./BlenderStreamWebView";
+import { notSetUpDetail } from "./hostedBlenderSetupText";
 
 type BlenderRouteScreenProps = StaticScreenProps<{
   readonly environmentId: string;
@@ -218,11 +214,7 @@ function StateMessage(props: { readonly children: ReactNode }) {
 
 function BlenderStateCard(props: { readonly state: HostedBlenderThreadState }) {
   const gt = useGT();
-  const names: Record<HostedBlenderRequirement, string> = {
-    blender: "Blender",
-    labwc: "labwc",
-    helper: gt("T3 Code's hidden display helper"),
-  };
+  const messages = useMessages();
   const [title, detail] = ((): readonly [string, string] => {
     switch (props.state.status) {
       case "unavailable":
@@ -233,12 +225,7 @@ function BlenderStateCard(props: { readonly state: HostedBlenderThreadState }) {
           ),
         ];
       case "notSetUp":
-        return [
-          gt("Hosted Blender isn't set up"),
-          gt("This server is missing: {list}. Install them on the server, then open this again.", {
-            list: props.state.missing.map((requirement) => names[requirement]).join(", "),
-          }),
-        ];
+        return [gt("Hosted Blender isn't set up"), notSetUpDetail(props.state.missing, messages)];
       case "stopped":
         return [
           gt("No hosted Blender running"),
