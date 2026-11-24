@@ -22,6 +22,7 @@ export type FilePreviewKind =
   | "mermaid"
   | "font"
   | "model"
+  | "blend"
   | "archive"
   | "sqlite"
   | "docx"
@@ -45,6 +46,8 @@ export function filePreviewKind(
   const extension = name.slice(name.lastIndexOf("."));
   const generic = !mime || GENERIC_MIME_TYPES.has(mime) || mime === "text/plain";
   const richDocuments = options?.richDocuments !== false;
+  // Read on the server; checked first, since a name like README.blend would otherwise be text.
+  if (richDocuments && isBlendPreviewPath(name)) return "blend";
   const office = richDocuments ? officePreviewKind(file) : null;
   if (office) return office;
   // A 3MF file is a zip, and some systems label it as one.
@@ -261,6 +264,11 @@ export function modelPreviewFormat(file: {
   )
     return byExtension;
   return byMime ?? null;
+}
+
+/** A Blender file, or one of the `.blend1` backups Blender keeps beside it. */
+export function isBlendPreviewPath(path: string): boolean {
+  return /\.blend\d*$/i.test(path);
 }
 
 export function hostPreviewMimeTypeFromExtension(extension: string): string | null {

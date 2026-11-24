@@ -20,6 +20,7 @@ import {
   isWorkspaceImagePreviewPath,
   isWorkspaceFontPreviewPath,
   isWorkspaceVideoPreviewPath,
+  isBlendPreviewPath,
   modelPreviewFormat,
   officePreviewKind,
   binaryPreviewKind,
@@ -130,6 +131,7 @@ import { FULL_TEXT_MAX_BYTES } from "./largeTextProtocol";
 import { resolveCenteredFileLineScrollTop } from "./fileLineReveal";
 import { DiffCommentAnnotation } from "../diffs/DiffCommentAnnotation";
 import { projectFileCacheKey } from "./fileContentRevision";
+import { BlendFilePreview } from "./BlendFilePreview";
 import {
   filePreviewReadErrorMessage,
   isMarkdownPreviewFile,
@@ -1297,9 +1299,11 @@ export default function FilePreviewPanel({
   const isImage = relativePath !== null && !isVideo && isWorkspaceImagePreviewPath(relativePath);
   const isMedia = isImage || isVideo || isAudio;
   const isPdf = relativePath !== null && isPdfPreviewFile(relativePath);
+  const isBlend = relativePath !== null && isBlendPreviewPath(relativePath);
   const isDocument =
     relativePath !== null &&
-    (binaryPreviewKind({ name: relativePath }) !== null ||
+    (isBlend ||
+      binaryPreviewKind({ name: relativePath }) !== null ||
       officePreviewKind({ name: relativePath }) !== null ||
       isWorkspaceFontPreviewPath(relativePath) ||
       modelPreviewFormat({ name: relativePath }) !== null);
@@ -1635,9 +1639,6 @@ export default function FilePreviewPanel({
               revealFileManager={revealsInFileManager}
             />
           ) : null}
-          {threadRef && !isHostFile && relativePath !== null && isBlendFile(relativePath) ? (
-            <OpenInHostedBlender threadRef={threadRef} relativePath={relativePath} />
-          ) : null}
           {canToggleRendered && renderedMode ? (
             <FileSurfaceAction
               label={renderedToggleLabel(renderedMode, rendered, m)}
@@ -1821,6 +1822,24 @@ export default function FilePreviewPanel({
               revealLine={revealLine}
               revealRequestId={revealRequestId}
               wordWrap={wordWrap}
+            />
+          ) : relativePath && isBlend ? (
+            <BlendFilePreview
+              key={`${environmentId}:${cwd}:${relativePath}`}
+              environmentId={environmentId}
+              name={relativePath.split(/[\\/]/).at(-1) || relativePath}
+              source={{
+                kind: "file",
+                cwd,
+                relativePath,
+                workspaceMutationId,
+                refreshRevision: fileRefreshRevision,
+              }}
+              actions={
+                threadRef && !isHostFile && isBlendFile(relativePath) ? (
+                  <OpenInHostedBlender threadRef={threadRef} relativePath={relativePath} />
+                ) : null
+              }
             />
           ) : relativePath &&
             absolutePath &&

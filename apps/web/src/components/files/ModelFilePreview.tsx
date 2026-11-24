@@ -11,10 +11,9 @@ import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments"
 import type { AssetResource, EnvironmentId, ProjectId } from "@t3tools/contracts";
 import type { ModelPreviewFormat } from "@t3tools/shared/filePreview";
 import type { ModelView as ModelCameraView } from "@t3tools/shared/modelView";
-import * as Schema from "effect/Schema";
 import { msg, T, useGT, useLocale, useMessages } from "gt-react";
-import { CameraIcon, ChevronDownIcon, FocusIcon } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { CameraIcon, FocusIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 import { useAssetUrlMinter } from "~/assets/assetUrls";
 import { readComposerImageBytes } from "~/components/chat/composerAttachmentFiles";
@@ -23,11 +22,8 @@ import { useComposerDraftStore, type ComposerThreadTarget } from "~/composerDraf
 import { capturePreviewAnnotationScreenshot } from "~/lib/previewAnnotation";
 import { randomUUID } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
-import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "~/components/ui/collapsible";
 import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
-import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useStableCallback } from "~/hooks/useStableCallback";
 import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
@@ -36,11 +32,11 @@ import { modelCompanionResource } from "./filePreviewMode";
 import { FileSurfaceFailure, FileSurfaceLoading } from "./fileSurfaceChrome";
 import { ModelAnnotationEditor, type ModelAnnotationResult } from "./ModelAnnotationEditor";
 import { modelAnnotationPayload } from "./modelAnnotation";
+import { PreviewAction, PreviewFacts, PreviewStatusChip } from "./previewChrome";
 
 /** Models parse on the main thread; past this size the window can stall for seconds, so we ask first. */
 export const MODEL_CONFIRM_BYTES = 100 * 1024 * 1024;
 const MODEL_MAX_BYTES = 1024 * 1024 * 1024;
-const FACTS_OPEN_STORAGE_KEY = "t3code.modelPreviewFactsOpen";
 
 const FORMAT_LABELS: Record<ModelPreviewFormat, string> = {
   glb: "GLB",
@@ -176,7 +172,6 @@ export function ModelFilePreview(props: {
     readonly attempt: string;
     readonly view: ModelView;
   } | null>(null);
-  const [factsOpen, setFactsOpen] = useLocalStorage(FACTS_OPEN_STORAGE_KEY, true, Schema.Boolean);
   const [snapshot, setSnapshot] = useState<ModelSnapshot | null>(null);
   const addPreviewAnnotation = useComposerDraftStore((store) => store.addPreviewAnnotation);
   const addImage = useComposerDraftStore((store) => store.addImage);
@@ -327,7 +322,7 @@ export function ModelFilePreview(props: {
   );
 
   const statusChip = (
-    <StatusChip
+    <PreviewStatusChip
       tone={
         shown.phase === "failed"
           ? "error"
@@ -355,7 +350,7 @@ export function ModelFilePreview(props: {
                     "{count, plural, one {{count} file not found} other {{count} files not found}}",
                     { count: missing.length },
                   )}
-    </StatusChip>
+    </PreviewStatusChip>
   );
 
   return (
@@ -425,33 +420,24 @@ export function ModelFilePreview(props: {
       </div>
       <div className="absolute end-2 top-2 flex gap-1">
         {ready && props.annotation ? (
-          <ViewerAction label={gt("Screenshot & annotate")} onPress={startAnnotation}>
+          <PreviewAction label={gt("Screenshot & annotate")} onPress={startAnnotation}>
             <CameraIcon />
-          </ViewerAction>
+          </PreviewAction>
         ) : null}
         {ready ? (
-          <ViewerAction label={gt("Reset view")} onPress={() => viewerRef.current?.resetView()}>
+          <PreviewAction label={gt("Reset view")} onPress={() => viewerRef.current?.resetView()}>
             <FocusIcon />
-          </ViewerAction>
+          </PreviewAction>
         ) : null}
-        <ViewerAction label={gt("Reload model")} onPress={props.onRefresh}>
+        <PreviewAction label={gt("Reload model")} onPress={props.onRefresh}>
           <RefreshIcon />
-        </ViewerAction>
+        </PreviewAction>
       </div>
       {shown.phase === "ready" ? (
-        <div className="surface-glass absolute end-2 bottom-2 w-48 rounded-lg border border-border/60 text-2xs shadow-sm">
-          <Collapsible open={factsOpen} onOpenChange={setFactsOpen}>
-            <CollapsibleTrigger className="flex w-full items-center gap-1 px-2.5 py-1.5 text-left font-medium text-muted-foreground hover:text-foreground">
-              <T>Model details</T>
-              <ChevronDownIcon
-                className={cn("ms-auto size-3 transition-transform", factsOpen && "rotate-180")}
-              />
-            </CollapsibleTrigger>
-            <CollapsiblePanel>
-              <ModelFacts facts={shown.facts} unit={SIZE_UNITS[format]} />
-            </CollapsiblePanel>
-          </Collapsible>
-        </div>
+        <PreviewFacts
+          title={<T>Model details</T>}
+          rows={modelFactRows(shown.facts, SIZE_UNITS[format], gt)}
+        />
       ) : null}
       {snapshot && ready && props.annotation ? (
         <ModelAnnotationEditor
@@ -469,12 +455,11 @@ export function ModelFilePreview(props: {
   );
 }
 
-function ModelFacts(props: {
-  readonly facts: ModelPreviewFacts;
-  readonly unit: string | undefined;
-}) {
-  const gt = useGT();
-  const { facts } = props;
+function modelFactRows(
+  facts: ModelPreviewFacts,
+  unit: string | undefined,
+  gt: ReturnType<typeof useGT>,
+): Array<readonly [string, string]> {
   const length = (value: number) =>
     value.toLocaleString(undefined, { maximumFractionDigits: value < 10 ? 2 : 1 });
   const [x, y, z] = facts.size;
@@ -489,58 +474,9 @@ function ModelFacts(props: {
   if (facts.meshes > 0) rows.push([gt("Meshes"), facts.meshes.toLocaleString()]);
   rows.push([
     gt("Size", { $context: "bounding box of a 3D model" }),
-    props.unit === undefined
+    unit === undefined
       ? gt("{width} × {height} × {depth}", { width, height, depth })
-      : gt("{width} × {height} × {depth} {unit}", { width, height, depth, unit: props.unit }),
+      : gt("{width} × {height} × {depth} {unit}", { width, height, depth, unit }),
   ]);
-  return (
-    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 px-2.5 pb-2 tabular-nums">
-      {rows.map(([label, value]) => (
-        <div key={label} className="contents">
-          <dt className="text-muted-foreground">{label}</dt>
-          <dd className="truncate text-end text-foreground">{value}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
-function StatusChip(props: {
-  readonly tone: "info" | "success" | "warning" | "error";
-  readonly children: ReactNode;
-}) {
-  return (
-    <span className="surface-glass inline-flex min-w-0 items-center gap-1.5 rounded-full border border-border/60 px-2 py-0.5 text-2xs text-foreground shadow-xs">
-      <span
-        aria-hidden
-        className={cn(
-          "size-1.5 shrink-0 rounded-full",
-          props.tone === "info" && "bg-info",
-          props.tone === "success" && "bg-success",
-          props.tone === "warning" && "bg-warning",
-          props.tone === "error" && "bg-destructive",
-        )}
-      />
-      <span className="truncate">{props.children}</span>
-    </span>
-  );
-}
-
-function ViewerAction(props: {
-  readonly label: string;
-  readonly onPress: () => void;
-  readonly children: ReactNode;
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button aria-label={props.label} size="icon-xs" variant="glass" onClick={props.onPress} />
-        }
-      >
-        {props.children}
-      </TooltipTrigger>
-      <TooltipPopup side="bottom">{props.label}</TooltipPopup>
-    </Tooltip>
-  );
+  return rows;
 }

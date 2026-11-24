@@ -5,6 +5,7 @@ import {
   clampFileAttachmentUploadBytes,
   formatAttachmentSize,
 } from "@t3tools/client-runtime/state/attachments";
+import { isBlendPreviewPath } from "@t3tools/shared/filePreview";
 import { msg, useGT } from "gt-react-native";
 import { useRef, useState } from "react";
 import { View } from "react-native";
@@ -23,6 +24,10 @@ import { scopedThreadKey } from "../../lib/scopedEntities";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { isZipFile, ZipArchiveView } from "./ZipArchiveView";
 import { AttachmentDocumentBody, nativeViewerKind } from "./AttachmentDocumentBody";
+import { readsBlendAttachmentFacts } from "./filePath";
+import { BlendFileFacts } from "./ModelFileFacts";
+import { useEnvironmentQuery } from "../../state/query";
+import { projectEnvironment } from "../../state/projects";
 
 export type AttachmentFileRouteParams = {
   readonly environmentId?: string;
@@ -61,8 +66,21 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
     environmentId,
     attachment: localAttachment,
   });
+  const blendFacts = readsBlendAttachmentFacts({
+    name: params.name,
+    hasEnvironment: environmentId !== null,
+    local: localAttachment !== null,
+  });
+  const blendPreview = useEnvironmentQuery(
+    blendFacts && environmentId !== null
+      ? projectEnvironment.readBlendAttachmentPreview({
+          environmentId,
+          input: { attachmentId: params.attachmentId },
+        })
+      : null,
+  );
   const [nativeOpen, setNativeOpen] = useState(false);
-  const nativeKind = nativeViewerKind(document.kind);
+  const nativeKind = blendFacts ? null : nativeViewerKind(document.kind);
   const [nativeViewer, setNativeViewer] = useState<"pending" | "open" | "unavailable" | null>(
     nativeKind ? "pending" : null,
   );
@@ -226,7 +244,13 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
   const refresh = useRefreshAssetUrl(environmentId, resource);
   const capabilities = useEnvironmentServerConfig(environmentId)?.environment.capabilities;
 
-  if (document.kind === "archive" && isZipFile(params) && !document.error) {
+  // A .blend is never a ZIP, even sent or drafted with a ZIP label.
+  if (
+    !isBlendPreviewPath(params.name) &&
+    document.kind === "archive" &&
+    isZipFile(params) &&
+    !document.error
+  ) {
     const threadDraftKey =
       environmentId && params.threadId
         ? scopedThreadKey(environmentId, ThreadId.make(params.threadId))
@@ -256,18 +280,22 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
   return (
     <View className="flex-1 bg-sheet">
       <AppBar title={params.name} subtitle={subtitle} onBack={handleBack} menus={[fileMenu]} />
-      <AttachmentDocumentBody
-        document={document}
-        name={params.name}
-        environmentId={environmentId}
-        htmlRender={params.htmlRender === "1"}
-        nativeViewer={nativeViewer}
-        nativeError={nativeError}
-        onOpenNative={() => {
-          setNativeViewer((current) => (current === null ? null : "open"));
-          setNativeOpen(true);
-        }}
-      />
+      {blendFacts ? (
+        <BlendFileFacts name={params.name} query={blendPreview} />
+      ) : (
+        <AttachmentDocumentBody
+          document={document}
+          name={params.name}
+          environmentId={environmentId}
+          htmlRender={params.htmlRender === "1"}
+          nativeViewer={nativeViewer}
+          nativeError={nativeError}
+          onOpenNative={() => {
+            setNativeViewer((current) => (current === null ? null : "open"));
+            setNativeOpen(true);
+          }}
+        />
+      )}
       {nativeOpen && nativeSource ? (
         <FilePreviewModal
           source={nativeSource}

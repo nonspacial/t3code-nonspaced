@@ -4,7 +4,7 @@ import { BoxIcon } from "lucide-react";
 import { useGT, useMessages } from "gt-react";
 import { useState } from "react";
 
-import { FileSurfaceAction } from "~/components/files/fileSurfaceChrome";
+import { PreviewAction } from "~/components/files/previewChrome";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { hostedBlenderEnvironment, useHostedBlenderState } from "~/state/hostedBlender";
@@ -30,6 +30,7 @@ export function OpenInHostedBlender(props: {
 
   const showPane = () => useRightPanelStore.getState().open(props.threadRef, "blender");
   const openFile = async () => {
+    if (pending) return;
     // The pane explains what's missing; there is nothing to start yet.
     if (state.status === "notSetUp") return showPane();
     setPending(true);
@@ -49,12 +50,8 @@ export function OpenInHostedBlender(props: {
   };
 
   return (
-    <FileSurfaceAction
-      label={gt("Open in hosted Blender")}
-      disabled={pending}
-      onPress={() => void openFile()}
-    >
-      <BoxIcon className="size-3.5" />
-    </FileSurfaceAction>
+    <PreviewAction label={gt("Open in hosted Blender")} onPress={() => void openFile()}>
+      <BoxIcon />
+    </PreviewAction>
   );
 }

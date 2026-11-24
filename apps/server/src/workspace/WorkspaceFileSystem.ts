@@ -123,6 +123,14 @@ export class WorkspaceFileSystem extends Context.Service<
       ProjectReadFileResult,
       WorkspaceFileSystemError | WorkspacePaths.WorkspacePathOutsideRootError
     >;
+    /** The real path `readFile` would read, for readers of binary formats. */
+    readonly resolveReadPath: (input: {
+      readonly cwd: string;
+      readonly relativePath: string;
+    }) => Effect.Effect<
+      { readonly relativePath: string; readonly realPath: string },
+      WorkspaceFileSystemError | WorkspacePaths.WorkspacePathOutsideRootError
+    >;
     /** Writes inside a known workspace only. */
     readonly writeFile: (
       input: ProjectWriteFileInput,
@@ -378,6 +386,20 @@ export const make = Effect.gen(function* () {
       relativePath: target.relativePath,
       realTargetPath: resolved.exists ? resolved.realTargetPath : null,
     };
+  });
+
+  const resolveReadPath: WorkspaceFileSystem["Service"]["resolveReadPath"] = Effect.fn(
+    "WorkspaceFileSystem.resolveReadPath",
+  )(function* (input) {
+    const target = yield* resolveReadTarget(input);
+    // Only an allowed-missing read resolves without a target.
+    if (target.realTargetPath === null || (yield* isServerInternalPath(target.realTargetPath))) {
+      return yield* new WorkspacePaths.WorkspacePathOutsideRootError({
+        workspaceRoot: input.cwd,
+        relativePath: input.relativePath,
+      });
+    }
+    return { relativePath: target.relativePath, realPath: target.realTargetPath };
   });
 
   const readFile: WorkspaceFileSystem["Service"]["readFile"] = Effect.fn(
@@ -642,7 +664,7 @@ export const make = Effect.gen(function* () {
     return { relativePath: target.relativePath };
   });
 
-  return WorkspaceFileSystem.of({ getMetadata, readFile, writeFile });
+  return WorkspaceFileSystem.of({ getMetadata, readFile, resolveReadPath, writeFile });
 });
 
 export const layer = Layer.effect(WorkspaceFileSystem, make);
