@@ -77,28 +77,41 @@ export function hitUnderMark(input: {
   readonly space: ModelSpace;
   readonly samples: ReadonlyArray<ViewSample>;
 }): PreviewAnnotationHit | null {
+  return hitTester(input)(input.samples);
+}
+
+/** Builds the raycaster once for a frozen view, so each sample only casts. */
+export function hitTester(input: {
+  readonly root: Object3D;
+  readonly camera: Camera;
+  readonly space: ModelSpace;
+}): (samples: ReadonlyArray<ViewSample>) => PreviewAnnotationHit | null {
   const raycaster = new Raycaster();
   // Point clouds have no faces; a point counts when the ray passes within this of it.
   raycaster.params.Points.threshold =
     new Box3().setFromObject(input.root).getBoundingSphere(new Sphere()).radius / 100 || 0.01;
   const pointer = new Vector2();
-  for (const sample of input.samples) {
-    pointer.set(sample.x * 2 - 1, 1 - sample.y * 2);
-    raycaster.setFromCamera(pointer, input.camera);
-    const hit = raycaster
-      .intersectObject(input.root, true)
-      .find(({ object }) => (object instanceof Mesh || object instanceof Points) && object.visible);
-    if (!hit) continue;
-    // A point cloud hit reports the spot on the ray nearest the vertex; the vertex is what was marked.
-    const position =
-      hit.object instanceof Points ? hit.object.geometry.getAttribute("position") : null;
-    const point =
-      position && hit.index !== undefined
-        ? new Vector3()
-            .fromBufferAttribute(position, hit.index)
-            .applyMatrix4(hit.object.matrixWorld)
-        : hit.point;
-    return { object: objectName(hit.object, input.root), point: input.space.toFile(point) };
-  }
-  return null;
+  return (samples) => {
+    for (const sample of samples) {
+      pointer.set(sample.x * 2 - 1, 1 - sample.y * 2);
+      raycaster.setFromCamera(pointer, input.camera);
+      const hit = raycaster
+        .intersectObject(input.root, true)
+        .find(
+          ({ object }) => (object instanceof Mesh || object instanceof Points) && object.visible,
+        );
+      if (!hit) continue;
+      // A point cloud hit reports the spot on the ray nearest the vertex; the vertex is what was marked.
+      const position =
+        hit.object instanceof Points ? hit.object.geometry.getAttribute("position") : null;
+      const point =
+        position && hit.index !== undefined
+          ? new Vector3()
+              .fromBufferAttribute(position, hit.index)
+              .applyMatrix4(hit.object.matrixWorld)
+          : hit.point;
+      return { object: objectName(hit.object, input.root), point: input.space.toFile(point) };
+    }
+    return null;
+  };
 }

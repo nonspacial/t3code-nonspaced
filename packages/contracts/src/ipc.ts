@@ -878,7 +878,7 @@ export const PreviewAnnotationCameraViewSchema: Schema.Codec<PreviewAnnotationCa
     upAxis: Schema.Literals(["y", "z"]),
   });
 
-/** What a mark on a 3D view covers: the first surface under it, in the camera's coordinates. */
+/** What a mark on a 3D view covers: the first surface under it, in the model file's coordinates (the same space as the camera view). */
 export interface PreviewAnnotationHit {
   /** The object or mesh name; null when the file names none. */
   object: string | null;

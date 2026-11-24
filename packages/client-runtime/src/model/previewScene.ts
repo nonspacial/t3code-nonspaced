@@ -21,7 +21,7 @@ import { createRenderScheduler } from "../device/renderScheduler.ts";
 import { disposeModel, frameDistance, type ModelPreviewFacts } from "./modelGeometry.ts";
 import { loadModel, type ModelCompanions } from "./modelLoaders.ts";
 import { ModelPreviewError } from "./modelPreviewError.ts";
-import { hitUnderMark, modelSpace, type ModelSpace, type ViewSample } from "./modelSpace.ts";
+import { hitTester, modelSpace, type ModelSpace, type ViewSample } from "./modelSpace.ts";
 
 export {
   isModelPreviewError,
@@ -206,8 +206,7 @@ export function createModelViewer(options: {
           target: frozenSpace.toFile(controls.target),
           upAxis: frozenSpace.upAxis,
         },
-        hitAt: (samples) =>
-          hitUnderMark({ root, camera: frozenCamera, space: frozenSpace, samples }),
+        hitAt: hitTester({ root, camera: frozenCamera, space: frozenSpace }),
       };
     },
     dispose() {
