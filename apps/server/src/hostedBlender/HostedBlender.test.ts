@@ -222,6 +222,15 @@ def control():
         with open(os.environ["STANDIN_SAVES"], "a") as log:
             log.write("save\n")
         connection.sendall(b'{"type": "saving"}\n')
+        if scenario == "held-save":
+            # Acknowledged, then fails once the test creates STANDIN_BIND.
+            def fail_when_released():
+                import time
+                while not os.path.exists(os.environ["STANDIN_BIND"]):
+                    time.sleep(0.05)
+                connection.sendall(b'{"type": "quitFailed", "reason": "saveFailed"}\n')
+            threading.Thread(target=fail_when_released, daemon=True).start()
+            continue
         if scenario == "late-failing-save":
             # Acknowledged, then fails only after T3's 20-second settle deadline.
             threading.Timer(21.0, lambda: connection.sendall(
@@ -948,6 +957,86 @@ describe("Endings and recovery", () => {
       }).pipe(Effect.scoped);
       // The helper ignores its quit too, so only the shutdown's fast stop ends it in time.
       expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(5_000);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "a Blender that crashes mid-save while its thread settles ends Crashed, autosave kept",
+    () =>
+      Effect.gen(function* () {
+        const { dir, service, openReady, awaitStatus, crash, hostedDir } = yield* standIn(
+          "crash-saving",
+          "held-save",
+        );
+        yield* openReady;
+        const savesLog = NodePath.join(dir, "saves.log");
+        const saving = new Promise<void>((resolve) => {
+          const watcher = NodeFS.watch(dir, () => {
+            if (!NodeFS.existsSync(savesLog)) return;
+            watcher.close();
+            resolve();
+          });
+        });
+        yield* service.quit({ threadId, save: true }).pipe(Effect.ignore, Effect.forkChild);
+        yield* Effect.promise(() => saving);
+        // The settle waits on the save; Blender crashes before either finishes.
+        yield* service.closeOnSettle({ threadId });
+        crash();
+        expect(yield* awaitStatus("crashed")).toMatchObject({ recovery: true });
+        expect(recoveryOf(hostedDir)?.contents).toBe("autosave");
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("changes no capture during a Save and quit, and catches up if the save fails", () =>
+    Effect.gen(function* () {
+      const { dir, service, openReady, helperCommands, bind } = yield* standIn(
+        "saving-capture",
+        "held-save",
+      );
+      yield* openReady;
+      const attached = yield* service.attachViewer(threadId, { canOperate: false });
+      assert.strictEqual(attached._tag, "attached");
+      if (attached._tag !== "attached") return;
+      const viewer = attached.viewer;
+      yield* viewer.setVisible(false);
+      const logged = (matches: (command: { readonly type: string }) => boolean) =>
+        Effect.promise(
+          () =>
+            new Promise<void>((resolve) => {
+              const check = () => {
+                if (!helperCommands().some(matches)) return false;
+                watcher.close();
+                resolve();
+                return true;
+              };
+              const watcher = NodeFS.watch(dir, check);
+              check();
+            }),
+        );
+      const savesLog = NodePath.join(dir, "saves.log");
+      const saving = new Promise<void>((resolve) => {
+        const watcher = NodeFS.watch(dir, () => {
+          if (!NodeFS.existsSync(savesLog)) return;
+          watcher.close();
+          resolve();
+        });
+      });
+      const quitting = yield* service
+        .quit({ threadId, save: true })
+        .pipe(Effect.flip, Effect.forkChild);
+      yield* Effect.promise(() => saving);
+      yield* viewer.setVisible(true);
+      // Commands reach the helper in order, so once this resize is logged a resume would be too.
+      yield* viewer.resize(802, 602);
+      yield* logged((command) => command.type === "resize");
+      const capture = () =>
+        helperCommands().filter((command) => command.type === "pause" || command.type === "resume");
+      expect(capture().at(-1)?.type).toBe("pause");
+      // The save fails and Blender stays open: capture follows the pane that is showing.
+      bind();
+      expect((yield* Fiber.join(quitting)).reason).toBe("saveFailed");
+      yield* logged((command) => command.type === "resume");
+      expect(capture().at(-1)?.type).toBe("resume");
     }).pipe(Effect.scoped),
   );
 

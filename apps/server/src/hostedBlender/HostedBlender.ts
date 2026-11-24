@@ -267,6 +267,8 @@ interface Instance {
   acknowledged: boolean;
   /** Stopped as a shutdown runs out of time: the helper gets no grace. */
   stopNow: boolean;
+  /** Its thread settled: T3 is closing it, though the quit itself may not have begun. */
+  closeRequested: boolean;
   /** `pending` until the add-on reports the restore of `recover`. */
   restore: RestoreState;
   /** Blender showed its viewport window. */
@@ -814,8 +816,10 @@ const make = Effect.gen(function* () {
   // keyframe.
   const applyCapture = (instance: Instance) =>
     Effect.suspend(() => {
-      // A Blender being quit is left as it is: no capture starts while it ends.
-      if (instance.quitting) return Effect.void;
+      // A Blender being saved, closed or quit is left as it is; a failed save catches up.
+      if (instance.quitting || instance.closeRequested || instance.pendingSave !== null) {
+        return Effect.void;
+      }
       const wanted = instance.viewers.some((viewer) => viewer.visible);
       if (wanted === instance.capturing) return Effect.void;
       instance.capturing = wanted;
@@ -1305,6 +1309,7 @@ const make = Effect.gen(function* () {
       saved: false,
       acknowledged: false,
       stopNow: false,
+      closeRequested: false,
       restore: recover === null ? "none" : "pending",
       shown: false,
       changed: false,
@@ -1444,6 +1449,13 @@ const make = Effect.gen(function* () {
       if (saved) return yield* awaitEnded(instance, deadline);
       // Blender stays open after a failed save; the recovery quit gets a deadline of its own.
       if (!deadline.shutdown) deadline = yield* deadlineIn(QUIT_TIMEOUT, false);
+      // A save lost with its connection usually means Blender is gone (a crash): its run ends
+      // on its own and keeps what it left as such.
+      const control = instance.control;
+      if (control === null || (yield* Deferred.isDone(control.closed))) {
+        const ended = yield* within(Deferred.await(instance.ended), deadline);
+        if (Option.isSome(ended)) return;
+      }
     }
     if (!instance.ending) {
       instance.ending = true;
@@ -1469,7 +1481,7 @@ const make = Effect.gen(function* () {
     yield* Effect.annotateCurrentSpan({ threadId });
     const instance = instances.get(threadId);
     if (instance === undefined) return;
-    instance.quitting = true;
+    instance.closeRequested = true;
     const deadline = yield* deadlineIn(QUIT_TIMEOUT, false);
     yield* end(instance, deadline).pipe(Effect.forkIn(serviceScope));
   });
@@ -1505,8 +1517,11 @@ const make = Effect.gen(function* () {
       const started = yield* Deferred.make<boolean>();
       pending = started;
       instance.pendingSave = started;
-      const clear = Effect.sync(() => {
-        if (instance.pendingSave === started) instance.pendingSave = null;
+      const clear = Effect.suspend(() => {
+        if (instance.pendingSave !== started) return Effect.void;
+        instance.pendingSave = null;
+        // Blender stays open after a failed save: capture follows the panes again.
+        return applyCapture(instance);
       });
       yield* saveThenQuit(instance, control).pipe(
         // Only a failure clears it, before answering, so a retry starts a new save.
