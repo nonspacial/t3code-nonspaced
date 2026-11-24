@@ -28,8 +28,11 @@ export function OpenInHostedBlender(props: {
 
   const showPane = () => useRightPanelStore.getState().open(props.threadRef, "blender");
   const openFile = async () => {
-    // The pane explains what's missing; there is nothing to start yet.
+    // The pane explains what's missing, or offers the unsaved changes a closed Blender kept.
     if (state.status === "notSetUp") return showPane();
+    if ((state.status === "closed" || state.status === "crashed") && state.recovery) {
+      return showPane();
+    }
     setPending(true);
     const result = await open({
       environmentId: props.threadRef.environmentId,

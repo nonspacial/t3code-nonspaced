@@ -17,6 +17,9 @@ import { hostedBlenderEnvironment } from "~/state/hostedBlender";
 import { formatEnvironmentQueryError } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
 
+export const fileName = (relativePath: string) =>
+  relativePath.slice(relativePath.lastIndexOf("/") + 1);
+
 /** Quitting a thread's hosted Blender, asking first whether to save a file with changes. */
 export function useQuitHostedBlender(threadRef: ScopedThreadRef, name: string) {
   const gt = useGT();

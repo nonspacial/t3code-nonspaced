@@ -104,6 +104,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.hostedBlenderOpen]: AuthOrchestrationOperateScope,
   [WS_METHODS.hostedBlenderQuit]: AuthOrchestrationOperateScope,
   [WS_METHODS.hostedBlenderReopen]: AuthOrchestrationOperateScope,
+  [WS_METHODS.hostedBlenderDismiss]: AuthOrchestrationOperateScope,
   // Send stores and sends a report from a thread's turn: the bar of running that thread.
   [WS_METHODS.agentFeedbackAnswerRequest]: AuthOrchestrationOperateScope,
 } as const;

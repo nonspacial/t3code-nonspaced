@@ -3,7 +3,7 @@ import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, HostedBlenderRunningBlender } from "@t3tools/contracts";
 import { T, useGT } from "gt-react";
 
-import { useQuitHostedBlender } from "~/components/blender/useQuitHostedBlender";
+import { fileName, useQuitHostedBlender } from "~/components/blender/useQuitHostedBlender";
 import { Button } from "~/components/ui/button";
 import { formatBytes } from "~/lib/formatBytes";
 import { useThreadShell } from "~/state/entities";
@@ -29,13 +29,14 @@ export function BlenderSettingsPanel() {
 /** Every hosted Blender on the environment, folded away until asked for. */
 function RunningBlenders(props: { readonly environmentId: EnvironmentId | null }) {
   const gt = useGT();
-  const blenders = useRunningHostedBlenders(props.environmentId) ?? [];
+  const { environmentId } = props;
+  const blenders = useRunningHostedBlenders(environmentId) ?? [];
   return (
     <FoldedSettingsSection
       id="running-blenders"
       title={gt("Running Blenders ({count})", { count: blenders.length })}
     >
-      {props.environmentId === null || blenders.length === 0 ? (
+      {environmentId === null || blenders.length === 0 ? (
         <SettingsRow
           title={<T>No hosted Blenders are running</T>}
           description={<T>Each thread's hosted Blender shows here while it runs.</T>}
@@ -44,7 +45,7 @@ function RunningBlenders(props: { readonly environmentId: EnvironmentId | null }
         blenders.map((blender) => (
           <RunningBlenderRow
             key={blender.threadId}
-            environmentId={props.environmentId!}
+            environmentId={environmentId}
             blender={blender}
           />
         ))
@@ -60,8 +61,7 @@ function RunningBlenderRow(props: {
   const threadRef = scopeThreadRef(props.environmentId, props.blender.threadId);
   const thread = useThreadShell(threadRef);
   const canQuit = useAtomValue(hostedBlenderEnvironment.quit.permissionAtom(props.environmentId));
-  const name = props.blender.relativePath.slice(props.blender.relativePath.lastIndexOf("/") + 1);
-  const quit = useQuitHostedBlender(threadRef, name);
+  const quit = useQuitHostedBlender(threadRef, fileName(props.blender.relativePath));
   const details = [
     props.blender.relativePath,
     props.blender.memoryBytes === null ? null : formatBytes(props.blender.memoryBytes),

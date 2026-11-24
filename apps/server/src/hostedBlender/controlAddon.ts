@@ -111,7 +111,7 @@ def _handle(command):
     if kind == "quit":
         if not command.get("save"):
             _push_undo_step()
-        if command.get("save"):
+        else:
             # Answered before the save, which blocks Blender for as long as a big file takes.
             _send({"type": "saving"})
             if not _save():
@@ -189,7 +189,7 @@ def _disable_mcp_addon():
         addon_utils.disable(name, default_set=False)
 
 
-def _use_private_temp():
+def _keep_recovery_files():
     # Copied settings may name a temporary folder shared with the desktop Blender; this session
     # keeps its quit copy and autosaves in the private TMPDIR T3 gave it, where T3 finds them.
     filepaths = bpy.context.preferences.filepaths
@@ -246,7 +246,7 @@ def _on_load_post(*_args):
 
 def register():
     _disable_mcp_addon()
-    _use_private_temp()
+    _keep_recovery_files()
     try:
         bpy.context.preferences.is_dirty = False
     except AttributeError:

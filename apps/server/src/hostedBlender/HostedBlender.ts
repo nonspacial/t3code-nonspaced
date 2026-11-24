@@ -1,6 +1,7 @@
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
   HostedBlenderError,
+  type HostedBlenderDismissInput,
   type HostedBlenderOpenInput,
   type HostedBlenderQuitInput,
   type HostedBlenderReopenInput,
@@ -136,6 +137,8 @@ export class HostedBlender extends Context.Service<
     readonly quit: (input: HostedBlenderQuitInput) => Effect.Effect<void, HostedBlenderError>;
     /** Reopens the thread's closed or crashed Blender, restoring its recovery copy if asked. */
     readonly reopen: (input: HostedBlenderReopenInput) => Effect.Effect<void, HostedBlenderError>;
+    /** Forgets what a stopped thread's Blender left to reopen. A running one is left alone. */
+    readonly dismiss: (input: HostedBlenderDismissInput) => Effect.Effect<void>;
     /**
      * Saves a recovery copy and quits the thread's Blender, without waiting for it: the thread
      * settled, was archived or was deleted.
@@ -183,6 +186,8 @@ interface Instance {
   blenderExit: BlenderExit | null;
   /** The recovery copy or autosave this run restored over the file. */
   recover: string | null;
+  /** The add-on confirmed a save before quitting, so nothing is left to recover. */
+  saved: boolean;
 }
 
 type Availability =
@@ -276,6 +281,7 @@ const make = Effect.gen(function* () {
     ).pipe(Effect.andThen(publishRunning()));
 
   // Each write goes through a temporary name, so a crash mid-write never leaves half a file.
+  // Runs inside keepRecord's span.
   const writeAtomically = Effect.fnUntraced(function* (
     target: string,
     write: (to: string) => Effect.Effect<void, PlatformError>,
@@ -499,8 +505,11 @@ const make = Effect.gen(function* () {
         if (instance.dirty === message.value.dirty) return;
         instance.dirty = message.value.dirty;
         return yield* publishNow();
-      case "saving":
       case "saved":
+        instance.saved = true;
+        if (instance.saveReplies) yield* Queue.offer(instance.saveReplies, "saved");
+        return;
+      case "saving":
       case "quitFailed":
         if (instance.saveReplies) yield* Queue.offer(instance.saveReplies, message.value.type);
         return;
@@ -614,7 +623,8 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const ending = endingOf({
             wasRunning: instance.status === "running",
-            ending: instance.ending,
+            // A save that finished first leaves nothing to recover, even if the thread settled.
+            ending: instance.ending && !instance.saved,
             quitting: instance.quitting,
             blenderExit: instance.blenderExit,
           });
@@ -834,6 +844,7 @@ const make = Effect.gen(function* () {
       ending: false,
       blenderExit: null,
       recover,
+      saved: false,
     };
     failedStarts.delete(threadId);
     instances.set(threadId, instance);
@@ -846,6 +857,10 @@ const make = Effect.gen(function* () {
     relativePath,
   }) {
     yield* Effect.annotateCurrentSpan({ threadId });
+    // A thread keeps one recovery copy, which a new file's ending would replace.
+    if (!instances.has(threadId) && records.get(threadId)?.recovery === true) {
+      return yield* new HostedBlenderError({ reason: "recoveryPending" });
+    }
     yield* start(threadId, relativePath, null);
   });
 
@@ -865,6 +880,16 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const dismiss: HostedBlender["Service"]["dismiss"] = Effect.fn("HostedBlender.dismiss")(
+    function* ({ threadId }) {
+      yield* Effect.annotateCurrentSpan({ threadId });
+      if (instances.has(threadId)) return;
+      const failed = failedStarts.delete(threadId);
+      if (!(yield* forgetRecord(threadId)) && !failed) return;
+      yield* publishNow();
+    },
+  );
+
   // Last resort: the helper stops Blender with SIGTERM, then SIGKILL.
   const forceQuit = Effect.fn("HostedBlender.forceQuit")(function* (instance: Instance) {
     instance.quitting = true;
@@ -877,6 +902,15 @@ const make = Effect.gen(function* () {
     timeout: Duration.Input,
   ) {
     yield* Effect.annotateCurrentSpan({ threadId: instance.threadId });
+    // A Save and quit already under way decides first; only a failed one leaves work to keep.
+    if (instance.pendingSave !== null) {
+      const saved = yield* Deferred.await(instance.pendingSave).pipe(Effect.timeoutOption(timeout));
+      if (Option.getOrElse(saved, () => false)) {
+        const ended = yield* Deferred.await(instance.ended).pipe(Effect.timeoutOption(timeout));
+        if (Option.isNone(ended)) yield* forceQuit(instance);
+        return;
+      }
+    }
     if (!instance.ending) {
       instance.ending = true;
       instance.quitting = true;
@@ -914,12 +948,7 @@ const make = Effect.gen(function* () {
   }) {
     yield* Effect.annotateCurrentSpan({ threadId, save });
     const instance = instances.get(threadId);
-    if (instance === undefined) {
-      // Dismisses what's left to reopen as well as a failed start.
-      const failed = failedStarts.delete(threadId);
-      if (!(yield* forgetRecord(threadId)) && !failed) return;
-      return yield* publishNow();
-    }
+    if (instance === undefined) return yield* dismiss({ threadId });
     const control = instance.control;
     const saveFailed = new HostedBlenderError({ reason: "saveFailed" });
     if (!save) {
@@ -1057,6 +1086,7 @@ const make = Effect.gen(function* () {
     open,
     quit,
     reopen,
+    dismiss,
     closeOnSettle,
     threadState,
     attachViewer,

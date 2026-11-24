@@ -272,6 +272,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.hostedBlenderQuit]: "hostedBlender",
   [WS_METHODS.hostedBlenderSubscribeThread]: "hostedBlender",
   [WS_METHODS.hostedBlenderReopen]: "hostedBlender",
+  [WS_METHODS.hostedBlenderDismiss]: "hostedBlender",
   [WS_METHODS.hostedBlenderSubscribeRunning]: "hostedBlender",
   [WS_METHODS.subscribeServerConfig]: "server",
   [WS_METHODS.subscribeServerLifecycle]: "server",

@@ -401,6 +401,52 @@ describe("Endings and recovery", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("keeps a waiting recovery copy until it is reopened or dismissed", () =>
+    Effect.gen(function* () {
+      const { dir, service, openReady, awaitStatus, awaitDirty, hostedDir } = yield* standIn(
+        "pending",
+        "",
+      );
+      yield* openReady;
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      // Another file would replace this thread's only copy, so it waits for the copy first.
+      NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+      for (const relativePath of ["other.blend", "cube.blend"]) {
+        const refused = yield* service.open({ threadId, relativePath }).pipe(Effect.flip);
+        expect(refused.reason).toBe("recoveryPending");
+      }
+      // Dismissing a Blender that is running again does nothing, so a stale card can't end it.
+      yield* service.reopen({ threadId, restore: true });
+      yield* awaitDirty(true);
+      yield* service.dismiss({ threadId });
+      expect((yield* firstState(service)).status).toBe("running");
+      expect(recoveryOf(hostedDir)?.contents).toBe("quit copy");
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      yield* service.dismiss({ threadId });
+      yield* awaitStatus("stopped");
+      expect(recoveryOf(hostedDir)).toBeNull();
+      yield* service.open({ threadId, relativePath: "other.blend" });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a thread that settles during Save and quit ends saved, with nothing to reopen", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, awaitDirty, saveCommands, hostedDir } =
+        yield* standIn("settle-saving", "saved-then-exit");
+      yield* openReady;
+      const saving = yield* Effect.forkChild(service.quit({ threadId, save: true }));
+      // Saved, Blender not yet gone: the thread settles in this window.
+      yield* awaitDirty(false);
+      yield* service.closeOnSettle({ threadId });
+      yield* Fiber.join(saving);
+      yield* awaitStatus("stopped");
+      expect(saveCommands()).toBe(1);
+      expect(recoveryOf(hostedDir)).toBeNull();
+    }).pipe(Effect.scoped),
+  );
+
   it.live("a T3 restart saves every Blender's copy on the way down and offers Reopen after", () =>
     Effect.gen(function* () {
       const { layer, hostedDir, marker, launches } = yield* standIn("restart", "");

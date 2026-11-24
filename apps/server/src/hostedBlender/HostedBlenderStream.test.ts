@@ -32,6 +32,7 @@ const serve = (
       open: () => Effect.void,
       quit: () => Effect.void,
       reopen: () => Effect.void,
+      dismiss: () => Effect.void,
       closeOnSettle: () => Effect.void,
       threadState: () => Stream.empty,
       runningBlenders: Stream.empty,

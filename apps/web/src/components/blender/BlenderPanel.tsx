@@ -47,15 +47,13 @@ import {
 } from "~/state/hostedBlender";
 import { formatEnvironmentQueryError } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
-import { useQuitHostedBlender } from "./useQuitHostedBlender";
+import { fileName, useQuitHostedBlender } from "./useQuitHostedBlender";
 
 interface StreamStats {
   readonly frameSize: { readonly width: number; readonly height: number } | null;
   readonly rate: HostedBlenderFrameRate | null;
   readonly server: HostedBlenderStreamStats | null;
 }
-
-const fileName = (relativePath: string) => relativePath.slice(relativePath.lastIndexOf("/") + 1);
 
 /** The thread's hosted Blender, live and view-only. Closing the pane leaves Blender running. */
 export function BlenderPanel(props: {
@@ -141,7 +139,7 @@ function ReopenCard(props: {
   const environmentId = props.threadRef.environmentId;
   const canOperate = useAtomValue(hostedBlenderEnvironment.reopen.permissionAtom(environmentId));
   const reopen = useAtomCommand(hostedBlenderEnvironment.reopen, { reportFailure: false });
-  const dismiss = useAtomCommand(hostedBlenderEnvironment.quit, { reportFailure: false });
+  const dismiss = useAtomCommand(hostedBlenderEnvironment.dismiss, { reportFailure: false });
   const [pending, setPending] = useState(false);
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const name = fileName(props.state.relativePath);
@@ -151,7 +149,7 @@ function ReopenCard(props: {
     const input = { threadId: props.threadRef.threadId };
     const result =
       action === "dismiss"
-        ? await dismiss({ environmentId, input: { ...input, save: false } })
+        ? await dismiss({ environmentId, input })
         : await reopen({ environmentId, input: { ...input, restore: action === "restore" } });
     setPending(false);
     setConfirmingDiscard(false);

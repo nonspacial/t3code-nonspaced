@@ -46,6 +46,12 @@ export function createHostedBlenderEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    dismiss: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:hosted-blender:dismiss",
+      tag: WS_METHODS.hostedBlenderDismiss,
+      scheduler,
+      concurrency,
+    }),
     runningBlenders: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:hosted-blender:running",
       tag: WS_METHODS.hostedBlenderSubscribeRunning,

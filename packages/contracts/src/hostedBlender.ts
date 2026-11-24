@@ -70,6 +70,9 @@ export const HostedBlenderQuitInput = Schema.Struct({
 });
 export type HostedBlenderQuitInput = typeof HostedBlenderQuitInput.Type;
 
+export const HostedBlenderDismissInput = Schema.Struct({ threadId: ThreadId });
+export type HostedBlenderDismissInput = typeof HostedBlenderDismissInput.Type;
+
 export const HostedBlenderReopenInput = Schema.Struct({
   threadId: ThreadId,
   /** Restore the recovery copy or autosave instead of the file as saved. */
@@ -104,6 +107,7 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "openInAnotherThread",
       "saveFailed",
       "nothingToReopen",
+      "recoveryPending",
     ]),
   },
 ) {
@@ -129,6 +133,8 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "Blender could not save the file.";
       case "nothingToReopen":
         return "This thread has no closed hosted Blender to reopen.";
+      case "recoveryPending":
+        return "This thread's hosted Blender kept unsaved changes. Reopen or discard them first.";
     }
   }
 }

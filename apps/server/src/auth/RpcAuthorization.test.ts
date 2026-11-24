@@ -72,6 +72,7 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.hostedBlenderOpen,
       WS_METHODS.hostedBlenderQuit,
       WS_METHODS.hostedBlenderReopen,
+      WS_METHODS.hostedBlenderDismiss,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
     }

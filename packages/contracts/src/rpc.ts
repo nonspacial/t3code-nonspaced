@@ -366,6 +366,7 @@ import {
   DeviceShutdownInput,
 } from "./device.ts";
 import {
+  HostedBlenderDismissInput,
   HostedBlenderError,
   HostedBlenderOpenInput,
   HostedBlenderQuitInput,
@@ -601,6 +602,7 @@ export const WS_METHODS = {
   hostedBlenderQuit: "hostedBlender.quit",
   hostedBlenderSubscribeThread: "hostedBlender.subscribeThread",
   hostedBlenderReopen: "hostedBlender.reopen",
+  hostedBlenderDismiss: "hostedBlender.dismiss",
   hostedBlenderSubscribeRunning: "hostedBlender.subscribeRunning",
 
   serverProbe: "server.probe",
@@ -2155,6 +2157,11 @@ const WsHostedBlenderReopenRpc = Rpc.make(WS_METHODS.hostedBlenderReopen, {
   error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
 });
 
+const WsHostedBlenderDismissRpc = Rpc.make(WS_METHODS.hostedBlenderDismiss, {
+  payload: HostedBlenderDismissInput,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
 const WsHostedBlenderSubscribeRunningRpc = Rpc.make(WS_METHODS.hostedBlenderSubscribeRunning, {
   payload: Schema.Struct({}),
   success: HostedBlenderRunningList,
@@ -2759,6 +2766,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsHostedBlenderQuitRpc,
   WsHostedBlenderSubscribeThreadRpc,
   WsHostedBlenderReopenRpc,
+  WsHostedBlenderDismissRpc,
   WsHostedBlenderSubscribeRunningRpc,
   WsSubscribeServerConfigRpc,
   WsSubscribeServerLifecycleRpc,
