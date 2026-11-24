@@ -274,7 +274,12 @@ export function RightPanelSurfaceContent(props: {
     case "blender":
       return (
         <Suspense fallback={null}>
-          <BlenderPanel threadRef={threadRef} visible={visible} />
+          <BlenderPanel
+            threadRef={threadRef}
+            visible={visible}
+            composerTarget={props.composerDraftTarget}
+            projectId={props.files.projectId}
+          />
         </Suspense>
       );
     case "files":

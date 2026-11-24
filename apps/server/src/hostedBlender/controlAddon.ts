@@ -7,9 +7,12 @@ import os
 import socket
 import struct
 import sys
+import time
 
 import bpy
+import gpu
 from bpy.app.handlers import persistent
+from mathutils import Matrix, Vector
 
 
 def _option(name):
@@ -20,6 +23,8 @@ def _option(name):
 SOCKET_PATH = _option("--t3-control")
 MCP_PORT = _option("--t3-mcp-port")
 TICK = 0.1
+# Casting a mark's samples stops after this long, as the 3D preview's does.
+HIT_BUDGET = 0.1
 
 
 class _State:
@@ -91,8 +96,192 @@ def _save():
         return False
 
 
+def _viewport():
+    # The person's viewport window: the one _open_viewport_window made, never the main window.
+    windows = bpy.context.window_manager.windows
+    for index, window in enumerate(windows):
+        areas = window.screen.areas
+        if index == 0 or len(areas) != 1 or areas[0].type != "VIEW_3D":
+            continue
+        area = areas[0]
+        region = next((region for region in area.regions if region.type == "WINDOW"), None)
+        if region is not None:
+            return window, area, region, area.spaces.active
+    return None
+
+
+def _camera_view(view_matrix, distance):
+    # From the matrix the screenshot is drawn with, so the camera and the pixels always agree;
+    # a viewport looking through a camera has that camera's matrix here.
+    inverse = view_matrix.inverted()
+    position = inverse.translation
+    forward = (inverse.to_3x3() @ Vector((0.0, 0.0, -1.0))).normalized()
+    target = position + forward * distance
+    return {"position": list(position), "target": list(target), "upAxis": "z"}
+
+
+def _write_png(path, width, height, rgba):
+    import numpy
+    import zlib
+
+    # GPU rows run bottom-up; PNG rows top-down, each led by filter byte 0 (none).
+    pixels = numpy.asarray(rgba, dtype=numpy.uint8).reshape(height, width, 4)[::-1, :, :3]
+    rows = numpy.zeros((height, width * 3 + 1), dtype=numpy.uint8)
+    rows[:, 1:] = pixels.reshape(height, width * 3)
+
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data))
+
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(rows.tobytes(), 3))
+        + chunk(b"IEND", b"")
+    )
+    partial = path + ".part"
+    with open(partial, "wb") as file:
+        file.write(png)
+    os.replace(partial, path)
+
+
+# Offscreen drawing has no draw context, so an external engine's rendered shading (Cycles)
+# draws nothing; EEVEE and Workbench draw as the viewport does.
+OFFSCREEN_ENGINES = {"BLENDER_EEVEE", "BLENDER_EEVEE_NEXT", "BLENDER_WORKBENCH"}
+# About 1920x1088: a screenshot is sent whole over the shared connection.
+MAX_SCREENSHOT_PIXELS = 1920 * 1088
+
+
+def _renders_offscreen(space, scene):
+    return space.shading.type != "RENDERED" or scene.render.engine in OFFSCREEN_ENGINES
+
+
+def _screenshot_size(width, height):
+    # Larger regions render scaled down; marks are fractions of the picture, so they still map.
+    scale = min(1.0, (MAX_SCREENSHOT_PIXELS / (width * height)) ** 0.5)
+    return max(1, int(width * scale)), max(1, int(height * scale))
+
+
+def _view(command):
+    # The screenshot goes beside the control socket, in T3's private folder for this Blender.
+    name = command["screenshot"]
+    if os.path.basename(name) != name or not name.endswith(".png"):
+        return None
+    found = _viewport()
+    if found is None:
+        return None
+    window, area, region, space = found
+    rv3d = space.region_3d
+    if not _renders_offscreen(space, window.scene):
+        # The camera is still right; only the picture can't be had.
+        return _view_result(rv3d.view_matrix, rv3d.window_matrix, rv3d, None)
+    view_matrix = rv3d.view_matrix.copy()
+    window_matrix = rv3d.window_matrix.copy()
+    width, height = _screenshot_size(region.width, region.height)
+    # One draw: the pixels and the camera come from the same matrices.
+    offscreen = gpu.types.GPUOffScreen(width, height)
+    try:
+        with bpy.context.temp_override(window=window, area=area, region=region):
+            offscreen.draw_view3d(
+                window.scene,
+                window.view_layer,
+                space,
+                region,
+                view_matrix,
+                window_matrix,
+                do_color_management=True,
+            )
+        with offscreen.bind():
+            framebuffer = gpu.state.active_framebuffer_get()
+            rgba = framebuffer.read_color(0, 0, width, height, 4, 0, "UBYTE")
+    finally:
+        offscreen.free()
+    _write_png(os.path.join(os.path.dirname(SOCKET_PATH), name), width, height, rgba)
+    return _view_result(view_matrix, window_matrix, rv3d, {"width": width, "height": height})
+
+
+def _view_result(view_matrix, window_matrix, rv3d, screenshot):
+    perspective = window_matrix @ view_matrix
+    return {
+        "screenshot": screenshot,
+        "cameraView": _camera_view(view_matrix, rv3d.view_distance),
+        "projection": {
+            "matrix": [value for row in perspective for value in row],
+            # The screenshot is the 3D view's drawing region, so marks on it cover it whole.
+            "region": {"x": 0, "y": 0, "width": 1, "height": 1},
+        },
+    }
+
+
+def _hits(command):
+    found = _viewport()
+    if found is None:
+        return None
+    window, area, view_region, _space = found
+    inverse = Matrix([command["matrix"][row * 4:row * 4 + 4] for row in range(4)]).inverted()
+    region = command["region"]
+    # Timers run in the main window's context; the marks are on the person's window, whose
+    # scene and view layer can differ from the agent's.
+    with bpy.context.temp_override(window=window, area=area, region=view_region):
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+    scene = window.scene
+    deadline = time.perf_counter() + HIT_BUDGET
+    hits = []
+    for samples in command["marks"]:
+        hit = None
+        for sample in samples:
+            if time.perf_counter() >= deadline:
+                break
+            # The window fraction, inside the 3D view's drawing region, as clip coordinates.
+            x = (sample["x"] - region["x"]) / region["width"]
+            y = (sample["y"] - region["y"]) / region["height"]
+            if not (0 <= x <= 1 and 0 <= y <= 1):
+                continue
+            near = inverse @ Vector((x * 2 - 1, 1 - y * 2, -1.0, 1.0))
+            far = inverse @ Vector((x * 2 - 1, 1 - y * 2, 1.0, 1.0))
+            near, far = near.xyz / near.w, far.xyz / far.w
+            ray = far - near
+            found, location, _normal, _index, obj, _matrix = scene.ray_cast(
+                depsgraph, near, ray.normalized(), distance=ray.length
+            )
+            if found:
+                hit = {"object": obj.name if obj else None, "point": list(location)}
+                break
+        hits.append(hit)
+    return hits
+
+
+def _set_view(command):
+    found = _viewport()
+    if found is None:
+        return None
+    _window, area, _region, space = found
+    rv3d = space.region_3d
+    position, target = Vector(command["position"]), Vector(command["target"])
+    offset = position - target
+    if rv3d.view_perspective == "CAMERA":
+        rv3d.view_perspective = "PERSP"
+    rv3d.view_location = target
+    rv3d.view_distance = offset.length
+    rv3d.view_rotation = offset.to_track_quat("Z", "Y")
+    area.tag_redraw()
+    return True
+
+
 def _handle(command):
     kind = command.get("type")
+    requests = {
+        "view": lambda: _view(command),
+        "hits": lambda: _hits(command),
+        "setView": lambda: _set_view(command),
+    }
+    if kind in requests:
+        try:
+            result = requests[kind]()
+        except Exception as error:  # noqa: BLE001 - a failed request answers null, never a crash
+            print("T3 control add-on:", kind, "failed:", error, file=sys.stderr)
+            result = None
+        _send({"type": "reply", "id": command.get("id"), "result": result})
+        return
     if kind == "quit":
         if command.get("save"):
             # Answered before the save, which blocks Blender for as long as a big file takes.
@@ -135,9 +324,14 @@ def _tick():
         while b"\n" in _State.buffer:
             line, _State.buffer = _State.buffer.split(b"\n", 1)
             try:
-                _handle(json.loads(line))
+                command = json.loads(line)
+                _handle(command)
             except Exception as error:  # noqa: BLE001 - a bad command must not stop the add-on
                 print("T3 control add-on:", error, file=sys.stderr)
+                continue
+            # Casting blocks Blender's UI; the next request waits for the next tick.
+            if command.get("type") == "hits":
+                break
         snapshot = _snapshot()
         if snapshot != _State.sent:
             _State.sent = snapshot
@@ -172,11 +366,7 @@ def _disable_mcp_addon():
 
 
 def _has_viewport_window():
-    windows = bpy.context.window_manager.windows
-    return any(
-        index > 0 and len(window.screen.areas) == 1 and window.screen.areas[0].type == "VIEW_3D"
-        for index, window in enumerate(windows)
-    )
+    return _viewport() is not None
 
 
 def _open_viewport_window():

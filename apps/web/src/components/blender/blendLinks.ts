@@ -1,9 +1,10 @@
 import type { HostedBlenderThreadState, ScopedThreadRef } from "@t3tools/contracts";
+import type { ModelView } from "@t3tools/shared/modelView";
 
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 
 import { rightPanelHostRef, useRightPanelStore } from "~/rightPanelStore";
-import { readHostedBlenderState } from "~/state/hostedBlender";
+import { readHostedBlenderState, setHostedBlenderView } from "~/state/hostedBlender";
 
 export const isBlendFile = (relativePath: string) => relativePath.toLowerCase().endsWith(".blend");
 
@@ -26,30 +27,41 @@ export const hostedBlenderOpensLink = (
 
 /**
  * Opens a chat link to a `.blend` in the Blender pane, or in the file preview otherwise. Reading
- * the thread's Blender takes a round trip, so a newer action in the panel meanwhile wins.
+ * the thread's Blender takes a round trip, so a newer action in the panel meanwhile wins. A
+ * `#view=` link moves the person's viewport window there; `openFile` carries it to the preview.
  */
 export async function openBlendLink(input: {
   readonly threadRef: ScopedThreadRef;
   readonly path: string;
   readonly workspaceRoot: string | undefined;
+  readonly view?: ModelView | undefined;
   readonly openFile: () => void;
   readonly readState?: (threadRef: ScopedThreadRef) => Promise<HostedBlenderThreadState | null>;
+  readonly setView?: typeof setHostedBlenderView;
 }): Promise<void> {
   const panels = useRightPanelStore.getState();
   const panelRef = rightPanelHostRef(input.threadRef);
   const panelKey = scopedThreadKey(panelRef);
   const revision = panels.markUserAction(panelRef);
-  const state = await (input.readState ?? readHostedBlenderState)(input.threadRef);
-  const latest = useRightPanelStore.getState();
-  if (
+  // Each round trip gives the panel time to move on; a newer action there wins.
+  const superseded = () =>
     scopedThreadKey(rightPanelHostRef(input.threadRef)) !== panelKey ||
-    latest.getUserActionRevision(panelRef) !== revision
-  ) {
+    useRightPanelStore.getState().getUserActionRevision(panelRef) !== revision;
+  const state = await (input.readState ?? readHostedBlenderState)(input.threadRef);
+  if (superseded()) return;
+  if (!hostedBlenderOpensLink(input.path, input.workspaceRoot, state)) {
+    input.openFile();
     return;
   }
-  if (hostedBlenderOpensLink(input.path, input.workspaceRoot, state)) {
-    latest.open(input.threadRef, "blender");
-  } else {
-    input.openFile();
-  }
+  const moved = input.view
+    ? await (input.setView ?? setHostedBlenderView)(
+        input.threadRef,
+        workspaceRelative(input.path, input.workspaceRoot),
+        input.view,
+      )
+    : "moved";
+  if (superseded()) return;
+  // The state read may be from before a reconnect; the server has the last word on the file.
+  if (moved === "otherFile") input.openFile();
+  else useRightPanelStore.getState().open(input.threadRef, "blender");
 }

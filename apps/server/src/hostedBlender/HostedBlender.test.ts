@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeZlib from "node:zlib";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, expect, it } from "@effect/vitest";
@@ -15,6 +16,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -22,6 +24,7 @@ import * as ServerConfig from "../config.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
 import * as HostedBlender from "./HostedBlender.ts";
 import * as HostedBlenderSetup from "./HostedBlenderSetup.ts";
 
@@ -129,7 +132,7 @@ const WAITING_HELPER = 'while read line; do case "$line" in *quit*) exit 0;; esa
  * STANDIN_COMMANDS, answers keyframe requests and resizes, and on `quit` writes STANDIN_MARKER.
  */
 const STANDIN_HELPER = String.raw`
-import json, os, socket, struct, sys, threading
+import json, os, socket, struct, sys, threading, time
 rest = sys.argv[1:][sys.argv[1:].index("--") + 1:]
 t3 = rest[rest.index("--") + 1:]
 scenario = os.environ.get("STANDIN_SCENARIO", "")
@@ -152,14 +155,86 @@ event({"type": "ready", "capture": "extImageCopyCapture", "target": "window",
        "encoder": "x264enc", "width": 1280, "height": 720, "cursorTracking": True})
 if scenario != "never-shows":
     event({"type": "windowCaptured", "title": "3D Viewport"})
+# A 1x1 PNG, as the add-on renders the viewport into the control socket's private folder.
+PIXEL = bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de"
+    "0000000c4944415408d763f8cfc0000003010100c9fe92ef0000000049454e44ae426082")
+shots = os.path.dirname(t3[t3.index("--t3-control") + 1])
+def screenshot(name):
+    path = os.path.join(shots, name)
+    if scenario == "linked-shot":
+        # A real PNG, but outside the private folder: only a plain file there is read.
+        outside = os.path.join(os.path.dirname(os.environ["STANDIN_SAVES"]), "outside.png")
+        open(outside, "wb").write(PIXEL)
+        os.symlink(outside, path)
+    elif scenario == "big-shot":
+        # A real PNG signature, but too large to send over the shared connection.
+        open(path, "wb").write(PIXEL + b"\0" * (8 * 1024 * 1024))
+    else:
+        open(path + ".part", "wb").write(PIXEL)
+        os.replace(path + ".part", path)
+def view_reply(command):
+    with open(os.environ["STANDIN_SAVES"] + ".views", "a") as log:
+        log.write("view\n")
+    if scenario == "no-render":
+        return None
+    screenshot(command["screenshot"])
+    return {"width": 1, "height": 1}
 def control():
     connection, _ = server.accept()
     connection.sendall(b'{"type": "hello", "pid": %d}\n' % os.getpid())
     connection.sendall(b'{"type": "state", "filepath": "cube.blend", "dirty": true}\n')
     saves = 0
+    view = {"position": [7, -7, 5], "target": [0, 0, 1]}
+    outstanding = [0]
+    def slow_hits(command):
+        # Answers later, saying how many hit requests were waiting when this one arrived.
+        result = [{"object": "in flight %d" % outstanding[0], "point": [0, 0, 0]}]
+        time.sleep(0.3)
+        outstanding[0] -= 1
+        connection.sendall((json.dumps({"type": "reply", "id": command["id"], "result": result}) + "\n").encode())
     for line in connection.makefile():
         command = json.loads(line)
-        if command.get("type") != "quit" or not command.get("save"):
+        kind = command.get("type")
+        if kind == "hits" and scenario == "slow-hits":
+            outstanding[0] += 1
+            threading.Thread(target=slow_hits, args=(command,), daemon=True).start()
+            continue
+        if kind in ("view", "hits", "setView") and scenario == "drop-on-view":
+            connection.close()
+            return
+        if kind == "view" and scenario == "no-viewport":
+            result = None
+        elif kind == "view" and scenario == "slow-view":
+            # Renders slowly, on its own thread, then answers as the add-on would.
+            def slow_view(command):
+                time.sleep(0.3)
+                shot = view_reply(command)
+                reply = {"screenshot": shot, "cameraView": {**view, "upAxis": "z"},
+                         "projection": {"matrix": [1] * 16,
+                                        "region": {"x": 0, "y": 0, "width": 1, "height": 1}}}
+                connection.sendall((json.dumps({"type": "reply", "id": command["id"], "result": reply}) + "\n").encode())
+            threading.Thread(target=slow_view, args=(command,), daemon=True).start()
+            continue
+        elif kind == "view":
+            result = {"screenshot": view_reply(command),
+                      "cameraView": {**view, "upAxis": "z"},
+                      "projection": {"matrix": [2] + [0] * 15,
+                                     "region": {"x": 0.1, "y": 0.05, "width": 0.8, "height": 0.9}}}
+        elif kind == "hits":
+            # Echoes what it was sent: the matrix's first entry and each mark's first sample.
+            result = [{"object": "m%g" % command["matrix"][0],
+                       "point": [mark[0]["x"], mark[0]["y"], len(command["marks"])]}
+                      if mark else None for mark in command["marks"]]
+        elif kind == "setView":
+            view = {"position": command["position"], "target": command["target"]}
+            result = True
+        else:
+            result = None
+        if kind in ("view", "hits", "setView"):
+            connection.sendall((json.dumps({"type": "reply", "id": command["id"], "result": result}) + "\n").encode())
+            continue
+        if kind != "quit" or not command.get("save"):
             continue
         saves += 1
         with open(os.environ["STANDIN_SAVES"], "a") as log:
@@ -259,6 +334,11 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
   const openReady = service
     .open({ threadId, relativePath: "cube.blend" })
     .pipe(Effect.andThen(awaitDirty(true)));
+  /** How many screenshots the add-on was asked to render. */
+  const viewRequests = () =>
+    NodeFS.existsSync(`${savesLog}.views`)
+      ? NodeFS.readFileSync(`${savesLog}.views`, "utf8").split("\n").length - 1
+      : 0;
   const saveCommands = () =>
     NodeFS.existsSync(savesLog) ? NodeFS.readFileSync(savesLog, "utf8").split("\n").length - 1 : 0;
   /** The input commands the helper got, in order. */
@@ -280,6 +360,7 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
     awaitDirty,
     openReady,
     saveCommands,
+    viewRequests,
     helperInput,
     helperCommands,
     marker,
@@ -346,6 +427,187 @@ describe("Save and quit", () => {
       yield* Fiber.join(first);
       yield* awaitStatus("stopped");
       expect(saveCommands()).toBe(1);
+    }).pipe(Effect.scoped),
+  );
+});
+
+describe("The viewport window", () => {
+  it.live("reads its camera and casts each mark through the frozen view", () =>
+    Effect.gen(function* () {
+      const { service, openReady, runtime } = yield* standIn("view", "");
+      yield* openReady;
+      const capture = yield* service.captureView(threadId);
+      assert.deepStrictEqual(capture, {
+        // Blender's own render of the viewport, drawn with this camera, read and then removed.
+        screenshot: { dataUrl: `data:image/png;base64,${STANDIN_PNG}`, width: 1, height: 1 },
+        cameraView: { position: [7, -7, 5], target: [0, 0, 1], upAxis: "z" },
+        projection: {
+          matrix: [2, ...Array.from({ length: 15 }, () => 0)],
+          region: { x: 0.1, y: 0.05, width: 0.8, height: 0.9 },
+        },
+      });
+      const hits = yield* service.findHits({
+        threadId,
+        projection: capture.projection,
+        marks: [[{ x: 0.5, y: 0.25 }], []],
+      });
+      assert.deepStrictEqual(hits, [{ object: "m2", point: [0.5, 0.25, 2] }, null]);
+      expect(
+        NodeFS.readdirSync(runtime, { recursive: true }).filter((name) =>
+          String(name).endsWith(".png"),
+        ),
+      ).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("moves to a link's view", () =>
+    Effect.gen(function* () {
+      const { service, openReady } = yield* standIn("set-view", "");
+      yield* openReady;
+      yield* service.setView({
+        threadId,
+        relativePath: "cube.blend",
+        view: { position: [1, 2, 3], target: [4, 5, 6] },
+      });
+      const capture = yield* service.captureView(threadId);
+      assert.deepStrictEqual(capture.cameraView, {
+        position: [1, 2, 3],
+        target: [4, 5, 6],
+        upAxis: "z",
+      });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("refuses a link's view for a file other than the one open", () =>
+    Effect.gen(function* () {
+      const { service, openReady } = yield* standIn("set-view-other", "");
+      yield* openReady;
+      const refused = yield* service
+        .setView({
+          threadId,
+          relativePath: "other.blend",
+          view: { position: [1, 2, 3], target: [4, 5, 6] },
+        })
+        .pipe(Effect.flip);
+      expect(refused.reason).toBe("otherFileOpen");
+      const capture = yield* service.captureView(threadId);
+      expect(capture.cameraView.position).toEqual([7, -7, 5]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("fails when the thread has no hosted Blender", () =>
+    Effect.gen(function* () {
+      const { service } = yield* standIn("view-stopped", "");
+      const failed = yield* service.captureView(threadId).pipe(Effect.flip);
+      expect(failed.reason).toBe("notRunning");
+      const refused = yield* service
+        .setView({
+          threadId,
+          relativePath: "cube.blend",
+          view: { position: [1, 0, 0], target: [0, 0, 0] },
+        })
+        .pipe(Effect.flip);
+      expect(refused.reason).toBe("notRunning");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("sends Blender one hit request at a time", () =>
+    Effect.gen(function* () {
+      const { service, openReady } = yield* standIn("one-cast", "slow-hits");
+      yield* openReady;
+      const projection = {
+        matrix: Array.from({ length: 16 }, () => 0),
+        region: { x: 0, y: 0, width: 1, height: 1 },
+      };
+      const results = yield* Effect.all(
+        Array.from({ length: 3 }, () =>
+          service.findHits({ threadId, projection, marks: [[{ x: 0.5, y: 0.5 }]] }),
+        ),
+        { concurrency: "unbounded" },
+      );
+      expect(results.map((hits) => hits[0]?.object)).toEqual([
+        "in flight 1",
+        "in flight 1",
+        "in flight 1",
+      ]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("keeps a hit request's slot until Blender answers, though its caller gave up", () =>
+    Effect.gen(function* () {
+      const { service, openReady } = yield* standIn("abandoned-cast", "slow-hits");
+      yield* openReady;
+      const request = {
+        threadId,
+        projection: {
+          matrix: Array.from({ length: 16 }, () => 0),
+          region: { x: 0, y: 0, width: 1, height: 1 },
+        },
+        marks: [[{ x: 0.5, y: 0.5 }]],
+      };
+      // The stand-in answers after 0.3 s; this caller stops waiting long before that.
+      const abandoned = yield* service.findHits(request).pipe(Effect.timeoutOption("100 millis"));
+      expect(abandoned._tag).toBe("None");
+      const hits = yield* service.findHits(request);
+      expect(hits[0]?.object).toBe("in flight 1");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("renders one screenshot at a time, and cleans up after one its caller gave up on", () =>
+    Effect.gen(function* () {
+      const { service, openReady, viewRequests, runtime } = yield* standIn("one-view", "slow-view");
+      yield* openReady;
+      // The first caller stops waiting before Blender has written its screenshot.
+      const abandoned = yield* service
+        .captureView(threadId)
+        .pipe(Effect.timeoutOption("50 millis"));
+      expect(abandoned._tag).toBe("None");
+      const capture = yield* service.captureView(threadId);
+      expect(capture.screenshot.width).toBe(1);
+      expect(viewRequests()).toBe(1);
+      expect(
+        NodeFS.readdirSync(runtime, { recursive: true }).filter((name) =>
+          /\.png(\.part)?$/.test(String(name)),
+        ),
+      ).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("goes without a screenshot Blender can't render or that's too large to send", () =>
+    Effect.gen(function* () {
+      for (const scenario of ["no-render", "big-shot"]) {
+        const { service, openReady } = yield* standIn(scenario, scenario);
+        yield* openReady;
+        const failed = yield* service.captureView(threadId).pipe(Effect.flip);
+        expect({ scenario, reason: failed.reason }).toEqual({ scenario, reason: "noScreenshot" });
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("reads a screenshot only as a plain file in Blender's private folder", () =>
+    Effect.gen(function* () {
+      const { service, openReady } = yield* standIn("linked-shot", "linked-shot");
+      yield* openReady;
+      const failed = yield* service.captureView(threadId).pipe(Effect.flip);
+      expect(failed.reason).toBe("noScreenshot");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("fails when Blender has no viewport window to read", () =>
+    Effect.gen(function* () {
+      const { service, openReady } = yield* standIn("no-viewport", "no-viewport");
+      yield* openReady;
+      const failed = yield* service.captureView(threadId).pipe(Effect.flip);
+      expect(failed.reason).toBe("noViewport");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("fails when Blender's control connection closes before answering", () =>
+    Effect.gen(function* () {
+      const { service, openReady } = yield* standIn("view-dropped", "drop-on-view");
+      yield* openReady;
+      const failed = yield* service.captureView(threadId).pipe(Effect.flip);
+      expect(failed.reason).toBe("noReply");
     }).pipe(Effect.scoped),
   );
 });
@@ -829,6 +1091,69 @@ describe("HostedBlender.open", () => {
   );
 });
 
+/** The stand-in add-on's 1x1 screenshot. */
+const STANDIN_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+/** Decodes the add-on's screenshots: 8-bit RGB PNG, every row unfiltered. */
+const decodePng = (dataUrl: string) => {
+  const bytes = Buffer.from(dataUrl.slice("data:image/png;base64,".length), "base64");
+  const width = bytes.readUInt32BE(16);
+  const height = bytes.readUInt32BE(20);
+  expect([bytes[24], bytes[25]]).toEqual([8, 2]);
+  const chunks: Buffer[] = [];
+  for (let offset = 8; offset < bytes.length;) {
+    const length = bytes.readUInt32BE(offset);
+    if (bytes.toString("ascii", offset + 4, offset + 8) === "IDAT")
+      chunks.push(bytes.subarray(offset + 8, offset + 8 + length));
+    offset += 12 + length;
+  }
+  const raw = NodeZlib.inflateSync(Buffer.concat(chunks));
+  const stride = width * 3 + 1;
+  return {
+    width,
+    height,
+    pixel: (x: number, y: number) => {
+      const row = Math.round(y) * stride;
+      expect(raw[row]).toBe(0);
+      const start = row + 1 + Math.round(x) * 3;
+      return [...raw.subarray(start, start + 3)];
+    },
+  };
+};
+
+/** Where a scene point lands in a screenshot, through a row-major perspective matrix. */
+const projectToPixel = (
+  matrix: ReadonlyArray<number>,
+  [x, y, z]: readonly [number, number, number],
+  size: { readonly width: number; readonly height: number },
+) => {
+  const row = (index: number) =>
+    matrix[index * 4]! * x +
+    matrix[index * 4 + 1]! * y +
+    matrix[index * 4 + 2]! * z +
+    matrix[index * 4 + 3]!;
+  const w = row(3);
+  return {
+    x: ((row(0) / w + 1) / 2) * size.width,
+    y: ((1 - row(1) / w) / 2) * size.height,
+  };
+};
+
+// The file's 3D views look through a camera of their own, which isn't the scene's camera.
+const LOCAL_CAMERA_SETUP = String.raw`import bpy
+camera = bpy.data.objects.new("PersonCamera", bpy.data.cameras.new("PersonCamera"))
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (3, -4, 2)
+camera.rotation_euler = (1.2, 0, 0.64)
+for screen in bpy.data.screens:
+    for area in screen.areas:
+        for space in area.spaces:
+            if space.type == "VIEW_3D":
+                space.use_local_camera = True
+                space.camera = camera
+                space.region_3d.view_perspective = "CAMERA"`;
+
 // A real hosted Blender: only on a Linux host with Blender, labwc and a built helper.
 const FAKE_MCP_MANIFEST = `schema_version = "1.0.0"
 id = "mcp"
@@ -878,6 +1203,97 @@ const canHostBlender =
   onPath("labwc");
 
 describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
+  /** A hosted Blender on a file made by `setup`, a Python script run in background Blender. */
+  const realBlender = Effect.fn(function* (prefix: string, setup: string) {
+    const dir = yield* tempDir(prefix);
+    const blendPath = NodePath.join(dir, "scene.blend");
+    NodeChildProcess.execFileSync("blender", [
+      "--background",
+      "--factory-startup",
+      "--python-expr",
+      `import bpy\n${setup}\nbpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(blendPath)})`,
+    ]);
+    const configHome = NodePath.join(dir, "config");
+    NodeFS.mkdirSync(configHome);
+    const service = yield* serviceFor(
+      layerFor({
+        env: {
+          PATH: hostEnvironment.PATH,
+          XDG_RUNTIME_DIR: hostEnvironment.XDG_RUNTIME_DIR,
+          XDG_CONFIG_HOME: configHome,
+        },
+        helper: helperBuild,
+        workspaceRoot: dir,
+        baseDir: dir,
+      }),
+    );
+    yield* service.open({ threadId, relativePath: "scene.blend" });
+    yield* service.threadState(threadId).pipe(
+      Stream.filter((state) => state.status === "running"),
+      Stream.runHead,
+    );
+    return service;
+  });
+
+  /** The first capture once the add-on's connection and viewport window are up. */
+  const firstCapture = (service: HostedBlender.HostedBlender["Service"]) =>
+    service.captureView(threadId).pipe(
+      Effect.retry({
+        while: (error) => error.reason === "noReply" || error.reason === "noViewport",
+        schedule: Schedule.spaced("500 millis"),
+        times: 40,
+      }),
+    );
+
+  it("won't draw Cycles' rendered shading offscreen, which would come out blank", () => {
+    // Rendered shading doesn't survive a file saved without a display, so the add-on's own
+    // check runs in a background Blender against a 3D view set up in place.
+    const output = NodeChildProcess.execFileSync(
+      "blender",
+      [
+        "--background",
+        "--factory-startup",
+        "--python-expr",
+        `${CONTROL_ADDON_SOURCE}
+space = next(space for area in bpy.data.screens["Layout"].areas for space in area.spaces if space.type == "VIEW_3D")
+scene = bpy.context.scene
+results = []
+for engine, shading in [("CYCLES", "RENDERED"), ("CYCLES", "SOLID"), ("BLENDER_EEVEE", "RENDERED"), ("BLENDER_WORKBENCH", "RENDERED")]:
+    scene.render.engine = engine
+    space.shading.type = shading
+    results.append([engine, shading, _renders_offscreen(space, scene)])
+print("T3-RESULT", json.dumps(results))`,
+      ],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+    const line = output.split("\n").find((entry) => entry.startsWith("T3-RESULT "));
+    expect(JSON.parse(line!.slice("T3-RESULT ".length))).toEqual([
+      ["CYCLES", "RENDERED", false],
+      ["CYCLES", "SOLID", true],
+      ["BLENDER_EEVEE", "RENDERED", true],
+      ["BLENDER_WORKBENCH", "RENDERED", true],
+    ]);
+  });
+
+  it.live("renders a large viewport scaled down, keeping its shape", () =>
+    Effect.gen(function* () {
+      const service = yield* realBlender("large", "pass");
+      const viewer = yield* attach(service, false);
+      yield* viewer.resize(3840, 2160);
+      yield* nextMessage(viewer, "viewport").pipe(
+        Effect.repeat({ until: (message) => message.width >= 3000 }),
+      );
+      // Frames at the new size mean Blender's window, and its 3D view, have grown.
+      const capture = yield* firstCapture(service);
+      const { width, height } = capture.screenshot;
+      expect(width * height).toBeLessThanOrEqual(1920 * 1088);
+      expect(width * height).toBeGreaterThan(1_800_000);
+      expect(width / height).toBeGreaterThan(1.6);
+      expect(width / height).toBeLessThan(2.2);
+      yield* service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
   it.live("starts with its own environment, streams its viewport window, and quits", () =>
     Effect.gen(function* () {
       const dir = yield* tempDir("real");
@@ -888,7 +1304,7 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
         "--background",
         "--factory-startup",
         "--python-expr",
-        `import bpy; bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(blendPath)})`,
+        `${LOCAL_CAMERA_SETUP}\nbpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(blendPath)})`,
       ]);
       // Settings of its own to copy, so the developer's Blender config is never read. The link
       // back out stands for one into desktop settings, which the copy must not keep.
@@ -985,6 +1401,18 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
       );
       expect(firstFrame.data[5]! & 1).toBe(1);
 
+      // The viewport looks through its own local camera, not the scene's (until the orbit below
+      // leaves camera view), and Blender renders the screenshot from that same view.
+      const throughCamera = yield* service.captureView(threadId);
+      const throughShot = decodePng(throughCamera.screenshot.dataUrl);
+      expect([throughShot.width, throughShot.height]).toEqual([
+        throughCamera.screenshot.width,
+        throughCamera.screenshot.height,
+      ]);
+      throughCamera.cameraView.position.forEach((value, index) =>
+        expect(value).toBeCloseTo([3, -4, 2][index]!, 3),
+      );
+
       // A middle-drag orbit in the viewport: Blender hides its cursor while it holds the mouse.
       const operator = yield* attach(service, true);
       yield* operator.input({ type: "takeControl", takeOver: false });
@@ -1026,6 +1454,46 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
       const argv = NodeFS.readFileSync(`/proc/${blenderPid}/cmdline`, "utf8").split("\0");
       expect(argv).toContain("--online-mode");
       expect(Number(argv[argv.indexOf("--t3-mcp-port") + 1])).not.toBe(9876);
+
+      // A view link moves the person's viewport window; the frame drawn after it is what a
+      // freeze would capture, so it is read back once Blender has drawn the new view.
+      yield* viewer.ack;
+      yield* service.setView({
+        threadId,
+        relativePath: "models/cube.blend",
+        view: { position: [6, -6, 5], target: [0, 0, 0] },
+      });
+      yield* Queue.take(viewer.output).pipe(
+        Effect.repeat({ until: (output) => output._tag === "frame" }),
+      );
+      const capture = yield* service.captureView(threadId);
+      expect(capture.cameraView.upAxis).toBe("z");
+      capture.cameraView.position.forEach((value, index) =>
+        expect(value).toBeCloseTo([6, -6, 5][index]!, 3),
+      );
+      capture.cameraView.target.forEach((value) => expect(value).toBeCloseTo(0, 3));
+      const { region } = capture.projection;
+      // The factory scene's cube sits at the origin, in the middle of the 3D view; a corner of
+      // the view looks past it at nothing.
+      const hits = yield* service.findHits({
+        threadId,
+        projection: capture.projection,
+        marks: [
+          [{ x: region.x + region.width / 2, y: region.y + region.height / 2 }],
+          [{ x: region.x + region.width * 0.02, y: region.y + region.height * 0.02 }],
+        ],
+      });
+      expect(hits).toHaveLength(2);
+      expect(hits[0]?.object).toBe("Cube");
+      // The screenshot and the camera are one view: the cube's hit point, projected through the
+      // returned matrix, lands on cube pixels in the screenshot, not on the background.
+      const shot = decodePng(capture.screenshot.dataUrl);
+      const at = projectToPixel(capture.projection.matrix, hits[0]!.point, shot);
+      expect(Math.abs(at.x - shot.width / 2)).toBeLessThan(2);
+      expect(Math.abs(at.y - shot.height / 2)).toBeLessThan(2);
+      expect(shot.pixel(at.x, at.y)).not.toEqual(shot.pixel(2, 2));
+      expect(Math.max(...hits[0]!.point.map(Math.abs))).toBeCloseTo(1, 3);
+      expect(hits[1]).toBeNull();
 
       // A save Blender can't write leaves it running, with the error for the pane.
       NodeFS.chmodSync(NodePath.join(workspace, "models"), 0o555);

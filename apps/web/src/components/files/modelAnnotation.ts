@@ -67,7 +67,7 @@ function flattenStroke(points: ReadonlyArray<PreviewAnnotationPoint>): PreviewAn
 }
 
 /** A file link that opens the preview at this camera. Parentheses would end a markdown link. */
-export function modelFileLink(path: string, view: PreviewAnnotationCameraView): string {
+export function modelFileLink(path: string, view: PreviewAnnotationCameraView | null): string {
   const encoded = path
     .split("/")
     .map((segment) =>
@@ -77,7 +77,7 @@ export function modelFileLink(path: string, view: PreviewAnnotationCameraView): 
       ),
     )
     .join("/");
-  return `${encoded}${formatModelViewHash(view)}`;
+  return view === null ? encoded : `${encoded}${formatModelViewHash(view)}`;
 }
 
 /**
@@ -138,6 +138,12 @@ export function markSamples(
   return [toSample(centre.x, centre.y), ...grid.map((point) => toSample(point.x, point.y))];
 }
 
+/** What each mark covers, in the order of the marks, as found outside the browser. */
+export interface MarkHits {
+  readonly regions: ReadonlyArray<PreviewAnnotationHit | null>;
+  readonly strokes: ReadonlyArray<PreviewAnnotationHit | null>;
+}
+
 /** An annotation drawn on a 3D view, in the shape browser-preview annotations already reach chat. */
 export function modelAnnotationPayload(input: {
   readonly id: string;
@@ -149,23 +155,33 @@ export function modelAnnotationPayload(input: {
   readonly strokes: ReadonlyArray<PreviewAnnotationStrokeTarget>;
   /** The view's size in CSS pixels, which the marks are measured in. */
   readonly size: Size;
-  readonly hitAt: (samples: ReadonlyArray<ViewSample>) => PreviewAnnotationHit | null;
+  /** Casts in the browser, sample by sample; or `hits`, for a view cast somewhere else. */
+  readonly hitAt?: (samples: ReadonlyArray<ViewSample>) => PreviewAnnotationHit | null;
+  readonly hits?: MarkHits | null;
   readonly screenshot: {
     readonly dataUrl: string;
     readonly width: number;
     readonly height: number;
   };
-  readonly cameraView: PreviewAnnotationCameraView;
+  /** Null when the view's camera couldn't be read. */
+  readonly cameraView: PreviewAnnotationCameraView | null;
   readonly createdAt: string;
   /** The clock the hit budget is measured on, in milliseconds. */
   readonly now?: () => number;
 }): PreviewAnnotationPayload {
   const now = input.now ?? (() => performance.now());
   const deadline = now() + HIT_BUDGET_MS;
-  const withHit = <Mark extends object>(mark: Mark, samples: ViewSample[]) => {
-    for (const sample of samples) {
+  const { hitAt } = input;
+  const withHit = <Mark extends object>(
+    mark: Mark,
+    samples: () => ViewSample[],
+    found: PreviewAnnotationHit | null | undefined,
+  ) => {
+    if (found) return { ...mark, hit: found };
+    if (!hitAt) return mark;
+    for (const sample of samples()) {
       if (now() >= deadline) return mark;
-      const hit = input.hitAt([sample]);
+      const hit = hitAt([sample]);
       if (hit) return { ...mark, hit };
     }
     return mark;
@@ -176,16 +192,22 @@ export function modelAnnotationPayload(input: {
     pageTitle: input.name,
     comment: input.comment.trim(),
     elements: [],
-    regions: input.regions.map((region) => withHit(region, markSamples(region.rect, input.size))),
-    strokes: input.strokes.map((stroke) =>
-      withHit(stroke, markSamples(stroke.bounds, input.size, stroke.points)),
+    regions: input.regions.map((region, index) =>
+      withHit(region, () => markSamples(region.rect, input.size), input.hits?.regions[index]),
+    ),
+    strokes: input.strokes.map((stroke, index) =>
+      withHit(
+        stroke,
+        () => markSamples(stroke.bounds, input.size, stroke.points),
+        input.hits?.strokes[index],
+      ),
     ),
     styleChanges: [],
     screenshot: {
       ...input.screenshot,
       cropRect: { x: 0, y: 0, width: input.size.width, height: input.size.height },
     },
-    cameraView: input.cameraView,
+    ...(input.cameraView ? { cameraView: input.cameraView } : {}),
     createdAt: input.createdAt,
   };
 }
