@@ -17,33 +17,32 @@ export class ViewerFlow {
   private synced = false;
   private pending: VideoFrame[] = [];
 
-  /** `fellBehind`: this viewer's queue overflowed, so it now waits for a keyframe. */
+  /**
+   * `requestKeyframe`: this viewer is waiting for one. A viewer whose frame is still out asks only
+   * once it acks that frame, so a stalled viewer can't keep forcing keyframes on everyone.
+   */
   offer(
     frame: VideoFrame,
     now: number,
-  ): {
-    readonly send: VideoFrame | null;
-    readonly requestKeyframe: boolean;
-    readonly fellBehind: boolean;
-  } {
+  ): { readonly send: VideoFrame | null; readonly requestKeyframe: boolean } {
     if (frame.key) {
       this.synced = true;
       this.pending = [];
     } else if (!this.synced) {
-      return { send: null, requestKeyframe: true, fellBehind: false };
+      return { send: null, requestKeyframe: !this.inFlight };
     }
     if (!this.inFlight) {
       this.inFlight = true;
       this.sentAt = now;
-      return { send: frame, requestKeyframe: false, fellBehind: false };
+      return { send: frame, requestKeyframe: false };
     }
     if (this.pending.length >= MAX_PENDING_FRAMES) {
       this.synced = false;
       this.pending = [];
-      return { send: null, requestKeyframe: true, fellBehind: true };
+      return { send: null, requestKeyframe: false };
     }
     this.pending.push(frame);
-    return { send: null, requestKeyframe: false, fellBehind: false };
+    return { send: null, requestKeyframe: false };
   }
 
   /**
@@ -56,14 +55,18 @@ export class ViewerFlow {
   }
 
   /**
-   * The frame on the wire arrived. Returns the next one to send, and how long the acked frame
-   * took from going out to its ack.
+   * The frame on the wire arrived. Returns the next one to send, how long the acked frame took
+   * from going out to its ack, and whether this viewer now waits for a keyframe.
    */
-  ack(now: number): { readonly next: VideoFrame | null; readonly latencyMs: number | null } {
+  ack(now: number): {
+    readonly next: VideoFrame | null;
+    readonly latencyMs: number | null;
+    readonly requestKeyframe: boolean;
+  } {
     const latencyMs = this.inFlight ? now - this.sentAt : null;
     const next = this.pending.shift() ?? null;
     this.inFlight = next !== null;
     this.sentAt = now;
-    return { next, latencyMs };
+    return { next, latencyMs, requestKeyframe: !this.synced && latencyMs !== null };
   }
 }

@@ -155,6 +155,8 @@ interface Instance {
   memoryBytes: number | null;
   viewport: { readonly width: number; readonly height: number } | null;
   lastKeyframeRequest: number;
+  /** A keyframe request is waiting out the throttle. */
+  keyframeDeferred: boolean;
   helper: (command: HelperCommand) => Effect.Effect<void>;
   control: ControlConnection | null;
   /** What the add-on says while `quit` waits on a save. */
@@ -394,9 +396,26 @@ const make = Effect.gen(function* () {
 
   // Keyframe requests, packets, control lines, memory samples and viewer detaches run many times
   // per instance; they share its `HostedBlender.run` span instead of each opening one.
-  const requestKeyframe = Effect.fnUntraced(function* (instance: Instance) {
+  const requestKeyframe: (instance: Instance) => Effect.Effect<void> = Effect.fnUntraced(function* (
+    instance: Instance,
+  ) {
     const now = yield* Clock.currentTimeMillis;
-    if (now - instance.lastKeyframeRequest < KEYFRAME_REQUEST_INTERVAL_MS) return;
+    const wait = instance.lastKeyframeRequest + KEYFRAME_REQUEST_INTERVAL_MS - now;
+    if (wait > 0) {
+      // Deferred, not dropped: on an idle viewport no later frame would ask again.
+      if (instance.keyframeDeferred) return;
+      instance.keyframeDeferred = true;
+      yield* Effect.sleep(wait).pipe(
+        Effect.andThen(
+          Effect.suspend(() => {
+            instance.keyframeDeferred = false;
+            return requestKeyframe(instance);
+          }),
+        ),
+        Effect.forkIn(serviceScope),
+      );
+      return;
+    }
     instance.lastKeyframeRequest = now;
     yield* instance.helper({ type: "keyframe" });
   });
@@ -417,26 +436,23 @@ const make = Effect.gen(function* () {
   // A viewer that joins or shows its pane starts on a keyframe, whatever was asked for lately.
   const joinOnKeyframe = (instance: Instance) =>
     Effect.suspend(() => {
-      instance.lastKeyframeRequest = 0;
+      instance.lastKeyframeRequest = Number.NEGATIVE_INFINITY;
       return requestKeyframe(instance);
     });
 
   const handlePacket = Effect.fnUntraced(function* (instance: Instance, packet: HelperPacket) {
     if (packet._tag === "video") {
       const now = yield* Clock.currentTimeMillis;
+      // A viewer that falls behind is slower than Blender's frame rate, which a lower bitrate
+      // can't fix; it resyncs on a keyframe, and only ack delay moves the bitrate.
       let wantsKeyframe = false;
-      let fellBehind = false;
       for (const viewer of instance.viewers) {
         if (!viewer.visible) continue;
         const offered = viewer.flow.offer(packet, now);
         if (offered.send) yield* Queue.offer(viewer.queue, { _tag: "frame", data: packet.data });
         wantsKeyframe ||= offered.requestKeyframe;
-        fellBehind ||= offered.fellBehind;
       }
-      // A viewer that fell behind is slower than Blender's frame rate, which a lower bitrate
-      // can't fix (only ack delay moves it); it resyncs on a keyframe straight away.
-      if (fellBehind) yield* joinOnKeyframe(instance);
-      else if (wantsKeyframe) yield* requestKeyframe(instance);
+      if (wantsKeyframe) yield* requestKeyframe(instance);
       return;
     }
     const event = packet.event;
@@ -782,7 +798,8 @@ const make = Effect.gen(function* () {
       stats: null,
       memoryBytes: null,
       viewport: null,
-      lastKeyframeRequest: 0,
+      lastKeyframeRequest: Number.NEGATIVE_INFINITY,
+      keyframeDeferred: false,
       helper: () => Effect.void,
       control: null,
       saveReplies: null,
@@ -921,8 +938,9 @@ const make = Effect.gen(function* () {
   // Acks arrive for every frame; they share the viewer's stream span.
   const ackFrame = Effect.fnUntraced(function* (instance: Instance, entry: ViewerEntry) {
     const now = yield* Clock.currentTimeMillis;
-    const { next, latencyMs } = entry.flow.ack(now);
+    const { next, latencyMs, requestKeyframe: wantsKeyframe } = entry.flow.ack(now);
     if (next) yield* Queue.offer(entry.queue, { _tag: "frame", data: next.data });
+    if (wantsKeyframe) yield* requestKeyframe(instance);
     if (latencyMs === null || leadViewer(instance) !== entry) return;
     if (instance.bitrateLead !== entry.id) {
       instance.bitrateLead = entry.id;

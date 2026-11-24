@@ -599,6 +599,36 @@ describe("The stream", () => {
   );
 });
 
+it.effect(
+  "a stalled viewer's keyframe waits out the throttle, and comes even if Blender is idle",
+  () =>
+    Effect.gen(function* () {
+      const { service, awaitStatus, helperCommands } = yield* standIn("deferred", "");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitStatus("running");
+      const operator = yield* attach(service, true);
+      yield* operator.input({ type: "takeControl", takeOver: false });
+      const cursor = (captured: boolean): Effect.Effect<unknown> =>
+        nextMessage(operator, "cursor").pipe(
+          Effect.flatMap((message) =>
+            message.captured === captured ? Effect.void : cursor(captured),
+          ),
+        );
+      // F1 overflows the operator's queue while its first frame is unacked; nothing more comes.
+      yield* operator.input({ type: "key", code: 59, pressed: true });
+      yield* cursor(true);
+      yield* operator.input({ type: "key", code: 59, pressed: false });
+      yield* cursor(false);
+      // Its ack asks for a keyframe, but one went out at join this same instant.
+      yield* operator.ack;
+      yield* syncPoint(operator);
+      expect(ofType(helperCommands(), "keyframe")).toHaveLength(1);
+      yield* TestClock.adjust("250 millis");
+      expect(isKey(yield* nextFrame(operator))).toBe(true);
+      expect(ofType(helperCommands(), "keyframe")).toHaveLength(2);
+    }).pipe(Effect.scoped),
+);
+
 it.effect("gives up on a start that never shows Blender by asking the helper to quit", () =>
   Effect.gen(function* () {
     const { service, awaitStatus, marker, runtime } = yield* standIn("timeout", "never-shows");
