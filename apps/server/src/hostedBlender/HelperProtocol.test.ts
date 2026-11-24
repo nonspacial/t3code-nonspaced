@@ -1,6 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
+import type { HostedBlenderInputMessage } from "@t3tools/contracts";
 
-import { encodeHelperCommand, HelperPacketReader } from "./HelperProtocol.ts";
+import {
+  encodeHelperCommand,
+  HelperPacketReader,
+  helperCommandForInput,
+} from "./HelperProtocol.ts";
 
 // Mirrors `write_packet`, `write_event` and `write_video` in native/hidden-display/src/control.rs.
 const packet = (kind: number, payload: Uint8Array) => {
@@ -48,6 +53,7 @@ describe("HelperPacketReader", () => {
       key.packet,
       event({ type: "cursorLeave" }),
       delta.packet,
+      event({ type: "cursorEnter", x: 640, y: 360 }),
       event({ type: "exited", process: "blender", code: 0, signal: null }),
     );
 
@@ -69,8 +75,9 @@ describe("HelperPacketReader", () => {
           },
         },
         { _tag: "video", key: true, data: key.semu },
-        // cursorLeave matters only once viewers can take control, so it is skipped for now.
+        { _tag: "event", event: { type: "cursorLeave" } },
         { _tag: "video", key: false, data: delta.semu },
+        { _tag: "event", event: { type: "cursorEnter" } },
         { _tag: "event", event: { type: "exited", process: "blender", code: 0, signal: null } },
       ]);
     }
@@ -88,4 +95,25 @@ it("encodes commands as the JSON lines the helper reads", () => {
   expect(encodeHelperCommand({ type: "resize", width: 1600, height: 900 })).toBe(
     '{"type":"resize","width":1600,"height":900}\n',
   );
+});
+
+it("turns viewer input into the helper's pointer, key and keymap commands", () => {
+  const inputs: HostedBlenderInputMessage[] = [
+    { type: "pointer", x: 10, y: 20.5 },
+    { type: "pointerMotion", dx: -3.5, dy: 2 },
+    { type: "button", button: 274, pressed: true },
+    { type: "scroll", axis: "vertical", source: "wheel", value: 15, steps: 1 },
+    { type: "scroll", axis: "horizontal", source: "finger", value: -4.25 },
+    { type: "key", code: 30, pressed: false },
+    { type: "keymap", layout: "us", variant: "dvorak" },
+  ];
+  expect(inputs.map(helperCommandForInput)).toEqual([
+    { type: "pointerPosition", x: 10, y: 20.5 },
+    { type: "pointerMotion", dx: -3.5, dy: 2 },
+    { type: "pointerButton", button: 274, pressed: true },
+    { type: "pointerAxis", axis: "vertical", source: "wheel", value: 15, discrete: 1 },
+    { type: "pointerAxis", axis: "horizontal", source: "finger", value: -4.25 },
+    { type: "key", code: 30, pressed: false },
+    { type: "keymap", layout: "us", variant: "dvorak" },
+  ]);
 });
