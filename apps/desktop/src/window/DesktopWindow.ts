@@ -844,9 +844,12 @@ export const make = Effect.gen(function* () {
         event.preventDefault();
       }
     });
-    window.webContents.on("did-start-loading", () => {
-      if (!window.isDestroyed()) MenuShortcuts.setIgnored(window.webContents.id, false);
-    });
+    // A reload or a closed window drops the renderer's control, so the flag goes with it.
+    const webContentsId = window.webContents.id;
+    window.webContents.on("did-start-loading", () =>
+      MenuShortcuts.setIgnored(webContentsId, false),
+    );
+    window.webContents.on("destroyed", () => MenuShortcuts.setIgnored(webContentsId, false));
     window.webContents.on("input-event", (_event, input) => {
       if (window.isDestroyed()) return;
       if (input.type === "gestureScrollBegin") {

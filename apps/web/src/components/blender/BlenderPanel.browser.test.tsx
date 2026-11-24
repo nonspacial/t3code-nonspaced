@@ -1,9 +1,8 @@
 import type {
   HostedBlenderControl,
   HostedBlenderStreamEvents,
-  HostedBlenderViewerMessage,
 } from "@t3tools/client-runtime/hosted-blender/stream";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, type HostedBlenderViewerMessage, ThreadId } from "@t3tools/contracts";
 import { expect, it, vi } from "vite-plus/test";
 
 import { toastManager } from "~/components/ui/toast";

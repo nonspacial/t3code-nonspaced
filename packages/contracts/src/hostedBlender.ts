@@ -191,3 +191,9 @@ export const HostedBlenderStreamClientMessage = Schema.Union([
   ...HostedBlenderInputMessage.members,
 ]);
 export type HostedBlenderStreamClientMessage = typeof HostedBlenderStreamClientMessage.Type;
+
+/** What a viewer sends besides acks and its size: taking control, and input. */
+export type HostedBlenderViewerMessage = Exclude<
+  HostedBlenderStreamClientMessage,
+  { readonly type: "ack" | "resize" }
+>;

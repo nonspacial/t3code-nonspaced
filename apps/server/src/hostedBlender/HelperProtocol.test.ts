@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import type { HostedBlenderInputMessage } from "@t3tools/contracts";
 
 import {
   encodeHelperCommand,
@@ -97,17 +98,16 @@ it("encodes commands as the JSON lines the helper reads", () => {
 });
 
 it("turns viewer input into the helper's pointer, key and keymap commands", () => {
-  expect(
-    [
-      { type: "pointer", x: 10, y: 20.5 },
-      { type: "pointerMotion", dx: -3.5, dy: 2 },
-      { type: "button", button: 274, pressed: true },
-      { type: "scroll", axis: "vertical", source: "wheel", value: 15, steps: 1 },
-      { type: "scroll", axis: "horizontal", source: "finger", value: -4.25 },
-      { type: "key", code: 30, pressed: false },
-      { type: "keymap", layout: "us", variant: "dvorak" },
-    ].map((input) => helperCommandForInput(input as never)),
-  ).toEqual([
+  const inputs: HostedBlenderInputMessage[] = [
+    { type: "pointer", x: 10, y: 20.5 },
+    { type: "pointerMotion", dx: -3.5, dy: 2 },
+    { type: "button", button: 274, pressed: true },
+    { type: "scroll", axis: "vertical", source: "wheel", value: 15, steps: 1 },
+    { type: "scroll", axis: "horizontal", source: "finger", value: -4.25 },
+    { type: "key", code: 30, pressed: false },
+    { type: "keymap", layout: "us", variant: "dvorak" },
+  ];
+  expect(inputs.map(helperCommandForInput)).toEqual([
     { type: "pointerPosition", x: 10, y: 20.5 },
     { type: "pointerMotion", dx: -3.5, dy: 2 },
     { type: "pointerButton", button: 274, pressed: true },

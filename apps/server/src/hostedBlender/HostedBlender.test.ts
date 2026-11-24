@@ -160,7 +160,7 @@ def control():
 threading.Thread(target=control, daemon=True).start()
 for line in sys.stdin:
     command = json.loads(line)
-    if command.get("type") not in ("quit", "keyframe", "pause", "resume", "resize"):
+    if command.get("type") not in ("quit", "keyframe", "pause", "resume"):
         with open(os.environ["STANDIN_INPUT"], "a") as log:
             log.write(line)
     # A middle-drag orbit: Blender hides its cursor while the button is down.
@@ -390,6 +390,39 @@ describe("Taking control", () => {
         { type: "pointerButton", button: 274, pressed: false },
         { type: "pointerMotion", dx: 3, dy: -2 },
         { type: "pointerButton", button: 274, pressed: true },
+      ]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("sizes the display to the viewer in control, and answers a refused take", () =>
+    Effect.gen(function* () {
+      const { service, openReady, helperInput } = yield* standIn("size", "");
+      yield* openReady;
+      const operator = yield* attach(service, true);
+      yield* operator.resize(800, 600);
+      expect(yield* controller(operator)).toBe("unclaimed");
+      yield* operator.input({ type: "takeControl", takeOver: false });
+      expect(yield* controller(operator)).toBe("you");
+      // A newer viewer opening the pane doesn't resize the controller's display...
+      const newer = yield* attach(service, true);
+      yield* newer.resize(1600, 900);
+      expect(yield* controller(newer)).toBe("another-viewer");
+      // ...and a take it lost the race for still tells it who has control.
+      yield* newer.input({ type: "takeControl", takeOver: false });
+      expect(yield* controller(newer)).toBe("another-viewer");
+      yield* operator.resize(1024, 768);
+      yield* syncPoint(operator);
+      expect(yield* nextMessage(newer, "cursor")).toEqual({ type: "cursor", captured: true });
+      // Taking over resizes the display to the new controller's pane.
+      yield* newer.input({ type: "takeControl", takeOver: true });
+      expect(yield* nextMessage(newer, "cursor")).toEqual({ type: "cursor", captured: false });
+      yield* syncPoint(newer);
+      expect(
+        helperInput().filter((command) => (command as { type: string }).type === "resize"),
+      ).toEqual([
+        { type: "resize", width: 800, height: 600 },
+        { type: "resize", width: 1024, height: 768 },
+        { type: "resize", width: 1600, height: 900 },
       ]);
     }).pipe(Effect.scoped),
   );

@@ -9,7 +9,7 @@ export class HeldInput {
   private readonly buttons = new Set<number>();
 
   /** Records a command about to be sent; `false` means the helper must not get it. */
-  note(command: HelperCommand): boolean {
+  shouldSend(command: HelperCommand): boolean {
     if (command.type === "key") return this.toggle(this.keys, command.code, command.pressed);
     if (command.type === "pointerButton") {
       return this.toggle(this.buttons, command.button, command.pressed);

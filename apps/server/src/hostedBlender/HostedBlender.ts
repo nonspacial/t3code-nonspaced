@@ -4,10 +4,9 @@ import {
   type HostedBlenderOpenInput,
   type HostedBlenderQuitInput,
   type HostedBlenderRequirement,
-  type HostedBlenderInputMessage,
   type HostedBlenderRunningState,
-  type HostedBlenderStreamClientMessage,
   type HostedBlenderStreamServerMessage,
+  type HostedBlenderViewerMessage,
   type HostedBlenderThreadState,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -93,17 +92,16 @@ export type HostedBlenderViewerOutput =
   | { readonly _tag: "message"; readonly message: HostedBlenderStreamServerMessage }
   | { readonly _tag: "stopped" };
 
-export type HostedBlenderViewerInput =
-  | Extract<HostedBlenderStreamClientMessage, { type: "takeControl" | "releaseControl" }>
-  | HostedBlenderInputMessage;
-
 export interface HostedBlenderViewer {
   readonly output: Queue.Dequeue<HostedBlenderViewerOutput>;
   readonly ack: Effect.Effect<void>;
-  /** The viewer's pane size in device pixels. Only the newest viewer sizes the display. */
+  /**
+   * The viewer's pane size in device pixels. The display follows the viewer in control, or
+   * the newest viewer while nobody is.
+   */
   readonly resize: (width: number, height: number) => Effect.Effect<void>;
   /** Taking control, and input that only reaches Blender from the viewer in control. */
-  readonly input: (message: HostedBlenderViewerInput) => Effect.Effect<void>;
+  readonly input: (message: HostedBlenderViewerMessage) => Effect.Effect<void>;
 }
 
 export type HostedBlenderAttachResult =
@@ -134,6 +132,7 @@ interface ViewerEntry {
   readonly canOperate: boolean;
   readonly queue: Queue.Queue<HostedBlenderViewerOutput>;
   readonly flow: ViewerFlow;
+  size: { readonly width: number; readonly height: number } | null;
 }
 
 interface Instance {
@@ -167,6 +166,8 @@ interface Instance {
   readonly held: HeldInput;
   /** Blender holds the mouse (a grab or orbit), so the controller sends relative motion. */
   cursorCaptured: boolean;
+  /** The display size last asked of the helper. */
+  displaySize: string;
 }
 
 type Availability =
@@ -282,7 +283,9 @@ const make = Effect.gen(function* () {
   // controller sent and nothing it sent can land after them.
   const sendInput = (instance: Instance, command: HelperCommand) =>
     runPromise(
-      Effect.suspend(() => (instance.held.note(command) ? instance.helper(command) : Effect.void)),
+      Effect.suspend(() =>
+        instance.held.shouldSend(command) ? instance.helper(command) : Effect.void,
+      ),
     );
   const releaseHeld = (instance: Instance) =>
     runPromise(
@@ -294,31 +297,54 @@ const make = Effect.gen(function* () {
   const settle = (work: Promise<unknown>) =>
     Effect.promise(() => work.then(constUndefined, constUndefined));
 
+  // The display follows the viewer in control, or the newest viewer while nobody is.
+  const applySize = (instance: Instance) =>
+    Effect.suspend(() => {
+      const sizer =
+        instance.viewers.find((viewer) => viewer.id === instance.session.controller) ??
+        instance.viewers.at(-1);
+      if (sizer?.size == null) return Effect.void;
+      const size = displaySize(sizer.size.width, sizer.size.height);
+      const key = `${size.width}x${size.height}`;
+      if (key === instance.displaySize) return Effect.void;
+      instance.displaySize = key;
+      return instance.helper({ type: "resize", ...size });
+    });
+
+  // Runs from both a viewer's input and its detach, inside their spans.
   const releaseControl = Effect.fnUntraced(function* (instance: Instance, viewer: ViewerEntry) {
     if (instance.session.controller !== viewer.id) return;
     const releasing = instance.session.disconnect(viewer.id, () => releaseHeld(instance));
     yield* broadcastControl(instance);
     yield* settle(releasing);
+    yield* applySize(instance);
   });
 
   // Input arrives for every pointer move; it shares the viewer's stream span.
   const handleViewerInput = Effect.fnUntraced(function* (
     instance: Instance,
     viewer: ViewerEntry,
-    message: HostedBlenderViewerInput,
+    message: HostedBlenderViewerMessage,
   ) {
     const owner = instance.session.controller;
     switch (message.type) {
       case "takeControl": {
         if (!viewer.canOperate || owner === viewer.id) return;
-        if (owner !== null && !message.takeOver) return;
+        // Someone else won the race: tell this viewer, whose view of control is stale.
+        if (owner !== null && !message.takeOver) {
+          return yield* Queue.offer(viewer.queue, {
+            _tag: "message",
+            message: controlMessage(instance, viewer),
+          });
+        }
         const handoff =
           owner === null
             ? Promise.resolve()
             : instance.session.disconnect(owner, () => releaseHeld(instance));
         const taking = instance.session.take(viewer.id);
         yield* broadcastControl(instance);
-        return yield* settle(Promise.all([handoff, taking]));
+        yield* settle(Promise.all([handoff, taking]));
+        return yield* applySize(instance);
       }
       case "releaseControl":
         return yield* releaseControl(instance, viewer);
@@ -707,6 +733,7 @@ const make = Effect.gen(function* () {
       session: new SessionControl(null),
       held: new HeldInput(),
       cursorCaptured: false,
+      displaySize: "",
     };
     failedStarts.delete(threadId);
     instances.set(threadId, instance);
@@ -810,6 +837,7 @@ const make = Effect.gen(function* () {
     if (index >= 0) instance.viewers.splice(index, 1);
     yield* Queue.shutdown(entry.queue);
     yield* releaseControl(instance, entry);
+    yield* applySize(instance);
     // With nobody watching, capture and encoding stop entirely.
     if (instance.viewers.length === 0) yield* instance.helper({ type: "pause" });
   });
@@ -827,6 +855,7 @@ const make = Effect.gen(function* () {
       // ViewerFlow keeps at most one frame queued; the rest are small, infrequent messages.
       queue: yield* Queue.unbounded<HostedBlenderViewerOutput>(),
       flow: new ViewerFlow(),
+      size: null,
     };
     instance.viewers.push(entry);
     yield* Effect.addFinalizer(() => detach(instance, entry));
@@ -854,9 +883,10 @@ const make = Effect.gen(function* () {
           return next ? Queue.offer(entry.queue, { _tag: "frame", data: next.data }) : Effect.void;
         }).pipe(Effect.asVoid),
         resize: (width, height) =>
-          instance.viewers.at(-1) === entry
-            ? instance.helper({ type: "resize", ...displaySize(width, height) })
-            : Effect.void,
+          Effect.suspend(() => {
+            entry.size = { width, height };
+            return applySize(instance);
+          }),
         input: (message) => handleViewerInput(instance, entry, message),
       },
     };

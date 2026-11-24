@@ -2,8 +2,8 @@
 import {
   HOSTED_BLENDER_STREAM_FULL_CLOSE_CODE,
   HOSTED_BLENDER_STREAM_STOPPED_CLOSE_CODE,
-  type HostedBlenderStreamClientMessage,
   HostedBlenderStreamServerMessage,
+  type HostedBlenderViewerMessage,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -24,13 +24,8 @@ export type HostedBlenderControl = Omit<
   "type"
 >;
 
-/** What the viewer sends besides acks and its size: taking control, and input. */
-export type HostedBlenderViewerMessage = Exclude<
-  HostedBlenderStreamClientMessage,
-  { readonly type: "ack" | "resize" }
->;
-
-const VIEW_ONLY: HostedBlenderControl = { canOperate: false, controller: "unclaimed" };
+/** Before the server says otherwise, and after a disconnect. */
+export const VIEW_ONLY: HostedBlenderControl = { canOperate: false, controller: "unclaimed" };
 
 export interface HostedBlenderFrameRate {
   readonly framesPerSecond: number;

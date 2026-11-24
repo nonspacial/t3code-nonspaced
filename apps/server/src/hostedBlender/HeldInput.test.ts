@@ -13,7 +13,7 @@ it("passes presses once, drops repeats and stray releases, and releases what is 
     { type: "pointerButton", button: 274, pressed: true },
     { type: "pointerMotion", dx: 4, dy: 0 },
   ] as const;
-  expect(sent.map((command) => held.note(command))).toEqual([
+  expect(sent.map((command) => held.shouldSend(command))).toEqual([
     true,
     false,
     true,

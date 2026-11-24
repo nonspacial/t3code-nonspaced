@@ -14,6 +14,7 @@ import {
   type HostedBlenderStreamClient,
   type HostedBlenderStreamStats,
   type HostedBlenderStreamStatus,
+  VIEW_ONLY,
 } from "@t3tools/client-runtime/hosted-blender/stream";
 import type {
   EnvironmentId,
@@ -23,7 +24,7 @@ import type {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { MoreVertical } from "lucide-react";
-import { T, useGT, useMessages, Var } from "gt-react";
+import { msg, T, useGT, useMessages, Var } from "gt-react";
 import { type ReactNode, type RefObject, useEffect, useEffectEvent, useRef, useState } from "react";
 
 import {
@@ -78,8 +79,6 @@ interface StreamStats {
 
 const fileName = (relativePath: string) => relativePath.slice(relativePath.lastIndexOf("/") + 1);
 
-const VIEW_ONLY: HostedBlenderControl = { canOperate: false, controller: "unclaimed" };
-
 // Per device: the keyboard and mouse belong to the device, not the account.
 const KEYBOARD_LAYOUT_KEY = "t3code:hosted-blender:keyboard-layout";
 const SCROLLING_KEY = "t3code:hosted-blender:scrolling";
@@ -120,7 +119,7 @@ interface BlenderStreamHandle {
 const canUseFullscreen = () =>
   !isElectron && typeof document !== "undefined" && document.fullscreenEnabled;
 
-/** The thread's hosted Blender, live and view-only. Closing the pane leaves Blender running. */
+/** The thread's hosted Blender, live; clicking it takes control. Closing the pane leaves Blender running. */
 export function BlenderPanel(props: {
   readonly threadRef: ScopedThreadRef;
   readonly visible: boolean;
@@ -341,7 +340,7 @@ function BlenderToolbar(props: {
                       </MenuRadioItem>
                       {HOSTED_BLENDER_KEYBOARD_LAYOUTS.map((layout) => (
                         <MenuRadioItem key={layout} value={layout} closeOnClick>
-                          <KeyboardLayoutName layout={layout} />
+                          {m(KEYBOARD_LAYOUT_NAMES[layout])}
                         </MenuRadioItem>
                       ))}
                     </MenuRadioGroup>
@@ -416,28 +415,24 @@ function BlenderToolbar(props: {
   );
 }
 
-function KeyboardLayoutName(props: { readonly layout: HostedBlenderKeyboardLayout }) {
-  const gt = useGT();
-  const names: Record<HostedBlenderKeyboardLayout, string> = {
-    us: gt("English (US)"),
-    gb: gt("English (UK)"),
-    de: gt("German"),
-    fr: gt("French"),
-    es: gt("Spanish"),
-    it: gt("Italian"),
-    pt: gt("Portuguese"),
-    br: gt("Portuguese (Brazil)"),
-    se: gt("Swedish"),
-    no: gt("Norwegian"),
-    dk: gt("Danish"),
-    ch: gt("Swiss German"),
-    ru: gt("Russian"),
-    jp: gt("Japanese"),
-    "us-dvorak": gt("English (Dvorak)"),
-    "us-colemak": gt("English (Colemak)"),
-  };
-  return names[props.layout];
-}
+const KEYBOARD_LAYOUT_NAMES: Record<HostedBlenderKeyboardLayout, string> = {
+  us: msg("English (US)"),
+  gb: msg("English (UK)"),
+  de: msg("German"),
+  fr: msg("French"),
+  es: msg("Spanish"),
+  it: msg("Italian"),
+  pt: msg("Portuguese"),
+  br: msg("Portuguese (Brazil)"),
+  se: msg("Swedish"),
+  no: msg("Norwegian"),
+  dk: msg("Danish"),
+  ch: msg("Swiss German"),
+  ru: msg("Russian"),
+  jp: msg("Japanese"),
+  "us-dvorak": msg("English (Dvorak)"),
+  "us-colemak": msg("English (Colemak)"),
+};
 
 function BlenderStream(props: {
   readonly environmentId: EnvironmentId;
@@ -545,6 +540,10 @@ function BlenderStream(props: {
     document.addEventListener("fullscreenchange", onFullscreenChange);
     return () => {
       document.removeEventListener("fullscreenchange", onFullscreenChange);
+      // Losing control (a take over, a disconnect) leaves fullscreen and its keyboard lock.
+      if (document.fullscreenElement === container)
+        void document.exitFullscreen().catch(() => undefined);
+      (navigator as KeyboardLockNavigator).keyboard?.unlock?.();
       void window.desktopBridge?.setMenuShortcutsIgnored?.(false).catch(() => undefined);
       inputRef.current = null;
       input.dispose();
