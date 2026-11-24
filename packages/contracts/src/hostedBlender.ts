@@ -134,6 +134,7 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "notRunning",
       "noReply",
       "noViewport",
+      "noScreenshot",
     ]),
   },
 ) {
@@ -163,6 +164,8 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "The hosted Blender didn't answer.";
       case "noViewport":
         return "The hosted Blender has no viewport window open.";
+      case "noScreenshot":
+        return "The hosted Blender couldn't take a picture of its viewport.";
     }
   }
 }

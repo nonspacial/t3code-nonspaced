@@ -37,7 +37,7 @@ Closing the pane leaves Blender running; open it again from the file preview or 
 
 ## Point the agent at something
 
-**Screenshot & annotate** in the pane's toolbar has Blender take a picture of the 3D view in its viewport window and freezes it so you can draw on it, mark regions and write or dictate a comment, as in the [3D preview](3d-previews.md#point-the-agent-at-part-of-a-model). Add to chat puts it in the composer with the screenshot, titled with the file and whether it's a working copy or the master, such as "hero.wip-a1b2.blend · Working copy". The agent also gets the camera the picture was taken from and, for each mark, the object Blender finds under it and the 3D point it covers. If Blender can't take the picture, the frame you were watching is frozen instead, without the camera or what the marks cover.
+**Screenshot & annotate** in the pane's toolbar has Blender take a picture of the 3D view in its viewport window and freezes it so you can draw on it, mark regions and write or dictate a comment, as in the [3D preview](3d-previews.md#point-the-agent-at-part-of-a-model). Add to chat puts it in the composer with the screenshot, titled with the file and whether it's a working copy or the master, such as "hero.wip-a1b2.blend · Working copy". The agent also gets the camera the picture was taken from and, for each mark, the object Blender finds under it and the 3D point it covers. If Blender can't take the picture, as in Cycles' rendered view, the frame you were watching is frozen instead, without the camera or what the marks cover. Very large viewports are pictured at a smaller size.
 
 ## View links
 

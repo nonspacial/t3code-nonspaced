@@ -1,8 +1,10 @@
 import { assert, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
+import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -135,4 +137,28 @@ it.effect("leaves no taker waiting behind callers that timed out on a busy slot"
     for (const caller of callers) expect(yield* Fiber.join(caller)).toBe(false);
     expect(counts.waiting).toBe(0);
   }).pipe(Effect.scoped),
+);
+
+it.effect("sends nothing, and keeps no permit, once the slot's owner has shut down", () =>
+  Effect.gen(function* () {
+    const permits = yield* Semaphore.make(1);
+    const owner = yield* Scope.make();
+    let sent = false;
+    yield* permits.take(1);
+    const caller = yield* sendHoldingSlot({
+      slot: permits,
+      send: Effect.sync(() => {
+        sent = true;
+      }),
+      settled: Effect.never,
+      scope: owner,
+      timeout: "5 seconds",
+    }).pipe(Effect.forkChild);
+    yield* Effect.yieldNow;
+    // The service shuts down while the caller still waits for the permit.
+    yield* Scope.close(owner, Exit.void);
+    yield* permits.release(1);
+    expect(yield* Fiber.join(caller)).toBe(false);
+    expect({ sent, free: yield* hasFreePermit(permits) }).toEqual({ sent: false, free: true });
+  }),
 );

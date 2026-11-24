@@ -144,6 +144,23 @@ def _write_png(path, width, height, rgba):
     os.replace(partial, path)
 
 
+# Offscreen drawing has no draw context, so an external engine's rendered shading (Cycles)
+# draws nothing; EEVEE and Workbench draw as the viewport does.
+OFFSCREEN_ENGINES = {"BLENDER_EEVEE", "BLENDER_EEVEE_NEXT", "BLENDER_WORKBENCH"}
+# About 1920x1088: a screenshot is sent whole over the shared connection.
+MAX_SCREENSHOT_PIXELS = 1920 * 1088
+
+
+def _renders_offscreen(space, scene):
+    return space.shading.type != "RENDERED" or scene.render.engine in OFFSCREEN_ENGINES
+
+
+def _screenshot_size(width, height):
+    # Larger regions render scaled down; marks are fractions of the picture, so they still map.
+    scale = min(1.0, (MAX_SCREENSHOT_PIXELS / (width * height)) ** 0.5)
+    return max(1, int(width * scale)), max(1, int(height * scale))
+
+
 def _view(command):
     # The screenshot goes beside the control socket, in T3's private folder for this Blender.
     name = command["screenshot"]
@@ -154,9 +171,12 @@ def _view(command):
         return None
     window, area, region, space = found
     rv3d = space.region_3d
+    if not _renders_offscreen(space, window.scene):
+        # The camera is still right; only the picture can't be had.
+        return _view_result(rv3d.view_matrix, rv3d.window_matrix, rv3d, None)
     view_matrix = rv3d.view_matrix.copy()
     window_matrix = rv3d.window_matrix.copy()
-    width, height = region.width, region.height
+    width, height = _screenshot_size(region.width, region.height)
     # One draw: the pixels and the camera come from the same matrices.
     offscreen = gpu.types.GPUOffScreen(width, height)
     try:
@@ -176,9 +196,13 @@ def _view(command):
     finally:
         offscreen.free()
     _write_png(os.path.join(os.path.dirname(SOCKET_PATH), name), width, height, rgba)
+    return _view_result(view_matrix, window_matrix, rv3d, {"width": width, "height": height})
+
+
+def _view_result(view_matrix, window_matrix, rv3d, screenshot):
     perspective = window_matrix @ view_matrix
     return {
-        "screenshot": {"width": width, "height": height},
+        "screenshot": screenshot,
         "cameraView": _camera_view(view_matrix, rv3d.view_distance),
         "projection": {
             "matrix": [value for row in perspective for value in row],

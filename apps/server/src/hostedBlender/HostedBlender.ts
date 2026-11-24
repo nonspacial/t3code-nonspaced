@@ -121,9 +121,11 @@ const encodeControlRequest = Schema.encodeSync(Schema.fromJsonString(ControlRequ
 /** What the add-on renders; the server reads the PNG it wrote. */
 const AddonViewCapture = Schema.Struct({
   ...HostedBlenderViewCapture.fields,
-  screenshot: Schema.Struct({ width: Schema.Int, height: Schema.Int }),
+  /** Null when Blender can't render this view (an external engine's rendered shading). */
+  screenshot: Schema.NullOr(Schema.Struct({ width: Schema.Int, height: Schema.Int })),
 });
-const MAX_SCREENSHOT_BYTES = 32 * 1024 * 1024;
+/** Above what the add-on's pixel cap can produce; anything larger is not sent. */
+const MAX_SCREENSHOT_BYTES = 8 * 1024 * 1024;
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 export type HostedBlenderViewerOutput =
@@ -200,6 +202,8 @@ interface Instance {
   lastKeyframeRequest: number;
   /** The private folder of the control socket, where the add-on writes screenshots. */
   controlDir: string | null;
+  /** The screenshot being rendered, shared by every caller until Blender is done with it. */
+  capture: Deferred.Deferred<HostedBlenderViewCapture, HostedBlenderError> | null;
   helper: (command: HelperCommand) => Effect.Effect<void>;
   control: ControlConnection | null;
   /** What the add-on says while `quit` waits on a save. */
@@ -791,6 +795,7 @@ const make = Effect.gen(function* () {
       viewport: null,
       lastKeyframeRequest: 0,
       controlDir: null,
+      capture: null,
       helper: () => Effect.void,
       control: null,
       saveReplies: null,
@@ -967,9 +972,14 @@ const make = Effect.gen(function* () {
     threadId: ThreadId,
     body: ControlRequestBody,
     result: Schema.Decoder<A>,
-    /** One slot of this is held until the add-on answers or its connection closes. */
-    slot?: Semaphore.Semaphore,
+    options: {
+      /** One slot of this is held until the add-on answers or its connection closes. */
+      readonly slot?: Semaphore.Semaphore;
+      /** Waits for the add-on's answer however long it takes; the caller bounds the wait. */
+      readonly untimed?: boolean;
+    } = {},
   ) {
+    const { slot } = options;
     const instance = instances.get(threadId);
     if (instance === undefined || instance.status !== "running") {
       return yield* new HostedBlenderError({ reason: "notRunning" });
@@ -1002,7 +1012,7 @@ const make = Effect.gen(function* () {
     const answer = yield* Deferred.await(reply).pipe(
       Effect.asSome,
       Effect.raceFirst(closed.pipe(Effect.as(Option.none()))),
-      Effect.timeoutOption(CONTROL_REPLY_TIMEOUT),
+      options.untimed ? Effect.asSome : Effect.timeoutOption(CONTROL_REPLY_TIMEOUT),
       Effect.map(Option.flatten),
     );
     if (Option.isNone(answer)) return yield* new HostedBlenderError({ reason: "noReply" });
@@ -1017,34 +1027,73 @@ const make = Effect.gen(function* () {
     "HostedBlender.captureView",
   )(function* (threadId) {
     yield* Effect.annotateCurrentSpan({ threadId });
-    const controlDir = instances.get(threadId)?.controlDir ?? null;
-    if (controlDir === null) return yield* new HostedBlenderError({ reason: "notRunning" });
+    const instance = instances.get(threadId);
+    if (instance === undefined || instance.controlDir === null) {
+      return yield* new HostedBlenderError({ reason: "notRunning" });
+    }
+    // Rendering blocks Blender, so one screenshot renders at a time; callers meanwhile share it.
+    if (instance.capture === null) {
+      const capture = yield* Deferred.make<HostedBlenderViewCapture, HostedBlenderError>();
+      instance.capture = capture;
+      yield* renderScreenshot(threadId, instance.controlDir, capture).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (instance.capture === capture) instance.capture = null;
+          }),
+        ),
+        Effect.forkIn(serviceScope),
+      );
+    }
+    const captured = yield* Deferred.await(instance.capture).pipe(
+      Effect.timeoutOption(CONTROL_REPLY_TIMEOUT),
+    );
+    if (Option.isNone(captured)) return yield* new HostedBlenderError({ reason: "noReply" });
+    return captured.value;
+  });
+
+  /**
+   * Has the add-on render the viewport into the private control folder and answers `capture`.
+   * It waits for Blender however long the render takes, so the file is removed only once
+   * Blender is done with it, whoever stopped waiting.
+   */
+  const renderScreenshot = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    controlDir: string,
+    capture: Deferred.Deferred<HostedBlenderViewCapture, HostedBlenderError>,
+  ) {
     screenshots += 1;
     const file = path.join(controlDir, `view-${screenshots}.png`);
-    // Blender renders the viewport region with the camera it reports, so the two always agree.
-    const view = yield* ask(
-      threadId,
-      { type: "view", screenshot: path.basename(file) },
-      AddonViewCapture,
-    ).pipe(Effect.onError(() => fileSystem.remove(file, { force: true }).pipe(Effect.ignore)));
-    const png = yield* Effect.gen(function* () {
+    const noScreenshot = new HostedBlenderError({ reason: "noScreenshot" });
+    const outcome = yield* Effect.gen(function* () {
+      // Blender renders the viewport region with the camera it reports, so the two always agree.
+      const view = yield* ask(
+        threadId,
+        { type: "view", screenshot: path.basename(file) },
+        AddonViewCapture,
+        { untimed: true },
+      );
+      if (view.screenshot === null) return yield* noScreenshot;
       // Only Blender writes in that folder; a link or anything odd there is refused.
-      const info = yield* fileSystem.lstat(file);
-      if (info.type !== "File" || Number(info.size) > MAX_SCREENSHOT_BYTES) return null;
-      const bytes = yield* fileSystem.readFile(file);
-      return PNG_SIGNATURE.every((byte, index) => bytes[index] === byte) ? bytes : null;
-    }).pipe(
-      Effect.orElseSucceed(() => null),
-      Effect.ensuring(fileSystem.remove(file, { force: true }).pipe(Effect.ignore)),
+      const info = yield* fileSystem.lstat(file).pipe(Effect.mapError(() => noScreenshot));
+      if (info.type !== "File" || Number(info.size) > MAX_SCREENSHOT_BYTES) {
+        return yield* noScreenshot;
+      }
+      const png = yield* fileSystem.readFile(file).pipe(Effect.mapError(() => noScreenshot));
+      if (!PNG_SIGNATURE.every((byte, index) => png[index] === byte)) return yield* noScreenshot;
+      return {
+        ...view,
+        screenshot: {
+          ...view.screenshot,
+          dataUrl: `data:image/png;base64,${Buffer.from(png).toString("base64")}`,
+        },
+      };
+    }).pipe(Effect.exit);
+    yield* Effect.forEach(
+      [file, `${file}.part`],
+      (leftover) => fileSystem.remove(leftover, { force: true }).pipe(Effect.ignore),
+      { discard: true },
     );
-    if (png === null) return yield* new HostedBlenderError({ reason: "noReply" });
-    return {
-      ...view,
-      screenshot: {
-        ...view.screenshot,
-        dataUrl: `data:image/png;base64,${Buffer.from(png).toString("base64")}`,
-      },
-    };
+    yield* Deferred.done(capture, outcome);
   });
 
   const findHits: HostedBlender["Service"]["findHits"] = Effect.fn("HostedBlender.findHits")(
@@ -1052,12 +1101,9 @@ const make = Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan({ threadId, marks: marks.length });
       const instance = instances.get(threadId);
       if (instance === undefined) return yield* new HostedBlenderError({ reason: "notRunning" });
-      return yield* ask(
-        threadId,
-        { type: "hits", ...projection, marks },
-        HostedBlenderHits,
-        instance.hitsLock,
-      );
+      return yield* ask(threadId, { type: "hits", ...projection, marks }, HostedBlenderHits, {
+        slot: instance.hitsLock,
+      });
     },
   );
 

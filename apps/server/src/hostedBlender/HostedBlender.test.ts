@@ -17,6 +17,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -25,6 +26,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as ProjectService from "../project/ProjectService.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as HiddenDisplayBinary from "./HiddenDisplayBinary.ts";
+import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
 import * as HostedBlender from "./HostedBlender.ts";
 
 const threadId = ThreadId.make("thread-hosted-blender");
@@ -141,8 +143,19 @@ def screenshot(name):
         outside = os.path.join(os.path.dirname(os.environ["STANDIN_SAVES"]), "outside.png")
         open(outside, "wb").write(PIXEL)
         os.symlink(outside, path)
+    elif scenario == "big-shot":
+        # A real PNG signature, but too large to send over the shared connection.
+        open(path, "wb").write(PIXEL + b"\0" * (8 * 1024 * 1024))
     else:
-        open(path, "wb").write(PIXEL)
+        open(path + ".part", "wb").write(PIXEL)
+        os.replace(path + ".part", path)
+def view_reply(command):
+    with open(os.environ["STANDIN_SAVES"] + ".views", "a") as log:
+        log.write("view\n")
+    if scenario == "no-render":
+        return None
+    screenshot(command["screenshot"])
+    return {"width": 1, "height": 1}
 def control():
     connection, _ = server.accept()
     connection.sendall(b'{"type": "hello", "pid": %d}\n' % os.getpid())
@@ -168,9 +181,19 @@ def control():
             return
         if kind == "view" and scenario == "no-viewport":
             result = None
+        elif kind == "view" and scenario == "slow-view":
+            # Renders slowly, on its own thread, then answers as the add-on would.
+            def slow_view(command):
+                time.sleep(0.3)
+                shot = view_reply(command)
+                reply = {"screenshot": shot, "cameraView": {**view, "upAxis": "z"},
+                         "projection": {"matrix": [1] * 16,
+                                        "region": {"x": 0, "y": 0, "width": 1, "height": 1}}}
+                connection.sendall((json.dumps({"type": "reply", "id": command["id"], "result": reply}) + "\n").encode())
+            threading.Thread(target=slow_view, args=(command,), daemon=True).start()
+            continue
         elif kind == "view":
-            screenshot(command["screenshot"])
-            result = {"screenshot": {"width": 1, "height": 1},
+            result = {"screenshot": view_reply(command),
                       "cameraView": {**view, "upAxis": "z"},
                       "projection": {"matrix": [2] + [0] * 15,
                                      "region": {"x": 0.1, "y": 0.05, "width": 0.8, "height": 0.9}}}
@@ -272,6 +295,11 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
   const openReady = service
     .open({ threadId, relativePath: "cube.blend" })
     .pipe(Effect.andThen(awaitDirty(true)));
+  /** How many screenshots the add-on was asked to render. */
+  const viewRequests = () =>
+    NodeFS.existsSync(`${savesLog}.views`)
+      ? NodeFS.readFileSync(`${savesLog}.views`, "utf8").split("\n").length - 1
+      : 0;
   const saveCommands = () =>
     NodeFS.existsSync(savesLog) ? NodeFS.readFileSync(savesLog, "utf8").split("\n").length - 1 : 0;
   /** The input commands the helper got, in order. */
@@ -288,6 +316,7 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
     awaitDirty,
     openReady,
     saveCommands,
+    viewRequests,
     helperInput,
     marker,
     runtime,
@@ -479,12 +508,43 @@ describe("The viewport window", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("renders one screenshot at a time, and cleans up after one its caller gave up on", () =>
+    Effect.gen(function* () {
+      const { service, openReady, viewRequests, runtime } = yield* standIn("one-view", "slow-view");
+      yield* openReady;
+      // The first caller stops waiting before Blender has written its screenshot.
+      const abandoned = yield* service
+        .captureView(threadId)
+        .pipe(Effect.timeoutOption("50 millis"));
+      expect(abandoned._tag).toBe("None");
+      const capture = yield* service.captureView(threadId);
+      expect(capture.screenshot.width).toBe(1);
+      expect(viewRequests()).toBe(1);
+      expect(
+        NodeFS.readdirSync(runtime, { recursive: true }).filter((name) =>
+          /\.png(\.part)?$/.test(String(name)),
+        ),
+      ).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("goes without a screenshot Blender can't render or that's too large to send", () =>
+    Effect.gen(function* () {
+      for (const scenario of ["no-render", "big-shot"]) {
+        const { service, openReady } = yield* standIn(scenario, scenario);
+        yield* openReady;
+        const failed = yield* service.captureView(threadId).pipe(Effect.flip);
+        expect({ scenario, reason: failed.reason }).toEqual({ scenario, reason: "noScreenshot" });
+      }
+    }).pipe(Effect.scoped),
+  );
+
   it.live("reads a screenshot only as a plain file in Blender's private folder", () =>
     Effect.gen(function* () {
       const { service, openReady } = yield* standIn("linked-shot", "linked-shot");
       yield* openReady;
       const failed = yield* service.captureView(threadId).pipe(Effect.flip);
-      expect(failed.reason).toBe("noReply");
+      expect(failed.reason).toBe("noScreenshot");
     }).pipe(Effect.scoped),
   );
 
@@ -939,6 +999,97 @@ const canHostBlender =
   onPath("labwc");
 
 describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
+  /** A hosted Blender on a file made by `setup`, a Python script run in background Blender. */
+  const realBlender = Effect.fn(function* (prefix: string, setup: string) {
+    const dir = yield* tempDir(prefix);
+    const blendPath = NodePath.join(dir, "scene.blend");
+    NodeChildProcess.execFileSync("blender", [
+      "--background",
+      "--factory-startup",
+      "--python-expr",
+      `import bpy\n${setup}\nbpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(blendPath)})`,
+    ]);
+    const configHome = NodePath.join(dir, "config");
+    NodeFS.mkdirSync(configHome);
+    const service = yield* serviceFor(
+      layerFor({
+        env: {
+          PATH: hostEnvironment.PATH,
+          XDG_RUNTIME_DIR: hostEnvironment.XDG_RUNTIME_DIR,
+          XDG_CONFIG_HOME: configHome,
+        },
+        helper: helperBuild,
+        workspaceRoot: dir,
+        baseDir: dir,
+      }),
+    );
+    yield* service.open({ threadId, relativePath: "scene.blend" });
+    yield* service.threadState(threadId).pipe(
+      Stream.filter((state) => state.status === "running"),
+      Stream.runHead,
+    );
+    return service;
+  });
+
+  /** The first capture once the add-on's connection and viewport window are up. */
+  const firstCapture = (service: HostedBlender.HostedBlender["Service"]) =>
+    service.captureView(threadId).pipe(
+      Effect.retry({
+        while: (error) => error.reason === "noReply" || error.reason === "noViewport",
+        schedule: Schedule.spaced("500 millis"),
+        times: 40,
+      }),
+    );
+
+  it("won't draw Cycles' rendered shading offscreen, which would come out blank", () => {
+    // Rendered shading doesn't survive a file saved without a display, so the add-on's own
+    // check runs in a background Blender against a 3D view set up in place.
+    const output = NodeChildProcess.execFileSync(
+      "blender",
+      [
+        "--background",
+        "--factory-startup",
+        "--python-expr",
+        `${CONTROL_ADDON_SOURCE}
+space = next(space for area in bpy.data.screens["Layout"].areas for space in area.spaces if space.type == "VIEW_3D")
+scene = bpy.context.scene
+results = []
+for engine, shading in [("CYCLES", "RENDERED"), ("CYCLES", "SOLID"), ("BLENDER_EEVEE", "RENDERED"), ("BLENDER_WORKBENCH", "RENDERED")]:
+    scene.render.engine = engine
+    space.shading.type = shading
+    results.append([engine, shading, _renders_offscreen(space, scene)])
+print("T3-RESULT", json.dumps(results))`,
+      ],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+    const line = output.split("\n").find((entry) => entry.startsWith("T3-RESULT "));
+    expect(JSON.parse(line!.slice("T3-RESULT ".length))).toEqual([
+      ["CYCLES", "RENDERED", false],
+      ["CYCLES", "SOLID", true],
+      ["BLENDER_EEVEE", "RENDERED", true],
+      ["BLENDER_WORKBENCH", "RENDERED", true],
+    ]);
+  });
+
+  it.live("renders a large viewport scaled down, keeping its shape", () =>
+    Effect.gen(function* () {
+      const service = yield* realBlender("large", "pass");
+      const viewer = yield* attach(service, false);
+      yield* viewer.resize(3840, 2160);
+      yield* nextMessage(viewer, "viewport").pipe(
+        Effect.repeat({ until: (message) => message.width >= 3000 }),
+      );
+      // Frames at the new size mean Blender's window, and its 3D view, have grown.
+      const capture = yield* firstCapture(service);
+      const { width, height } = capture.screenshot;
+      expect(width * height).toBeLessThanOrEqual(1920 * 1088);
+      expect(width * height).toBeGreaterThan(1_800_000);
+      expect(width / height).toBeGreaterThan(1.6);
+      expect(width / height).toBeLessThan(2.2);
+      yield* service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
   it.live("starts with its own environment, streams its viewport window, and quits", () =>
     Effect.gen(function* () {
       const dir = yield* tempDir("real");
