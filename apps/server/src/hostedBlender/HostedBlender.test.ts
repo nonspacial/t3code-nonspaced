@@ -158,11 +158,19 @@ def event(value):
         sys.stdout.buffer.write(struct.pack(">IB", len(data) + 1, 1) + data)
         sys.stdout.buffer.flush()
 state = {"connection": None}
-def crash(*_args):
+def lose_connection(*_args):
+    # Blender dies: its autosave stays, and the add-on's connection really drops (shutdown, as
+    # close leaves it open while the reader holds it), though the helper is still running.
     open(os.path.join(tmp, "cube_4242_autosave.blend"), "w").write("autosave")
-    event({"type": "exited", "process": "blender", "code": None, "signal": 11})
     if state["connection"] is not None:
-        state["connection"].close()
+        try:
+            state["connection"].shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+def crash(*_args):
+    lose_connection()
+    event({"type": "exited", "process": "blender", "code": None, "signal": 11})
+signal.signal(signal.SIGUSR2, lose_connection)
 signal.signal(signal.SIGUSR1, crash)
 state["finishing"] = threading.Event()
 state["finishing"].set()
@@ -462,6 +470,8 @@ const standIn = Effect.fn(function* (
     bind: () => NodeFS.writeFileSync(NodePath.join(dir, "bind"), ""),
     /** Crashes the stand-in Blender, by the pid it wrote itself at spawn. */
     crash: () => process.kill(Number(NodeFS.readFileSync(pidFile, "utf8")), "SIGUSR1"),
+    /** Drops the stand-in Blender's connection, leaving it to report its exit on `crash`. */
+    loseConnection: () => process.kill(Number(NodeFS.readFileSync(pidFile, "utf8")), "SIGUSR2"),
   };
 });
 
@@ -1041,10 +1051,8 @@ describe("Endings and recovery", () => {
     "a Blender that crashes mid-save while its thread settles ends Crashed, autosave kept",
     () =>
       Effect.gen(function* () {
-        const { dir, service, openReady, awaitStatus, crash, hostedDir } = yield* standIn(
-          "crash-saving",
-          "held-save",
-        );
+        const { dir, service, openReady, awaitStatus, crash, loseConnection, hostedDir } =
+          yield* standIn("crash-saving", "held-save");
         yield* openReady;
         const savesLog = NodePath.join(dir, "saves.log");
         const saving = new Promise<void>((resolve) => {
@@ -1054,10 +1062,15 @@ describe("Endings and recovery", () => {
             resolve();
           });
         });
-        yield* service.quit({ threadId, save: true }).pipe(Effect.ignore, Effect.forkChild);
+        const quitting = yield* service
+          .quit({ threadId, save: true })
+          .pipe(Effect.flip, Effect.forkChild);
         yield* Effect.promise(() => saving);
-        // The settle waits on the save; Blender crashes before either finishes.
+        // The settle waits on the save; Blender dies before either finishes. Its connection
+        // drops while the helper still runs, and the save fails before the exit is reported.
         yield* service.closeOnSettle({ threadId });
+        loseConnection();
+        expect((yield* Fiber.join(quitting)).reason).toBe("saveFailed");
         crash();
         expect(yield* awaitStatus("crashed")).toMatchObject({ recovery: true });
         expect(recoveryOf(hostedDir)?.contents).toBe("autosave");
