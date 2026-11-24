@@ -27,8 +27,9 @@ export function BlenderSettingsPanel() {
         {setupEnvironmentId === null ? null : (
           <HostedBlenderSetupSettings environmentId={setupEnvironmentId} />
         )}
-        <RunningBlenders environmentId={connected?.environmentId ?? null} />
       </SettingsSection>
+      {/* A card of its own, spaced from the setup card as settings sections are. */}
+      <RunningBlenders environmentId={connected?.environmentId ?? null} />
     </SettingsPageContainer>
   );
 }
