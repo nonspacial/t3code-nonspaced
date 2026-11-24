@@ -150,6 +150,8 @@ def listen():
         import time
         while not os.path.exists(os.environ["STANDIN_BIND"]):
             time.sleep(0.05)
+    if scenario == "never-connects":
+        threading.Event().wait()
     if scenario == "late-slow-quit":
         import time
         time.sleep(3)
@@ -194,6 +196,11 @@ def control():
         with open(os.environ["STANDIN_SAVES"], "a") as log:
             log.write("save\n")
         connection.sendall(b'{"type": "saving"}\n')
+        if scenario == "late-failing-save":
+            # Acknowledged, then fails only after T3's 20-second settle deadline.
+            threading.Timer(21.0, lambda: connection.sendall(
+                b'{"type": "quitFailed", "reason": "saveFailed"}\n')).start()
+            continue
         if scenario == "exit-while-saving":
             os._exit(0)
         if scenario == "drop-socket":
@@ -224,6 +231,8 @@ for line in sys.stdin:
     # A middle-drag orbit: Blender hides its cursor while the button is down.
     if command.get("type") == "pointerButton" and command.get("button") == 274:
         event({"type": "cursorLeave"} if command["pressed"] else {"type": "cursorEnter", "x": 1, "y": 2})
+    if '"quit"' in line and scenario == "never-connects":
+        continue  # A helper stuck stopping Blender.
     if '"quit"' in line:
         stopped("quit" if state["finishing"].is_set() else "killed")
 stopped("quit" if state["finishing"].is_set() else "killed")
@@ -410,10 +419,11 @@ const leftover = (
     };
     readonly waiting?: string;
     readonly helperPid?: number;
+    readonly name?: string;
   },
 ) => {
   const hostedDir = NodePath.join(dir, "userdata", "hosted-blender");
-  const launchDir = NodePath.join(hostedDir, "launches", "left");
+  const launchDir = NodePath.join(hostedDir, "launches", input.name ?? "left");
   NodeFS.mkdirSync(NodePath.join(launchDir, "tmp"), { recursive: true });
   NodeFS.writeFileSync(
     NodePath.join(launchDir, "launch.json"),
@@ -484,6 +494,102 @@ describe("Salvaging what a stopped server left", () => {
         .pipe(Effect.flip);
       expect(refused.reason).toBe("recoveryPending");
       expect(NodeFS.existsSync(launchDir)).toBe(false);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("waits for the leftover's whole process group before collecting its files", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage-group");
+      const { hostedDir, launchDir } = leftover(dir, {});
+      const childPidFile = NodePath.join(dir, "child.pid");
+      // A helper leading its own group, whose Blender ignores SIGTERM and outlives it.
+      const helper = NodeChildProcess.spawn(
+        python,
+        [
+          "-c",
+          [
+            "import subprocess, sys, time",
+            "subprocess.Popen([sys.executable, '-c', 'import os, signal, sys, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); open(sys.argv[1], \"w\").write(str(os.getpid())); time.sleep(600)', sys.argv[1], '--state-dir', sys.argv[2]])",
+            "time.sleep(600)",
+          ].join("\n"),
+          childPidFile,
+          launchDir,
+        ],
+        { cwd: launchDir, stdio: "ignore", detached: true },
+      );
+      const childStarted = new Promise<void>((resolve) => {
+        const watcher = NodeFS.watch(dir, () => {
+          if (
+            !NodeFS.existsSync(childPidFile) ||
+            NodeFS.readFileSync(childPidFile, "utf8") === ""
+          ) {
+            return;
+          }
+          watcher.close();
+          resolve();
+        });
+      });
+      yield* Effect.promise(() => childStarted);
+      const childPid = Number(NodeFS.readFileSync(childPidFile, "utf8"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          for (const pid of [childPid, helper.pid!]) {
+            try {
+              process.kill(pid, "SIGKILL");
+            } catch {}
+          }
+        }),
+      );
+      leftover(dir, { helperPid: helper.pid! });
+      const service = yield* idleService(dir);
+      // Its files are collected only once nothing of that launch is still running.
+      const stat = NodeFS.existsSync(`/proc/${childPid}/stat`)
+        ? NodeFS.readFileSync(`/proc/${childPid}/stat`, "utf8")
+        : "";
+      expect(stat === "" || stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z")).toBe(true);
+      expect((yield* firstState(service)).status).toBe("closed");
+      expect(recoveryOf(hostedDir)?.contents).toBe("left behind");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("stops several stubborn leftovers in one grace period", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage-many");
+      const ready = (file: string) =>
+        new Promise<void>((resolve) => {
+          const watcher = NodeFS.watch(dir, () => {
+            if (!NodeFS.existsSync(file)) return;
+            watcher.close();
+            resolve();
+          });
+        });
+      const helpers = ["one", "two"].map((name) => {
+        const { launchDir } = leftover(dir, { name });
+        const readyFile = NodePath.join(dir, `${name}.ready`);
+        const isReady = ready(readyFile);
+        const helper = NodeChildProcess.spawn(
+          python,
+          [
+            "-c",
+            "import signal, sys, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); open(sys.argv[1], 'w').close(); time.sleep(600)",
+            readyFile,
+            "--state-dir",
+            launchDir,
+          ],
+          { cwd: launchDir, stdio: "ignore", detached: true },
+        );
+        leftover(dir, { name, helperPid: helper.pid! });
+        return {
+          isReady,
+          exited: new Promise<void>((resolve) => helper.once("exit", () => resolve())),
+        };
+      });
+      yield* Effect.promise(() => Promise.all(helpers.map((helper) => helper.isReady)));
+      const started = yield* Clock.currentTimeMillis;
+      yield* idleService(dir);
+      yield* Effect.promise(() => Promise.all(helpers.map((helper) => helper.exited)));
+      // Each would take the 7-second grace if they were stopped one after another.
+      expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(10_000);
     }).pipe(Effect.scoped),
   );
 
@@ -705,6 +811,53 @@ describe("Endings and recovery", () => {
       }).pipe(Effect.scoped);
       expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(5_000);
       expect(NodeFS.readFileSync(marker, "utf8")).toBe("killed");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a settle that outlasts a failing save still quits Blender with its copy", () =>
+    Effect.gen(function* () {
+      const { dir, service, openReady, awaitStatus } = yield* standIn(
+        "late-fail",
+        "late-failing-save",
+      );
+      yield* openReady;
+      // The stand-in logs each save before it acknowledges it.
+      const savesLog = NodePath.join(dir, "saves.log");
+      const saving = new Promise<void>((resolve) => {
+        const watcher = NodeFS.watch(dir, () => {
+          if (!NodeFS.existsSync(savesLog)) return;
+          watcher.close();
+          resolve();
+        });
+      });
+      const quitting = yield* service
+        .quit({ threadId, save: true })
+        .pipe(Effect.flip, Effect.forkChild);
+      yield* Effect.promise(() => saving);
+      yield* service.closeOnSettle({ threadId });
+      expect((yield* Fiber.join(quitting)).reason).toBe("saveFailed");
+      expect(yield* awaitStatus("closed")).toMatchObject({ recovery: true });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a shutdown stops a Blender whose add-on never connects, within its deadline", () =>
+    Effect.gen(function* () {
+      const { layer } = yield* standIn("never-connects", "never-connects");
+      const started = yield* Effect.gen(function* () {
+        const first = yield* serviceFor(layer);
+        const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+        yield* first.threadState(threadId).pipe(
+          Stream.runForEach((state) => Queue.offer(states, state)),
+          Effect.forkScoped,
+        );
+        yield* first.open({ threadId, relativePath: "cube.blend" });
+        yield* Queue.take(states).pipe(
+          Effect.repeat({ until: (state) => state.status === "running" }),
+        );
+        return yield* Clock.currentTimeMillis;
+      }).pipe(Effect.scoped);
+      // The helper ignores its quit too, so only the shutdown's fast stop ends it in time.
+      expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(5_000);
     }).pipe(Effect.scoped),
   );
 

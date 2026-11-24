@@ -499,15 +499,61 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => false),
     );
 
-  // A helper from a server that died stops Blender itself once asked; one that won't is killed.
-  const stopLeftoverHelper = Effect.fnUntraced(function* (pid: number, launchDir: string) {
-    if (!(yield* leftoverHelperAlive(pid, launchDir))) return;
-    yield* Effect.sync(() => signalProcess(pid, "SIGTERM"));
-    const stopped = yield* leftoverHelperAlive(pid, launchDir).pipe(
-      Effect.repeat({ while: (alive) => alive, schedule: Schedule.spaced("100 millis") }),
-      Effect.timeoutOption(LEFTOVER_STOP_TIMEOUT),
+  // /proc/<pid>/stat is "pid (comm) state ppid pgrp ..."; comm may hold spaces and parens.
+  const processGroupOf = (pid: string) =>
+    fileSystem.readFileString(`/proc/${pid}/stat`).pipe(
+      Effect.map((stat) => {
+        const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+        return fields[0] === "Z" ? null : Number(fields[2]);
+      }),
+      Effect.orElseSucceed(() => null),
     );
-    if (Option.isNone(stopped)) yield* Effect.sync(() => signalProcess(-pid, "SIGKILL"));
+
+  /**
+   * The live processes of a leftover launch: the helper, and the members of its process group
+   * (it leads one) whose arguments name the launch folder, as Blender's and labwc's do.
+   */
+  const leftoverProcesses = Effect.fnUntraced(function* (helperPid: number, launchDir: string) {
+    const real = yield* fileSystem.realPath(launchDir).pipe(Effect.orElseSucceed(() => launchDir));
+    const pids = (yield* fileSystem
+      .readDirectory("/proc")
+      .pipe(Effect.orElseSucceed(() => []))).filter((entry) => /^\d+$/.test(entry));
+    const members = yield* Effect.forEach(pids, (pid) =>
+      Effect.gen(function* () {
+        if ((yield* processGroupOf(pid)) !== helperPid) return null;
+        const cmdline = yield* fileSystem
+          .readFileString(`/proc/${pid}/cmdline`)
+          .pipe(Effect.orElseSucceed(() => ""));
+        return cmdline.includes(launchDir) || cmdline.includes(real) ? Number(pid) : null;
+      }),
+    );
+    const live = members.filter((pid) => pid !== null);
+    // Not its group's leader, the helper is still ours when it runs in the folder.
+    if (!live.includes(helperPid) && (yield* leftoverHelperAlive(helperPid, launchDir))) {
+      live.push(helperPid);
+    }
+    return live;
+  });
+
+  // A helper from a server that died stops Blender itself once asked. Whatever of its launch
+  // outlasts the grace is killed, and only then are its files collected.
+  const stopLeftover = Effect.fnUntraced(function* (helperPid: number, launchDir: string) {
+    const running = yield* leftoverProcesses(helperPid, launchDir);
+    if (running.length === 0) return;
+    const asked = running.includes(helperPid) ? [helperPid] : running;
+    yield* Effect.sync(() => asked.forEach((pid) => signalProcess(pid, "SIGTERM")));
+    const gone = (timeout: Duration.Input) =>
+      leftoverProcesses(helperPid, launchDir).pipe(
+        Effect.repeat({
+          while: (left) => left.length > 0,
+          schedule: Schedule.spaced("100 millis"),
+        }),
+        Effect.timeoutOption(timeout),
+      );
+    if (Option.isSome(yield* gone(LEFTOVER_STOP_TIMEOUT))) return;
+    const left = yield* leftoverProcesses(helperPid, launchDir);
+    yield* Effect.sync(() => left.forEach((pid) => signalProcess(pid, "SIGKILL")));
+    yield* gone(Duration.seconds(1));
   });
 
   /** Keeps what a launch a stopped server left behind holds, then removes it. */
@@ -519,8 +565,7 @@ const make = Effect.gen(function* () {
           .pipe(Effect.orElseSucceed(() => "")),
       );
       if (Option.isSome(launch)) {
-        const { threadId, relativePath, helperPid } = launch.value;
-        if (helperPid !== undefined) yield* stopLeftoverHelper(helperPid, launchDir);
+        const { threadId, relativePath } = launch.value;
         const read = (name: string) =>
           fileSystem
             .readFileString(path.join(launchDir, name))
@@ -561,11 +606,23 @@ const make = Effect.gen(function* () {
         records.set(record.value.threadId, record.value);
       }
     }
-    for (const entry of yield* fileSystem
+    const leftovers = (yield* fileSystem
       .readDirectory(launchesDir)
-      .pipe(Effect.orElseSucceed(() => []))) {
-      yield* salvage(path.join(launchesDir, entry));
-    }
+      .pipe(Effect.orElseSucceed(() => []))).map((entry) => path.join(launchesDir, entry));
+    // Every leftover's Blender is stopped at once, so several cost one grace period.
+    yield* Effect.forEach(
+      leftovers,
+      (launchDir) =>
+        fileSystem.readFileString(path.join(launchDir, "launch.json")).pipe(
+          Effect.map((text) => Option.getOrUndefined(decodeLaunchRecord(text))?.helperPid),
+          Effect.orElseSucceed(() => undefined),
+          Effect.flatMap((helperPid) =>
+            helperPid === undefined ? Effect.void : stopLeftover(helperPid, launchDir),
+          ),
+        ),
+      { concurrency: "unbounded", discard: true },
+    );
+    for (const launchDir of leftovers) yield* salvage(launchDir);
   });
   yield* restoreRecords;
   yield* publishNow();
@@ -1299,14 +1356,25 @@ const make = Effect.gen(function* () {
   });
 
   /** Quits without saving, so Blender writes its quit copy, which the run keeps to reopen. */
-  const end = Effect.fn("HostedBlender.end")(function* (instance: Instance, deadline: Deadline) {
-    yield* Effect.annotateCurrentSpan({ threadId: instance.threadId, shutdown: deadline.shutdown });
+  const end = Effect.fn("HostedBlender.end")(function* (instance: Instance, given: Deadline) {
+    yield* Effect.annotateCurrentSpan({ threadId: instance.threadId, shutdown: given.shutdown });
+    let deadline = given;
     // A Save and quit already under way decides first; only a failed one leaves work to keep.
+    // Settling waits for its answer however long the save takes (an unacknowledged one answers
+    // within seconds); a shutdown keeps its one deadline.
     const pending = instance.pendingSave;
     if (pending !== null) {
-      const answered = yield* within(Deferred.await(pending), deadline);
-      if (Option.isNone(answered)) return yield* pastDeadline(instance, deadline);
-      if (answered.value) return yield* awaitEnded(instance, deadline);
+      let saved: boolean;
+      if (deadline.shutdown) {
+        const answered = yield* within(Deferred.await(pending), deadline);
+        if (Option.isNone(answered)) return yield* pastDeadline(instance, deadline);
+        saved = answered.value;
+      } else {
+        saved = yield* Deferred.await(pending);
+      }
+      if (saved) return yield* awaitEnded(instance, deadline);
+      // Blender stays open after a failed save; the recovery quit gets a deadline of its own.
+      if (!deadline.shutdown) deadline = yield* deadlineIn(QUIT_TIMEOUT, false);
     }
     if (!instance.ending) {
       instance.ending = true;
@@ -1319,7 +1387,9 @@ const make = Effect.gen(function* () {
           .pipe(Effect.ignore);
       }
       // A Blender still starting has until the deadline to connect, so its session is kept.
-      if (!(yield* sendQuitWithoutSaving(instance, deadline))) return yield* forceQuit(instance);
+      if (!(yield* sendQuitWithoutSaving(instance, deadline))) {
+        return yield* pastDeadline(instance, deadline);
+      }
     }
     yield* awaitEnded(instance, deadline);
   });
