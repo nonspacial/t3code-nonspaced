@@ -6,6 +6,7 @@ import {
   type HostedBlenderRequirement,
   type HostedBlenderRunningState,
   type HostedBlenderStreamServerMessage,
+  type HostedBlenderViewerMessage,
   type HostedBlenderThreadState,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -18,6 +19,7 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import { constUndefined } from "effect/Function";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -45,14 +47,17 @@ import {
   helperEnvironment,
   newestBlenderConfigVersion,
 } from "./BlenderLaunch.ts";
+import { SessionControl } from "../preview/SessionControl.ts";
 import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
 import { type ControlConnection, requestSave, type SaveReply } from "./ControlSave.ts";
+import { HeldInput } from "./HeldInput.ts";
 import * as HiddenDisplayBinary from "./HiddenDisplayBinary.ts";
 import {
   encodeHelperCommand,
   type HelperCommand,
   type HelperPacket,
   HelperPacketError,
+  helperCommandForInput,
   HelperPacketReader,
   isHelperPacketError,
 } from "./HelperProtocol.ts";
@@ -90,8 +95,13 @@ export type HostedBlenderViewerOutput =
 export interface HostedBlenderViewer {
   readonly output: Queue.Dequeue<HostedBlenderViewerOutput>;
   readonly ack: Effect.Effect<void>;
-  /** The viewer's pane size in device pixels. Only the newest viewer sizes the display. */
+  /**
+   * The viewer's pane size in device pixels. The display follows the viewer in control, or
+   * the newest viewer while nobody is.
+   */
   readonly resize: (width: number, height: number) => Effect.Effect<void>;
+  /** Taking control, and input that only reaches Blender from the viewer in control. */
+  readonly input: (message: HostedBlenderViewerMessage) => Effect.Effect<void>;
 }
 
 export type HostedBlenderAttachResult =
@@ -109,15 +119,20 @@ export class HostedBlender extends Context.Service<
     readonly open: (input: HostedBlenderOpenInput) => Effect.Effect<void, HostedBlenderError>;
     readonly quit: (input: HostedBlenderQuitInput) => Effect.Effect<void, HostedBlenderError>;
     readonly threadState: (threadId: ThreadId) => Stream.Stream<HostedBlenderThreadState>;
+    /** `canOperate`: the viewer may take control (`terminal:operate`). */
     readonly attachViewer: (
       threadId: string,
+      options: { readonly canOperate: boolean },
     ) => Effect.Effect<HostedBlenderAttachResult, never, Scope.Scope>;
   }
 >()("t3/hostedBlender/HostedBlender") {}
 
 interface ViewerEntry {
+  readonly id: string;
+  readonly canOperate: boolean;
   readonly queue: Queue.Queue<HostedBlenderViewerOutput>;
   readonly flow: ViewerFlow;
+  size: { readonly width: number; readonly height: number } | null;
 }
 
 interface Instance {
@@ -143,6 +158,16 @@ interface Instance {
   fiber: Fiber.Fiber<void> | null;
   /** Set by `quit`, so stopping a Blender that is still starting doesn't read as a failed start. */
   quitting: boolean;
+  /**
+   * Which viewer controls the mouse and keyboard. There is no agent side: the agent works
+   * through its own MCP connection, so a viewer in control never pauses it.
+   */
+  readonly session: SessionControl;
+  readonly held: HeldInput;
+  /** Blender holds the mouse (a grab or orbit), so the controller sends relative motion. */
+  cursorCaptured: boolean;
+  /** The display size last asked of the helper. */
+  displaySize: string;
 }
 
 type Availability =
@@ -172,6 +197,8 @@ const make = Effect.gen(function* () {
     | ProjectService.ProjectService
   >();
   const serviceScope = yield* Effect.scope;
+  const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
+  let nextViewerId = 0;
 
   const instances = new Map<string, Instance>();
   const states = yield* SubscriptionRef.make<ReadonlyMap<string, PublishedState>>(new Map());
@@ -230,6 +257,105 @@ const make = Effect.gen(function* () {
       { discard: true },
     );
 
+  const controlMessage = (
+    instance: Instance,
+    viewer: ViewerEntry,
+  ): HostedBlenderStreamServerMessage => ({
+    type: "control",
+    canOperate: viewer.canOperate,
+    controller:
+      instance.session.controller === null
+        ? "unclaimed"
+        : instance.session.controller === viewer.id
+          ? "you"
+          : "another-viewer",
+  });
+
+  const broadcastControl = (instance: Instance) =>
+    Effect.forEach(
+      instance.viewers,
+      (viewer) =>
+        Queue.offer(viewer.queue, { _tag: "message", message: controlMessage(instance, viewer) }),
+      { discard: true },
+    );
+
+  // Both run inside the session's order, so a handoff's releases follow everything the last
+  // controller sent and nothing it sent can land after them.
+  const sendInput = (instance: Instance, command: HelperCommand) =>
+    runPromise(
+      Effect.suspend(() =>
+        instance.held.shouldSend(command) ? instance.helper(command) : Effect.void,
+      ),
+    );
+  const releaseHeld = (instance: Instance) =>
+    runPromise(
+      Effect.suspend(() =>
+        Effect.forEach(instance.held.releaseAll(), instance.helper, { discard: true }),
+      ),
+    );
+  // Refusals (control changed, Blender gone) mean the input no longer applies.
+  const settle = (work: Promise<unknown>) =>
+    Effect.promise(() => work.then(constUndefined, constUndefined));
+
+  // The display follows the viewer in control, or the newest viewer while nobody is.
+  const applySize = (instance: Instance) =>
+    Effect.suspend(() => {
+      const sizer =
+        instance.viewers.find((viewer) => viewer.id === instance.session.controller) ??
+        instance.viewers.at(-1);
+      if (sizer?.size == null) return Effect.void;
+      const size = displaySize(sizer.size.width, sizer.size.height);
+      const key = `${size.width}x${size.height}`;
+      if (key === instance.displaySize) return Effect.void;
+      instance.displaySize = key;
+      return instance.helper({ type: "resize", ...size });
+    });
+
+  // Runs from both a viewer's input and its detach, inside their spans.
+  const releaseControl = Effect.fnUntraced(function* (instance: Instance, viewer: ViewerEntry) {
+    if (instance.session.controller !== viewer.id) return;
+    const releasing = instance.session.disconnect(viewer.id, () => releaseHeld(instance));
+    yield* broadcastControl(instance);
+    yield* settle(releasing);
+    yield* applySize(instance);
+  });
+
+  // Input arrives for every pointer move; it shares the viewer's stream span.
+  const handleViewerInput = Effect.fnUntraced(function* (
+    instance: Instance,
+    viewer: ViewerEntry,
+    message: HostedBlenderViewerMessage,
+  ) {
+    const owner = instance.session.controller;
+    switch (message.type) {
+      case "takeControl": {
+        if (!viewer.canOperate || owner === viewer.id) return;
+        // Someone else won the race: tell this viewer, whose view of control is stale.
+        if (owner !== null && !message.takeOver) {
+          return yield* Queue.offer(viewer.queue, {
+            _tag: "message",
+            message: controlMessage(instance, viewer),
+          });
+        }
+        const handoff =
+          owner === null
+            ? Promise.resolve()
+            : instance.session.disconnect(owner, () => releaseHeld(instance));
+        const taking = instance.session.take(viewer.id);
+        yield* broadcastControl(instance);
+        yield* settle(Promise.all([handoff, taking]));
+        return yield* applySize(instance);
+      }
+      case "releaseControl":
+        return yield* releaseControl(instance, viewer);
+      default: {
+        if (owner !== viewer.id) return;
+        const command = helperCommandForInput(message);
+        return yield* settle(instance.session.human(viewer.id, () => sendInput(instance, command)));
+      }
+    }
+  });
+
   const statsMessage = (instance: Instance): HostedBlenderStreamServerMessage | null =>
     instance.stats === null
       ? null
@@ -278,6 +404,13 @@ const make = Effect.gen(function* () {
         return yield* Effect.logWarning("hosted Blender's hidden display reported an error", {
           message: event.message,
         });
+      case "cursorLeave":
+      case "cursorEnter": {
+        const captured = event.type === "cursorLeave";
+        if (instance.cursorCaptured === captured) return;
+        instance.cursorCaptured = captured;
+        return yield* broadcast(instance, { type: "cursor", captured });
+      }
       case "windowClosed":
         return;
     }
@@ -522,6 +655,7 @@ const make = Effect.gen(function* () {
         Effect.ensuring(
           Effect.gen(function* () {
             instances.delete(instance.threadId);
+            yield* settle(instance.session.close());
             if (instance.status === "starting" && !instance.quitting) {
               failedStarts.add(instance.threadId);
             }
@@ -596,6 +730,10 @@ const make = Effect.gen(function* () {
       pendingSave: null,
       fiber: null,
       quitting: false,
+      session: new SessionControl(null),
+      held: new HeldInput(),
+      cursorCaptured: false,
+      displaySize: "",
     };
     failedStarts.delete(threadId);
     instances.set(threadId, instance);
@@ -698,26 +836,32 @@ const make = Effect.gen(function* () {
     const index = instance.viewers.indexOf(entry);
     if (index >= 0) instance.viewers.splice(index, 1);
     yield* Queue.shutdown(entry.queue);
+    yield* releaseControl(instance, entry);
+    yield* applySize(instance);
     // With nobody watching, capture and encoding stop entirely.
     if (instance.viewers.length === 0) yield* instance.helper({ type: "pause" });
   });
 
   const attachViewer: HostedBlender["Service"]["attachViewer"] = Effect.fn(
     "HostedBlender.attachViewer",
-  )(function* (threadId) {
-    yield* Effect.annotateCurrentSpan({ threadId });
+  )(function* (threadId, { canOperate }) {
+    yield* Effect.annotateCurrentSpan({ threadId, canOperate });
     const instance = instances.get(threadId);
     if (instance === undefined) return { _tag: "stopped" as const };
     if (instance.viewers.length >= MAX_VIEWERS) return { _tag: "full" as const };
     const entry: ViewerEntry = {
+      id: `viewer-${nextViewerId++}`,
+      canOperate,
       // ViewerFlow keeps at most one frame queued; the rest are small, infrequent messages.
       queue: yield* Queue.unbounded<HostedBlenderViewerOutput>(),
       flow: new ViewerFlow(),
+      size: null,
     };
     instance.viewers.push(entry);
     yield* Effect.addFinalizer(() => detach(instance, entry));
     const initial: HostedBlenderStreamServerMessage[] = [
-      { type: "control", canOperate: false, controller: "unclaimed" },
+      controlMessage(instance, entry),
+      { type: "cursor", captured: instance.cursorCaptured },
     ];
     if (instance.viewport) initial.push({ type: "viewport", ...instance.viewport });
     const stats = statsMessage(instance);
@@ -739,9 +883,11 @@ const make = Effect.gen(function* () {
           return next ? Queue.offer(entry.queue, { _tag: "frame", data: next.data }) : Effect.void;
         }).pipe(Effect.asVoid),
         resize: (width, height) =>
-          instance.viewers.at(-1) === entry
-            ? instance.helper({ type: "resize", ...displaySize(width, height) })
-            : Effect.void,
+          Effect.suspend(() => {
+            entry.size = { width, height };
+            return applySize(instance);
+          }),
+        input: (message) => handleViewerInput(instance, entry, message),
       },
     };
   });
