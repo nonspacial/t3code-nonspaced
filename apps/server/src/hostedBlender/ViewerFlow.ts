@@ -13,36 +13,48 @@ export const MAX_PENDING_FRAMES = 8;
  */
 export class ViewerFlow {
   private inFlight = false;
+  private sentAt = 0;
   private synced = false;
   private pending: VideoFrame[] = [];
 
-  offer(frame: VideoFrame): {
+  /** `fellBehind`: this viewer's queue overflowed, so it now waits for a keyframe. */
+  offer(
+    frame: VideoFrame,
+    now: number,
+  ): {
     readonly send: VideoFrame | null;
     readonly requestKeyframe: boolean;
+    readonly fellBehind: boolean;
   } {
     if (frame.key) {
       this.synced = true;
       this.pending = [];
     } else if (!this.synced) {
-      return { send: null, requestKeyframe: true };
+      return { send: null, requestKeyframe: true, fellBehind: false };
     }
     if (!this.inFlight) {
       this.inFlight = true;
-      return { send: frame, requestKeyframe: false };
+      this.sentAt = now;
+      return { send: frame, requestKeyframe: false, fellBehind: false };
     }
     if (this.pending.length >= MAX_PENDING_FRAMES) {
       this.synced = false;
       this.pending = [];
-      return { send: null, requestKeyframe: true };
+      return { send: null, requestKeyframe: true, fellBehind: true };
     }
     this.pending.push(frame);
-    return { send: null, requestKeyframe: false };
+    return { send: null, requestKeyframe: false, fellBehind: false };
   }
 
-  /** The frame on the wire arrived; returns the next one to send. */
-  ack(): VideoFrame | null {
+  /**
+   * The frame on the wire arrived. Returns the next one to send, and how long the acked frame
+   * took from going out to its ack.
+   */
+  ack(now: number): { readonly next: VideoFrame | null; readonly latencyMs: number | null } {
+    const latencyMs = this.inFlight ? now - this.sentAt : null;
     const next = this.pending.shift() ?? null;
     this.inFlight = next !== null;
-    return next;
+    this.sentAt = now;
+    return { next, latencyMs };
   }
 }

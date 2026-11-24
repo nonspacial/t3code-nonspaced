@@ -157,6 +157,7 @@ export function shouldRenderPreviewMiniPlayer(
   renderedRightPanelSurface: RightPanelSurface | null,
 ): boolean {
   if (source === null) return false;
+  if (source.kind === "blender") return renderedRightPanelSurface?.kind !== "blender";
   if (source.kind === "browser") {
     return !(
       renderedRightPanelSurface?.kind === "preview" &&
