@@ -22,7 +22,8 @@ const stream = vi.hoisted(() => ({
   visible: [] as boolean[],
   clients: 0,
   access: { httpBase: "https://t3", wsBase: "wss://t3/blender", credentials: false, query: {} },
-  state: { status: "running", relativePath: "models/hero.blend", dirty: false },
+  state: { status: "running", relativePath: "models/hero.blend", dirty: false } as unknown,
+  setup: null as unknown,
 }));
 
 vi.mock(import("@t3tools/client-runtime/hosted-blender/stream"), async (original) => ({
@@ -57,6 +58,7 @@ vi.mock(import("@t3tools/client-runtime/device/frame"), async (original) => ({
 vi.mock(import("~/state/hostedBlender"), async (original) => ({
   ...(await original()),
   useHostedBlenderState: (() => stream.state) as never,
+  useHostedBlenderSetupState: (() => stream.setup) as never,
   useHostedBlenderStreamAccess: (() => stream.access) as never,
 }));
 
@@ -217,6 +219,81 @@ it("gives control straight back when it's granted after focus has moved elsewher
     { type: "takeControl", takeOver: true },
     { type: "releaseControl" },
   ]);
+});
+
+it("shows Setup needed, saying what is missing, with a way into Settings › Blender", async () => {
+  using _app = startup();
+  const running = stream.state;
+  try {
+    stream.state = { status: "notSetUp", missing: ["enabled"] };
+    await using screen = await render(
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+    );
+    await expect.element(screen.getByText("Setup needed")).toBeInTheDocument();
+    await expect
+      .element(screen.getByText("Switch on Hosted Blender in Settings › Blender", { exact: false }))
+      .toBeInTheDocument();
+    stream.state = { status: "notSetUp", missing: ["check"] };
+    await screen.rerender(
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+    );
+    await expect
+      .element(screen.getByText("T3 Code hasn't checked this server yet.", { exact: false }))
+      .toBeInTheDocument();
+    stream.state = { status: "notSetUp", missing: ["labwc", "encoder"] };
+    await screen.rerender(
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+    );
+    await expect
+      .element(screen.getByText("labwc, an H.264 encoder", { exact: false }))
+      .toBeInTheDocument();
+    await screen.getByRole("button", { name: "Open Blender settings" }).click();
+    expect(screen.router?.state.location.pathname).toBe("/settings/blender");
+    expect(screen.router?.state.location.search).toEqual({ machine: "environment-1" });
+
+    stream.state = { status: "unavailable", reason: "sandboxedBlender" };
+    await screen.rerender(
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+    );
+    await expect.element(screen.getByText("Not available on this host")).toBeInTheDocument();
+    await expect
+      .element(screen.getByText("Flatpak and Snap builds of Blender", { exact: false }))
+      .toBeInTheDocument();
+  } finally {
+    stream.state = running;
+  }
+});
+
+it("warns in the status strip when the server has no usable GPU", async () => {
+  using _app = startup();
+  // A GPU T3 can't open is named as such, not as a missing GPU.
+  for (const [status, warning] of [
+    ["warning", "No GPU: Blender will be slow"],
+    ["missing", "No GPU access: Blender will be slow"],
+  ] as const) {
+    stream.setup = {
+      result: {
+        status: "checked",
+        ready: true,
+        checks: [{ item: "gpu", status }],
+        distro: null,
+        packageManager: null,
+        capture: null,
+        commands: [],
+        checkedAt: 0,
+      },
+      checking: false,
+      installThreadId: null,
+    };
+    try {
+      await using screen = await render(
+        <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+      );
+      await expect.element(screen.getByText(warning)).toBeInTheDocument();
+    } finally {
+      stream.setup = null;
+    }
+  }
 });
 
 it("sizes the display in real pixels, and says when the window hides the pane", async () => {

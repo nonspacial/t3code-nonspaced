@@ -3306,26 +3306,33 @@
   "c77caac5b764ef8c": "English (Dvorak)",
   "7b15925473b02c07": "English (Colemak)",
   "a1628cec6e798a98": "T3 Code's hidden display helper",
+  "759aa5a1a95bc013": "an H.264 encoder",
+  "f5a8efdb194519df": "GStreamer's OpenGL plugin",
   "119259d2fa66fadf": "Couldn't quit Blender",
   "32cf9ac006229af1": "Blender menu",
   "e2d3b41b3731a6c1": "Save changes to {name} before quitting?",
   "9287e12fbeade687": "Another device took control of Blender",
   "d2b10ff67d190925": "Blender viewport",
   "2151790bc5e65b31": "Not available on this host",
-  "22e7ff1b5896ba7b": "Hosted Blender needs a Linux server. You can still open 3D files in the file preview.",
-  "3051b6753c63a53e": "Hosted Blender isn't set up",
+  "b94f5fc6d71bc852": "Setup needed",
   "7050870331ac8b9a": "No hosted Blender running",
   "fb2c65328a8a2e17": "Open a .blend file in the file preview and choose Open in hosted Blender.",
   "cb4451ab067ff47d": "Blender didn't start",
   "3f25b97ec987231e": "Blender couldn't open the file on the hidden display. Check that Blender opens it and that GStreamer has an H.264 encoder, then open it in hosted Blender again.",
-  "91e40fb96987dd85": [
+  "7dfc4caecd0ca4da": "Open Blender settings",
+  "22e7ff1b5896ba7b": "Hosted Blender needs a Linux server. You can still open 3D files in the file preview.",
+  "ccb9bcd7825f2f99": "This server's Linux release ships labwc and GStreamer too old for hosted Blender. You can still open 3D files in the file preview.",
+  "efd53a6196afbf6d": "Flatpak and Snap builds of Blender aren't supported yet. Settings › Blender says how to use another Blender.",
+  "ec1b57292361ae76": "Switch on Hosted Blender in Settings › Blender to watch and steer Blender here.",
+  "e4ec327ad1a82eb5": "T3 Code hasn't checked this server yet. Open a .blend in hosted Blender, or check it in Settings › Blender.",
+  "af467bacc13f5e57": [
     "This server is missing: ",
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    ". Install them on the server, then open this pane again."
+    ". Settings › Blender can install them with an agent or show you the commands."
   ],
   "f4266902a2c24f1e": "Starting Blender…",
   "9d8acbbea6eafeef": [
@@ -3355,6 +3362,8 @@
   "67ab7e22612414d0": "Another device is in control",
   "81f3ce1d88ecf7bb": "Watching",
   "3906097eebf88153": "Showing the whole display",
+  "27ea83219396f796": "No GPU: Blender will be slow",
+  "156c7543e861dda6": "No GPU access: Blender will be slow",
   "907a0f7ed16a709d": "Couldn't open in hosted Blender",
   "7b0cb06d256e6b28": "Open in hosted Blender",
   "49cc06e79f21f85a": "{seconds}秒",
@@ -8740,6 +8749,122 @@
   "e8622c39abe68f9d": "デフォルト",
   "5383ef2d2c09cdf7": "フォントを検索…",
   "ea08337bcadd35b4": "フォントが見つかりません。",
+  "7660bc93bbd673be": "Let T3 Code run its own Blender on this server, on a hidden display, so you can watch and steer it in the Blender pane. Linux only. Your desktop Blender is never touched.",
+  "41dfe036cd2b2975": "Hosted Blender",
+  "63235832060254a4": "Agents in Claude and Codex threads may start this server's hosted Blenders.",
+  "9dfd275b6a5d4f9a": "Finish setup first, including the official Blender MCP server. Agents use it to work in hosted Blenders.",
+  "1f0df945c5a89af5": "Allow agents to start hosted Blenders",
+  "67c674ad132e17bb": "Hidden display helper",
+  "16da5cd9c2fa80bc": "H.264 encoder",
+  "af0373642246bb1c": "GStreamer OpenGL upload (NVIDIA)",
+  "129d601c223507ec": "GPU",
+  "d87898d465d6309f": "Blender MCP server",
+  "541ee140c8330a2a": "Couldn't check hosted Blender's setup",
+  "428192e9745f36eb": "Couldn't start the setup thread",
+  "31ba36fb9402faa7": "Install commands",
+  "b6554bc1ff014f77": "The official Blender Lab MCP server, such as ~/.local/bin/blender-mcp. Leave empty to find it on PATH or in ~/.local/bin. Check again after changing it.",
+  "e7743bf6a3de9ca3": "Reset Blender MCP path to default",
+  "a9b3c3359bce1e24": "Blender MCP path",
+  "d52b3d6bf9f2a013": "混在",
+  "6d0cb7390c17be3b": "自動で検出",
+  "0726bb02c4c42175": "Checking this server…",
+  "3a450021c92f3e4e": "T3 Code looks for Blender, labwc, GStreamer and the GPU, and runs a test encode.",
+  "b0537628ad92ed53": "Not checked yet",
+  "33bb3044d9712567": "Check this server for Blender, labwc, GStreamer and the GPU, with a test encode.",
+  "c3f155eda04d9708": "Hosted Blender needs a Linux server. 3D file previews still work on this one.",
+  "60f2565d2d2a6c3e": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ships labwc and GStreamer too old for hosted Blender. Ubuntu 24.04, Debian 13, Fedora 43 and Arch work."
+  ],
+  "66c4a476d0b4abaa": "Flatpak and Snap builds of Blender aren't supported yet. Install Blender from blender.org or your distro, or set its path in Settings › General › 3D previews, then check again.",
+  "cd212c9950bba81d": "Found",
+  "f9ab32870fe2bf3a": "Missing",
+  "d724abd4cc4a85e5": "Too old",
+  "7b01b12da1a9fd17": "Slow",
+  "a5fe3dee0a941705": "Not Blender Lab's",
+  "7174ef3cfccc7a54": "Runs Blender on the hidden display and streams it.",
+  "59e399ec181acb63": "T3 Code's own helper is missing from this install. Update or reinstall T3 Code.",
+  "92a36f954d094a6f": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "759ad8d8187ed946": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Hosted Blender needs Blender 4.5 or later."
+  ],
+  "2cf31d1c821751ac": "Install Blender 4.5 or later, or set its path in Settings › General › 3D previews.",
+  "5d52dcf7276c5199": "The compositor behind the hidden display.",
+  "ac6f1be5c0b72432": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", captured with wlr-screencopy. labwc 0.9 or later captures Blender's window alone."
+  ],
+  "8ca441a272a1c6e1": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Hosted Blender needs GStreamer 1.24 or later."
+  ],
+  "f400a2435a7c9972": "GStreamer 1.24 or later encodes the stream.",
+  "991f74849ed9e582": [
+    "The one-second test encode used ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "ba5e2c560dd26d57": "No H.264 encoder passed the test encode. Install GStreamer's plugins: one of nvh264enc, vah264enc, x264enc or openh264enc.",
+  "2ab5a1fabca22fd0": "NVIDIA's encoder reads Blender's frames straight from the GPU.",
+  "fce6aa0c10874b0c": "NVIDIA's encoder needs GStreamer's OpenGL plugin.",
+  "040d82d74fa9b290": "Blender draws with the GPU.",
+  "b1f3a29faa7594ff": "This server has a GPU, but T3 Code can't open it. Add your user to the render and video groups. Until then, Blender will be slow.",
+  "e4f914bd5e6899bf": "No GPU found. Hosted Blender still works, but Blender will be slow.",
+  "933fa7740fe8c681": {
+    "i": 1,
+    "k": "_gt_value_1",
+    "v": "v"
+  },
+  "92c9412a1a79bb73": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " is a different project with the same name, not the Blender Lab MCP. Install the official one, or set its path below."
+  ],
+  "9a397640135c1803": "Agents need the official Blender Lab MCP server. The pane works without it.",
+  "7c26d4f38c0094aa": "The result is kept until you check again, such as after installing something.",
+  "021b62ff834041f0": "Install what's missing",
+  "ec5d04aa0c3eed05": "An agent is installing what's missing",
+  "26c7f14fb81274cb": "An agent can install it in a new thread, asking for your password in a private card, never in chat. Or run the commands yourself. T3 Code never installs system packages itself.",
+  "0d7eb1eeb33375bb": "T3 Code checks again when the agent finishes.",
+  "a19376d3fce3f52d": "Install with an agent",
+  "5dee7399d93445e1": "Hide the commands",
+  "fbb5ec917cc3451d": "Show me the commands",
+  "db2f53db5e812a59": "Copy commands",
   "d6ad43bc4b700a88": "消去できるブラウザープロファイルのデータはありません。",
   "ad8efd437b301a37": "システム",
   "42e23caa6ef99cad": "ライト",
@@ -9025,7 +9150,6 @@
   "f9904f78d3003f58": "高速ワークツリーチェックアウト",
   "9c2f647882522302": "選択したマシンでは、エージェントのフィードバックモードが異なります。",
   "31bbf7bf8c0a5279": "エージェントのフィードバック",
-  "d52b3d6bf9f2a013": "混在",
   "ec7623deed751c05": [
     "スレッドをゲストと共有します。ゲストはブラウザーでライブで閲覧し、あなたが承認したメッセージを送信できます。T3 Connect が必要です。サインインして、",
     " ",
@@ -11588,7 +11712,6 @@
   "a2fc60e4c15eb1de": ".blend ファイルを 3D プレビューに変換する Blender。例: /usr/bin/blender、C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe。空欄にすると PATH や Blender のインストール先から探します。",
   "4c0182441f7f746d": "Blender のパスを既定に戻す",
   "b0e5f2ebaa0f2d56": "Blender のパス",
-  "6d0cb7390c17be3b": "自動で検出",
   "ea6f97bad03faf84": "システムの等幅フォント",
   "afa0ba3d124d9b8a": "インターフェイスのフォントをデフォルトにリセット",
   "eb19ce0364bb9a6e": "コードブロックとターミナル以外のすべて。",
@@ -12054,6 +12177,9 @@
   "f2b07faba1229ce7": "ヘルスチェックの間隔",
   "5c9dc9970db79fe2": "更新 可用性 バージョン 認証状態 モデル バックグラウンド プローブ 秒 オフ refresh",
   "056ba6a180d114b5": "許可 無効 有効 開く 操作 プレビュー ツール セッション プロジェクト 上書き preview",
+  "37d76dab21a26b2a": "blender hosted setup install check labwc gstreamer encoder gpu hidden display linux agent commands",
+  "f74fb1f1e951cb67": "blender hosted agents mcp start allow",
+  "3cf7f8ed35b33c5f": "blender lab mcp server path binary install uv pipx",
   "345075be6cacc171": "デバイス ホスト SSH リモート Mac mini ID キー 接続 EAS Expo クラウド simlock プール ゲートウェイ ローカル シミュレーター device hosts",
   "a6b742430b05d6cc": "エージェントによるデバイスの使用",
   "1d5d7418a83575c2": "許可 シミュレーター エミュレーター iOS Android 操作 ツール セッション simulator",

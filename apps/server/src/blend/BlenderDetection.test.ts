@@ -132,6 +132,11 @@ describe("BlenderDetection", () => {
       expect(
         yield* find({ path: onPath, home: dir, blenderPath: NodePath.join(dir, "missing") }),
       ).toBeNull();
+      // A path typed as ~/… means the server's home, as in a shell.
+      expect(yield* find({ path: onPath, home: dir, blenderPath: "~/chosen/my-blender" })).toEqual({
+        path: chosen,
+        version: "5.3.0",
+      });
     }),
   );
 

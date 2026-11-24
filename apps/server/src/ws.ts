@@ -214,6 +214,7 @@ import { withSocketHeartbeat } from "./socketHeartbeat.ts";
 import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import * as HostedBlender from "./hostedBlender/HostedBlender.ts";
+import * as HostedBlenderSetup from "./hostedBlender/HostedBlenderSetup.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
@@ -1551,6 +1552,7 @@ export const layerWsRpc = (
       const pullRequestSync = yield* PullRequestSyncReactor.PullRequestSyncReactor;
       const deviceService = yield* DeviceService.DeviceService;
       const hostedBlender = yield* HostedBlender.HostedBlender;
+      const hostedBlenderSetup = yield* HostedBlenderSetup.HostedBlenderSetup;
       const deviceHostContext =
         yield* Effect.context<Effect.Services<ReturnType<typeof remoteSshDeviceHosts>>>();
       const orchestrationEngine = yield* Orchestrator.OrchestratorV2;
@@ -3543,6 +3545,9 @@ export const layerWsRpc = (
         [WS_METHODS.hostedBlenderCaptureView]: (input) => hostedBlender.captureView(input.threadId),
         [WS_METHODS.hostedBlenderFindHits]: (input) => hostedBlender.findHits(input),
         [WS_METHODS.hostedBlenderSetView]: (input) => hostedBlender.setView(input),
+        [WS_METHODS.hostedBlenderSubscribeSetup]: (_input) => hostedBlenderSetup.state,
+        [WS_METHODS.hostedBlenderCheckSetup]: (_input) => hostedBlenderSetup.check,
+        [WS_METHODS.hostedBlenderInstallWithAgent]: (_input) => hostedBlenderSetup.installWithAgent,
         [WS_METHODS.previewStopLocalServer]: (input) => portDiscovery.stopServer(input),
         [WS_METHODS.subscribeDiscoveredLocalServers]: (input) =>
           Stream.callback<DiscoveredLocalServerList>((queue) =>

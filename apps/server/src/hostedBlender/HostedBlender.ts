@@ -5,7 +5,6 @@ import {
   HostedBlenderHits,
   type HostedBlenderOpenInput,
   type HostedBlenderQuitInput,
-  type HostedBlenderRequirement,
   type HostedBlenderRunningState,
   HostedBlenderSetViewInput,
   type HostedBlenderStreamServerMessage,
@@ -17,7 +16,6 @@ import {
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
-import { resolveCommandPath } from "@t3tools/shared/shell";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -56,7 +54,7 @@ import { SessionControl } from "../preview/SessionControl.ts";
 import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
 import { type ControlConnection, requestSave, type SaveReply } from "./ControlSave.ts";
 import { HeldInput } from "./HeldInput.ts";
-import * as HiddenDisplayBinary from "./HiddenDisplayBinary.ts";
+import * as HostedBlenderSetup from "./HostedBlenderSetup.ts";
 import {
   encodeHelperCommand,
   type HelperCommand,
@@ -243,10 +241,6 @@ interface Instance {
   bitrateLead: string | null;
 }
 
-type Availability =
-  | { readonly status: "ok"; readonly helper: string; readonly blender: string }
-  | Extract<HostedBlenderThreadState, { status: "unavailable" | "notSetUp" }>;
-
 type PublishedState = HostedBlenderRunningState | { readonly status: "failed" };
 
 const sameState = (a: HostedBlenderThreadState, b: HostedBlenderThreadState) =>
@@ -258,9 +252,8 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const net = yield* NetService.NetService;
-  const hiddenDisplay = yield* HiddenDisplayBinary.HiddenDisplayBinary;
+  const setup = yield* HostedBlenderSetup.HostedBlenderSetup;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
-  const platform = yield* HostProcess.Platform;
   const environment = yield* HostProcess.Environment;
   const homeDirectory = yield* HostProcess.HomeDirectory;
   const lookupContext = yield* Effect.context<
@@ -298,32 +291,6 @@ const make = Effect.gen(function* () {
         ]),
       ),
     );
-
-  const availability = Effect.gen(function* (): Effect.fn.Return<
-    Availability,
-    never,
-    FileSystem.FileSystem | Path.Path
-  > {
-    if (platform !== "linux") return { status: "unavailable" };
-    const missing: HostedBlenderRequirement[] = [];
-    const helper = yield* hiddenDisplay.resolve.pipe(
-      Effect.map((resolved): string | null => resolved),
-      Effect.catchTags({
-        HiddenDisplayBinaryUnsupported: () => Effect.undefined,
-        HiddenDisplayBinaryNotFound: () => Effect.succeed(null),
-        HiddenDisplayBinaryNotExecutable: () => Effect.succeed(null),
-      }),
-    );
-    if (helper === undefined) return { status: "unavailable" };
-    if (helper === null) missing.push("helper");
-    const blender = yield* resolveCommandPath("blender");
-    if (blender === null) missing.push("blender");
-    if ((yield* resolveCommandPath("labwc")) === null) missing.push("labwc");
-    if (helper === null || blender === null || missing.length > 0) {
-      return { status: "notSetUp", missing };
-    }
-    return { status: "ok", helper, blender };
-  }).pipe(Effect.provideContext(lookupContext));
 
   const broadcast = (instance: Instance, message: HostedBlenderStreamServerMessage) =>
     Effect.forEach(
@@ -824,8 +791,12 @@ const make = Effect.gen(function* () {
     relativePath,
   }) {
     yield* Effect.annotateCurrentSpan({ threadId });
-    const tools = yield* availability;
-    if (tools.status !== "ok") return yield* new HostedBlenderError({ reason: tools.status });
+    // Opening is the pane's first use, by a caller allowed to start programs here.
+    yield* setup.ensureChecked;
+    const tools = yield* setup.readiness.pipe(Stream.runHead, Effect.map(Option.getOrNull));
+    if (tools?.status !== "ok") {
+      return yield* new HostedBlenderError({ reason: tools?.status ?? "notSetUp" });
+    }
     if (!relativePath.toLowerCase().endsWith(".blend"))
       return yield* new HostedBlenderError({ reason: "notBlendFile" });
     const root = yield* threadRoot(threadId);
@@ -969,21 +940,14 @@ const make = Effect.gen(function* () {
       ),
   );
 
+  // A running Blender stays visible, and can be quit, even after setup or the switch changes.
   const threadState: HostedBlender["Service"]["threadState"] = (threadId) =>
-    Stream.unwrap(
-      availability.pipe(
-        Effect.map((available) =>
-          available.status !== "ok"
-            ? Stream.concat(Stream.succeed<HostedBlenderThreadState>(available), Stream.never)
-            : SubscriptionRef.changes(states).pipe(
-                Stream.map(
-                  (running): HostedBlenderThreadState =>
-                    running.get(threadId) ?? { status: "stopped" },
-                ),
-                Stream.changesWith(sameState),
-              ),
-        ),
+    Stream.zipLatest(setup.readiness, SubscriptionRef.changes(states)).pipe(
+      Stream.map(
+        ([readiness, running]): HostedBlenderThreadState =>
+          running.get(threadId) ?? (readiness.status === "ok" ? { status: "stopped" } : readiness),
       ),
+      Stream.changesWith(sameState),
     );
 
   const detach = Effect.fnUntraced(function* (instance: Instance, entry: ViewerEntry) {
