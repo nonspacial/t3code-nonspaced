@@ -15,7 +15,10 @@ export const isMarkdownPreviewFile = (path: string): boolean =>
   /\.(?:md|mdx|markdown|mdown|mkd)$/i.test(path);
 
 export function filePreviewReadErrorMessage(
-  error: ProjectReadFileError,
+  error: Pick<ProjectReadFileError, "message"> & {
+    readonly failure?: string | undefined;
+    readonly operation?: ProjectReadFileError["operation"];
+  },
   resolve: MessageResolver = m,
 ): string {
   switch (error.failure) {

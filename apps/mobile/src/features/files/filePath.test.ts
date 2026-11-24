@@ -59,6 +59,14 @@ describe("needsWorkspaceFileContents", () => {
     expect(needsWorkspaceFileContents({ ...input, metadataKind: undefined })).toBe(true);
     expect(needsWorkspaceFileContents({ ...input, metadataKind: "directory" })).toBe(false);
   });
+
+  it("does not read 3D files as text, since they show facts instead", () => {
+    for (const relativePath of ["rig.blend", "rig.blend1", "statue.glb", "part.stl"]) {
+      expect(
+        needsWorkspaceFileContents({ relativePath, activeMode: "source", metadataKind: "file" }),
+      ).toBe(false);
+    }
+  });
 });
 
 describe("workspace preview classifiers", () => {

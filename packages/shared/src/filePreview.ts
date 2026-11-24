@@ -263,6 +263,11 @@ export function modelPreviewFormat(file: {
   return byMime ?? null;
 }
 
+/** A Blender file, or one of the `.blend1` backups Blender keeps beside it. */
+export function isBlendPreviewPath(path: string): boolean {
+  return /\.blend\d*$/i.test(path);
+}
+
 export function hostPreviewMimeTypeFromExtension(extension: string): string | null {
   if (!/^\.[a-z0-9-]+$/i.test(extension)) return null;
   return (

@@ -4,6 +4,8 @@ import { joinPath, resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import {
   isWorkspaceAudioPreviewPath,
   isWorkspaceVideoPreviewPath,
+  isBlendPreviewPath,
+  modelPreviewFormat,
 } from "@t3tools/shared/filePreview";
 
 function isWindowsAbsolutePath(value: string): boolean {
@@ -111,6 +113,11 @@ export function isMarkdownPreviewFile(path: string): boolean {
   return /\.(?:md|mdx|markdown|mdown|mkd)$/i.test(path);
 }
 
+/** A 3D file shows facts instead of text: a `.blend`'s from the server, others just name and size. */
+export function isModelFactsFile(path: string): boolean {
+  return isBlendPreviewPath(path) || modelPreviewFormat({ name: path }) !== null;
+}
+
 export function needsWorkspaceFileContents(input: {
   readonly relativePath: string | null;
   readonly metadataKind: FilesystemEntryMetadata["kind"] | undefined;
@@ -122,6 +129,7 @@ export function needsWorkspaceFileContents(input: {
     path !== null &&
     !isVideoPreviewFile(path) &&
     !isAudioPreviewFile(path) &&
+    !isModelFactsFile(path) &&
     (input.activeMode === "source" ||
       isMarkdownPreviewFile(path) ||
       filePreviewDelimiter({ name: path }) !== null)

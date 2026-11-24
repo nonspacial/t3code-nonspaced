@@ -1,0 +1,108 @@
+// @effect-diagnostics nodeBuiltinImport:off - The reader is a plain async parser over node:fs streams.
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeZlib from "node:zlib";
+
+import { describe, expect, it } from "vite-plus/test";
+
+import { readBlendFile } from "./blendFile.ts";
+
+// Made by fixtures/make-fixtures.sh with Blender 4.5 and 5.3; each version names its own.
+const fixture = (name: string) => NodePath.join(import.meta.dirname, "fixtures", name);
+
+async function withTempFile<A>(bytes: Uint8Array, use: (path: string) => Promise<A>): Promise<A> {
+  const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-blend-"));
+  try {
+    const path = NodePath.join(dir, "file.blend");
+    await NodeFSP.writeFile(path, bytes);
+    return await use(path);
+  } finally {
+    await NodeFSP.rm(dir, { recursive: true, force: true });
+  }
+}
+
+// Blender's zstd save compresses the same stream an uncompressed save writes.
+const uncompressed = async (name: string) =>
+  NodeZlib.zstdDecompressSync(await NodeFSP.readFile(fixture(name)));
+
+describe("readBlendFile", () => {
+  it.each([
+    { version: "5.3", file: "bracket-5.blend", header: "BLENDER17-01v0503" },
+    { version: "4.5", file: "bracket-4.blend", header: "BLENDER-v405" },
+  ])("reads Blender $version's header and scene facts", async ({ version, file, header }) => {
+    const bytes = await uncompressed(file);
+    expect(new TextDecoder().decode(bytes.subarray(0, header.length))).toBe(header);
+    for (const facts of [
+      await readBlendFile(fixture(file)),
+      await withTempFile(bytes, readBlendFile),
+    ]) {
+      expect(facts).toMatchObject({
+        blenderVersion: version,
+        scene: { name: "Bracket", frameStart: 10, frameEnd: 120 },
+        scenes: 1,
+        // Two cubes, a camera and a sun.
+        objects: 4,
+        meshes: 2,
+        materials: 2,
+        libraries: [],
+      });
+    }
+  });
+
+  it("reads the saved thumbnail top row first, from compressed and uncompressed files", async () => {
+    const compressed = await readBlendFile(fixture("bracket-5.blend"));
+    const plain = await withTempFile(await uncompressed("bracket-5.blend"), readBlendFile);
+    for (const facts of [compressed, plain]) {
+      expect(facts.thumbnail).toMatchObject({ width: 128, height: 128 });
+      expect(facts.thumbnail?.rgba.byteLength).toBe(128 * 128 * 4);
+    }
+    expect(plain.thumbnail?.rgba).toEqual(compressed.thumbnail?.rgba);
+    const rgba = compressed.thumbnail?.rgba ?? new Uint8Array();
+    const opaqueRows = Array.from({ length: 128 }, (_, row) => {
+      const red: number[] = [];
+      for (let x = 0; x < 128; x += 1) {
+        const pixel = (row * 128 + x) * 4;
+        if (rgba[pixel + 3] === 255) red.push(rgba[pixel] ?? 0);
+      }
+      return red.length === 0 ? null : red.reduce((sum, value) => sum + value, 0) / red.length;
+    }).filter((value) => value !== null);
+    // The camera looks down on a cube, so its lit top face is the first thing in the image.
+    expect(opaqueRows.at(0)).toBeGreaterThan((opaqueRows.at(-1) ?? 0) + 15);
+  });
+
+  it("has no thumbnail when the file was saved without one", async () => {
+    const facts = await readBlendFile(fixture("bracket-4.blend"));
+    expect(facts.thumbnail).toBeNull();
+  });
+
+  it.each(["4", "5"])(
+    "lists Blender %s's linked libraries and counts linked objects",
+    async (v) => {
+      const facts = await readBlendFile(fixture(`assembly-${v}.blend`));
+      expect(facts).toMatchObject({
+        scene: { name: "Assembly", frameStart: 1, frameEnd: 24 },
+        libraries: [`//parts-${v}.blend`],
+        // The local frame and the linked wheel; the wheel's mesh stays in its library.
+        objects: 2,
+        meshes: 1,
+      });
+    },
+  );
+
+  it("refuses files that are not .blend files, or stop partway", async () => {
+    const bytes = await uncompressed("bracket-5.blend");
+    await withTempFile(new TextEncoder().encode("not a blend file"), async (path) => {
+      await expect(readBlendFile(path)).rejects.toThrow("not a .blend file");
+    });
+    await withTempFile(bytes.subarray(0, bytes.byteLength / 2), async (path) => {
+      await expect(readBlendFile(path)).rejects.toThrow("ends early");
+    });
+    await withTempFile(
+      NodeZlib.zstdCompressSync(bytes.subarray(0, bytes.byteLength / 2)),
+      async (path) => {
+        await expect(readBlendFile(path)).rejects.toThrow("ends early");
+      },
+    );
+  });
+});

@@ -12,9 +12,15 @@ import { useGT, useMessages } from "gt-react-native";
 import { type ComponentProps, type ReactNode, useId, useState } from "react";
 import { Platform, View } from "react-native";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
-import { EnvironmentId, type ProjectReadFileResult, ThreadId } from "@t3tools/contracts";
+import {
+  type BlendPreview,
+  EnvironmentId,
+  type ProjectReadFileResult,
+  ThreadId,
+} from "@t3tools/contracts";
 import { videoMimeType } from "@t3tools/shared/video";
 import {
+  isBlendPreviewPath,
   isWorkspaceBrowserPreviewPath,
   isWorkspaceImagePreviewPath,
   mediaMimeTypeFromExtension,
@@ -37,7 +43,7 @@ import { useMediaActions } from "../../state/mediaActions";
 import { type MediaActionsSource } from "../../lib/mediaActionsSource";
 import { useThreadSelection } from "../../state/use-thread-selection";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
-import { useEnvironmentQuery } from "../../state/query";
+import { type EnvironmentQueryView, useEnvironmentQuery } from "../../state/query";
 import { useEnvironmentPresentation } from "../../state/presentation";
 import { projectEnvironment } from "../../state/projects";
 import type { AssetUrlFailureReason } from "../../state/asset-url-state";
@@ -70,9 +76,11 @@ import {
   isAudioPreviewFile,
   isMarkdownPreviewFile,
   isSvgImagePreviewFile,
+  isModelFactsFile,
   isVideoPreviewFile,
   needsWorkspaceFileContents,
 } from "./filePath";
+import { BlendFileFacts, ModelFileNotice } from "./ModelFileFacts";
 import { useWorkspaceFileAssetUrlState } from "./workspaceFileAssetUrl";
 import { MOBILE_FULL_FILE_MAX_BYTES, useFullFileText } from "./useFullFileText";
 
@@ -257,6 +265,8 @@ function FileContent(props: {
   /** Renders Markdown in lazily parsed chunks; set for files past the 1 MB preview. */
   readonly selectable: boolean;
   readonly onRefresh?: () => Promise<void> | void;
+  readonly blendPreview: EnvironmentQueryView<BlendPreview>;
+  readonly byteLength: number | null;
 }) {
   const gt = useGT();
   // Reopening a mutable host file must not reuse a poster from an earlier visit.
@@ -273,6 +283,14 @@ function FileContent(props: {
     isVideoFile ||
     isAudioFile ||
     (props.activeMode === "preview" && (isImageFile || isBrowserFile));
+
+  if (isBlendPreviewPath(props.relativePath)) {
+    return <BlendFileFacts name={basename(props.relativePath)} query={props.blendPreview} />;
+  }
+
+  if (isModelFactsFile(props.relativePath)) {
+    return <ModelFileNotice name={basename(props.relativePath)} byteLength={props.byteLength} />;
+  }
 
   if (needsAssetUrl && props.previewFailure !== null) {
     return (
@@ -689,6 +707,8 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
     relativePath !== null && !isVideoFile && isWorkspaceBrowserPreviewPath(relativePath);
   const isImageFile =
     relativePath !== null && !isVideoFile && isWorkspaceImagePreviewPath(relativePath);
+  const isModelFile = relativePath !== null && isModelFactsFile(relativePath);
+  const isBlendFile = relativePath !== null && isBlendPreviewPath(relativePath);
   const canPreview =
     relativePath !== null &&
     (isMarkdownPreviewFile(relativePath) ||
@@ -704,7 +724,17 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
         ? "source"
         : defaultViewMode(relativePath);
   const resolvedActiveMode =
-    isVideoFile || isAudioFile ? "preview" : canPreview ? activeMode : "source";
+    isVideoFile || isAudioFile || isModelFile ? "preview" : canPreview ? activeMode : "source";
+  const blendPreview = useEnvironmentQuery(
+    canReadFiles &&
+      isBlendFile &&
+      metadata.data?.kind !== "directory" &&
+      environmentId !== null &&
+      cwd !== null &&
+      relativePath !== null
+      ? projectEnvironment.readBlendPreview({ environmentId, input: { cwd, relativePath } })
+      : null,
+  );
   // Metadata is needed only to distinguish directories; file contents can load concurrently.
   const needsFileContents = needsWorkspaceFileContents({
     relativePath,
@@ -968,13 +998,14 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
           } as const)
         : null,
       resolvedActiveMode === "preview" &&
-      (isBrowserFile || isImageFile || isVideoFile || isAudioFile)
+      (isBrowserFile || isImageFile || isVideoFile || isAudioFile || isBlendFile)
         ? ({
             id: "refresh",
             title: gt("Refresh", { $context: "verb, reloads the file" }),
             icon: "arrow.clockwise",
             inline: false,
             onPress: async () => {
+              if (isBlendFile) blendPreview.refresh();
               if (isVideoFile || isAudioFile) await assetPreview.refresh();
               setPreviewRevision((current) => current + 1);
             },
@@ -1113,6 +1144,8 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
             setFileRefreshCount((count) => count + 1);
             return fileQuery.refresh();
           }}
+          blendPreview={blendPreview}
+          byteLength={metadata.data?.kind === "file" ? (metadata.data.byteLength ?? null) : null}
         />
       </ScreenContent>
       <FilePreviewModal
