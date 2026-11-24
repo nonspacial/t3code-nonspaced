@@ -200,14 +200,11 @@ export function BlendFilePreview(props: {
           actions={props.actions}
           view={props.view ?? null}
           annotation={props.annotation ?? null}
-          readyChip={pending ? chip : <ConvertedChip ready={shown} />}
+          readyChip={<ConvertedChip ready={shown} />}
           updatingChip={
-            pending ? (
-              chip
-            ) : shown.changed === undefined ? undefined : (
-              <ChangedChip file={shown.changed} />
-            )
+            shown.changed === undefined ? undefined : <ChangedChip file={shown.changed} />
           }
+          pendingChip={pending ? chip : undefined}
           facts={facts}
           overlay={action}
         />

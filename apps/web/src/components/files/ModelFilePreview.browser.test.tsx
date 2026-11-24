@@ -127,7 +127,7 @@ it("renders a model in the browser and lists what it measured", async () => {
 
 it("keeps the shown model while a new version downloads, and after one that fails", async () => {
   setup();
-  const preview = (src: string) => (
+  const preview = (src: string, pending = false) => (
     <ModelFilePreview
       src={src}
       name="bracket.stl"
@@ -136,6 +136,7 @@ it("keeps the shown model while a new version downloads, and after one that fail
       companions={null}
       onRefresh={() => {}}
       updatingChip={<p>bracket.stl changed · updating…</p>}
+      pendingChip={pending ? <p>Converting the next save…</p> : undefined}
     />
   );
   await using screen = await render(preview(modelUrl(stl())), pane());
@@ -154,10 +155,16 @@ it("keeps the shown model while a new version downloads, and after one that fail
   await expect.element(screen.getByText("20 × 10 × 40 mm")).toBeVisible();
   await expect.element(screen.getByText("STL · rendered in the browser")).toBeVisible();
 
-  await screen.rerender(preview(modelUrl("not a model")));
+  const broken = modelUrl("not a model");
+  await screen.rerender(preview(broken));
   await expect.element(screen.getByText("Couldn't load the new version")).toBeVisible();
   await expect.element(screen.getByText("20 × 10 × 40 mm")).toBeVisible();
   await expect.element(screen.getByRole("button", { name: "Reset view" })).toBeVisible();
+
+  // Work on the next version outranks the last one's failure.
+  await screen.rerender(preview(broken, true));
+  await expect.element(screen.getByText("Converting the next save…")).toBeVisible();
+  await expect.element(screen.getByText("Couldn't load the new version")).not.toBeInTheDocument();
 });
 
 it("signs each file a glTF references beside it and names the ones it cannot read", async () => {

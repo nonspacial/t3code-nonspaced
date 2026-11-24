@@ -171,6 +171,8 @@ export function ModelFilePreview(props: {
   readonly readyChip?: ReactNode;
   /** The status chip while a new `src` loads behind the model still shown. */
   readonly updatingChip?: ReactNode;
+  /** Work toward a newer version, such as a conversion; it outranks every other chip. */
+  readonly pendingChip?: ReactNode;
   /** Replaces the loaded model's details box. */
   readonly facts?: ReactNode;
   /** Drawn over the view whatever its state, such as a conversion's bottom-left action. */
@@ -483,7 +485,9 @@ export function ModelFilePreview(props: {
         </div>
       ) : null}
       <div className="absolute start-2 top-2 flex max-w-[calc(100%-6rem)]">
-        {replacing === "failed" ? (
+        {props.pendingChip !== undefined ? (
+          props.pendingChip
+        ) : replacing === "failed" ? (
           <PreviewStatusChip tone="error">{gt("Couldn't load the new version")}</PreviewStatusChip>
         ) : replacing === "loading" ? (
           (props.updatingChip ?? (
