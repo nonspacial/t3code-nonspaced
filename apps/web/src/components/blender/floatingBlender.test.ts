@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { BLENDER_MINI_PLAYER_SOURCE } from "../../previewMiniPlayerStore";
-import { type FloatingBlenderInput, floatingBlenderAction } from "./floatingBlender";
+import {
+  decideFloatingBlender,
+  type FloatingBlenderInput,
+  floatingBlenderAction,
+  resetFloatingBlenderDecisionsForTests,
+} from "./floatingBlender";
 
 const running = { status: "running", relativePath: "cube.blend", dirty: false } as const;
 const working: FloatingBlenderInput = {
@@ -65,5 +70,35 @@ describe("floatingBlenderAction", () => {
     );
     expect(floatingBlenderAction({ ...floating, runningTurnId: null }).action).toBe("none");
     expect(floatingBlenderAction({ ...floating, state: null }).action).toBe("none");
+  });
+});
+
+describe("decideFloatingBlender", () => {
+  const { decidedTurnId: _decided, ...inThread } = working;
+
+  it("remembers each thread's dismissal across visits to other threads", () => {
+    resetFloatingBlenderDecisionsForTests();
+    expect(decideFloatingBlender("thread-a", inThread)).toBe("float");
+    // Thread B's own turn floats there...
+    expect(decideFloatingBlender("thread-b", { ...inThread, runningTurnId: "turn-b" })).toBe(
+      "float",
+    );
+    // ...and coming back to A, whose float the user closed, during the same turn leaves it closed.
+    expect(decideFloatingBlender("thread-a", inThread)).toBe("none");
+    expect(decideFloatingBlender("thread-a", { ...inThread, runningTurnId: "turn-2" })).toBe(
+      "float",
+    );
+  });
+
+  it("decides nothing until the saved settings have loaded", () => {
+    resetFloatingBlenderDecisionsForTests();
+    expect(decideFloatingBlender("thread-a", { ...inThread, autoShowFloatingPreview: null })).toBe(
+      "none",
+    );
+    // Once they load with auto-show off, the turn is decided without floating.
+    expect(decideFloatingBlender("thread-a", { ...inThread, autoShowFloatingPreview: false })).toBe(
+      "none",
+    );
+    expect(decideFloatingBlender("thread-a", inThread)).toBe("none");
   });
 });

@@ -204,7 +204,7 @@ import {
   selectThreadPreviewMiniPlayer,
   usePreviewMiniPlayerStore,
 } from "../previewMiniPlayerStore";
-import { floatingBlenderAction } from "./blender/floatingBlender";
+import { decideFloatingBlender } from "./blender/floatingBlender";
 import { useHostedBlenderState } from "../state/hostedBlender";
 import { threadPullRequestPanelTarget } from "./pullRequest/pullRequestDetail.logic";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
@@ -2172,19 +2172,18 @@ export default function ChatView(props: ChatViewProps) {
       : null,
   );
   const blenderPanelShown = renderedRightPanelSurface?.kind === "blender";
-  const decidedBlenderTurnId = useRef<string | null>(null);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Floats the Blender pane over chat while the shown thread's agent works, and closes it when its Blender stops.
   useEffect(() => {
     if (!floatingBlenderThreadRef) return;
-    const { action, decidedTurnId } = floatingBlenderAction({
+    const action = decideFloatingBlender(scopedThreadKey(floatingBlenderThreadRef), {
       runningTurnId: activeRunningTurnId,
-      decidedTurnId: decidedBlenderTurnId.current,
       state: floatingBlenderState,
-      autoShowFloatingPreview: getClientSettings().browserAutoShowFloatingPreview,
+      autoShowFloatingPreview: clientSettingsHydrated
+        ? getClientSettings().browserAutoShowFloatingPreview
+        : null,
       floating: floatingSource,
       panelShown: blenderPanelShown,
     });
-    decidedBlenderTurnId.current = decidedTurnId;
     const miniPlayer = usePreviewMiniPlayerStore.getState();
     if (action === "float") miniPlayer.open(floatingBlenderThreadRef, BLENDER_MINI_PLAYER_SOURCE);
     if (action === "close") miniPlayer.close(floatingBlenderThreadRef);
@@ -2194,6 +2193,7 @@ export default function ChatView(props: ChatViewProps) {
     floatingBlenderState,
     floatingSource,
     blenderPanelShown,
+    clientSettingsHydrated,
   ]);
   useProactivePanels({
     threadRef: isServerThread && !embedded ? activeThreadRef : null,

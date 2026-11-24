@@ -110,7 +110,7 @@ const WAITING_HELPER = 'while read line; do case "$line" in *quit*) exit 0;; esa
  * STANDIN_COMMANDS, answers keyframe requests and resizes, and on `quit` writes STANDIN_MARKER.
  */
 const STANDIN_HELPER = String.raw`
-import json, os, socket, struct, sys, threading, time
+import json, os, socket, struct, sys, threading
 rest = sys.argv[1:][sys.argv[1:].index("--") + 1:]
 t3 = rest[rest.index("--") + 1:]
 scenario = os.environ.get("STANDIN_SCENARIO", "")
@@ -178,10 +178,8 @@ for line in sys.stdin:
     # F1: a burst of deltas, then Blender "captures" the cursor to mark the end of it.
     if command.get("type") == "key" and command.get("code") == 59:
         if command["pressed"]:
-            # Paced like a busy viewport, so a viewer that acks keeps up.
             for _ in range(12):
                 video(False)
-                time.sleep(0.03)
         event({"type": "cursorLeave"} if command["pressed"] else {"type": "cursorEnter", "x": 1, "y": 2})
     # A middle-drag orbit: Blender hides its cursor while the button is down.
     if command.get("type") == "pointerButton" and command.get("button") == 274:
@@ -573,62 +571,31 @@ describe("The stream", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live(
-    "lowers the bitrate when the viewer in control falls behind, not when a watcher does",
-    () =>
-      Effect.gen(function* () {
-        const { service, openReady, helperCommands } = yield* standIn("bitrate", "");
-        yield* openReady;
-        const operator = yield* attach(service, true);
-        const watcher = yield* attach(service, false);
-        yield* operator.input({ type: "takeControl", takeOver: false });
-        // The operator keeps up, acking every frame; its messages go to `seen`.
-        const seen = yield* Queue.unbounded<ViewerMessage>();
-        const keepingUp = yield* Queue.take(operator.output).pipe(
-          Effect.flatMap((output) =>
-            output._tag === "frame"
-              ? operator.ack
-              : output._tag === "message"
-                ? Queue.offer(seen, output.message)
-                : Effect.void,
+  it.live("resyncs a viewer that falls behind on a keyframe, without cutting the bitrate", () =>
+    Effect.gen(function* () {
+      const { service, openReady, helperCommands } = yield* standIn("bitrate", "");
+      yield* openReady;
+      const operator = yield* attach(service, true);
+      yield* operator.input({ type: "takeControl", takeOver: false });
+      const cursor = (captured: boolean): Effect.Effect<unknown> =>
+        nextMessage(operator, "cursor").pipe(
+          Effect.flatMap((message) =>
+            message.captured === captured ? Effect.void : cursor(captured),
           ),
-          Effect.forever,
-          Effect.forkScoped,
         );
-        // The F1 burst ends with Blender "capturing" the cursor, and releasing F1 lets it go.
-        const cursor = (from: Queue.Dequeue<ViewerMessage>, captured: boolean) =>
-          Queue.take(from).pipe(
-            Effect.repeat({
-              until: (message) => message.type === "cursor" && message.captured === captured,
-            }),
-          );
-        const operatorCursor = (captured: boolean): Effect.Effect<unknown> =>
-          nextMessage(operator, "cursor").pipe(
-            Effect.flatMap((message) =>
-              message.captured === captured ? Effect.void : operatorCursor(captured),
-            ),
-          );
-        // F1 sends a burst of deltas, more than a viewer that never acks may have waiting.
-        const burst = (afterPress: Effect.Effect<unknown>, afterRelease: Effect.Effect<unknown>) =>
-          Effect.gen(function* () {
-            yield* operator.input({ type: "key", code: 59, pressed: true });
-            yield* afterPress;
-            yield* operator.input({ type: "key", code: 59, pressed: false });
-            yield* afterRelease;
-          });
-        const lowered = () =>
-          ofType(helperCommands(), "bitrate").filter(
-            (command) => typeof command.kbps === "number" && command.kbps < 8000,
-          );
-
-        yield* burst(cursor(seen, true), cursor(seen, false));
-        expect(yield* hasFrame(watcher)).toBe(true);
-        expect(lowered()).toEqual([]);
-
-        yield* Fiber.interrupt(keepingUp);
-        yield* burst(operatorCursor(true), operatorCursor(false));
-        expect(lowered()).toEqual([{ type: "bitrate", kbps: 5600 }]);
-      }).pipe(Effect.scoped),
+      // F1 sends more deltas than a viewer that hasn't acked may have waiting, then Blender
+      // "captures" the cursor; releasing F1 lets it go.
+      yield* operator.input({ type: "key", code: 59, pressed: true });
+      yield* cursor(true);
+      yield* operator.input({ type: "key", code: 59, pressed: false });
+      yield* cursor(false);
+      // Falling behind is a slow viewer, not a congested link: it skips to a keyframe, and only
+      // ack delay moves the bitrate.
+      expect(ofType(helperCommands(), "bitrate")).toEqual([]);
+      // Acking the frame it was stuck on lets the keyframe out.
+      yield* operator.ack;
+      expect(isKey(yield* nextFrame(operator))).toBe(true);
+    }).pipe(Effect.scoped),
   );
 });
 

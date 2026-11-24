@@ -16,7 +16,7 @@ Once a file is open, a link to that `.blend` in the chat opens the Blender pane.
 
 The pane opens view-only. The status strip shows who's in control, the stream's size, frame rate, bitrate and encoder, and how much memory Blender is using.
 
-The stream costs nothing while nobody can see it. When no open pane is on screen, because it's closed, its tab is in the background or the window is minimized, Blender stops being captured and encoded, though it keeps running. It picks up again the moment a pane is back on screen. Hiding a pane doesn't give up control.
+The stream costs nothing while nobody can see it. When no open pane is on screen, because it's closed, Settings or Usage covers it, its tab is in the background or the window is minimized, Blender stops being captured and encoded, though it keeps running. It picks up again the moment a pane is back on screen. Hiding a pane doesn't give up control.
 
 Blender's display is sized to the pane of whoever is in control, or else to the pane opened or brought back most recently, at your screen's real pixel size so it stays sharp on high-resolution screens. Resizing that pane resizes Blender. The bitrate adjusts to how quickly that device's frames arrive, so a slow connection gets a smoother, softer picture instead of a stalled one. Up to four devices can watch one hosted Blender at a time.
 

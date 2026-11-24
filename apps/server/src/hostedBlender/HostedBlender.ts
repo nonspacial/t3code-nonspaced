@@ -424,18 +424,19 @@ const make = Effect.gen(function* () {
   const handlePacket = Effect.fnUntraced(function* (instance: Instance, packet: HelperPacket) {
     if (packet._tag === "video") {
       const now = yield* Clock.currentTimeMillis;
-      const lead = leadViewer(instance);
       let wantsKeyframe = false;
+      let fellBehind = false;
       for (const viewer of instance.viewers) {
         if (!viewer.visible) continue;
         const offered = viewer.flow.offer(packet, now);
         if (offered.send) yield* Queue.offer(viewer.queue, { _tag: "frame", data: packet.data });
         wantsKeyframe ||= offered.requestKeyframe;
-        if (offered.fellBehind && viewer === lead) {
-          yield* setBitrate(instance, instance.bitrate.congested(now));
-        }
+        fellBehind ||= offered.fellBehind;
       }
-      if (wantsKeyframe) yield* requestKeyframe(instance);
+      // A viewer that fell behind is slower than Blender's frame rate, which a lower bitrate
+      // can't fix (only ack delay moves it); it resyncs on a keyframe straight away.
+      if (fellBehind) yield* joinOnKeyframe(instance);
+      else if (wantsKeyframe) yield* requestKeyframe(instance);
       return;
     }
     const event = packet.event;

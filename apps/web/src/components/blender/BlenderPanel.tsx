@@ -25,7 +25,15 @@ import type {
 import * as Schema from "effect/Schema";
 import { MoreVertical } from "lucide-react";
 import { msg, T, useGT, useMessages, Var } from "gt-react";
-import { type ReactNode, type RefObject, useEffect, useEffectEvent, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  use,
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+} from "react";
 
 import {
   AlertDialog,
@@ -69,6 +77,8 @@ import { formatEnvironmentQueryError } from "~/state/query";
 import { primaryServerKeybindingsAtom } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
+
+import { HiddenThreadContext } from "../chat/backgroundThread";
 
 import { attachBlenderInput, type BlenderInput } from "./blenderInput";
 
@@ -510,6 +520,9 @@ function BlenderStream(props: {
   const controllerRef = useRef<HostedBlenderControl["controller"]>("unclaimed");
   // A take sent but not yet answered; leaving before the grant arrives must still undo it.
   const takingRef = useRef(false);
+  // Settings and Usage keep the thread mounted under them while the window stays visible.
+  const hiddenThread = use(HiddenThreadContext);
+  const onScreen = useEffectEvent(() => document.visibilityState === "visible" && !hiddenThread);
   const reportFrameSize = useEffectEvent(
     (size: { readonly width: number; readonly height: number }) => props.onFrameSize?.(size),
   );
@@ -571,7 +584,7 @@ function BlenderStream(props: {
       },
     };
     // A pane in a hidden tab or a minimized window is not on screen.
-    const showVisibility = () => client.setVisible(document.visibilityState === "visible");
+    const showVisibility = () => client.setVisible(onScreen());
     showVisibility();
     document.addEventListener("visibilitychange", showVisibility);
     // Real pixels, so HiDPI screens get a sharp stream.
@@ -592,6 +605,11 @@ function BlenderStream(props: {
       changeControl(VIEW_ONLY);
     };
   }, [access, environmentId, threadId, onStats, handleRef, floating]);
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the server when Settings or Usage cover or uncover the thread, without reconnecting
+  useEffect(() => {
+    clientRef.current?.setVisible(document.visibilityState === "visible" && !hiddenThread);
+  }, [hiddenThread]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- while in control, the pane owns the DOM's pointer lock, the keyboard and the desktop app's menu shortcuts
   useEffect(() => {

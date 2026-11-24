@@ -23,8 +23,9 @@ const SLOW_ACKS = 3;
 
 /**
  * The stream's bitrate, from how quickly the lead viewer acknowledges frames. Each ack's delay
- * is judged against the quickest of the last few seconds, so a far viewer's round trip isn't read as
- * congestion: it backs off sharply when frames queue, and rises a step at a time when they don't.
+ * is judged against the quickest of the last few seconds, so a far viewer's round trip isn't
+ * read as congestion: it backs off sharply when frames queue on the link, and rises a step at a
+ * time when they don't.
  */
 export class BitrateControl {
   kbps: number = BITRATE.initialKbps;
@@ -51,11 +52,6 @@ export class BitrateControl {
       Math.max(this.kbps + BITRATE.minIncreaseKbps, Math.round(this.kbps * BITRATE.increaseFactor)),
       now,
     );
-  }
-
-  /** The lead viewer fell so far behind that it skips to the next keyframe. */
-  congested(now: number): number | null {
-    return this.decrease(now);
   }
 
   /** Another viewer leads; its link starts unmeasured. */

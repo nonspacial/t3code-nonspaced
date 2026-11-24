@@ -53,12 +53,11 @@ describe("BitrateControl", () => {
     expect(ackAll(control, 1000, 300, 190)[0]).toBeGreaterThan(BITRATE.initialKbps);
   });
 
-  it("drops straight away when the viewer fell behind, but not twice in a burst", () => {
+  it("holds its rate over a steady link, however far, when frames come faster than acks", () => {
     const control = new BitrateControl();
-    const first = control.congested(0);
-    expect(first).toBeLessThan(BITRATE.initialKbps);
-    expect(control.congested(100)).toBeNull();
-    expect(control.congested(BITRATE.decreaseHoldMs)).toBeLessThan(first!);
+    // 60 fps from Blender, but one frame in flight on a steady 44 ms link: an ack every 44 ms.
+    expect(ackAll(control, 0, 300, 44, 44).every((kbps) => kbps >= BITRATE.initialKbps)).toBe(true);
+    expect(control.kbps).toBeGreaterThanOrEqual(BITRATE.initialKbps);
   });
 
   it("measures a new lead viewer's link afresh", () => {
