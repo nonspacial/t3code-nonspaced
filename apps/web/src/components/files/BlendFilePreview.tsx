@@ -79,6 +79,10 @@ export function BlendFilePreview(props: {
   const gt = useGT();
   const messages = useMessages();
   const { environmentId, source, name } = props;
+  // The last converted view stays up while a refresh or a change converts again.
+  const [shown, setShown] = useState<ReadyStatus | null>(null);
+  // A view converted after a change comes with new scene facts too.
+  const changedAt = shown?.changed === undefined ? 0 : shown.convertedAt;
   const atom =
     source.kind === "file"
       ? revisionedQuery(
@@ -87,7 +91,7 @@ export function BlendFilePreview(props: {
             input: { cwd: source.cwd, relativePath: source.relativePath },
           }),
           source.workspaceMutationId,
-          { detail: String(source.refreshRevision) },
+          { detail: `${source.refreshRevision}:${changedAt}` },
         )
       : projectEnvironment.readBlendAttachmentPreview({
           environmentId,
@@ -117,8 +121,6 @@ export function BlendFilePreview(props: {
     messages,
   );
   const status = request.cancelled ? null : conversion.data;
-  // The last converted view stays up while a refresh converts again.
-  const [shown, setShown] = useState<ReadyStatus | null>(null);
   if (
     status?.status === "ready" &&
     (shown === null ||
@@ -187,7 +189,6 @@ export function BlendFilePreview(props: {
     return (
       <Suspense fallback={<FileSurfaceLoading />}>
         <ModelFilePreview
-          key={glbUrl}
           src={glbUrl}
           name={name}
           format="glb"
@@ -199,7 +200,11 @@ export function BlendFilePreview(props: {
           actions={props.actions}
           view={props.view ?? null}
           annotation={props.annotation ?? null}
-          readyChip={pending ? chip : <ConvertedChip ready={shown} />}
+          readyChip={<ConvertedChip ready={shown} />}
+          updatingChip={
+            shown.changed === undefined ? undefined : <ChangedChip file={shown.changed} />
+          }
+          pendingChip={pending ? chip : undefined}
           facts={facts}
           overlay={action}
         />
@@ -320,6 +325,15 @@ function ConvertingChip(props: { readonly version: string; readonly startedAt: n
   );
 }
 
+function ChangedChip(props: { readonly file: string }) {
+  const gt = useGT();
+  return (
+    <PreviewStatusChip tone="info">
+      {gt("{file} changed · updating…", { file: props.file })}
+    </PreviewStatusChip>
+  );
+}
+
 /** Shows the saved thumbnail's chip until a conversion has something to say. */
 function ConversionChip(props: {
   readonly preview: BlendPreview;
@@ -350,6 +364,9 @@ function ConversionChip(props: {
   }
   if (props.cancelled) {
     return <PreviewStatusChip tone="warning">{gt("Conversion cancelled")}</PreviewStatusChip>;
+  }
+  if ((status?.status === "waiting" || status?.status === "converting") && status.changed) {
+    return <ChangedChip file={status.changed} />;
   }
   switch (status?.status) {
     case "waiting":

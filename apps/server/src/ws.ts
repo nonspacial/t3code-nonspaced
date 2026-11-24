@@ -3166,7 +3166,7 @@ export const layerWsRpc = (
         [WS_METHODS.projectsSubscribeBlendConversion]: (input) =>
           Stream.callback<BlendConversionStatus, BlendPreviewError>((queue) =>
             blendConversion
-              .convert(input, (status) => Queue.offer(queue, status).pipe(Effect.asVoid))
+              .watch(input, (status) => Queue.offer(queue, status).pipe(Effect.asVoid))
               .pipe(
                 Effect.mapError(blendPreviewError(input.relativePath)),
                 Effect.matchCauseEffect({
