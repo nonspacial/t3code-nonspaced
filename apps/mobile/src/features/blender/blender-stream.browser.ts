@@ -26,6 +26,8 @@ const MAX_STREAM_COORDINATE = 7680;
 interface Viewer {
   readonly stream: HostedBlenderStreamClient;
   readonly control: () => HostedBlenderControl;
+  /** The middle of the stream, in stream pixels. */
+  readonly centre: () => { readonly x: number; readonly y: number };
   readonly dispose: () => void;
 }
 
@@ -45,6 +47,9 @@ export function command(next: BlenderStreamCommand) {
       return active.stream.send({ type: "releaseControl" });
     case "shadingPie":
       if (active.control().controller !== "you") return;
+      // Blender opens the pie only over the 3D viewport, and the tap that took control never
+      // moved the pointer there.
+      active.stream.send({ type: "pointer", ...active.centre() });
       active.stream.send({ type: "key", code: KEY_Z, pressed: true });
       active.stream.send({ type: "key", code: KEY_Z, pressed: false });
   }
@@ -97,7 +102,10 @@ export function start(configuration: BlenderStreamConfiguration) {
       onControl: (next) => {
         control = next;
         if (next.controller === "you" && touch === null) {
-          touch = createHostedBlenderTouch({ send: client.send, slop: SLOP_CSS_PIXELS * scale() });
+          touch = createHostedBlenderTouch({
+            send: client.send,
+            slop: () => SLOP_CSS_PIXELS * scale(),
+          });
           touch.setCaptured(captured);
         } else if (next.controller !== "you" && touch !== null) {
           touch.dispose();
@@ -136,7 +144,7 @@ export function start(configuration: BlenderStreamConfiguration) {
     }
   });
   surface.addEventListener("pointermove", (event) => touch?.move(event.pointerId, toStream(event)));
-  surface.addEventListener("pointerup", (event) => touch?.up(event.pointerId, toStream(event)));
+  surface.addEventListener("pointerup", (event) => touch?.up(event.pointerId));
   surface.addEventListener("pointercancel", (event) => touch?.cancel(event.pointerId));
   surface.addEventListener("contextmenu", (event) => event.preventDefault());
 
@@ -151,6 +159,10 @@ export function start(configuration: BlenderStreamConfiguration) {
   active = {
     stream: client,
     control: () => control,
+    centre: () => ({
+      x: Math.round(Math.min(canvas.width, MAX_STREAM_COORDINATE) / 2),
+      y: Math.round(Math.min(canvas.height, MAX_STREAM_COORDINATE) / 2),
+    }),
     dispose: () => {
       observer?.disconnect();
       touch?.dispose();

@@ -15,7 +15,8 @@ const noPermission = Atom.make(false);
 
 /**
  * "Open in hosted Blender" for a workspace `.blend`: starts the thread's hosted Blender with it,
- * then shows Blender. Null when this environment can't, or the caller may not open one.
+ * then shows Blender. Watching a Blender that already has the file open needs no more than
+ * seeing the thread; starting one needs `orchestration:operate`.
  */
 export function useOpenInHostedBlender(
   target: {
@@ -34,7 +35,11 @@ export function useOpenInHostedBlender(
   );
   const open = useAtomCommand(hostedBlenderEnvironment.open, { reportFailure: false });
   const [pending, setPending] = useState(false);
-  if (target === null || !canOpen || state === null || state.status === "unavailable") return null;
+  if (target === null || state === null || state.status === "unavailable") return null;
+  const alreadyOpen =
+    (state.status === "running" || state.status === "starting") &&
+    state.relativePath === target.relativePath;
+  if (!canOpen && !alreadyOpen) return null;
 
   const showBlender = () =>
     navigation.navigate("ThreadBlender", {
@@ -42,9 +47,6 @@ export function useOpenInHostedBlender(
       threadId: String(target.threadId),
     });
   const openFile = async () => {
-    const alreadyOpen =
-      (state.status === "running" || state.status === "starting") &&
-      state.relativePath === target.relativePath;
     // Blender explains what's missing; there is nothing to start yet.
     if (alreadyOpen || state.status === "notSetUp") return showBlender();
     setPending(true);

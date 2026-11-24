@@ -10,7 +10,7 @@ export interface TouchPoint {
 export interface HostedBlenderTouch {
   readonly down: (id: number, point: TouchPoint) => void;
   readonly move: (id: number, point: TouchPoint) => void;
-  readonly up: (id: number, point: TouchPoint) => void;
+  readonly up: (id: number) => void;
   /** The system took the touch: nothing it started clicks, and held input is let go. */
   readonly cancel: (id: number) => void;
   /** Blender holds the mouse (a grab or an orbit), so motion is sent relative. */
@@ -52,11 +52,12 @@ const clampDelta = (value: number) => Math.max(-MAX_DELTA, Math.min(MAX_DELTA, v
 /**
  * Turns touches on the stream into Blender's mouse: one finger orbits (middle drag), two pan
  * (Shift + middle drag), a pinch zooms (wheel notches), a long press right-clicks and a tap
- * left-clicks. `slop` is how far, in stream pixels, a finger moves before it drags.
+ * left-clicks. `slop` is how far, in stream pixels, a finger moves before it drags; it is read
+ * on each touch, so it follows the stream's scale.
  */
 export function createHostedBlenderTouch(options: {
   readonly send: (message: HostedBlenderInputMessage) => void;
-  readonly slop: number;
+  readonly slop: () => number;
 }): HostedBlenderTouch {
   const { send, slop } = options;
   const fingers = new Map<number, TouchPoint>();
@@ -134,7 +135,7 @@ export function createHostedBlenderTouch(options: {
       fingers.set(id, point);
       switch (gesture.kind) {
         case "press": {
-          if (distanceOf(gesture.start, point) <= slop) return;
+          if (distanceOf(gesture.start, point) <= slop()) return;
           clearLongPress();
           pointer(gesture.start);
           button(MIDDLE, true);
@@ -152,7 +153,8 @@ export function createHostedBlenderTouch(options: {
           const centre = centreOf(...both);
           const shift = distanceOf(gesture.centre, centre);
           const spread = Math.abs(distanceOf(...both) - gesture.distance);
-          if (shift <= slop && spread <= slop) return;
+          const threshold = slop();
+          if (shift <= threshold && spread <= threshold) return;
           pointer(gesture.centre);
           if (spread > shift && gesture.distance > 0) {
             gesture = { kind: "pinch", base: Math.log(gesture.distance) };
@@ -179,10 +181,8 @@ export function createHostedBlenderTouch(options: {
         }
       }
     },
-    up: (id, point) => {
-      if (!fingers.has(id)) return;
-      fingers.set(id, point);
-      fingers.delete(id);
+    up: (id) => {
+      if (!fingers.delete(id)) return;
       finishOne(true);
     },
     cancel: (id) => {

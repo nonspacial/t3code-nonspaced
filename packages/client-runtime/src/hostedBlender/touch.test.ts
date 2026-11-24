@@ -1,5 +1,5 @@
 import type { HostedBlenderInputMessage } from "@t3tools/contracts";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { createHostedBlenderTouch } from "./touch.ts";
 
@@ -8,27 +8,22 @@ const RIGHT = 273;
 const MIDDLE = 274;
 const SHIFT = 42;
 
-function gestures() {
+function gestures(slop: () => number = () => 10) {
+  vi.useFakeTimers();
   const sent: HostedBlenderInputMessage[] = [];
-  const touch = createHostedBlenderTouch({ send: (message) => sent.push(message), slop: 10 });
-  return { sent, touch };
+  const touch = createHostedBlenderTouch({ send: (message) => sent.push(message), slop });
+  return { sent, touch, [Symbol.dispose]: () => vi.useRealTimers() };
 }
 
 describe("hosted Blender touch gestures", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
   it("orbits with a one-finger drag as a middle-button drag", () => {
-    const { sent, touch } = gestures();
+    using fixture = gestures();
+    const { sent, touch } = fixture;
     touch.down(1, { x: 100, y: 100 });
     touch.move(1, { x: 104, y: 100 });
     expect(sent).toEqual([]);
     touch.move(1, { x: 130, y: 110 });
-    touch.up(1, { x: 130, y: 110 });
+    touch.up(1);
     expect(sent).toEqual([
       { type: "pointer", x: 100, y: 100 },
       { type: "button", button: MIDDLE, pressed: true },
@@ -38,7 +33,8 @@ describe("hosted Blender touch gestures", () => {
   });
 
   it("sends relative motion while Blender holds the mouse", () => {
-    const { sent, touch } = gestures();
+    using fixture = gestures();
+    const { sent, touch } = fixture;
     touch.down(1, { x: 100, y: 100 });
     touch.move(1, { x: 120, y: 100 });
     touch.setCaptured(true);
@@ -46,10 +42,23 @@ describe("hosted Blender touch gestures", () => {
     expect(sent.at(-1)).toEqual({ type: "pointerMotion", dx: 30, dy: -10 });
   });
 
+  it("judges a drag by the stream's current scale", () => {
+    let slop = 10;
+    using fixture = gestures(() => slop);
+    const { sent, touch } = fixture;
+    slop = 30;
+    touch.down(1, { x: 100, y: 100 });
+    touch.move(1, { x: 120, y: 100 });
+    expect(sent).toEqual([]);
+    touch.move(1, { x: 140, y: 100 });
+    expect(sent[1]).toEqual({ type: "button", button: MIDDLE, pressed: true });
+  });
+
   it("left-clicks on a tap", () => {
-    const { sent, touch } = gestures();
+    using fixture = gestures();
+    const { sent, touch } = fixture;
     touch.down(1, { x: 40, y: 50 });
-    touch.up(1, { x: 42, y: 51 });
+    touch.up(1);
     expect(sent).toEqual([
       { type: "pointer", x: 40, y: 50 },
       { type: "button", button: LEFT, pressed: true },
@@ -58,13 +67,14 @@ describe("hosted Blender touch gestures", () => {
   });
 
   it("right-clicks on a long press, and nothing more until the finger lifts", () => {
-    const { sent, touch } = gestures();
+    using fixture = gestures();
+    const { sent, touch } = fixture;
     touch.down(1, { x: 40, y: 50 });
     vi.advanceTimersByTime(499);
     expect(sent).toEqual([]);
     vi.advanceTimersByTime(1);
     touch.move(1, { x: 140, y: 150 });
-    touch.up(1, { x: 140, y: 150 });
+    touch.up(1);
     expect(sent).toEqual([
       { type: "pointer", x: 40, y: 50 },
       { type: "button", button: RIGHT, pressed: true },
@@ -73,13 +83,14 @@ describe("hosted Blender touch gestures", () => {
   });
 
   it("pans with a two-finger drag as a Shift and middle-button drag", () => {
-    const { sent, touch } = gestures();
+    using fixture = gestures();
+    const { sent, touch } = fixture;
     touch.down(1, { x: 100, y: 100 });
     touch.down(2, { x: 200, y: 100 });
     touch.move(1, { x: 120, y: 130 });
     touch.move(2, { x: 220, y: 130 });
-    touch.up(1, { x: 120, y: 130 });
-    touch.up(2, { x: 220, y: 130 });
+    touch.up(1);
+    touch.up(2);
     expect(sent).toEqual([
       { type: "pointer", x: 150, y: 100 },
       { type: "key", code: SHIFT, pressed: true },
@@ -94,7 +105,8 @@ describe("hosted Blender touch gestures", () => {
   });
 
   it("zooms in on a pinch apart and out on a pinch together, one wheel notch at a time", () => {
-    const { sent, touch } = gestures();
+    using fixture = gestures();
+    const { sent, touch } = fixture;
     touch.down(1, { x: 100, y: 100 });
     touch.down(2, { x: 200, y: 100 });
     // Spread to 1.5× apart around the same centre: ln(1.5) / 0.15 ≈ 2.7 notches.
@@ -102,8 +114,8 @@ describe("hosted Blender touch gestures", () => {
     touch.move(2, { x: 225, y: 100 });
     touch.move(1, { x: 100, y: 100 });
     touch.move(2, { x: 200, y: 100 });
-    touch.up(1, { x: 100, y: 100 });
-    touch.up(2, { x: 200, y: 100 });
+    touch.up(1);
+    touch.up(2);
     const notches = sent.flatMap((message) => (message.type === "scroll" ? [message.steps] : []));
     expect(sent[0]).toEqual({ type: "pointer", x: 150, y: 100 });
     expect(notches.filter((steps) => steps === -1)).toHaveLength(2);
@@ -112,7 +124,8 @@ describe("hosted Blender touch gestures", () => {
   });
 
   it("lets go of a two-finger drag when the third finger or a cancel lands", () => {
-    const { sent, touch } = gestures();
+    using fixture = gestures();
+    const { sent, touch } = fixture;
     touch.down(1, { x: 100, y: 100 });
     touch.down(2, { x: 200, y: 100 });
     touch.move(1, { x: 120, y: 130 });
@@ -126,12 +139,13 @@ describe("hosted Blender touch gestures", () => {
   });
 
   it("releases a held orbit when disposed, and a cancelled tap clicks nothing", () => {
-    const { sent, touch } = gestures();
+    using fixture = gestures();
+    const { sent, touch } = fixture;
     touch.down(1, { x: 100, y: 100 });
     touch.move(1, { x: 150, y: 100 });
     touch.dispose();
     expect(sent.at(-1)).toEqual({ type: "button", button: MIDDLE, pressed: false });
-    const other = gestures();
+    using other = gestures();
     other.touch.down(1, { x: 10, y: 10 });
     other.touch.cancel(1);
     vi.advanceTimersByTime(1000);

@@ -12,21 +12,31 @@ import {
   type HostedBlenderThreadState,
   ThreadId,
 } from "@t3tools/contracts";
-import { useGT, useMessages } from "gt-react-native";
+import { useAtomValue } from "@effect/atom-react";
+import { msg, useGT, useMessages } from "gt-react-native";
 import { type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppText } from "../../components/ui/AppText";
+import * as Dialog from "../../components/ui/Dialog";
 import { Button } from "../../components/ui/Button";
 import { ControlPill } from "../../components/ui/ControlPill";
 import { GlassSurface } from "../../components/ui/GlassSurface";
+import { Menu } from "../../components/ui/Menu";
 import { Notice } from "../../components/ui/Notice";
 import { SheetCloseButton } from "../../components/ui/SheetHeader";
 import { useAppForeground } from "../../lib/appState";
 import { uuidv4 } from "../../lib/uuid";
-import { useHostedBlenderState, useHostedBlenderStreamAccess } from "../../state/hostedBlender";
+import { m } from "../../i18n/messages";
+import {
+  hostedBlenderEnvironment,
+  useHostedBlenderState,
+  useHostedBlenderStreamAccess,
+} from "../../state/hostedBlender";
+import { formatEnvironmentQueryError } from "../../state/query";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import type { BlenderStreamMessage } from "./blender-stream-document";
 import { BlenderStreamWebView, type BlenderStreamRef } from "./BlenderStreamWebView";
@@ -75,6 +85,36 @@ function BlenderScreen(props: {
   const running = blender?.status === "running" ? blender : null;
   const background = themeVariables["--color-sheet-solid"];
   const { canOperate, controller } = running ? control : VIEW_ONLY;
+  const canQuit = useAtomValue(hostedBlenderEnvironment.quit.permissionAtom(props.environmentId));
+  const quit = useAtomCommand(hostedBlenderEnvironment.quit, { reportFailure: false });
+  const [quitting, setQuitting] = useState(false);
+  const quitBlender = async (save: boolean) => {
+    setQuitting(true);
+    const result = await quit({
+      environmentId: props.environmentId,
+      input: { threadId: props.threadId, save },
+    }).finally(() => setQuitting(false));
+    if (result._tag === "Failure") {
+      Dialog.alert(m(msg("Couldn't quit Blender")), formatEnvironmentQueryError(result.cause));
+    }
+  };
+  const askToQuit = () => {
+    if (blender?.status !== "running" && blender?.status !== "starting") return;
+    if (!blender.dirty) return void quitBlender(false);
+    Dialog.alert(
+      gt("Save changes to {name} before quitting?", { name: fileName(blender.relativePath) }),
+      gt("Changes Blender hasn't saved are lost if you quit without saving."),
+      [
+        { text: gt("Cancel"), style: "cancel" },
+        {
+          text: gt("Quit without saving"),
+          style: "destructive",
+          onPress: () => void quitBlender(false),
+        },
+        { text: gt("Save and quit"), onPress: () => void quitBlender(true) },
+      ],
+    );
+  };
   return (
     <View className="flex-1" style={{ backgroundColor: background }}>
       <View className="px-3" style={{ paddingTop: Math.max(insets.top, 12) }}>
@@ -112,6 +152,25 @@ function BlenderScreen(props: {
                 })
               }
             />
+          ) : null}
+          {canQuit && (blender?.status === "running" || blender?.status === "starting") ? (
+            <Menu
+              actions={[
+                {
+                  id: "quit",
+                  title: gt("Quit Blender"),
+                  image: "power",
+                  attributes: quitting ? { disabled: true } : { destructive: true },
+                },
+              ]}
+              isAnchoredToRight
+              title={gt("Blender options")}
+              onPressAction={({ nativeEvent }) => {
+                if (nativeEvent.event === "quit" && !quitting) askToQuit();
+              }}
+            >
+              <ControlPill icon="ellipsis" accessibilityLabel={gt("Blender options")} />
+            </Menu>
           ) : null}
         </GlassSurface>
       </View>
@@ -233,6 +292,7 @@ function BlenderStream({
   const [takenOver, setTakenOver] = useState(false);
   // A new viewer mints a fresh ticket and starts a new WebView.
   const restart = () => {
+    changeControl(VIEW_ONLY);
     setStatus("connecting");
     setViewer(uuidv4());
   };
@@ -295,7 +355,11 @@ function BlenderStream({
             threadId={props.threadId}
             colors={{ background: "#000000", muted: props.muted }}
             onMessage={onMessage}
-            onFailed={() => setStatus("error")}
+            onFailed={() => {
+              // A dead page holds nothing; the server gives control back when it disconnects.
+              changeControl(VIEW_ONLY);
+              setStatus("error");
+            }}
           />
         ) : null}
         {status !== "live" ? (

@@ -1,17 +1,14 @@
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { command, start, stop } from "./blender-stream.browser";
 
 class FakeSocket {
   static OPEN = 1;
-  static sockets: FakeSocket[] = [];
   readonly sent: unknown[] = [];
   readonly listeners = new Map<string, Array<(event: unknown) => void>>();
   readyState = 0;
   binaryType = "blob";
-  constructor(readonly url: string) {
-    FakeSocket.sockets.push(this);
-  }
+  constructor(readonly url: string) {}
   addEventListener(type: string, listener: (event: unknown) => void) {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
   }
@@ -32,8 +29,16 @@ class FakeSocket {
 }
 
 function viewer() {
-  FakeSocket.sockets = [];
-  vi.stubGlobal("WebSocket", FakeSocket);
+  const sockets: FakeSocket[] = [];
+  vi.stubGlobal(
+    "WebSocket",
+    class extends FakeSocket {
+      constructor(url: string) {
+        super(url);
+        sockets.push(this);
+      }
+    },
+  );
   vi.stubGlobal("VideoDecoder", vi.fn());
   vi.stubGlobal("EncodedVideoChunk", vi.fn());
   const posted: Array<Record<string, unknown>> = [];
@@ -51,7 +56,7 @@ function viewer() {
     colors: { background: "black", muted: "gray" },
     labels: { viewport: "Blender viewport" },
   });
-  const socket = FakeSocket.sockets[0]!;
+  const socket = sockets[0]!;
   socket.open();
   // The stream is 800×400 stream pixels, shown at 400×200 CSS pixels.
   const canvas = document.querySelector("canvas")!;
@@ -76,17 +81,22 @@ function viewer() {
         "type" in message &&
         message.type !== "resize",
     );
-  return { socket, posted, touch, input };
+  return {
+    socket,
+    posted,
+    touch,
+    input,
+    [Symbol.dispose]: () => {
+      stop();
+      vi.unstubAllGlobals();
+    },
+  };
 }
 
 describe("mobile Blender stream", () => {
-  afterEach(() => {
-    stop();
-    vi.unstubAllGlobals();
-  });
-
   it("watches the thread's stream and tells the app who is in control", () => {
-    const { socket, posted } = viewer();
+    using fixture = viewer();
+    const { socket, posted } = fixture;
     expect(new URL(socket.url).searchParams.get("threadId")).toBe("thread-1");
     socket.serverSays({ type: "control", canOperate: true, controller: "another-viewer" });
     expect(posted).toContainEqual({
@@ -97,7 +107,8 @@ describe("mobile Blender stream", () => {
   });
 
   it("takes control on the first tap without clicking in Blender", () => {
-    const { socket, touch, input } = viewer();
+    using fixture = viewer();
+    const { socket, touch, input } = fixture;
     socket.serverSays({ type: "control", canOperate: true, controller: "unclaimed" });
     touch("pointerdown", 1, 10, 10);
     touch("pointerup", 1, 10, 10);
@@ -105,7 +116,8 @@ describe("mobile Blender stream", () => {
   });
 
   it("sends nothing from touches when this device may only watch", () => {
-    const { socket, touch, input } = viewer();
+    using fixture = viewer();
+    const { socket, touch, input } = fixture;
     socket.serverSays({ type: "control", canOperate: false, controller: "unclaimed" });
     touch("pointerdown", 1, 10, 10);
     touch("pointermove", 1, 100, 100);
@@ -115,7 +127,8 @@ describe("mobile Blender stream", () => {
   });
 
   it("orbits in stream pixels while in control", () => {
-    const { socket, touch, input } = viewer();
+    using fixture = viewer();
+    const { socket, touch, input } = fixture;
     socket.serverSays({ type: "control", canOperate: true, controller: "you" });
     touch("pointerdown", 1, 100, 50);
     touch("pointermove", 1, 150, 60);
@@ -129,13 +142,16 @@ describe("mobile Blender stream", () => {
   });
 
   it("opens the shading pie with Z, takes over and gives control back on command", () => {
-    const { socket, input } = viewer();
+    using fixture = viewer();
+    const { socket, input } = fixture;
     command({ type: "takeControl", takeOver: true });
     socket.serverSays({ type: "control", canOperate: true, controller: "you" });
     command({ type: "shadingPie" });
     command({ type: "releaseControl" });
     expect(input()).toEqual([
       { type: "takeControl", takeOver: true },
+      // The pie opens where the pointer is, so Z first moves it to the middle of the viewport.
+      { type: "pointer", x: 400, y: 200 },
       { type: "key", code: 44, pressed: true },
       { type: "key", code: 44, pressed: false },
       { type: "releaseControl" },
@@ -143,7 +159,8 @@ describe("mobile Blender stream", () => {
   });
 
   it("lets go of a held orbit when control is taken over", () => {
-    const { socket, touch, input } = viewer();
+    using fixture = viewer();
+    const { socket, touch, input } = fixture;
     socket.serverSays({ type: "control", canOperate: true, controller: "you" });
     touch("pointerdown", 1, 100, 50);
     touch("pointermove", 1, 150, 60);

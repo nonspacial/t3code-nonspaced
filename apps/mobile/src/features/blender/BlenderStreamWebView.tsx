@@ -1,5 +1,5 @@
 import blenderStreamScript from "@t3tools/mobile-blender-stream";
-import { useImperativeHandle, useLayoutEffect, useRef, type Ref } from "react";
+import { useEffectEvent, useImperativeHandle, useLayoutEffect, useRef, type Ref } from "react";
 import { useGT } from "gt-react-native";
 import { Platform } from "react-native";
 import { WebView } from "react-native-webview";
@@ -37,10 +37,22 @@ export function BlenderStreamWebView({
     colors: props.colors,
     labels: { viewport: gt("Blender viewport") },
   } satisfies BlenderStreamConfiguration);
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- stops the WebView's stream (its WebSocket and decoder) when this view unmounts
+  const bootstrapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearBootstrapTimer = () => {
+    if (bootstrapTimer.current !== null) clearTimeout(bootstrapTimer.current);
+    bootstrapTimer.current = null;
+  };
+  const bootstrapTimedOut = useEffectEvent(() => props.onFailed());
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- times out a page that never reports, and stops the WebView's stream (its WebSocket and decoder) when this view unmounts
   useLayoutEffect(() => {
     const view = webView.current;
-    return () => view?.injectJavaScript("window.T3BlenderStream?.stop(); true;");
+    // As the device viewer's: a page that loads but never starts its script reports nothing.
+    bootstrapTimer.current = setTimeout(bootstrapTimedOut, 15_000);
+    return () => {
+      if (bootstrapTimer.current !== null) clearTimeout(bootstrapTimer.current);
+      bootstrapTimer.current = null;
+      view?.injectJavaScript("window.T3BlenderStream?.stop(); true;");
+    };
   }, []);
   useImperativeHandle(ref, () => ({
     command: (command) =>
@@ -71,6 +83,7 @@ export function BlenderStreamWebView({
       setSupportMultipleWindows={false}
       style={{ flex: 1, backgroundColor: props.colors.background }}
       onError={props.onFailed}
+      onHttpError={props.onFailed}
       onContentProcessDidTerminate={props.onFailed}
       onRenderProcessGone={props.onFailed}
       onShouldStartLoadWithRequest={(request) =>
@@ -78,7 +91,9 @@ export function BlenderStreamWebView({
       }
       onMessage={(event) => {
         const message = blenderStreamMessage(event.nativeEvent.data);
-        if (message !== null) props.onMessage(message);
+        if (message === null) return;
+        clearBootstrapTimer();
+        props.onMessage(message);
       }}
     />
   );
