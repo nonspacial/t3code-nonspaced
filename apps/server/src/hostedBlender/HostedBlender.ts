@@ -426,6 +426,9 @@ const make = Effect.gen(function* () {
     switch (event.type) {
       case "ready": {
         instance.stats = { encoder: event.encoder, target: event.target };
+        // Sizes asked for before the helper ran went nowhere; ask for the wanted one now.
+        instance.displaySize = `${event.width}x${event.height}`;
+        yield* applySize(instance);
         instance.capturing = true;
         yield* applyCapture(instance);
         const stats = statsMessage(instance);
