@@ -36,6 +36,8 @@ export function filePreviewReadErrorMessage(
       return resolve(msg("This file is not a Blender file, or it is damaged."));
     case "blend_file_too_large":
       return resolve(msg("This Blender file is too large to read its details."));
+    case "attachment_not_found":
+      return resolve(msg("This attachment is no longer available."));
     case "operation_failed":
       return error.operation === "realpath-workspace-root"
         ? resolve(msg("The workspace folder could not be accessed."))

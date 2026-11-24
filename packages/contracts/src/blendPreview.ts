@@ -51,7 +51,7 @@ export type BlendPreview = typeof BlendPreview.Type;
 
 export const BlendPreviewFailure = Schema.Union([
   ProjectFileFailure,
-  Schema.Literals(["unreadable_blend_file", "blend_file_too_large"]),
+  Schema.Literals(["unreadable_blend_file", "blend_file_too_large", "attachment_not_found"]),
 ]);
 export type BlendPreviewFailure = typeof BlendPreviewFailure.Type;
 
@@ -71,6 +71,8 @@ export class BlendPreviewError extends Schema.TaggedError<BlendPreviewError>()(
         return `'${this.relativePath}' is not a .blend file, or it is damaged.`;
       case "blend_file_too_large":
         return `'${this.relativePath}' is too large to read its details.`;
+      case "attachment_not_found":
+        return `Attachment '${this.relativePath}' is no longer available.`;
       default:
         return `Could not read '${this.relativePath}' (${this.failure}).`;
     }

@@ -3128,7 +3128,7 @@ export const layerWsRpc = (
                   relativePath: input.attachmentId,
                   failure:
                     cause._tag === "BlendAttachmentNotFoundError"
-                      ? "path_not_file"
+                      ? "attachment_not_found"
                       : cause.problem === "too_large"
                         ? "blend_file_too_large"
                         : "unreadable_blend_file",
