@@ -729,16 +729,23 @@ export const layerWithOptions = (
                 return { mcpCredentialId: credential.config.providerSessionId, issued: true };
               }),
             );
+      // A hosted Blender listens for the thread's agent only while its session holds the MCP.
+      const endHostedBlenderAccess = (threadId: ThreadId) =>
+        Option.isNone(hostedBlenderAgents)
+          ? Effect.void
+          : hostedBlenderAgents.value.sessionEnded(threadId);
       const clearMcpSession = (threadId: ThreadId, mcpCredentialId?: string) =>
         mcpCredentialId === undefined
-          ? mcpSessionRegistry
-              .revokeThread(threadId)
-              .pipe(Effect.tap(() => mcpSessions.clear(threadId)))
+          ? mcpSessionRegistry.revokeThread(threadId).pipe(
+              Effect.tap(() => mcpSessions.clear(threadId)),
+              Effect.tap(() => endHostedBlenderAccess(threadId)),
+            )
           : mcpSessionRegistry.revokeProviderSession(mcpCredentialId).pipe(
               Effect.tap(() =>
                 Effect.gen(function* () {
                   if ((yield* mcpSessions.read(threadId))?.providerSessionId === mcpCredentialId) {
                     yield* mcpSessions.clear(threadId);
+                    yield* endHostedBlenderAccess(threadId);
                   }
                 }),
               ),

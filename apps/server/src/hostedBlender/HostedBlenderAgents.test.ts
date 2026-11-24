@@ -10,7 +10,10 @@ import type { HostedBlenderMcpLaunch } from "@t3tools/provider-core/server/mcpSe
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as NetService from "@t3tools/shared/Net";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../config.ts";
@@ -29,17 +32,44 @@ const READY: HostedBlenderSetup.HostedBlenderReadiness = {
   blenderMcp: "/home/user/.local/bin/blender-mcp",
 };
 
+/** Test settings whose writes reach `subscribeChanges`, which `layerTest` never streams. */
+const changingSettings = (initial: {
+  readonly hostedBlenderEnabled: boolean;
+  readonly hostedBlenderAllowAgents: boolean;
+}) =>
+  Layer.effect(
+    ServerSettings.ServerSettingsService,
+    Effect.gen(function* () {
+      const base = yield* ServerSettings.ServerSettingsService;
+      const changes = yield* PubSub.unbounded<Effect.Success<typeof base.getSettings>>();
+      let current = { ...(yield* base.getSettings), ...initial };
+      return {
+        ...base,
+        getSettings: Effect.sync(() => current),
+        updateSettings: (patch) =>
+          Effect.gen(function* () {
+            current = { ...current, ...patch } as typeof current;
+            yield* PubSub.publish(changes, current);
+            return current;
+          }),
+        subscribeChanges: Effect.map(PubSub.subscribe(changes), Stream.fromSubscription),
+      };
+    }),
+  ).pipe(Layer.provide(ServerSettings.ServerSettingsService.layerTest()));
+
 const layerFor = (input: {
   readonly enabled?: boolean;
   readonly allowAgents?: boolean;
   readonly readiness?: HostedBlenderSetup.HostedBlenderReadiness;
   readonly checks?: Array<"check">;
+  /** What the loopback probe answers, in turn, instead of real free ports. */
+  readonly probes?: Array<number>;
 }) =>
   HostedBlenderAgents.layerFollowSetup.pipe(
     Layer.provideMerge(HostedBlenderAgents.layer),
     Layer.provideMerge(
       Layer.mergeAll(
-        ServerSettings.ServerSettingsService.layerTest({
+        changingSettings({
           hostedBlenderEnabled: input.enabled ?? true,
           hostedBlenderAllowAgents: input.allowAgents ?? true,
         }),
@@ -56,7 +86,11 @@ const layerFor = (input: {
           }),
         ),
         McpProviderSessions.layer,
-        NetService.layer,
+        input.probes === undefined
+          ? NetService.layer
+          : Layer.mock(NetService.NetService)({
+              reserveLoopbackPort: () => Effect.sync(() => input.probes!.shift() ?? 0),
+            }),
         ServerConfig.layerTest(process.cwd(), { prefix: "t3-hosted-blender-agents-" }),
       ),
     ),
@@ -131,12 +165,10 @@ describe("HostedBlenderAgents.listenerPort", () => {
     Effect.gen(function* () {
       const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
       assert.isNull(yield* agents.listenerPort(threadId));
-      assert.isFalse(yield* agents.listening(threadId));
 
       const launch = yield* agents.sessionLaunch({ threadId, driver: claude });
       yield* startSession(launch);
       assert.equal(yield* agents.listenerPort(threadId), launch?.hostedPort);
-      assert.isTrue(yield* agents.listening(threadId));
     }).pipe(Effect.provide(layerFor({}))),
   );
 
@@ -148,8 +180,48 @@ describe("HostedBlenderAgents.listenerPort", () => {
         hostedBlenderAllowAgents: false,
       });
       assert.isNull(yield* agents.listenerPort(threadId));
-      assert.isFalse(yield* agents.listening(threadId));
     }).pipe(Effect.provide(layerFor({}))),
+  );
+
+  it.effect("never hands a port out twice, even when the probe repeats one", () =>
+    Effect.gen(function* () {
+      const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
+      const first = yield* agents.sessionLaunch({ threadId, driver: claude });
+      const second = yield* agents.sessionLaunch({
+        threadId: ThreadId.make("thread-second"),
+        driver: codex,
+      });
+      assert.deepEqual(
+        [first?.hostedPort, first?.masterPort, second?.hostedPort, second?.masterPort],
+        [41000, 41001, 41002, 41003],
+      );
+    }).pipe(
+      Effect.provide(layerFor({ probes: [41000, 41000, 41001, 41001, 41000, 41002, 41003] })),
+    ),
+  );
+});
+
+describe("HostedBlenderAgents.revocations", () => {
+  it.effect("revokes every thread when Allow agents is switched off", () =>
+    Effect.gen(function* () {
+      const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
+      const next = yield* agents.revocations.pipe(Stream.runHead, Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* (yield* ServerSettings.ServerSettingsService).updateSettings({
+        hostedBlenderAllowAgents: false,
+      });
+      assert.deepEqual(yield* Fiber.join(next), Option.some(null));
+    }).pipe(Effect.scoped, Effect.provide(layerFor({}))),
+  );
+
+  it.effect("revokes a thread whose session ended", () =>
+    Effect.gen(function* () {
+      const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
+      const next = yield* agents.revocations.pipe(Stream.runHead, Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* agents.sessionEnded(threadId);
+      assert.deepEqual(yield* Fiber.join(next), Option.some(threadId));
+    }).pipe(Effect.scoped, Effect.provide(layerFor({}))),
   );
 });
 

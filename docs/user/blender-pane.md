@@ -36,11 +36,11 @@ With **Allow agents to start hosted Blenders** on, Claude and Codex threads can 
 
 Ask the agent to change a `.blend`, say `models/hero.blend`. It doesn't edit that file: T3 Code copies it to `models/hero.wip-<id>.blend` beside it, where links to other files still work, and opens the copy in the thread's hosted Blender. The agent edits the copy, and posts a link to it when it's done or when you ask to watch; the link opens the Blender pane, and a link with a view moves your viewport window to what it points at. The copy stays in your project after the thread ends. To have the agent work in your own Blender instead, say so.
 
-What the agent may do without asking follows the thread's access mode. In **Full access** it uses every Blender tool freely. In the other modes it reads the scene, takes screenshots and searches the docs freely, and asks before it runs code or writes files. In Plan mode it can only look. Changing the mode applies from the next turn.
+What the agent may do without asking follows the thread's access mode. In **Full access** it uses every Blender tool freely. In the other modes it reads the scene, takes screenshots and searches the docs freely, and asks before it runs code or writes files. In Plan mode it can only look: it can't start or quit Blender, and embedded scripts stay off. Changing the mode applies from the next turn.
 
 While the agent is running something in Blender, the composer says **Working in Blender**, with **Stop** to stop the turn.
 
-A hosted Blender you opened yourself before the agent's session started can't take the agent's calls; the agent quits it, saving first, and starts it again.
+Only the working copy the agent started takes its calls. A file you opened from the pane, even the working copy, doesn't; the agent quits it, saving first, and starts it again. Switching **Allow agents to start hosted Blenders** off, or the thread's agent session ending, closes the agent's connection to Blender at once; Blender keeps running, and you can still watch and use it in the pane.
 
 ## Watching
 

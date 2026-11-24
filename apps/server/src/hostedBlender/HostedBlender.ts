@@ -83,7 +83,12 @@ const CONTROL_REPLY_TIMEOUT = Duration.seconds(5);
 // T3's control add-on speaks JSON lines on its private socket; see controlAddon.ts.
 const ControlMessage = Schema.Union([
   Schema.Struct({ type: Schema.Literal("hello"), pid: Schema.Int }),
-  Schema.Struct({ type: Schema.Literal("state"), filepath: Schema.String, dirty: Schema.Boolean }),
+  Schema.Struct({
+    type: Schema.Literal("state"),
+    filepath: Schema.String,
+    dirty: Schema.Boolean,
+    agentListener: Schema.optional(Schema.Literals(["off", "starting", "ready", "failed"])),
+  }),
   Schema.Struct({ type: Schema.Literal("saving") }),
   Schema.Struct({ type: Schema.Literal("saved") }),
   Schema.Struct({ type: Schema.Literal("quitFailed"), reason: Schema.Literal("saveFailed") }),
@@ -91,6 +96,14 @@ const ControlMessage = Schema.Union([
   Schema.Struct({ type: Schema.Literal("reply"), id: Schema.Int, result: Schema.Unknown }),
 ]);
 const decodeControlMessage = Schema.decodeUnknownOption(Schema.fromJsonString(ControlMessage));
+const STOP_AGENT_LISTENER = `${Schema.encodeSync(
+  Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("stopAgentListener") })),
+)({ type: "stopAgentListener" })}\n`;
+// Blender loads the file and the official add-on before its listener can come up.
+const AGENT_LISTENER_TIMEOUT = Duration.seconds(90);
+
+/** Whether the official add-on takes the thread's `blender-hosted` calls. */
+export type AgentListenerState = "off" | "starting" | "ready" | "failed";
 const encodeControlCommand = Schema.encodeSync(
   Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("quit"), save: Schema.Boolean })),
 );
@@ -159,7 +172,22 @@ export type HostedBlenderAttachResult =
 export class HostedBlender extends Context.Service<
   HostedBlender,
   {
-    readonly open: (input: HostedBlenderOpenInput) => Effect.Effect<void, HostedBlenderError>;
+    /**
+     * `agentWorkingCopy`: `blender_start` opens the thread's working copy, the only file whose
+     * Blender listens for the thread's agent.
+     */
+    readonly open: (
+      input: HostedBlenderOpenInput,
+      options?: { readonly agentWorkingCopy?: boolean },
+    ) => Effect.Effect<void, HostedBlenderError>;
+    /**
+     * The thread's agent listener, or null with no hosted Blender. `wait` waits for a starting
+     * listener to settle; one that never does counts as failed.
+     */
+    readonly agentListener: (
+      threadId: ThreadId,
+      options?: { readonly wait?: boolean },
+    ) => Effect.Effect<AgentListenerState | null>;
     readonly quit: (input: HostedBlenderQuitInput) => Effect.Effect<void, HostedBlenderError>;
     readonly threadState: (threadId: ThreadId) => Stream.Stream<HostedBlenderThreadState>;
     /** `canOperate`: the viewer may take control (`terminal:operate`). */
@@ -225,6 +253,12 @@ interface Instance {
   fiber: Fiber.Fiber<void> | null;
   /** Set by `quit`, so stopping a Blender that is still starting doesn't read as a failed start. */
   quitting: boolean;
+  readonly agentWorkingCopy: boolean;
+  agentListener: AgentListenerState;
+  /** Done once the listener is ready, failed or off. */
+  readonly agentListenerSettled: Deferred.Deferred<void>;
+  /** The thread lost agent access; the listener stays off until Blender restarts. */
+  agentListenerRevoked: boolean;
   /**
    * Which viewer controls the mouse and keyboard. There is no agent side: the agent works
    * through its own MCP connection, so a viewer in control never pauses it.
@@ -530,6 +564,23 @@ const make = Effect.gen(function* () {
     yield* publishNow();
   });
 
+  const setAgentListener = Effect.fnUntraced(function* (
+    instance: Instance,
+    state: AgentListenerState,
+  ) {
+    instance.agentListener = state;
+    if (state !== "starting") yield* Deferred.succeed(instance.agentListenerSettled, undefined);
+  });
+
+  // Switching agents off, or the thread's session ending, closes the listener and every
+  // connection to it. The pane keeps working.
+  const revokeAgentListener = Effect.fnUntraced(function* (instance: Instance) {
+    if (instance.agentListener === "off" || instance.agentListenerRevoked) return;
+    instance.agentListenerRevoked = true;
+    yield* setAgentListener(instance, "off");
+    if (instance.control) yield* instance.control.write(STOP_AGENT_LISTENER);
+  });
+
   const handleControlLine = Effect.fnUntraced(function* (instance: Instance, line: string) {
     const message = decodeControlMessage(line);
     if (Option.isNone(message)) return;
@@ -537,10 +588,15 @@ const make = Effect.gen(function* () {
       case "hello":
         instance.pid = message.value.pid;
         return;
-      case "state":
+      case "state": {
+        const listener = message.value.agentListener;
+        if (listener !== undefined && !instance.agentListenerRevoked) {
+          yield* setAgentListener(instance, listener);
+        }
         if (instance.dirty === message.value.dirty) return;
         instance.dirty = message.value.dirty;
         return yield* publishNow();
+      }
       case "saving":
       case "saved":
       case "quitFailed":
@@ -566,6 +622,8 @@ const make = Effect.gen(function* () {
       const closed = yield* Deferred.make<void>();
       yield* Effect.addFinalizer(() => Deferred.succeed(closed, undefined));
       instance.control = { write: (line) => writer.write(line).pipe(Effect.ignore), closed };
+      // Revoked before the add-on could hear it: its own start may have run since.
+      if (instance.agentListenerRevoked) yield* instance.control.write(STOP_AGENT_LISTENER);
       const decoder = new TextDecoder();
       let buffer = "";
       return yield* Effect.forever(
@@ -662,14 +720,15 @@ const make = Effect.gen(function* () {
       yield* fileSystem.chmod(controlDir, 0o700);
       const controlSocket = path.join(controlDir, "control.sock");
       instance.controlDir = controlDir;
-      const agentPort = Option.isSome(agents)
-        ? yield* agents.value.listenerPort(instance.threadId)
-        : null;
+      const agentPort =
+        Option.isSome(agents) && instance.agentWorkingCopy
+          ? yield* agents.value.listenerPort(instance.threadId)
+          : null;
+      if (agentPort === null) yield* setAgentListener(instance, "off");
       const mcpPort = agentPort ?? (yield* net.reserveLoopbackPort());
-      const runtimeMode = yield* ThreadManagementService.ThreadManagementService.pipe(
+      const shell = yield* ThreadManagementService.ThreadManagementService.pipe(
         Effect.flatMap((threads) => threads.getThreadShell(instance.threadId)),
-        Effect.map((shell) => shell?.runtimeMode),
-        Effect.orElseSucceed(() => undefined),
+        Effect.orElseSucceed(() => null),
         Effect.provideContext(lookupContext),
       );
       // The file `open` checked must still be that file, not a link swapped in since.
@@ -690,7 +749,8 @@ const make = Effect.gen(function* () {
               controlSocket,
               mcpPort,
               mcpListen: agentPort !== null,
-              autoRun: runtimeMode === "full-access",
+              // Plan mode is read-only, whatever the runtime mode.
+              autoRun: shell?.runtimeMode === "full-access" && shell.interactionMode !== "plan",
               ...INITIAL_SIZE,
             }),
             {
@@ -802,10 +862,10 @@ const make = Effect.gen(function* () {
   const threadRoot = (threadId: ThreadId) =>
     threadWorkspaceRoot(threadId).pipe(Effect.provideContext(lookupContext));
 
-  const open: HostedBlender["Service"]["open"] = Effect.fn("HostedBlender.open")(function* ({
-    threadId,
-    relativePath,
-  }) {
+  const open: HostedBlender["Service"]["open"] = Effect.fn("HostedBlender.open")(function* (
+    { threadId, relativePath },
+    options,
+  ) {
     yield* Effect.annotateCurrentSpan({ threadId });
     // Opening is the pane's first use, by a caller allowed to start programs here.
     yield* setup.ensureChecked;
@@ -868,6 +928,10 @@ const make = Effect.gen(function* () {
       lastRequestId: 0,
       fiber: null,
       quitting: false,
+      agentWorkingCopy: options?.agentWorkingCopy === true,
+      agentListener: "starting",
+      agentListenerSettled: yield* Deferred.make<void>(),
+      agentListenerRevoked: false,
       session: new SessionControl(null),
       held: new HeldInput(),
       cursorCaptured: false,
@@ -1204,8 +1268,38 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const agentListener: HostedBlender["Service"]["agentListener"] = Effect.fn(
+    "HostedBlender.agentListener",
+  )(function* (threadId, options) {
+    const instance = instances.get(threadId);
+    if (instance === undefined) return null;
+    if (options?.wait === false) return instance.agentListener;
+    yield* Deferred.await(instance.agentListenerSettled).pipe(
+      Effect.raceFirst(Deferred.await(instance.ended)),
+      Effect.timeoutOption(AGENT_LISTENER_TIMEOUT),
+    );
+    // A listener that never came up is treated as failed, never as open.
+    return instance.agentListener === "starting" ? "failed" : instance.agentListener;
+  });
+
+  if (Option.isSome(agents)) {
+    yield* agents.value.revocations.pipe(
+      Stream.runForEach((threadId) =>
+        Effect.forEach(
+          [...instances.values()].filter(
+            (instance) => threadId === null || instance.threadId === threadId,
+          ),
+          revokeAgentListener,
+          { discard: true },
+        ),
+      ),
+      Effect.forkIn(serviceScope),
+    );
+  }
+
   return HostedBlender.of({
     open,
+    agentListener,
     quit,
     threadState,
     attachViewer,

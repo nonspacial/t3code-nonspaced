@@ -8,13 +8,20 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as PubSub from "effect/PubSub";
 import type * as Scope from "effect/Scope";
+import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as HostedBlenderSetup from "./HostedBlenderSetup.ts";
+
+class HostedBlenderPortError extends Schema.TaggedError<HostedBlenderPortError>()(
+  "HostedBlenderPortError",
+  {},
+) {}
 
 /** The providers T3 adds the hosted Blender MCP to, the same two that get agentcast upstream. */
 const SUPPORTED_DRIVERS: ReadonlySet<string> = new Set(["claudeAgent", "codex"]);
@@ -42,8 +49,13 @@ export class HostedBlenderAgents extends Context.Service<
      * connections, any local process could reach this port.
      */
     readonly listenerPort: (threadId: ThreadId) => Effect.Effect<number | null>;
-    /** Whether the thread's latest hosted Blender started with its agent listener on. */
-    readonly listening: (threadId: ThreadId) => Effect.Effect<boolean>;
+    /**
+     * Threads whose agents lost access to their hosted Blender: the thread's session ended, or
+     * null when "Allow agents" was switched off for every thread.
+     */
+    readonly revocations: Stream.Stream<ThreadId | null>;
+    /** The thread's provider session ended and its MCP config is gone. */
+    readonly sessionEnded: (threadId: ThreadId) => Effect.Effect<void>;
     /** "Allow agents to start hosted Blenders", read now. */
     readonly agentsAllowed: Effect.Effect<boolean>;
     /**
@@ -65,7 +77,9 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
 
   const ports = new Map<ThreadId, { readonly hosted: number; readonly master: number }>();
-  const listeners = new Map<ThreadId, boolean>();
+  // Every port handed out, so two threads or roles never share one.
+  const assignedPorts = new Set<number>();
+  const revoked = yield* PubSub.unbounded<ThreadId | null>();
   let readiness: HostedBlenderSetup.HostedBlenderReadiness | null = null;
   const portLock = yield* Semaphore.make(1);
   const tmpDir = path.join(config.stateDir, "hosted-blender", "mcp-tmp");
@@ -76,15 +90,21 @@ const make = Effect.gen(function* () {
     Effect.orElseSucceed(() => false),
   );
 
+  const freshPort = net.reserveLoopbackPort().pipe(
+    Effect.repeat({ until: (port) => !assignedPorts.has(port), times: 20 }),
+    Effect.filterOrFail(
+      (port) => !assignedPorts.has(port),
+      () => new HostedBlenderPortError(),
+    ),
+    Effect.tap((port) => Effect.sync(() => assignedPorts.add(port))),
+  );
+
   const portsFor = (threadId: ThreadId) =>
     portLock.withPermits(1)(
       Effect.gen(function* () {
         const known = ports.get(threadId);
         if (known !== undefined) return known;
-        const assigned = {
-          hosted: yield* net.reserveLoopbackPort(),
-          master: yield* net.reserveLoopbackPort(),
-        };
+        const assigned = { hosted: yield* freshPort, master: yield* freshPort };
         ports.set(threadId, assigned);
         return assigned;
       }),
@@ -125,7 +145,6 @@ const make = Effect.gen(function* () {
       session?.hostedBlender !== undefined && (yield* agentsAllowed)
         ? session.hostedBlender.hostedPort
         : null;
-    listeners.set(threadId, port !== null);
     return port;
   });
 
@@ -145,11 +164,22 @@ const make = Effect.gen(function* () {
     },
   );
 
+  // Switching "Allow agents" off revokes every thread's listener at once.
+  const changes = yield* settings.subscribeChanges;
+  yield* changes.pipe(
+    Stream.map((value) => value.hostedBlenderEnabled && value.hostedBlenderAllowAgents),
+    Stream.changes,
+    Stream.filter((allowed) => !allowed),
+    Stream.runForEach(() => PubSub.publish(revoked, null)),
+    Effect.forkScoped,
+  );
+
   return HostedBlenderAgents.of({
     sessionLaunch,
     listenerPort,
-    listening: Effect.fn("HostedBlenderAgents.listening")(function* (threadId) {
-      return listeners.get(threadId) === true;
+    revocations: Stream.fromPubSub(revoked),
+    sessionEnded: Effect.fn("HostedBlenderAgents.sessionEnded")(function* (threadId) {
+      yield* PubSub.publish(revoked, threadId);
     }),
     agentsAllowed,
     followSetup,

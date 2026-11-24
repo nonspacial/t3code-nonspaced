@@ -65,6 +65,8 @@ const layerFor = (input: {
   readonly state: HostedBlenderThreadState;
   readonly allowed?: boolean;
   readonly quits?: Array<HostedBlenderQuitInput>;
+  readonly plan?: boolean;
+  readonly listener?: HostedBlender.AgentListenerState;
 }) =>
   McpHttpServer.layerHostedBlenderToolkit.pipe(
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
@@ -72,6 +74,7 @@ const layerFor = (input: {
       Layer.mergeAll(
         Layer.mock(HostedBlender.HostedBlender)({
           threadState: () => Stream.succeed(input.state),
+          agentListener: () => Effect.succeed(input.listener ?? "ready"),
           quit: (quit) =>
             Effect.sync(() => {
               input.quits?.push(quit);
@@ -79,12 +82,15 @@ const layerFor = (input: {
         }),
         Layer.mock(HostedBlenderAgents.HostedBlenderAgents)({
           agentsAllowed: Effect.succeed(input.allowed ?? true),
-          listening: () => Effect.succeed(true),
+          revocations: Stream.never,
         }),
         Layer.mock(ThreadManagement.ThreadManagementService)({
           getThreadShell: (id) =>
             Effect.succeed({
-              ...McpToolAccessTestkit.liveThreadShell(id),
+              ...McpToolAccessTestkit.liveThreadShell(
+                id,
+                input.plan === true ? { interactionMode: "plan" } : {},
+              ),
               worktreePath: workspace,
             }),
         }),
@@ -199,4 +205,28 @@ describe("hosted Blender MCP tools", () => {
       expect(JSON.stringify(result.content)).toContain("switched off");
     }).pipe(Effect.provide(layerFor({ state: running, allowed: false }))),
   );
+
+  it.effect("reports no agent access until Blender Lab's listener is ready", () =>
+    Effect.gen(function* () {
+      const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
+      expect(status.structuredContent).toMatchObject({ blenders: [{ agentAccess: false }] });
+    }).pipe(Effect.provide(layerFor({ state: running, listener: "starting" }))),
+  );
+
+  it.effect("keeps Plan mode read-only: status works, start and quit are refused", () => {
+    const quits: Array<HostedBlenderQuitInput> = [];
+    return Effect.gen(function* () {
+      const scope = threadCaller(["hosted-blender"]);
+      expect((yield* call("blender_status", {}, scope)).isError).toBe(false);
+      for (const [name, args] of [
+        ["blender_start", { path: "hero.blend" }],
+        ["blender_quit", { save: true }],
+      ] as const) {
+        const refused = yield* call(name, args, scope);
+        expect(refused.isError).toBe(true);
+        expect(JSON.stringify(refused.content)).toContain("Plan mode is read-only");
+      }
+      expect(quits).toEqual([]);
+    }).pipe(Effect.provide(layerFor({ state: running, quits, plan: true })));
+  });
 });

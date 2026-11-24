@@ -36,7 +36,10 @@ import {
   type ClaudeLedgerUsage,
   type ClaudeModelLedger,
 } from "../../provider/ClaudeTurnTokenUsage.ts";
-import { claudeHostedBlenderOverrides } from "../../provider/hostedBlenderMcp.ts";
+import {
+  claudeHostedBlenderOverrides,
+  claudeHostedBlenderToolDecision,
+} from "../../provider/hostedBlenderMcp.ts";
 import { toMcpElicitationResponse } from "../../provider/CodexMcpElicitation.ts";
 import {
   type CanUseTool,
@@ -12994,7 +12997,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             } satisfies PermissionResult;
           }
 
-          if (!requiresClaudeApproval(context)) {
+          const blenderDecision = claudeHostedBlenderToolDecision(
+            toolName,
+            context.input.runtimePolicy,
+          );
+          if (blenderDecision === "deny") {
+            return {
+              behavior: "deny",
+              message:
+                "Plan mode offers only read-only Blender tools: scene summaries, screenshots and doc search.",
+              toolUseID: callbackOptions.toolUseID,
+            } satisfies PermissionResult;
+          }
+          if (!requiresClaudeApproval(context) && blenderDecision !== "ask") {
             return {
               behavior: "allow",
               updatedInput: toolInput,

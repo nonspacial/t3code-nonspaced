@@ -5971,6 +5971,89 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       return { first, decision };
     });
 
+    it.effect(
+      "asks before a hosted Blender write in Auto, which Claude would forward as allowed",
+      () =>
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+            runtimeMode: "auto",
+            interactionMode: "default",
+            cwd: "/workspace",
+          });
+          const input = makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-claude-blender-write"),
+            text: "Make the cape red.",
+            attachments: [],
+            runtimePolicy,
+          });
+          yield* harness.runtime.startTurn({
+            ...input,
+            appThread: { ...input.appThread, runtimeMode: "auto", interactionMode: "default" },
+          });
+          const canUseTool = harness.getOpenedOptions()?.canUseTool;
+          assert.isDefined(canUseTool);
+          const turn = { ...harness, canUseTool: canUseTool! };
+          const read = yield* requestWrite(
+            turn,
+            "mcp__blender-hosted__get_objects_summary",
+            {},
+            {
+              toolUseID: "tool-blender-read",
+            },
+          );
+          assert.equal(read.first.type, "decision");
+          const write = yield* requestWrite(
+            turn,
+            "mcp__blender-hosted__execute_blender_code",
+            { code: "bpy.data.materials['Cape'].diffuse_color = (1, 0, 0, 1)" },
+            { toolUseID: "tool-blender-write" },
+          );
+          assert.equal(write.first.type, "request");
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
+          ),
+        ),
+    );
+
+    it.effect("refuses a hosted Blender write in Plan, even one Blender Lab adds later", () =>
+      Effect.gen(function* () {
+        const turn = yield* openPlanTurn("full-access");
+        for (const tool of ["execute_blender_code", "a_new_writer"]) {
+          const { first } = yield* requestWrite(
+            turn,
+            `mcp__blender-hosted__${tool}`,
+            {},
+            {
+              toolUseID: `tool-plan-${tool}`,
+            },
+          );
+          assert.equal(first.type, "decision");
+          assert.equal(first.type === "decision" ? first.result?.behavior : undefined, "deny");
+        }
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+    );
+
     it.effect.each([
       {
         runtimeMode: "auto",

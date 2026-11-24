@@ -29,6 +29,9 @@ HIT_BUDGET = 0.1
 
 
 class _State:
+    # "off", "starting", "ready" or "failed": whether Blender Lab's listener takes agent calls.
+    agent_listener = "starting" if MCP_LISTEN else "off"
+    mcp_name = None
     server = None
     client = None
     buffer = b""
@@ -77,7 +80,12 @@ def _drop_client():
 
 
 def _snapshot():
-    return {"type": "state", "filepath": bpy.data.filepath, "dirty": bool(bpy.data.is_dirty)}
+    return {
+        "type": "state",
+        "filepath": bpy.data.filepath,
+        "dirty": bool(bpy.data.is_dirty),
+        "agentListener": _State.agent_listener,
+    }
 
 
 def _main_window():
@@ -283,6 +291,9 @@ def _handle(command):
             result = None
         _send({"type": "reply", "id": command.get("id"), "result": result})
         return
+    if kind == "stopAgentListener":
+        _stop_agent_listener()
+        return
     if kind == "quit":
         if command.get("save"):
             # Answered before the save, which blocks Blender for as long as a big file takes.
@@ -346,9 +357,10 @@ def _is_mcp_addon(name):
 
 def _setup_mcp_addon():
     # The official MCP add-on runs agent code, so it listens only for a thread whose agent
-    # session uses it (--t3-mcp-listen), on the port T3 assigned. Otherwise disabling it for
-    # the session (not in the settings) runs its unregister, which cancels the autostart timer
-    # it registered before this script ran. T3's wrapper for the listener belongs here.
+    # session uses it (--t3-mcp-listen), on the port T3 assigned, started by T3 rather than by its
+    # own autostart. Otherwise disabling it for the session (not in the settings) runs its
+    # unregister, which cancels the autostart timer it registered before this script ran.
+    # T3's wrapper for the listener belongs here.
     import addon_utils
 
     preferences = bpy.context.preferences
@@ -356,7 +368,9 @@ def _setup_mcp_addon():
     if MCP_LISTEN and not names:
         installed = [module.__name__ for module in addon_utils.modules() if _is_mcp_addon(module.__name__)]
         for name in installed[:1]:
-            addon_utils.enable(name, default_set=False)
+            # Its register() reads its preferences, which Blender creates only with default_set;
+            # these are T3's own copy of the user's settings.
+            addon_utils.enable(name, default_set=True)
             names.append(name)
     for name in names:
         addon = preferences.addons.get(name)
@@ -364,12 +378,65 @@ def _setup_mcp_addon():
             if hasattr(addon.preferences, "port"):
                 addon.preferences.port = int(MCP_PORT)
                 addon.preferences.host = "localhost"
+            if hasattr(addon.preferences, "use_autostart"):
+                addon.preferences.use_autostart = False
         if not MCP_LISTEN:
             addon_utils.disable(name, default_set=False)
+    if MCP_LISTEN:
+        _State.mcp_name = names[0] if names else None
+        _cancel_mcp_autostart()
+        bpy.app.timers.register(_start_agent_listener, first_interval=TICK)
     try:
         preferences.is_dirty = False
     except AttributeError:
         pass
+
+
+def _mcp_server():
+    return sys.modules.get(_State.mcp_name + ".mcp_to_blender_server") if _State.mcp_name else None
+
+
+def _cancel_mcp_autostart():
+    module = sys.modules.get(_State.mcp_name) if _State.mcp_name else None
+    autostart = getattr(module, "_autostart_timer", None)
+    if autostart is not None and bpy.app.timers.is_registered(autostart):
+        bpy.app.timers.unregister(autostart)
+
+
+def _start_agent_listener():
+    # Fails closed: a port another process holds, or a listener on any other port, is "failed".
+    server = _mcp_server()
+    try:
+        if server is not None and not server.is_running():
+            bpy.ops.blmcp.server_start()
+        sock = getattr(getattr(server, "_state", None), "sock", None)
+        ready = (
+            server is not None
+            and server.is_running()
+            and sock is not None
+            and sock.getsockname()[1] == int(MCP_PORT)
+        )
+    except Exception as error:  # noqa: BLE001 - a listener that can't start is reported, never a crash
+        print("T3 control add-on: Blender Lab MCP did not start:", error, file=sys.stderr)
+        ready = False
+    if not ready and server is not None and server.is_running():
+        _stop_agent_listener()
+    _State.agent_listener = "ready" if ready else "failed"
+    return None
+
+
+def _stop_agent_listener():
+    # Its stop closes the listening socket and every client connection.
+    server = _mcp_server()
+    try:
+        if server is not None and server.is_running():
+            bpy.ops.blmcp.server_stop()
+    except Exception as error:  # noqa: BLE001 - reported, never a crash
+        print("T3 control add-on: Blender Lab MCP did not stop:", error, file=sys.stderr)
+    if server is not None and server.is_running():
+        server.stop()
+    _cancel_mcp_autostart()
+    _State.agent_listener = "off"
 
 
 def _has_viewport_window():

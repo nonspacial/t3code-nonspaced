@@ -187,3 +187,26 @@ export function codexHostedBlenderApprovalsKey(
     ? undefined
     : JSON.stringify(codexHostedBlenderConfig(launch, policy));
 }
+
+const HOSTED_BLENDER_SERVERS: ReadonlySet<string> = new Set([
+  BLENDER_HOSTED_MCP_SERVER,
+  BLENDER_MASTER_MCP_SERVER,
+]);
+const READ_ONLY: ReadonlySet<string> = new Set(BLENDER_MCP_READ_ONLY_TOOLS);
+
+/**
+ * What T3 decides when Claude forwards a Blender call for a permission decision. `ask`: outside
+ * full access a tool off the read-only list goes through the approval flow, even in a mode where
+ * Claude would otherwise be allowed through. `deny`: plan mode refuses everything off that list,
+ * so a tool Blender Lab adds later is refused too. `default`: T3's usual handling.
+ */
+export function claudeHostedBlenderToolDecision(
+  toolName: string,
+  policy: ModePolicy,
+): "default" | "ask" | "deny" {
+  const match = /^mcp__([^_]+(?:-[^_]+)*)__(.+)$/.exec(toolName);
+  if (match === null || !HOSTED_BLENDER_SERVERS.has(match[1]!)) return "default";
+  if (READ_ONLY.has(match[2]!)) return "default";
+  const access = accessFor(policy);
+  return access === "all" ? "default" : access === "readOnly" ? "deny" : "ask";
+}

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   BLENDER_MCP_READ_ONLY_TOOLS,
   claudeHostedBlenderOverrides,
+  claudeHostedBlenderToolDecision,
   codexHostedBlenderApprovalsKey,
   codexHostedBlenderConfig,
   hostedBlenderStdioServers,
@@ -159,5 +160,46 @@ describe("Codex approvals", () => {
     expect(new Set(keys.slice(0, 3)).size).toBe(1);
     expect(keys[3]).not.toBe(keys[0]);
     expect(codexHostedBlenderApprovalsKey(launch, policy("full-access", "plan"))).not.toBe(keys[3]);
+  });
+});
+
+describe("Claude decisions for forwarded Blender calls", () => {
+  it.each(ASKING_MODES)(
+    "asks before a Blender write in %s, even when Claude would allow it",
+    (mode) => {
+      expect(
+        claudeHostedBlenderToolDecision("mcp__blender-hosted__execute_blender_code", policy(mode)),
+      ).toBe("ask");
+      expect(
+        claudeHostedBlenderToolDecision("mcp__blender-master__get_objects_summary", policy(mode)),
+      ).toBe("default");
+    },
+  );
+
+  it("leaves everything to Claude in full access", () => {
+    expect(
+      claudeHostedBlenderToolDecision(
+        "mcp__blender-hosted__execute_blender_code",
+        policy("full-access"),
+      ),
+    ).toBe("default");
+  });
+
+  it("refuses every tool off the read-only list in plan mode, including ones added upstream later", () => {
+    const plan = policy("full-access", "plan");
+    expect(claudeHostedBlenderToolDecision("mcp__blender-hosted__execute_blender_code", plan)).toBe(
+      "deny",
+    );
+    expect(claudeHostedBlenderToolDecision("mcp__blender-hosted__a_new_writer", plan)).toBe("deny");
+    expect(claudeHostedBlenderToolDecision("mcp__blender-hosted__get_objects_summary", plan)).toBe(
+      "default",
+    );
+  });
+
+  it("ignores other servers, including the user's own blender entry", () => {
+    expect(
+      claudeHostedBlenderToolDecision("mcp__blender__execute_blender_code", policy("auto")),
+    ).toBe("default");
+    expect(claudeHostedBlenderToolDecision("Bash", policy("auto", "plan"))).toBe("default");
   });
 });

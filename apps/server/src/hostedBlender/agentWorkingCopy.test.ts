@@ -20,7 +20,6 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { startAgentWorkingCopy, workingCopyName } from "./agentWorkingCopy.ts";
 import * as HostedBlender from "./HostedBlender.ts";
-import * as HostedBlenderAgents from "./HostedBlenderAgents.ts";
 
 const threadId = ThreadId.make("thread-6f1c2a9e-0b7d-4c55-9e1a-1a2b3c4d5e6f");
 
@@ -41,22 +40,20 @@ const tempWorkspace = Effect.acquireRelease(
 const layerFor = (input: {
   readonly root: string;
   readonly state?: HostedBlenderThreadState;
-  readonly listening?: boolean;
-  readonly opened: Array<HostedBlenderOpenInput>;
+  readonly listener?: HostedBlender.AgentListenerState;
+  readonly opened: Array<HostedBlenderOpenInput & { readonly agentWorkingCopy?: boolean }>;
   readonly openError?: HostedBlenderError;
 }) =>
   Layer.mergeAll(
     Layer.mock(HostedBlender.HostedBlender)({
-      open: (open) =>
+      open: (open, options) =>
         input.openError === undefined
           ? Effect.sync(() => {
-              input.opened.push(open);
+              input.opened.push({ ...open, ...options });
             })
           : Effect.fail(input.openError),
       threadState: () => Stream.succeed(input.state ?? { status: "stopped" }),
-    }),
-    Layer.mock(HostedBlenderAgents.HostedBlenderAgents)({
-      listening: () => Effect.succeed(input.listening ?? true),
+      agentListener: () => Effect.succeed(input.listener ?? "ready"),
     }),
     Layer.mock(ThreadManagementService.ThreadManagementService)({
       getThreadShell: () => Effect.succeed({ worktreePath: input.root, projectId: "p" } as never),
@@ -77,7 +74,7 @@ describe("startAgentWorkingCopy", () => {
     Effect.gen(function* () {
       const root = yield* tempWorkspace;
       const master = writeMaster(root, "models/hero.blend");
-      const opened: Array<HostedBlenderOpenInput> = [];
+      const opened: Array<HostedBlenderOpenInput & { readonly agentWorkingCopy?: boolean }> = [];
       const result = yield* startAgentWorkingCopy({ threadId, path: "models/hero.blend" }).pipe(
         Effect.provide(layerFor({ root, opened })),
       );
@@ -90,7 +87,9 @@ describe("startAgentWorkingCopy", () => {
         mcpServer: "blender-hosted",
       });
       assert.equal(NodeFS.readFileSync(copy, "utf8"), "master");
-      assert.deepEqual(opened, [{ threadId, relativePath: "models/hero.wip-3c4d5e6f.blend" }]);
+      assert.deepEqual(opened, [
+        { threadId, relativePath: "models/hero.wip-3c4d5e6f.blend", agentWorkingCopy: true },
+      ]);
     }).pipe(Effect.scoped),
   );
 
@@ -99,7 +98,7 @@ describe("startAgentWorkingCopy", () => {
       const root = yield* tempWorkspace;
       const master = writeMaster(root, "hero.blend", "new master");
       writeMaster(root, "hero.wip-3c4d5e6f.blend", "agent edits");
-      const opened: Array<HostedBlenderOpenInput> = [];
+      const opened: Array<HostedBlenderOpenInput & { readonly agentWorkingCopy?: boolean }> = [];
       const result = yield* startAgentWorkingCopy({ threadId, path: master }).pipe(
         Effect.provide(layerFor({ root, opened })),
       );
@@ -115,13 +114,15 @@ describe("startAgentWorkingCopy", () => {
     Effect.gen(function* () {
       const root = yield* tempWorkspace;
       writeMaster(root, "hero.wip-3c4d5e6f.blend");
-      const opened: Array<HostedBlenderOpenInput> = [];
+      const opened: Array<HostedBlenderOpenInput & { readonly agentWorkingCopy?: boolean }> = [];
       const result = yield* startAgentWorkingCopy({
         threadId,
         path: "hero.wip-3c4d5e6f.blend",
       }).pipe(Effect.provide(layerFor({ root, opened })));
       assert.isFalse(result.created);
-      assert.deepEqual(opened, [{ threadId, relativePath: "hero.wip-3c4d5e6f.blend" }]);
+      assert.deepEqual(opened, [
+        { threadId, relativePath: "hero.wip-3c4d5e6f.blend", agentWorkingCopy: true },
+      ]);
     }).pipe(Effect.scoped),
   );
 
@@ -147,14 +148,14 @@ describe("startAgentWorkingCopy", () => {
     Effect.gen(function* () {
       const root = yield* tempWorkspace;
       writeMaster(root, "hero.blend");
-      const opened: Array<HostedBlenderOpenInput> = [];
+      const opened: Array<HostedBlenderOpenInput & { readonly agentWorkingCopy?: boolean }> = [];
       const error = yield* Effect.flip(
         startAgentWorkingCopy({ threadId, path: "hero.blend" }).pipe(
           Effect.provide(
             layerFor({
               root,
               opened,
-              listening: false,
+              listener: "off",
               state: { status: "running", relativePath: "hero.wip-3c4d5e6f.blend", dirty: false },
             }),
           ),
@@ -181,6 +182,74 @@ describe("startAgentWorkingCopy", () => {
         ),
       );
       expect(error.reason).toContain("already has another file open");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("fails clearly when Blender Lab's listener never comes up", () =>
+    Effect.gen(function* () {
+      const root = yield* tempWorkspace;
+      writeMaster(root, "hero.blend");
+      const error = yield* Effect.flip(
+        startAgentWorkingCopy({ threadId, path: "hero.blend" }).pipe(
+          Effect.provide(layerFor({ root, opened: [], listener: "failed" })),
+        ),
+      );
+      expect(error.reason).toContain("did not start listening");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    { kind: "symlink", make: (master: string, copy: string) => NodeFS.symlinkSync(master, copy) },
+    { kind: "hard link", make: (master: string, copy: string) => NodeFS.linkSync(master, copy) },
+  ])("never opens the master through a $kind in the working copy's place", ({ make }) =>
+    Effect.gen(function* () {
+      const root = yield* tempWorkspace;
+      const master = writeMaster(root, "hero.blend");
+      make(master, NodePath.join(root, "hero.wip-3c4d5e6f.blend"));
+      const opened: Array<HostedBlenderOpenInput> = [];
+      const error = yield* Effect.flip(
+        startAgentWorkingCopy({ threadId, path: "hero.blend" }).pipe(
+          Effect.provide(layerFor({ root, opened })),
+        ),
+      );
+      expect(error.reason).toContain("not a separate copy");
+      assert.deepEqual(opened, []);
+      assert.equal(NodeFS.readFileSync(master, "utf8"), "master");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("makes one copy when two starts race, and replaces nothing", () =>
+    Effect.gen(function* () {
+      const root = yield* tempWorkspace;
+      writeMaster(root, "hero.blend");
+      const results = yield* Effect.all(
+        Array.from({ length: 4 }, () =>
+          startAgentWorkingCopy({ threadId, path: "hero.blend" }).pipe(
+            Effect.provide(layerFor({ root, opened: [] })),
+          ),
+        ),
+        { concurrency: "unbounded" },
+      );
+      assert.equal(results.filter((result) => result.created).length, 1);
+      assert.deepEqual(NodeFS.readdirSync(root).toSorted(), [
+        "hero.blend",
+        "hero.wip-3c4d5e6f.blend",
+      ]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("answers with paths under the workspace as configured, through a symlinked root", () =>
+    Effect.gen(function* () {
+      const real = yield* tempWorkspace;
+      writeMaster(real, "models/hero.blend");
+      const root = `${real}-link`;
+      NodeFS.symlinkSync(real, root);
+      yield* Effect.addFinalizer(() => Effect.sync(() => NodeFS.rmSync(root)));
+      const result = yield* startAgentWorkingCopy({ threadId, path: "models/hero.blend" }).pipe(
+        Effect.provide(layerFor({ root, opened: [] })),
+      );
+      assert.equal(result.workingCopy, NodePath.join(root, "models", "hero.wip-3c4d5e6f.blend"));
+      assert.equal(result.master, NodePath.join(root, "models", "hero.blend"));
     }).pipe(Effect.scoped),
   );
 });

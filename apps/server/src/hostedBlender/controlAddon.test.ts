@@ -8,14 +8,16 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
 
-// Just enough of `bpy` and `addon_utils` for the add-on's register(): a user config with the
-// official MCP extension installed, enabled or not, and a record of what the add-on did to it.
+const MCP = "bl_ext.user_default.mcp";
+
+// Just enough of Blender for the add-on's register(), and a stand-in for Blender Lab's MCP
+// extension (checked against version 1.0.3) whose server binds a real loopback socket.
 const STUBS = {
   "bpy/__init__.py": String.raw`
-import json, os, types
+import importlib, json, os, types
 state = json.loads(os.environ["STUB_STATE"])
 class Prefs:
-    def __init__(self): self.port = 9876; self.host = "0.0.0.0"
+    def __init__(self): self.port = 9876; self.host = "0.0.0.0"; self.use_autostart = True
 class Addon:
     def __init__(self): self.preferences = Prefs()
 class Addons(dict):
@@ -26,21 +28,72 @@ context = types.SimpleNamespace(
     window_manager=types.SimpleNamespace(windows=[]),
 )
 data = types.SimpleNamespace(filepath="", is_dirty=False)
-from . import app
+from . import app, ops
+# Blender registers enabled add-ons before --python scripts run.
+for name in state["enabled"]:
+    importlib.import_module(name)
 `,
-  "bpy/app/__init__.py":
-    "import types\ntimers = types.SimpleNamespace(register=lambda *a, **k: None)\nfrom . import handlers\n",
+  "bpy/app/__init__.py": String.raw`
+import types
+registered = []
+def _register(function, **kwargs): registered.append(function)
+def _unregister(function): registered.remove(function)
+timers = types.SimpleNamespace(
+    register=_register,
+    unregister=_unregister,
+    is_registered=lambda function: function in registered,
+)
+from . import handlers
+`,
   "bpy/app/handlers.py": "load_post = []\ndef persistent(function):\n    return function\n",
+  "bpy/ops.py": String.raw`
+import sys, types
+NAME = "${MCP}"
+def _start():
+    import bpy
+    prefs = bpy.context.preferences.addons[NAME].preferences
+    try:
+        sys.modules[NAME + ".mcp_to_blender_server"].start(prefs.host, prefs.port)
+    except Exception:
+        return {"CANCELLED"}
+    return {"FINISHED"}
+def _stop():
+    sys.modules[NAME + ".mcp_to_blender_server"].stop()
+    return {"FINISHED"}
+blmcp = types.SimpleNamespace(server_start=_start, server_stop=_stop)
+`,
   // Imported at the top for the capture and hit tests, which register() never runs.
   "gpu.py": "",
   "mathutils.py": "class Matrix: pass\nclass Vector: pass\n",
+  "bl_ext/__init__.py": "",
+  "bl_ext/user_default/__init__.py": "",
+  "bl_ext/user_default/mcp/__init__.py": String.raw`
+import bpy
+from . import mcp_to_blender_server
+def _autostart_timer(): mcp_to_blender_server.start("localhost", 9876)
+bpy.app.timers.register(_autostart_timer)
+`,
+  "bl_ext/user_default/mcp/mcp_to_blender_server.py": String.raw`
+import socket, types
+_state = types.SimpleNamespace(sock=None)
+def is_running(): return _state.sock is not None
+def start(host, port):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1" if host == "localhost" else host, port))
+    sock.listen(1)
+    _state.sock = sock
+def stop():
+    if _state.sock is not None: _state.sock.close()
+    _state.sock = None
+`,
   "addon_utils.py": String.raw`
-import json, os, types, bpy
+import importlib, json, os, types, bpy
 state = json.loads(os.environ["STUB_STATE"])
 def modules():
     return [types.SimpleNamespace(__name__=name) for name in state["installed"]]
 def enable(name, default_set=True):
     bpy.context.preferences.addons[name] = bpy.Addon()
+    importlib.import_module(name)
     log("enable", name, default_set)
 def disable(name, default_set=True):
     bpy.context.preferences.addons.pop(name, None)
@@ -51,18 +104,54 @@ def log(*entry):
 `,
 };
 
-const MCP = "bl_ext.user_default.mcp";
+// Runs T3's queued listener start, optionally with the port taken or then stopped by T3.
+const AFTER_REGISTER = String.raw`
+import json as _j
+_held = None
+if _j.loads(os.environ["STUB_STATE"]).get("portTaken"):
+    _held = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    _held.bind(("127.0.0.1", int(MCP_PORT)))
+    _held.listen(1)
+if _start_agent_listener in bpy.app.registered:
+    _start_agent_listener()
+_reports = [_snapshot()["agentListener"]]
+if _j.loads(os.environ["STUB_STATE"]).get("stop"):
+    _handle({"type": "stopAgentListener"})
+    _reports.append(_snapshot()["agentListener"])
+_server = sys.modules.get("${MCP}.mcp_to_blender_server")
+_addon = bpy.context.preferences.addons.get("${MCP}")
+print(_j.dumps({
+    "listener": _reports,
+    "listening": None if _server is None or _server._state.sock is None else _server._state.sock.getsockname()[1],
+    "autostart": any(getattr(f, "__name__", "") == "_autostart_timer" for f in bpy.app.registered),
+    "useAutostart": None if _addon is None else _addon.preferences.use_autostart,
+}))
+`;
+
 let dirs: Array<string> = [];
 afterEach(() => {
   for (const dir of dirs) NodeFS.rmSync(dir, { recursive: true, force: true });
   dirs = [];
 });
 
-/** Runs register() and reports the MCP add-on's calls and its port afterwards. */
+const freePort = () =>
+  Number(
+    NodeChildProcess.execFileSync(
+      "python3",
+      [
+        "-c",
+        "import socket; s = socket.socket(); s.bind(('127.0.0.1', 0)); print(s.getsockname()[1])",
+      ],
+      { encoding: "utf8" },
+    ).trim(),
+  );
+
 const runAddon = (input: {
   readonly installed: ReadonlyArray<string>;
   readonly enabled: ReadonlyArray<string>;
   readonly listen: boolean;
+  readonly portTaken?: boolean;
+  readonly stop?: boolean;
 }) => {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-control-addon-"));
   dirs.push(dir);
@@ -71,21 +160,14 @@ const runAddon = (input: {
     NodeFS.writeFileSync(NodePath.join(dir, file), body);
   }
   const addon = NodePath.join(dir, "t3_control.py");
-  NodeFS.writeFileSync(
-    addon,
-    `${CONTROL_ADDON_SOURCE}\nimport json as _j\nprint(_j.dumps({n: a.preferences.port for n, a in bpy.context.preferences.addons.items()}))\n`,
-  );
+  NodeFS.writeFileSync(addon, `${CONTROL_ADDON_SOURCE}\n${AFTER_REGISTER}`);
   const log = NodePath.join(dir, "calls.log");
+  const port = freePort();
   const stdout = NodeChildProcess.execFileSync(
     "python3",
-    [addon, "--", "--t3-mcp-port", "41234", ...(input.listen ? ["--t3-mcp-listen"] : [])],
+    [addon, "--", "--t3-mcp-port", String(port), ...(input.listen ? ["--t3-mcp-listen"] : [])],
     {
-      env: {
-        ...process.env,
-        PYTHONPATH: dir,
-        STUB_STATE: JSON.stringify(input),
-        STUB_LOG: log,
-      },
+      env: { ...process.env, PYTHONPATH: dir, STUB_STATE: JSON.stringify(input), STUB_LOG: log },
       encoding: "utf8",
     },
   );
@@ -95,34 +177,56 @@ const runAddon = (input: {
         .split("\n")
         .map((line) => JSON.parse(line))
     : [];
-  return { calls, ports: JSON.parse(stdout.trim().split("\n").at(-1)!) };
+  return { port, calls, ...JSON.parse(stdout.trim().split("\n").at(-1)!) };
 };
 
-describe("T3's control add-on and the official MCP add-on", () => {
+describe("T3's control add-on and Blender Lab's MCP add-on", () => {
   it("keeps the official listener off without --t3-mcp-listen, for this session only", () => {
-    const { calls, ports } = runAddon({ installed: [MCP], enabled: [MCP], listen: false });
-    expect(calls).toEqual([["disable", MCP, false]]);
-    expect(ports).toEqual({});
+    const result = runAddon({ installed: [MCP], enabled: [MCP], listen: false });
+    expect(result.calls).toEqual([["disable", MCP, false]]);
+    expect(result.listener).toEqual(["off"]);
+    expect(result.listening).toBeNull();
   });
 
-  it("listens on T3's port, never 9876, for a thread whose agent uses it", () => {
-    const { calls, ports } = runAddon({ installed: [MCP], enabled: [MCP], listen: true });
-    expect(calls).toEqual([]);
-    expect(ports).toEqual({ [MCP]: 41234 });
+  it("starts it itself on T3's port, never 9876, with its own autostart off", () => {
+    const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true });
+    expect(result.calls).toEqual([]);
+    expect(result.listener).toEqual(["ready"]);
+    expect(result.listening).toBe(result.port);
+    expect(result.autostart).toBe(false);
+    expect(result.useAutostart).toBe(false);
   });
 
-  it("turns the installed add-on on for this session when the user's settings had it off", () => {
-    const { calls, ports } = runAddon({ installed: [MCP], enabled: [], listen: true });
-    expect(calls).toEqual([["enable", MCP, false]]);
-    expect(ports).toEqual({ [MCP]: 41234 });
+  it("enables an installed but disabled extension with its preferences, then starts it", () => {
+    const result = runAddon({ installed: [MCP], enabled: [], listen: true });
+    expect(result.calls).toEqual([["enable", MCP, true]]);
+    expect(result.listener).toEqual(["ready"]);
+    expect(result.listening).toBe(result.port);
+  });
+
+  it("fails closed when another process holds the port", () => {
+    const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, portTaken: true });
+    expect(result.listener).toEqual(["failed"]);
+    expect(result.listening).toBeNull();
+  });
+
+  it("reports failed when the extension isn't installed", () => {
+    const result = runAddon({ installed: [], enabled: [], listen: true });
+    expect(result.listener).toEqual(["failed"]);
+  });
+
+  it("closes the listener when T3 revokes agent access", () => {
+    const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, stop: true });
+    expect(result.listener).toEqual(["ready", "off"]);
+    expect(result.listening).toBeNull();
   });
 
   it("leaves other add-ons alone", () => {
-    const { calls } = runAddon({
+    const result = runAddon({
       installed: ["bl_ext.user_default.node_wrangler"],
-      enabled: ["bl_ext.user_default.node_wrangler"],
+      enabled: [],
       listen: false,
     });
-    expect(calls).toEqual([]);
+    expect(result.calls).toEqual([]);
   });
 });

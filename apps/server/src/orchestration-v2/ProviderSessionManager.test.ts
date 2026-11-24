@@ -6109,12 +6109,17 @@ it.effect("ProviderSessionManagerV2 gives the session its hosted Blender MCP whe
       tmpDir: "/tmp/t3hb-mcp",
     };
     const asked: Array<string> = [];
+    const ended: Array<string> = [];
     const agentsLayer = (given: typeof launch | undefined) =>
       Layer.mock(HostedBlenderAgents.HostedBlenderAgents)({
         sessionLaunch: ({ driver }) =>
           Effect.sync(() => {
             asked.push(driver);
             return given;
+          }),
+        sessionEnded: (threadId) =>
+          Effect.sync(() => {
+            ended.push(threadId);
           }),
       });
     const withBlender = yield* runBrowserAccessScenario({
@@ -6125,6 +6130,8 @@ it.effect("ProviderSessionManagerV2 gives the session its hosted Blender MCP whe
     assert.deepEqual(withBlender?.hostedBlender, launch);
     assert.isTrue(withBlender?.capabilities?.has("hosted-blender"));
     assert.deepEqual(asked, ["codex"]);
+    // Releasing the session takes its hosted Blender's agent listener back.
+    assert.deepEqual(ended, ["thread-provider-session-manager-browser-access"]);
 
     const without = yield* runBrowserAccessScenario({
       enableAgentBrowserAccess: true,

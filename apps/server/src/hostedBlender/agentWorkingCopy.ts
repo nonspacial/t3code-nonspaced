@@ -13,7 +13,6 @@ import { threadWorkspaceRoot } from "../project/threadWorkspaceRoot.ts";
 import { BLENDER_HOSTED_MCP_SERVER } from "../provider/hostedBlenderMcp.ts";
 import { isWithinRoot } from "../workspace/KnownWorkspaces.ts";
 import * as HostedBlender from "./HostedBlender.ts";
-import * as HostedBlenderAgents from "./HostedBlenderAgents.ts";
 
 // The end of the thread id: fixed prefixes such as `thread-` would make every tag alike.
 const threadTag = (threadId: string) =>
@@ -27,6 +26,48 @@ export const workingCopyName = (masterName: string, threadId: string) =>
   `${masterName.replace(/\.blend$/i, "")}.wip-${threadTag(threadId)}.blend`;
 
 /**
+ * Copies the master to `workingCopy` without ever replacing what is there: the copy is made under
+ * a private name and hard-linked into place, which fails if the name is taken. A taken name is
+ * reused only as a regular file that isn't the master, so a link to the master can't open it for
+ * editing. False when the copy already existed.
+ */
+const createWorkingCopy = Effect.fn("HostedBlender.createWorkingCopy")(function* (
+  master: string,
+  workingCopy: string,
+  requested: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const couldNotCopy = () =>
+    new HostedBlenderToolError({ reason: `T3 could not copy ${requested} to ${workingCopy}.` });
+  const linked = yield* Effect.scoped(
+    Effect.gen(function* () {
+      const staging = yield* fileSystem.makeTempDirectoryScoped({
+        directory: path.dirname(master),
+        prefix: ".t3-wip-",
+      });
+      const partial = path.join(staging, "copy.blend");
+      yield* fileSystem.copyFile(master, partial);
+      return yield* fileSystem.link(partial, workingCopy).pipe(Effect.isSuccess);
+    }),
+  ).pipe(Effect.mapError(couldNotCopy));
+  if (linked) return true;
+  const existing = yield* fileSystem.lstat(workingCopy).pipe(Effect.mapError(couldNotCopy));
+  const original = yield* fileSystem.stat(master).pipe(Effect.mapError(couldNotCopy));
+  const sameFile =
+    Option.isSome(existing.ino) &&
+    Option.isSome(original.ino) &&
+    existing.ino.value === original.ino.value &&
+    existing.dev === original.dev;
+  if (existing.type !== "File" || sameFile) {
+    return yield* new HostedBlenderToolError({
+      reason: `${workingCopy} exists but is not a separate copy of ${requested}. Ask the user to move it aside.`,
+    });
+  }
+  return false;
+});
+
+/**
  * `blender_start`: copies the master to the thread's working copy unless one exists, and opens
  * the copy in the thread's working Blender. A copy that is already open is answered as it is.
  */
@@ -35,7 +76,6 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const hostedBlender = yield* HostedBlender.HostedBlender;
-    const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
 
     const root = yield* threadWorkspaceRoot(input.threadId);
     if (root === undefined)
@@ -87,42 +127,45 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
     // Named directly, the working copy is opened as it is.
     const isCopy = path.basename(master).endsWith(`.wip-${threadTag(input.threadId)}.blend`);
     const workingCopy = isCopy ? master : path.join(path.dirname(master), name);
-    const exists = yield* fileSystem.exists(workingCopy).pipe(Effect.orElseSucceed(() => false));
-    if (!exists) {
-      yield* fileSystem.copyFile(master, workingCopy).pipe(
-        Effect.mapError(
-          () =>
-            new HostedBlenderToolError({
-              reason: `T3 could not copy ${input.path} to ${workingCopy}.`,
-            }),
-        ),
-      );
-    }
+    const created = isCopy ? false : yield* createWorkingCopy(master, workingCopy, input.path);
+    // Paths under the workspace as configured, as the client matches file links against it.
+    const relativePath = path.relative(realRoot, workingCopy);
     const result = {
-      workingCopy,
-      master,
-      created: !exists,
+      workingCopy: path.join(root, relativePath),
+      master: path.join(root, path.relative(realRoot, master)),
+      created,
       mcpServer: BLENDER_HOSTED_MCP_SERVER,
     };
 
-    const relativePath = path.relative(realRoot, workingCopy);
     const state = Option.getOrUndefined(
       yield* Stream.runHead(hostedBlender.threadState(input.threadId)),
     );
-    if (
+    const running =
       (state?.status === "starting" || state?.status === "running") &&
-      state.relativePath === relativePath
-    ) {
-      if (!(yield* agents.listening(input.threadId))) {
-        return yield* new HostedBlenderToolError({
-          reason: `${name} is open in this thread's hosted Blender, but it started before your session could reach it. Call blender_quit with save: true, then blender_start again.`,
-        });
-      }
-      return { ...result, status: state.status } satisfies HostedBlenderToolStartResult;
+      state.relativePath === relativePath;
+    if (!running) {
+      yield* hostedBlender
+        .open({ threadId: input.threadId, relativePath }, { agentWorkingCopy: true })
+        .pipe(Effect.mapError((error) => new HostedBlenderToolError({ reason: error.message })));
     }
-    yield* hostedBlender
-      .open({ threadId: input.threadId, relativePath })
-      .pipe(Effect.mapError((error) => new HostedBlenderToolError({ reason: error.message })));
-    return { ...result, status: "starting" } satisfies HostedBlenderToolStartResult;
+    // Answered only once Blender Lab's listener has come up on the thread's port.
+    const listener = yield* hostedBlender.agentListener(input.threadId);
+    if (listener === "off") {
+      return yield* new HostedBlenderToolError({
+        reason: `${name} is open in this thread's hosted Blender, but not for you: it was opened from the pane, or before your session could reach it. Call blender_quit with save: true, then blender_start again.`,
+      });
+    }
+    if (listener !== "ready") {
+      return yield* new HostedBlenderToolError({
+        reason: `${name} is open, but Blender Lab's MCP add-on did not start listening for you. Check that the MCP extension is installed in the user's Blender and that nothing else holds its port, then call blender_quit and blender_start again.`,
+      });
+    }
+    const status = Option.getOrUndefined(
+      yield* Stream.runHead(hostedBlender.threadState(input.threadId)),
+    )?.status;
+    return {
+      ...result,
+      status: status === "running" ? "running" : "starting",
+    } satisfies HostedBlenderToolStartResult;
   },
 );

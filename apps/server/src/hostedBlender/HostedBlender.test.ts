@@ -40,8 +40,11 @@ interface Host {
   readonly workspaceRoot: string;
   readonly baseDir: string;
   readonly runtimeMode?: RuntimeMode;
+  readonly interactionMode?: "default" | "plan";
   /** The thread's agent session holds the hosted Blender MCP on this port. */
   readonly agentPort?: number;
+  /** Agent access T3 takes back, by thread (null for every thread). */
+  readonly revocations?: Stream.Stream<ThreadId | null>;
 }
 
 const blenderOnPath = (env: NodeJS.ProcessEnv) =>
@@ -81,6 +84,7 @@ const layerFor = (host: Host) =>
                     worktreePath: host.workspaceRoot,
                     projectId: "project",
                     runtimeMode: host.runtimeMode ?? "approval-required",
+                    interactionMode: host.interactionMode ?? "default",
                   } as never)
                 : null,
             ),
@@ -88,6 +92,7 @@ const layerFor = (host: Host) =>
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(HostedBlenderAgents.HostedBlenderAgents)({
           listenerPort: () => Effect.succeed(host.agentPort ?? null),
+          revocations: host.revocations ?? Stream.never,
         }),
         WorkspacePaths.layer,
         NetService.layer,
@@ -1530,13 +1535,36 @@ def event(value):
 event({"type": "ready", "capture": "extImageCopyCapture", "target": "window",
        "encoder": "x264enc", "width": 1280, "height": 720, "cursorTracking": True})
 event({"type": "windowCaptured", "title": "3D Viewport"})
+# Answers the control socket as the add-on would: its listener, and what T3 asks of it.
+import socket, threading
+t3 = sys.argv[sys.argv.index("--t3-control"):]
+listener = ["ready" if "--t3-mcp-listen" in t3 else "off"]
+def control():
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(t3[1])
+    server.listen(1)
+    connection, _ = server.accept()
+    def state():
+        connection.sendall((json.dumps({"type": "state", "filepath": "cube.blend", "dirty": False,
+                                        "agentListener": listener[0]}) + "\n").encode())
+    state()
+    for line in connection.makefile():
+        with open(os.environ["STANDIN_ARGS"] + ".control", "a") as log:
+            log.write(line)
+        if json.loads(line).get("type") == "stopAgentListener":
+            # Gone once it has heard the stop, so a test can wait for the stopped state.
+            os._exit(0)
+threading.Thread(target=control, daemon=True).start()
 for line in sys.stdin:
     if '"quit"' in line:
         break
 `;
 
 describe("Agent access at launch", () => {
-  const launchArgs = Effect.fn(function* (host: Pick<Host, "runtimeMode" | "agentPort">) {
+  const launch = Effect.fn(function* (
+    host: Pick<Host, "runtimeMode" | "interactionMode" | "agentPort" | "revocations">,
+    options: { readonly agentWorkingCopy?: boolean } = { agentWorkingCopy: true },
+  ) {
     const dir = yield* tempDir("agent-access");
     const bin = fakeTools(dir);
     NodeFS.writeFileSync(NodePath.join(bin, "helper"), `#!${python}\n${ARGS_HELPER}`, {
@@ -1555,16 +1583,26 @@ describe("Agent access at launch", () => {
         ...host,
       }),
     );
-    yield* service.open({ threadId, relativePath: "cube.blend" });
+    yield* service.open({ threadId, relativePath: "cube.blend" }, options);
     yield* service.threadState(threadId).pipe(
       Stream.filter((state) => state.status === "running"),
       Stream.runHead,
     );
     const args = NodeFS.readFileSync(argsLog, "utf8").split("\n");
+    const controlLog = () =>
+      NodeFS.existsSync(`${argsLog}.control`)
+        ? NodeFS.readFileSync(`${argsLog}.control`, "utf8")
+        : "";
+    return { service, args, controlLog };
+  });
+  const launchArgs = Effect.fn(function* (
+    host: Pick<Host, "runtimeMode" | "interactionMode" | "agentPort">,
+    options?: { readonly agentWorkingCopy?: boolean },
+  ) {
+    const { service, args } = yield* launch(host, options);
     yield* service.quit({ threadId, save: false });
     return args;
   });
-
   it.live("starts the Blender Lab listener on the port the thread's agent session holds", () =>
     Effect.gen(function* () {
       const args = yield* launchArgs({ agentPort: 41234 });
@@ -1580,6 +1618,38 @@ describe("Agent access at launch", () => {
       for (const runtimeMode of ["approval-required", "auto-accept-edits", "auto"] as const) {
         expect(yield* launchArgs({ runtimeMode })).toContain("--disable-autoexec");
       }
+      // Plan mode is read-only whatever the runtime mode.
+      expect(yield* launchArgs({ runtimeMode: "full-access", interactionMode: "plan" })).toContain(
+        "--disable-autoexec",
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("never listens for the agent in a file the pane opened, even the working copy", () =>
+    Effect.gen(function* () {
+      const { service, args } = yield* launch({ agentPort: 41234 }, {});
+      expect(args).not.toContain("--t3-mcp-listen");
+      expect(yield* service.agentListener(threadId)).toBe("off");
+      yield* service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("reports the listener as Blender's add-on does, and closes it when access ends", () =>
+    Effect.gen(function* () {
+      const revoked = yield* Queue.unbounded<ThreadId | null>();
+      const { service, controlLog } = yield* launch({
+        agentPort: 41234,
+        revocations: Stream.fromQueue(revoked),
+      });
+      expect(yield* service.agentListener(threadId)).toBe("ready");
+      // Another thread's session ending leaves this one alone.
+      yield* Queue.offer(revoked, otherThreadId);
+      yield* Queue.offer(revoked, threadId);
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "stopped"),
+        Stream.runHead,
+      );
+      expect(controlLog().match(/stopAgentListener/g)).toHaveLength(1);
     }).pipe(Effect.scoped),
   );
 });

@@ -1,4 +1,8 @@
-import { HostedBlenderToolError, type HostedBlenderToolStatusResult } from "@t3tools/contracts";
+import {
+  HostedBlenderToolError,
+  type HostedBlenderToolStatusResult,
+  type ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -7,6 +11,7 @@ import * as Stream from "effect/Stream";
 import { startAgentWorkingCopy } from "../../../hostedBlender/agentWorkingCopy.ts";
 import * as HostedBlender from "../../../hostedBlender/HostedBlender.ts";
 import * as HostedBlenderAgents from "../../../hostedBlender/HostedBlenderAgents.ts";
+import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import { threadWorkspaceRoot } from "../../../project/threadWorkspaceRoot.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -33,17 +38,29 @@ const requireHostedBlender = Effect.gen(function* () {
   return scope.thread.threadId;
 });
 
+// Plan mode is read-only: it may look at Blender, never start or quit it.
+const refuseInPlanMode = Effect.fnUntraced(function* (threadId: ThreadId, tool: string) {
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  const shell = yield* threads.getThreadShell(threadId).pipe(Effect.orElseSucceed(() => null));
+  if (shell?.interactionMode === "plan") {
+    return yield* new HostedBlenderToolError({
+      reason: `${tool} changes this thread's hosted Blender, and Plan mode is read-only. blender_status still works; ask the user to leave Plan mode first.`,
+    });
+  }
+});
+
 const handlers = {
   blender_start: McpToolAccess.actsAsCaller((input) =>
-    requireHostedBlender.pipe(
-      Effect.flatMap((threadId) => startAgentWorkingCopy({ threadId, path: input.path })),
-    ),
+    Effect.gen(function* () {
+      const threadId = yield* requireHostedBlender;
+      yield* refuseInPlanMode(threadId, "blender_start");
+      return yield* startAgentWorkingCopy({ threadId, path: input.path });
+    }),
   ),
   blender_status: McpToolAccess.readsAsCaller(() =>
     Effect.gen(function* () {
       const threadId = yield* requireHostedBlender;
       const hostedBlender = yield* HostedBlender.HostedBlender;
-      const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
       const path = yield* Path.Path;
       const state = Option.getOrUndefined(
         yield* Stream.runHead(hostedBlender.threadState(threadId)),
@@ -60,7 +77,9 @@ const handlers = {
             status: state.status,
             file: root === undefined ? state.relativePath : path.join(root, state.relativePath),
             unsavedChanges: state.dirty,
-            agentAccess: yield* agents.listening(threadId),
+            // Only a listener that came up on the thread's port takes `blender-hosted` calls.
+            agentAccess:
+              (yield* hostedBlender.agentListener(threadId, { wait: false })) === "ready",
           },
         ],
       } satisfies HostedBlenderToolStatusResult;
@@ -69,6 +88,7 @@ const handlers = {
   blender_quit: McpToolAccess.actsAsCaller((input) =>
     Effect.gen(function* () {
       const threadId = yield* requireHostedBlender;
+      yield* refuseInPlanMode(threadId, "blender_quit");
       const hostedBlender = yield* HostedBlender.HostedBlender;
       yield* hostedBlender
         .quit({ threadId, save: input.save })

@@ -31,7 +31,7 @@ const HostedBlenderToolFailure = Schema.Union([HostedBlenderToolError, Orchestra
 
 const BlenderStartTool = Tool.make("blender_start", {
   description:
-    "Open a working copy of a `.blend` in this thread's hosted Blender, which the user can watch in the Blender pane. Pass the master: the file the user wants changed. T3 copies it to `<name>.wip-<id>.blend` beside it, keeping an earlier copy, and starts Blender on the copy. Edit it with the `blender-hosted` MCP tools. Call again to restart after a crash.",
+    "Open a working copy of a `.blend` in this thread's hosted Blender, which the user can watch in the Blender pane. Pass the master, the file the user wants changed, as `path` relative to the thread's workspace root or absolute inside it; a name the user gave is usually enough, without searching the disk. T3 copies it to `<name>.wip-<id>.blend` beside it, keeping an earlier copy, and starts Blender on the copy. Edit it with the `blender-hosted` MCP tools. Call again to restart after a crash.",
   parameters: HostedBlenderToolStartInput,
   success: HostedBlenderToolStartResult,
   failure: HostedBlenderToolFailure,
