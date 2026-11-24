@@ -176,12 +176,20 @@ export type HostedBlenderStreamServerMessage = typeof HostedBlenderStreamServerM
 export const HostedBlenderStreamClientMessage = Schema.Union([
   /** The last frame arrived; the next one may be sent. */
   Schema.Struct({ type: Schema.Literal("ack") }),
-  /** The pane's size in device pixels; the display follows the newest viewer. */
+  /**
+   * The pane's size in device pixels. The display follows the viewer in control, or else the
+   * one that most recently opened or showed its pane.
+   */
   Schema.Struct({
     type: Schema.Literal("resize"),
     width: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 7680 })),
     height: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 4320 })),
   }),
+  /**
+   * Whether the pane is on screen; a viewer starts visible. With no viewer on screen, capture and
+   * encoding stop, and a pane shown again starts on a keyframe. Control is kept while hidden.
+   */
+  Schema.Struct({ type: Schema.Literal("visibility"), visible: Schema.Boolean }),
   /**
    * Needs `terminal:operate`. With `takeOver`, control moves here from whoever has it;
    * otherwise it is taken only when nobody has it.
@@ -192,8 +200,8 @@ export const HostedBlenderStreamClientMessage = Schema.Union([
 ]);
 export type HostedBlenderStreamClientMessage = typeof HostedBlenderStreamClientMessage.Type;
 
-/** What a viewer sends besides acks and its size: taking control, and input. */
+/** What a viewer sends besides acks, its size and visibility: taking control, and input. */
 export type HostedBlenderViewerMessage = Exclude<
   HostedBlenderStreamClientMessage,
-  { readonly type: "ack" | "resize" }
+  { readonly type: "ack" | "resize" | "visibility" }
 >;

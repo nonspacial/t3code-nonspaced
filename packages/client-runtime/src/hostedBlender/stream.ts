@@ -46,8 +46,13 @@ export interface HostedBlenderStreamEvents {
 }
 
 export interface HostedBlenderStreamClient {
-  /** The pane's size in device pixels; the display follows the newest viewer. */
+  /**
+   * The pane's size in device pixels. The display follows the viewer in control, or else the
+   * pane shown most recently; a viewer that never sends one leaves it as it is.
+   */
   readonly resize: (width: number, height: number) => void;
+  /** Whether the pane is on screen. While no pane is, the server stops capturing. */
+  readonly setVisible: (visible: boolean) => void;
   /** Dropped while disconnected: control doesn't survive a reconnect. */
   readonly send: (message: HostedBlenderViewerMessage) => void;
   readonly stop: () => void;
@@ -188,6 +193,8 @@ export function createHostedBlenderStreamClient(
   let decoderSps: Uint8Array | null = null;
   let configuring = false;
   let size: { readonly width: number; readonly height: number } | null = null;
+  // Every connection starts visible on the server.
+  let visible = true;
   let live = false;
   // Whether the server last said this viewer controls Blender, on the current socket.
   let controlling = false;
@@ -318,6 +325,11 @@ export function createHostedBlenderStreamClient(
     socket.send(JSON.stringify({ type: "resize", ...size }));
   };
 
+  const sendVisibility = () => {
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({ type: "visibility", visible }));
+  };
+
   const connect = () => {
     if (stopped) return;
     if (!webCodecsAvailable()) {
@@ -334,6 +346,7 @@ export function createHostedBlenderStreamClient(
     ws.addEventListener("open", () => {
       if (socket !== ws) return;
       opened = true;
+      if (!visible) sendVisibility();
       sendSize();
     });
     ws.addEventListener("message", (event) => {
@@ -415,6 +428,11 @@ export function createHostedBlenderStreamClient(
       if (size?.width === next.width && size.height === next.height) return;
       size = next;
       sendSize();
+    },
+    setVisible: (next) => {
+      if (next === visible) return;
+      visible = next;
+      sendVisibility();
     },
     send: (message) => {
       if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));

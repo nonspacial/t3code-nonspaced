@@ -1,5 +1,5 @@
 import { HOSTED_BLENDER_STREAM_STOPPED_CLOSE_CODE } from "@t3tools/contracts";
-import { afterEach, expect, it, vi } from "vite-plus/test";
+import { afterEach, expect, it, onTestFinished, vi } from "vite-plus/test";
 
 import { avcFrameSize, createHostedBlenderStreamClient } from "./stream.ts";
 
@@ -171,6 +171,45 @@ it("reports who controls Blender and whether it holds the mouse, and sends input
   socket.closeWith(1012);
   expect(control).toHaveBeenLastCalledWith({ canOperate: false, controller: "unclaimed" });
   expect(cursor).toHaveBeenLastCalledWith(false);
+  client.stop();
+});
+
+it("tells the server when the pane leaves the screen and comes back, across reconnects", () => {
+  FakeSocket.instances = [];
+  vi.useFakeTimers();
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  vi.stubGlobal("WebSocket", FakeSocket);
+  vi.stubGlobal("EncodedVideoChunk", vi.fn());
+  vi.stubGlobal("VideoDecoder", vi.fn());
+  const client = createHostedBlenderStreamClient(
+    {
+      access: { httpBase: "https://t3", wsBase: "wss://t3/blender", credentials: false, query: {} },
+      threadId: "thread-1",
+    },
+    { present: vi.fn(() => true) },
+    { onStatus: vi.fn(), onStats: vi.fn(), onFrameRate: vi.fn(), onUnauthorized: vi.fn() },
+  );
+  const first = FakeSocket.instances[0]!;
+  // A viewer starts visible, so an on-screen pane says nothing.
+  first.open();
+  client.setVisible(true);
+  client.setVisible(false);
+  client.setVisible(false);
+  client.setVisible(true);
+  expect(first.sent).toEqual([
+    JSON.stringify({ type: "visibility", visible: false }),
+    JSON.stringify({ type: "visibility", visible: true }),
+  ]);
+
+  // A pane hidden while reconnecting says so as soon as the new connection opens.
+  client.setVisible(false);
+  first.closeWith(1012);
+  vi.runAllTimers();
+  const second = FakeSocket.instances[1]!;
+  second.open();
+  expect(second.sent).toEqual([JSON.stringify({ type: "visibility", visible: false })]);
   client.stop();
 });
 

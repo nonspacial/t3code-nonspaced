@@ -61,6 +61,7 @@ import {
   HelperPacketReader,
   isHelperPacketError,
 } from "./HelperProtocol.ts";
+import { BitrateControl } from "./Bitrate.ts";
 import { ViewerFlow } from "./ViewerFlow.ts";
 
 const MAX_VIEWERS = 4;
@@ -97,9 +98,11 @@ export interface HostedBlenderViewer {
   readonly ack: Effect.Effect<void>;
   /**
    * The viewer's pane size in device pixels. The display follows the viewer in control, or
-   * the newest viewer while nobody is.
+   * else the one that most recently opened or showed its pane.
    */
   readonly resize: (width: number, height: number) => Effect.Effect<void>;
+  /** Whether the viewer's pane is on screen. Capture runs only while one is. */
+  readonly setVisible: (visible: boolean) => Effect.Effect<void>;
   /** Taking control, and input that only reaches Blender from the viewer in control. */
   readonly input: (message: HostedBlenderViewerMessage) => Effect.Effect<void>;
 }
@@ -131,8 +134,11 @@ interface ViewerEntry {
   readonly id: string;
   readonly canOperate: boolean;
   readonly queue: Queue.Queue<HostedBlenderViewerOutput>;
-  readonly flow: ViewerFlow;
+  flow: ViewerFlow;
   size: { readonly width: number; readonly height: number } | null;
+  visible: boolean;
+  /** When the viewer last opened or showed its pane, as an ordering. */
+  shownAt: number;
 }
 
 interface Instance {
@@ -149,6 +155,8 @@ interface Instance {
   memoryBytes: number | null;
   viewport: { readonly width: number; readonly height: number } | null;
   lastKeyframeRequest: number;
+  /** A keyframe request is waiting out the throttle. */
+  keyframeDeferred: boolean;
   helper: (command: HelperCommand) => Effect.Effect<void>;
   control: ControlConnection | null;
   /** What the add-on says while `quit` waits on a save. */
@@ -168,6 +176,11 @@ interface Instance {
   cursorCaptured: boolean;
   /** The display size last asked of the helper. */
   displaySize: string;
+  /** Whether the helper captures and encodes; it does from the start until told to pause. */
+  capturing: boolean;
+  readonly bitrate: BitrateControl;
+  /** The viewer whose acks the bitrate follows. */
+  bitrateLead: string | null;
 }
 
 type Availability =
@@ -199,6 +212,7 @@ const make = Effect.gen(function* () {
   const serviceScope = yield* Effect.scope;
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
   let nextViewerId = 0;
+  let nextShownAt = 0;
 
   const instances = new Map<string, Instance>();
   const states = yield* SubscriptionRef.make<ReadonlyMap<string, PublishedState>>(new Map());
@@ -297,12 +311,31 @@ const make = Effect.gen(function* () {
   const settle = (work: Promise<unknown>) =>
     Effect.promise(() => work.then(constUndefined, constUndefined));
 
-  // The display follows the viewer in control, or the newest viewer while nobody is.
+  /** The viewer that most recently opened or showed its pane, among those that `match`. */
+  const latestShown = (instance: Instance, match: (viewer: ViewerEntry) => boolean) => {
+    let latest: ViewerEntry | null = null;
+    for (const viewer of instance.viewers) {
+      if (match(viewer) && (latest === null || viewer.shownAt > latest.shownAt)) latest = viewer;
+    }
+    return latest;
+  };
+
+  /** The viewer whose acks set the bitrate: the one in control, else the latest on screen. */
+  const leadViewer = (instance: Instance) =>
+    instance.viewers.find(
+      (viewer) => viewer.visible && viewer.id === instance.session.controller,
+    ) ?? latestShown(instance, (viewer) => viewer.visible);
+
+  // The display follows the viewer in control, or else the latest pane shown. A floating
+  // player that never sends a size leaves the display as it is.
   const applySize = (instance: Instance) =>
     Effect.suspend(() => {
       const sizer =
-        instance.viewers.find((viewer) => viewer.id === instance.session.controller) ??
-        instance.viewers.at(-1);
+        instance.viewers.find(
+          (viewer) => viewer.size !== null && viewer.id === instance.session.controller,
+        ) ??
+        latestShown(instance, (viewer) => viewer.size !== null && viewer.visible) ??
+        latestShown(instance, (viewer) => viewer.size !== null);
       if (sizer?.size == null) return Effect.void;
       const size = displaySize(sizer.size.width, sizer.size.height);
       const key = `${size.width}x${size.height}`;
@@ -363,18 +396,59 @@ const make = Effect.gen(function* () {
 
   // Keyframe requests, packets, control lines, memory samples and viewer detaches run many times
   // per instance; they share its `HostedBlender.run` span instead of each opening one.
-  const requestKeyframe = Effect.fnUntraced(function* (instance: Instance) {
+  const requestKeyframe: (instance: Instance) => Effect.Effect<void> = Effect.fnUntraced(function* (
+    instance: Instance,
+  ) {
     const now = yield* Clock.currentTimeMillis;
-    if (now - instance.lastKeyframeRequest < KEYFRAME_REQUEST_INTERVAL_MS) return;
+    const wait = instance.lastKeyframeRequest + KEYFRAME_REQUEST_INTERVAL_MS - now;
+    if (wait > 0) {
+      // Deferred, not dropped: on an idle viewport no later frame would ask again.
+      if (instance.keyframeDeferred) return;
+      instance.keyframeDeferred = true;
+      yield* Effect.sleep(wait).pipe(
+        Effect.andThen(
+          Effect.suspend(() => {
+            instance.keyframeDeferred = false;
+            return requestKeyframe(instance);
+          }),
+        ),
+        Effect.forkIn(serviceScope),
+      );
+      return;
+    }
     instance.lastKeyframeRequest = now;
     yield* instance.helper({ type: "keyframe" });
   });
 
+  const setBitrate = (instance: Instance, kbps: number | null) =>
+    kbps === null ? Effect.void : instance.helper({ type: "bitrate", kbps });
+
+  // With no viewer on screen, capture and encoding stop entirely; the helper resumes on a
+  // keyframe.
+  const applyCapture = (instance: Instance) =>
+    Effect.suspend(() => {
+      const wanted = instance.viewers.some((viewer) => viewer.visible);
+      if (wanted === instance.capturing) return Effect.void;
+      instance.capturing = wanted;
+      return instance.helper({ type: wanted ? "resume" : "pause" });
+    });
+
+  // A viewer that joins or shows its pane starts on a keyframe, whatever was asked for lately.
+  const joinOnKeyframe = (instance: Instance) =>
+    Effect.suspend(() => {
+      instance.lastKeyframeRequest = Number.NEGATIVE_INFINITY;
+      return requestKeyframe(instance);
+    });
+
   const handlePacket = Effect.fnUntraced(function* (instance: Instance, packet: HelperPacket) {
     if (packet._tag === "video") {
+      const now = yield* Clock.currentTimeMillis;
+      // A viewer that falls behind is slower than Blender's frame rate, which a lower bitrate
+      // can't fix; it resyncs on a keyframe, and only ack delay moves the bitrate.
       let wantsKeyframe = false;
       for (const viewer of instance.viewers) {
-        const offered = viewer.flow.offer(packet);
+        if (!viewer.visible) continue;
+        const offered = viewer.flow.offer(packet, now);
         if (offered.send) yield* Queue.offer(viewer.queue, { _tag: "frame", data: packet.data });
         wantsKeyframe ||= offered.requestKeyframe;
       }
@@ -388,7 +462,8 @@ const make = Effect.gen(function* () {
         // Sizes asked for before the helper ran went nowhere; ask for the wanted one now.
         instance.displaySize = `${event.width}x${event.height}`;
         yield* applySize(instance);
-        if (instance.viewers.length === 0) yield* instance.helper({ type: "pause" });
+        instance.capturing = true;
+        yield* applyCapture(instance);
         const stats = statsMessage(instance);
         if (stats) yield* broadcast(instance, stats);
         // Without window capture there is no `windowCaptured`; the whole display is the stream.
@@ -485,7 +560,7 @@ const make = Effect.gen(function* () {
   );
 
   const sampleMemory = Effect.fnUntraced(function* (instance: Instance) {
-    if (instance.pid === null || instance.viewers.length === 0) return;
+    if (instance.pid === null || !instance.capturing) return;
     const status = yield* fileSystem
       .readFileString(`/proc/${instance.pid}/status`)
       .pipe(Effect.orElseSucceed(() => ""));
@@ -726,7 +801,8 @@ const make = Effect.gen(function* () {
       stats: null,
       memoryBytes: null,
       viewport: null,
-      lastKeyframeRequest: 0,
+      lastKeyframeRequest: Number.NEGATIVE_INFINITY,
+      keyframeDeferred: false,
       helper: () => Effect.void,
       control: null,
       saveReplies: null,
@@ -737,6 +813,9 @@ const make = Effect.gen(function* () {
       held: new HeldInput(),
       cursorCaptured: false,
       displaySize: "",
+      capturing: true,
+      bitrate: new BitrateControl(),
+      bitrateLead: null,
     };
     failedStarts.delete(threadId);
     instances.set(threadId, instance);
@@ -841,8 +920,36 @@ const make = Effect.gen(function* () {
     yield* Queue.shutdown(entry.queue);
     yield* releaseControl(instance, entry);
     yield* applySize(instance);
-    // With nobody watching, capture and encoding stop entirely.
-    if (instance.viewers.length === 0) yield* instance.helper({ type: "pause" });
+    yield* applyCapture(instance);
+  });
+
+  // Showing a pane joins on a keyframe, as attaching does; a hidden pane gets no frames.
+  const setVisible = Effect.fn("HostedBlender.setVisible")(function* (
+    instance: Instance,
+    entry: ViewerEntry,
+    visible: boolean,
+  ) {
+    if (entry.visible === visible) return;
+    entry.visible = visible;
+    entry.flow.resync();
+    if (visible) entry.shownAt = nextShownAt++;
+    yield* applyCapture(instance);
+    yield* applySize(instance);
+    if (visible) yield* joinOnKeyframe(instance);
+  });
+
+  // Acks arrive for every frame; they share the viewer's stream span.
+  const ackFrame = Effect.fnUntraced(function* (instance: Instance, entry: ViewerEntry) {
+    const now = yield* Clock.currentTimeMillis;
+    const { next, latencyMs, requestKeyframe: wantsKeyframe } = entry.flow.ack(now);
+    if (next) yield* Queue.offer(entry.queue, { _tag: "frame", data: next.data });
+    if (wantsKeyframe) yield* requestKeyframe(instance);
+    if (latencyMs === null || leadViewer(instance) !== entry) return;
+    if (instance.bitrateLead !== entry.id) {
+      instance.bitrateLead = entry.id;
+      instance.bitrate.reset();
+    }
+    yield* setBitrate(instance, instance.bitrate.ack(latencyMs, now));
   });
 
   const attachViewer: HostedBlender["Service"]["attachViewer"] = Effect.fn(
@@ -859,6 +966,8 @@ const make = Effect.gen(function* () {
       queue: yield* Queue.unbounded<HostedBlenderViewerOutput>(),
       flow: new ViewerFlow(),
       size: null,
+      visible: true,
+      shownAt: nextShownAt++,
     };
     instance.viewers.push(entry);
     yield* Effect.addFinalizer(() => detach(instance, entry));
@@ -873,23 +982,19 @@ const make = Effect.gen(function* () {
       entry.queue,
       initial.map((message) => ({ _tag: "message" as const, message })),
     );
-    if (instance.viewers.length === 1) yield* instance.helper({ type: "resume" });
-    // Each viewer joins on a keyframe.
-    instance.lastKeyframeRequest = 0;
-    yield* requestKeyframe(instance);
+    yield* applyCapture(instance);
+    yield* joinOnKeyframe(instance);
     return {
       _tag: "attached" as const,
       viewer: {
         output: entry.queue,
-        ack: Effect.suspend(() => {
-          const next = entry.flow.ack();
-          return next ? Queue.offer(entry.queue, { _tag: "frame", data: next.data }) : Effect.void;
-        }).pipe(Effect.asVoid),
+        ack: Effect.suspend(() => ackFrame(instance, entry)),
         resize: (width, height) =>
           Effect.suspend(() => {
             entry.size = { width, height };
             return applySize(instance);
           }),
+        setVisible: (visible) => setVisible(instance, entry, visible),
         input: (message) => handleViewerInput(instance, entry, message),
       },
     };

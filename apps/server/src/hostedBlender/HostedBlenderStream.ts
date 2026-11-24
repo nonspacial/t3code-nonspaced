@@ -97,6 +97,8 @@ const makeHandler = Effect.fnUntraced(function* (blender: HostedBlender.HostedBl
         if (message.value.type === "resize") {
           return yield* viewer.resize(message.value.width, message.value.height);
         }
+        if (message.value.type === "visibility")
+          return yield* viewer.setVisible(message.value.visible);
         // In order and one at a time, so a flood of input waits on the socket, not in memory.
         return yield* viewer.input(message.value);
       });

@@ -105,10 +105,9 @@ const fakeTools = (dir: string, helper = "exit 1") => {
 const WAITING_HELPER = 'while read line; do case "$line" in *quit*) exit 0;; esac; done';
 
 /**
- * Stands in for the helper and the Blender inside it: reports the viewport window on stdout,
- * answers on the control socket as the add-on would (per STANDIN_SCENARIO), and on the
- * helper's own `quit` writes STANDIN_MARKER and exits. Once its control connection is up it
- * reports the file dirty, and it logs each save command it gets to STANDIN_SAVES.
+ * Stands in for the helper and its Blender: answers the control socket as the add-on would (per
+ * STANDIN_SCENARIO), reports the file dirty, logs saves to STANDIN_SAVES and commands to
+ * STANDIN_COMMANDS, answers keyframe requests and resizes, and on `quit` writes STANDIN_MARKER.
  */
 const STANDIN_HELPER = String.raw`
 import json, os, socket, struct, sys, threading
@@ -120,6 +119,12 @@ def event(value):
     data = json.dumps(value).encode()
     with lock:
         sys.stdout.buffer.write(struct.pack(">IB", len(data) + 1, 1) + data)
+        sys.stdout.buffer.flush()
+def video(key):
+    # A SEMU header (magic, version, flags, pts) and one byte of "access unit".
+    data = struct.pack(">IBBHQ", 0x53454D55, 1, 1 if key else 0, 0, 0) + b"\x00"
+    with lock:
+        sys.stdout.buffer.write(struct.pack(">IB", len(data) + 1, 2) + data)
         sys.stdout.buffer.flush()
 server = socket.socket(socket.AF_UNIX)
 server.bind(t3[t3.index("--t3-control") + 1])
@@ -160,9 +165,22 @@ def control():
 threading.Thread(target=control, daemon=True).start()
 for line in sys.stdin:
     command = json.loads(line)
-    if command.get("type") not in ("quit", "keyframe", "pause", "resume"):
+    if command.get("type") != "quit":
+        with open(os.environ["STANDIN_COMMANDS"], "a") as log:
+            log.write(line)
+    if command.get("type") not in ("quit", "keyframe", "pause", "resume", "bitrate"):
         with open(os.environ["STANDIN_INPUT"], "a") as log:
             log.write(line)
+    if command.get("type") == "keyframe":
+        video(True)
+    if command.get("type") == "resize":
+        event({"type": "frameSize", "width": command["width"], "height": command["height"]})
+    # F1: a burst of deltas, then Blender "captures" the cursor to mark the end of it.
+    if command.get("type") == "key" and command.get("code") == 59:
+        if command["pressed"]:
+            for _ in range(12):
+                video(False)
+        event({"type": "cursorLeave"} if command["pressed"] else {"type": "cursorEnter", "x": 1, "y": 2})
     # A middle-drag orbit: Blender hides its cursor while the button is down.
     if command.get("type") == "pointerButton" and command.get("button") == 274:
         event({"type": "cursorLeave"} if command["pressed"] else {"type": "cursorEnter", "x": 1, "y": 2})
@@ -190,6 +208,7 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
   const marker = NodePath.join(dir, "helper-quit");
   const savesLog = NodePath.join(dir, "saves.log");
   const inputLog = NodePath.join(dir, "input.log");
+  const commandLog = NodePath.join(dir, "commands.log");
   const service = yield* serviceFor(
     layerFor({
       env: {
@@ -199,6 +218,7 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
         STANDIN_MARKER: marker,
         STANDIN_SAVES: savesLog,
         STANDIN_INPUT: inputLog,
+        STANDIN_COMMANDS: commandLog,
       },
       helper: NodePath.join(bin, "helper"),
       workspaceRoot: dir,
@@ -223,13 +243,18 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
   const saveCommands = () =>
     NodeFS.existsSync(savesLog) ? NodeFS.readFileSync(savesLog, "utf8").split("\n").length - 1 : 0;
   /** The input commands the helper got, in order. */
-  const helperInput = (): unknown[] =>
-    NodeFS.existsSync(inputLog)
-      ? NodeFS.readFileSync(inputLog, "utf8")
+  const readLog = (
+    log: string,
+  ): Array<{ readonly type: string; readonly [key: string]: unknown }> =>
+    NodeFS.existsSync(log)
+      ? NodeFS.readFileSync(log, "utf8")
           .split("\n")
           .filter((line) => line.length > 0)
           .map((line) => JSON.parse(line))
       : [];
+  const helperInput = (): unknown[] => readLog(inputLog);
+  /** Every command the helper got but quit, in order. */
+  const helperCommands = () => readLog(commandLog);
   return {
     service,
     awaitStatus,
@@ -237,6 +262,7 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
     openReady,
     saveCommands,
     helperInput,
+    helperCommands,
     marker,
     runtime,
   };
@@ -478,6 +504,149 @@ describe("Taking control", () => {
     }).pipe(Effect.scoped),
   );
 });
+
+/** The next frame, skipping messages. */
+const nextFrame = (viewer: Viewer): Effect.Effect<Uint8Array> =>
+  Queue.take(viewer.output).pipe(
+    Effect.flatMap((output) =>
+      output._tag === "frame" ? Effect.succeed(output.data) : nextFrame(viewer),
+    ),
+  );
+/** Whether a frame is waiting for `viewer`; empties its queue. */
+const hasFrame = (viewer: Viewer) =>
+  Queue.clear(viewer.output).pipe(
+    Effect.map((outputs) => outputs.some((output) => output._tag === "frame")),
+  );
+const isKey = (frame: Uint8Array) => (frame[5]! & 1) === 1;
+const ofType = <Command extends { readonly type: string }>(
+  commands: ReadonlyArray<Command>,
+  ...types: ReadonlyArray<string>
+) => commands.filter((command) => types.includes(command.type));
+
+describe("The stream", () => {
+  it.live("stops capturing while no pane is on screen and resumes on a keyframe", () =>
+    Effect.gen(function* () {
+      const { service, openReady, helperCommands } = yield* standIn("visible", "");
+      yield* openReady;
+      const first = yield* attach(service, false);
+      expect(isKey(yield* nextFrame(first))).toBe(true);
+      yield* first.ack;
+      yield* first.setVisible(false);
+      // A second pane on screen resumes capture and joins on a keyframe; the hidden one gets
+      // nothing.
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const second = yield* attach(service, false);
+          expect(isKey(yield* nextFrame(second))).toBe(true);
+          expect(yield* hasFrame(first)).toBe(false);
+        }),
+      );
+      // Showing the first pane again resumes capture, starting on a keyframe.
+      yield* first.setVisible(true);
+      expect(isKey(yield* nextFrame(first))).toBe(true);
+      // Nobody watched while Blender started, so it started paused.
+      expect(ofType(helperCommands(), "pause", "resume", "keyframe")).toEqual([
+        { type: "pause" },
+        { type: "resume" },
+        { type: "keyframe" },
+        { type: "pause" },
+        { type: "resume" },
+        { type: "keyframe" },
+        { type: "pause" },
+        { type: "resume" },
+        { type: "keyframe" },
+      ]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("sizes the display to the latest pane on screen; a pane without a size keeps it", () =>
+    Effect.gen(function* () {
+      const { service, openReady, helperCommands } = yield* standIn("latest", "");
+      yield* openReady;
+      const older = yield* attach(service, false);
+      yield* older.resize(800, 600);
+      yield* nextMessage(older, "viewport");
+      const newer = yield* attach(service, false);
+      yield* newer.resize(1600, 900);
+      yield* nextMessage(older, "viewport");
+      // A floating player sends no size, so opening one leaves the display alone...
+      yield* attach(service, false);
+      // ...hiding the newest pane hands the size back to the older one, and showing it again
+      // takes it back.
+      yield* newer.setVisible(false);
+      yield* nextMessage(older, "viewport");
+      yield* newer.setVisible(true);
+      expect(yield* nextMessage(older, "viewport")).toEqual({
+        type: "viewport",
+        width: 1600,
+        height: 900,
+      });
+      expect(ofType(helperCommands(), "resize")).toEqual([
+        { type: "resize", width: 800, height: 600 },
+        { type: "resize", width: 1600, height: 900 },
+        { type: "resize", width: 800, height: 600 },
+        { type: "resize", width: 1600, height: 900 },
+      ]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("resyncs a viewer that falls behind on a keyframe, without cutting the bitrate", () =>
+    Effect.gen(function* () {
+      const { service, openReady, helperCommands } = yield* standIn("bitrate", "");
+      yield* openReady;
+      const operator = yield* attach(service, true);
+      yield* operator.input({ type: "takeControl", takeOver: false });
+      const cursor = (captured: boolean): Effect.Effect<unknown> =>
+        nextMessage(operator, "cursor").pipe(
+          Effect.flatMap((message) =>
+            message.captured === captured ? Effect.void : cursor(captured),
+          ),
+        );
+      // F1 sends more deltas than a viewer that hasn't acked may have waiting, then Blender
+      // "captures" the cursor; releasing F1 lets it go.
+      yield* operator.input({ type: "key", code: 59, pressed: true });
+      yield* cursor(true);
+      yield* operator.input({ type: "key", code: 59, pressed: false });
+      yield* cursor(false);
+      // Falling behind is a slow viewer, not a congested link: it skips to a keyframe, and only
+      // ack delay moves the bitrate.
+      expect(ofType(helperCommands(), "bitrate")).toEqual([]);
+      // Acking the frame it was stuck on lets the keyframe out.
+      yield* operator.ack;
+      expect(isKey(yield* nextFrame(operator))).toBe(true);
+    }).pipe(Effect.scoped),
+  );
+});
+
+it.effect(
+  "a stalled viewer's keyframe waits out the throttle, and comes even if Blender is idle",
+  () =>
+    Effect.gen(function* () {
+      const { service, awaitStatus, helperCommands } = yield* standIn("deferred", "");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitStatus("running");
+      const operator = yield* attach(service, true);
+      yield* operator.input({ type: "takeControl", takeOver: false });
+      const cursor = (captured: boolean): Effect.Effect<unknown> =>
+        nextMessage(operator, "cursor").pipe(
+          Effect.flatMap((message) =>
+            message.captured === captured ? Effect.void : cursor(captured),
+          ),
+        );
+      // F1 overflows the operator's queue while its first frame is unacked; nothing more comes.
+      yield* operator.input({ type: "key", code: 59, pressed: true });
+      yield* cursor(true);
+      yield* operator.input({ type: "key", code: 59, pressed: false });
+      yield* cursor(false);
+      // Its ack asks for a keyframe, but one went out at join this same instant.
+      yield* operator.ack;
+      yield* syncPoint(operator);
+      expect(ofType(helperCommands(), "keyframe")).toHaveLength(1);
+      yield* TestClock.adjust("250 millis");
+      expect(isKey(yield* nextFrame(operator))).toBe(true);
+      expect(ofType(helperCommands(), "keyframe")).toHaveLength(2);
+    }).pipe(Effect.scoped),
+);
 
 it.effect("gives up on a start that never shows Blender by asking the helper to quit", () =>
   Effect.gen(function* () {

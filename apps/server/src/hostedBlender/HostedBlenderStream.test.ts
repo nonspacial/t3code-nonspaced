@@ -97,6 +97,7 @@ it.effect(
               output,
               ack: Effect.sync(() => acked.resolve()),
               resize: (width, height) => Effect.sync(() => resized.resolve([width, height])),
+              setVisible: () => Effect.void,
               input: () => Effect.void,
             },
           };
@@ -167,6 +168,7 @@ it.effect("lets a session that can operate terminals take control and send input
               output,
               ack: Effect.void,
               resize: () => Effect.void,
+              setVisible: () => Effect.void,
               input: (message) =>
                 Effect.sync(() => {
                   inputs.push(message);
@@ -191,5 +193,52 @@ it.effect("lets a session that can operate terminals take control and send input
       { type: "key", code: 30, pressed: true },
       { type: "releaseControl" },
     ]);
+  }),
+);
+
+it.effect("passes visibility on, and handles a viewer's messages one at a time", () =>
+  Effect.gen(function* () {
+    const output = yield* Queue.make<HostedBlender.HostedBlenderViewerOutput>();
+    const seen: unknown[] = [];
+    const done = Promise.withResolvers<void>();
+    let running = 0;
+    let mostAtOnce = 0;
+    // Each message takes a while, as input does while the helper's stdin is full.
+    const handle = (message: unknown) =>
+      Effect.gen(function* () {
+        running += 1;
+        mostAtOnce = Math.max(mostAtOnce, running);
+        yield* Effect.yieldNow;
+        yield* Effect.yieldNow;
+        running -= 1;
+        seen.push(message);
+        if (seen.length === 202) done.resolve();
+      });
+    const socket = yield* serve([AuthOrchestrationReadScope, AuthTerminalOperateScope], () =>
+      Effect.succeed({
+        _tag: "attached" as const,
+        viewer: {
+          output,
+          ack: handle("ack"),
+          resize: () => Effect.void,
+          setVisible: (visible) => handle({ visible }),
+          input: (message) => handle(message),
+        },
+      }),
+    );
+    socket.addEventListener("open", () => {
+      socket.send(JSON.stringify({ type: "visibility", visible: false }));
+      for (let code = 1; code <= 100; code++) {
+        socket.send(JSON.stringify({ type: "key", code, pressed: true }));
+        socket.send(JSON.stringify({ type: "ack" }));
+      }
+      socket.send(JSON.stringify({ type: "visibility", visible: true }));
+    });
+    yield* Effect.promise(() => done.promise);
+    expect(mostAtOnce).toBe(1);
+    expect(seen[0]).toEqual({ visible: false });
+    expect(seen[1]).toEqual({ type: "key", code: 1, pressed: true });
+    expect(seen[2]).toBe("ack");
+    expect(seen.at(-1)).toEqual({ visible: true });
   }),
 );
