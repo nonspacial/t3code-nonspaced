@@ -98,17 +98,25 @@ export const BlendConversionUnavailableReason = Schema.Literals([
 ]);
 export type BlendConversionUnavailableReason = typeof BlendConversionUnavailableReason.Type;
 
-/** A conversion's progress, ending in `ready`, `slow`, `failed` or `unavailable`. */
+/** The name of the file whose change started this conversion: the `.blend` or a library it links. */
+const changed = Schema.optionalKey(Schema.String);
+
+/**
+ * A conversion's progress, reaching `ready`, `slow`, `failed` or `unavailable`. A watched file
+ * starts again, with `changed`, each time it or a library it links changes.
+ */
 export const BlendConversionStatus = Schema.Union([
   /** `ahead` counts the conversions before this one, the running one included. */
-  Schema.Struct({ status: Schema.Literal("waiting"), ahead: NonNegativeInt }),
+  Schema.Struct({ status: Schema.Literal("waiting"), ahead: NonNegativeInt, changed }),
   Schema.Struct({
     status: Schema.Literal("converting"),
     blenderVersion: Schema.String,
     startedAt: Schema.Number,
+    changed,
   }),
   Schema.Struct({
     status: Schema.Literal("ready"),
+    changed,
     /** A signed asset URL for the GLB. */
     relativeUrl: Schema.String,
     byteLength: NonNegativeInt,

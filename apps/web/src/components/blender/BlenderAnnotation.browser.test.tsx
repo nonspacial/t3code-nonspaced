@@ -97,6 +97,7 @@ vi.mock(import("@t3tools/client-runtime/hosted-blender/stream"), async (original
     sink.present(frameOf("#3d3d3d"), 320, 180);
     return {
       resize: () => {},
+      setVisible: () => {},
       send: (message: HostedBlenderViewerMessage) => stream.sent.push(message),
       stop: () => {},
     };

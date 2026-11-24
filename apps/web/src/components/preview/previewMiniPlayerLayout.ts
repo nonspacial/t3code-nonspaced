@@ -231,6 +231,8 @@ export function resolvePreviewMiniPlayerFrame(input: {
   readonly source: PreviewMiniPlayerSize;
   readonly container: PreviewMiniPlayerSize;
   readonly obstacles?: PreviewMiniPlayerObstacles;
+  /** At most this share of the container's height, whatever width it was given. */
+  readonly maxHeightRatio?: number;
 }): PreviewMiniPlayerFrame {
   const {
     width,
@@ -238,15 +240,17 @@ export function resolvePreviewMiniPlayerFrame(input: {
     source,
     container,
     obstacles = NO_PREVIEW_MINI_PLAYER_OBSTACLES,
+    maxHeightRatio = 1,
   } = input;
+  const area = availableArea(
+    container,
+    position && width ? { composer: obstacles.composer, detailsCard: null } : obstacles,
+    position && width ? spanOf(position.x, width) : null,
+  );
   const size = fitPreviewMiniPlayerWidth(
     width ?? defaultPreviewMiniPlayerWidth(source),
     source,
-    availableArea(
-      container,
-      position && width ? { composer: obstacles.composer, detailsCard: null } : obstacles,
-      position && width ? spanOf(position.x, width) : null,
-    ),
+    { width: area.width, height: Math.min(area.height, container.height * maxHeightRatio) },
     width ?? undefined,
   );
   const { detailsCard } = obstacles;

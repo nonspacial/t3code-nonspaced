@@ -119,6 +119,8 @@ async function readModelBytes(
   return { data: await new Blob(chunks).arrayBuffer() };
 }
 
+const failedContextLost: ModelView = { phase: "failed", code: "context-lost", missing: [] };
+
 function failedView(cause: unknown): ModelView {
   return isModelPreviewError(cause)
     ? { phase: "failed", code: cause.code, missing: cause.missing }
@@ -165,6 +167,10 @@ export function ModelFilePreview(props: {
   readonly actions?: ReactNode;
   /** Replaces the loaded model's status chip. */
   readonly readyChip?: ReactNode;
+  /** The status chip while a new `src` loads behind the model still shown. */
+  readonly updatingChip?: ReactNode;
+  /** Work toward a newer version, such as a conversion; it outranks every other chip. */
+  readonly pendingChip?: ReactNode;
   /** Replaces the loaded model's details box. */
   readonly facts?: ReactNode;
   /** Drawn over the view whatever its state, such as a conversion's bottom-left action. */
@@ -176,10 +182,26 @@ export function ModelFilePreview(props: {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<ModelViewer | null>(null);
   const [allowLarge, setAllowLarge] = useState(false);
-  // Each result belongs to the load that produced it, so a new source shows loading, not the last model.
+  /** A large new version the user chose not to load yet, by its source. */
+  const [declined, setDeclined] = useState<string | null>(null);
+  // A viewer outlives a change of source, so a new version replaces the model only once it loads.
+  const [viewer, setViewer] = useState<ModelViewer | null>(null);
+  // A viewer that lost its WebGL context or never started needs a new one, which Reload makes.
+  const [generation, setGeneration] = useState(0);
+  // The viewer itself failing, which no load of a source can fix.
+  const [viewerFailure, setViewerFailure] = useState<{
+    readonly generation: number;
+    readonly view: ModelView;
+  } | null>(null);
+  // Each result belongs to the load that produced it.
   const [result, setResult] = useState<{
     readonly attempt: string;
     readonly view: ModelView;
+  } | null>(null);
+  /** The model in the viewer's scene, which stays shown while another version loads. */
+  const [inScene, setInScene] = useState<{
+    readonly viewer: ModelViewer;
+    readonly view: Extract<ModelView, { readonly phase: "ready" }>;
   } | null>(null);
   const [snapshot, setSnapshot] = useState<ModelSnapshot | null>(null);
   const attachAnnotationToComposer = useAttachModelAnnotation();
@@ -193,32 +215,57 @@ export function ModelFilePreview(props: {
   const awaitingConfirm = !allowLarge && props.sizeBytes > MODEL_CONFIRM_BYTES;
   const { src, format } = props;
   const blenderSource = props.blenderSource === true;
-  const attempt = `${allowLarge}:${format}:${blenderSource}:${src}`;
+  const attempt = `${generation}:${allowLarge}:${format}:${blenderSource}:${src}`;
+  // A viewer starts with the first model the user lets load, then stays while larger ones ask.
+  const wantViewer = !awaitingConfirm || viewer !== null;
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- creates the WebGL viewer on a canvas, streams and parses the model into it, and disposes both on cleanup
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- creates the WebGL viewer on its own canvas and disposes both on cleanup
   useEffect(() => {
     const host = hostRef.current;
-    if (awaitingConfirm || !host) return;
+    if (!wantViewer || !host) return;
     // Disposing forces the context lost, so every viewer needs a canvas of its own.
     const canvas = document.createElement("canvas");
     canvas.className = "absolute inset-0 size-full";
     host.append(canvas);
+    let created: ModelViewer;
+    try {
+      created = createModelViewer({
+        canvas,
+        onContextLost: () => {
+          setInScene(null);
+          setViewerFailure({ generation, view: failedContextLost });
+        },
+      });
+    } catch (cause) {
+      console.warn("3D preview could not load", cause);
+      // oxlint-disable-next-line react/set-state-in-effect -- WebGL refusing a context is only known by trying to create one.
+      setViewerFailure({ generation, view: failedView(cause) });
+      canvas.remove();
+      return;
+    }
+    viewerRef.current = created;
+    setViewer(created);
+    const resize = () => {
+      const { width, height } = host.getBoundingClientRect();
+      created.resize(width, height, window.devicePixelRatio);
+    };
+    resize();
+    const stopResize = observeResize(host, resize);
+    return () => {
+      stopResize();
+      viewerRef.current = null;
+      setViewer(null);
+      created.dispose();
+      canvas.remove();
+    };
+  }, [wantViewer, generation]);
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- streams and parses the model into the WebGL viewer, which swaps it in only once it has loaded
+  useEffect(() => {
+    if (viewer === null || awaitingConfirm) return;
     const controller = new AbortController();
-    let viewer: ModelViewer | null = null;
-    let stopResize = () => {};
     const setView = (view: ModelView) => setResult({ attempt, view });
     void (async () => {
-      viewer = createModelViewer({
-        canvas,
-        onContextLost: () => setView({ phase: "failed", code: "context-lost", missing: [] }),
-      });
-      viewerRef.current = viewer;
-      const resize = () => {
-        const { width, height } = host.getBoundingClientRect();
-        viewer?.resize(width, height, window.devicePixelRatio);
-      };
-      resize();
-      stopResize = observeResize(host, resize);
       const bytes = await readModelBytes(src, allowLarge, controller.signal);
       if ("confirm" in bytes) {
         setView({ phase: "confirm", bytes: bytes.confirm });
@@ -235,36 +282,62 @@ export function ModelFilePreview(props: {
         signal: controller.signal,
         blenderSource,
       });
-      if (!controller.signal.aborted) setView({ phase: "ready", ...loaded });
+      if (controller.signal.aborted) return;
+      const view = { phase: "ready", ...loaded } as const;
+      setView(view);
+      setInScene({ viewer, view });
     })().catch((cause: unknown) => {
       if (controller.signal.aborted) return;
       console.warn("3D preview could not load", cause);
       setView(failedView(cause));
     });
-    return () => {
-      controller.abort();
-      stopResize();
-      viewerRef.current = null;
-      viewer?.dispose();
-      canvas.remove();
-    };
+    return () => controller.abort();
   }, [
+    viewer,
+    awaitingConfirm,
     attempt,
     src,
     format,
     allowLarge,
-    awaitingConfirm,
     modelPath,
     workspaceRoot,
     mintCompanion,
     blenderSource,
   ]);
 
-  const shown: ModelView = awaitingConfirm
-    ? { phase: "confirm", bytes: props.sizeBytes }
-    : result?.attempt === attempt
-      ? result.view
-      : { phase: "loading" };
+  const current: ModelView | null =
+    viewerFailure?.generation === generation
+      ? viewerFailure.view
+      : result?.attempt === attempt
+        ? result.view
+        : null;
+  const kept = inScene !== null && inScene.viewer === viewer ? inScene.view : null;
+  const confirm = awaitingConfirm
+    ? { bytes: props.sizeBytes }
+    : current?.phase === "confirm"
+      ? { bytes: current.bytes }
+      : null;
+  // A newer version still loading, waiting to be allowed, or failed leaves the last model up.
+  const replacing =
+    kept === null || current?.phase === "ready"
+      ? null
+      : confirm !== null
+        ? declined === src
+          ? ("declined" as const)
+          : ("confirm" as const)
+        : current === null
+          ? ("loading" as const)
+          : ("failed" as const);
+  const shown: ModelView =
+    replacing !== null && kept !== null
+      ? kept
+      : confirm !== null
+        ? { phase: "confirm", bytes: confirm.bytes }
+        : (current ?? { phase: "loading" });
+  const refresh = () => {
+    if (viewerFailure?.generation === generation) setGeneration((value) => value + 1);
+    props.onRefresh();
+  };
   const ready = shown.phase === "ready";
   const linkedView = props.view?.view ?? null;
   const linkedViewRequest = props.view?.requestId ?? null;
@@ -372,15 +445,15 @@ export function ModelFilePreview(props: {
                   })
                 : messages(FAILURE_MESSAGES[shown.code])
             }
-            {...(shown.code === "webgl-unavailable" ? {} : { onRetry: props.onRefresh })}
+            {...(shown.code === "webgl-unavailable" ? {} : { onRetry: refresh })}
           />
         </div>
       ) : null}
-      {shown.phase === "confirm" ? (
+      {confirm !== null && replacing !== "declined" ? (
         <div className="absolute inset-0 flex items-center justify-center p-6">
           <div className="flex max-w-sm flex-col items-center gap-3 rounded-lg border bg-popover px-5 py-4 text-center text-xs leading-relaxed text-popover-foreground shadow-lg">
             <p>
-              {shown.bytes === null
+              {confirm.bytes === null
                 ? gt(
                     "This model is over {size}. Loading it can slow this window down for a while.",
                     {
@@ -388,17 +461,42 @@ export function ModelFilePreview(props: {
                     },
                   )
                 : gt("This model is {size}. Loading it can slow this window down for a while.", {
-                    size: formatAttachmentSize(shown.bytes, messages),
+                    size: formatAttachmentSize(confirm.bytes, messages),
                   })}
             </p>
-            <Button size="sm" variant="outline" onClick={() => setAllowLarge(true)}>
-              <T>Load model</T>
-            </Button>
+            <div className="flex gap-2">
+              {replacing === "confirm" ? (
+                <Button size="sm" variant="ghost" onClick={() => setDeclined(src)}>
+                  <T>Keep this version</T>
+                </Button>
+              ) : null}
+              <Button size="sm" variant="outline" onClick={() => setAllowLarge(true)}>
+                <T>Load model</T>
+              </Button>
+            </div>
           </div>
         </div>
       ) : null}
       <div className="absolute start-2 top-2 flex max-w-[calc(100%-6rem)]">
-        {ready && missing.length === 0 && props.readyChip !== undefined ? (
+        {props.pendingChip !== undefined ? (
+          props.pendingChip
+        ) : replacing === "confirm" ? (
+          <PreviewStatusChip tone="warning">{gt("Large model")}</PreviewStatusChip>
+        ) : replacing === "declined" ? (
+          <button
+            type="button"
+            className="flex min-w-0 rounded-full"
+            onClick={() => setDeclined(null)}
+          >
+            <PreviewStatusChip tone="info">{gt("A newer version is available")}</PreviewStatusChip>
+          </button>
+        ) : replacing === "failed" ? (
+          <PreviewStatusChip tone="error">{gt("Couldn't load the new version")}</PreviewStatusChip>
+        ) : replacing === "loading" ? (
+          (props.updatingChip ?? (
+            <PreviewStatusChip tone="info">{gt("Loading 3D model…")}</PreviewStatusChip>
+          ))
+        ) : ready && missing.length === 0 && props.readyChip !== undefined ? (
           props.readyChip
         ) : missing.length > 0 ? (
           <Popover>
@@ -428,7 +526,7 @@ export function ModelFilePreview(props: {
             <FocusIcon />
           </PreviewAction>
         ) : null}
-        <PreviewAction label={props.refreshLabel ?? gt("Reload model")} onPress={props.onRefresh}>
+        <PreviewAction label={props.refreshLabel ?? gt("Reload model")} onPress={refresh}>
           <RefreshIcon />
         </PreviewAction>
       </div>

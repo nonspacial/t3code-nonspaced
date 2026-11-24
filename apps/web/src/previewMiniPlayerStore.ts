@@ -20,7 +20,9 @@ export type PreviewMiniPlayerSource =
       readonly deviceId: string;
       readonly platform: DevicePlatform;
       readonly name: string;
-    };
+    }
+  /** The thread's hosted Blender, watch-only. */
+  | { readonly kind: "blender" };
 
 export interface PreviewMiniPlayerState {
   readonly source: PreviewMiniPlayerSource;
@@ -49,10 +51,17 @@ interface PreviewMiniPlayerStoreState {
 }
 
 export function previewMiniPlayerSourceKey(source: PreviewMiniPlayerSource): string {
-  return source.kind === "browser"
-    ? `browser:${source.tabId}`
-    : `device:${encodeURIComponent(source.hostId)}:${encodeURIComponent(source.deviceId)}`;
+  switch (source.kind) {
+    case "browser":
+      return `browser:${source.tabId}`;
+    case "device":
+      return `device:${encodeURIComponent(source.hostId)}:${encodeURIComponent(source.deviceId)}`;
+    case "blender":
+      return "blender";
+  }
 }
+
+export const BLENDER_MINI_PLAYER_SOURCE: PreviewMiniPlayerSource = { kind: "blender" };
 
 export const browserMiniPlayerSource = (tabId: string): PreviewMiniPlayerSource => ({
   kind: "browser",

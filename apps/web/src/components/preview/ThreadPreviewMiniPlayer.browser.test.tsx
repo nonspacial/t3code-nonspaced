@@ -9,11 +9,12 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { expect, it, vi } from "vite-plus/test";
 
 import { act, render } from "../../../test/render";
 import {
+  BLENDER_MINI_PLAYER_SOURCE,
   type PreviewMiniPlayerSource,
   selectThreadPreviewMiniPlayer,
   usePreviewMiniPlayerStore,
@@ -29,6 +30,14 @@ vi.mock(import("../device/DeviceStreamView"), () => ({
   DeviceStreamView: (({ viewId }: { viewId: string }) => (
     <div data-testid="stream" data-view-id={viewId} />
   )) as never,
+}));
+
+// A phone in control made the hosted Blender's display portrait.
+vi.mock(import("../blender/BlenderPanel"), () => ({
+  FloatingBlender: (({ onFrameSize }: { onFrameSize: (size: object) => void }) => {
+    useEffect(() => onFrameSize({ width: 1044, height: 2002 }), [onFrameSize]);
+    return <div data-testid="blender-stream" />;
+  }) as never,
 }));
 
 const threadRef = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-1"));
@@ -153,4 +162,28 @@ it("keeps one stream when switching between threads floating the same device", a
   // The stream session is keyed by view, so a new view id reconnects the device.
   await screen.rerender(harness(otherThreadRef));
   expect(viewId()).toBe(first);
+});
+
+it("keeps a portrait Blender float under half the window's height, at its aspect ratio", async () => {
+  using _store = {
+    [Symbol.dispose]: () => usePreviewMiniPlayerStore.getState().removeThread(threadRef),
+  };
+  usePreviewMiniPlayerStore.getState().open(threadRef, BLENDER_MINI_PLAYER_SOURCE);
+  // A width the user left from an earlier, landscape float.
+  usePreviewMiniPlayerStore.getState().resize(threadRef, "blender", 373);
+  const container = document.createElement("div");
+  container.style.cssText = "display:flex;position:fixed;inset:0;width:1200px;height:800px";
+  await using screen = await render(
+    <RegistryContext.Provider value={appAtomRegistry}>
+      <Harness />
+    </RegistryContext.Provider>,
+    { container },
+  );
+  await expect.element(screen.getByTestId("blender-stream")).toBeInTheDocument();
+  const player = screen.container.querySelector<HTMLElement>("[data-preview-mini-player]")!;
+  await vi.waitFor(() => {
+    const { width, height } = player.getBoundingClientRect();
+    expect(height).toBeLessThanOrEqual(800 * 0.45);
+    expect(width / height).toBeCloseTo(1044 / 2002, 2);
+  });
 });
