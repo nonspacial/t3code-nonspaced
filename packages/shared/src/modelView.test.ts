@@ -13,10 +13,17 @@ describe("model view links", () => {
     expect(modelViewFromHref("#view=120,80.5,-40,0,0.25,0")).toEqual(view);
   });
 
-  it("keeps links short and never writes -0", () => {
-    expect(
-      formatModelViewHash({ position: [1 / 3, -0, 1e-9], target: [123456.789, 0, -0.000123456] }),
-    ).toBe("#view=0.333333,0,1e-9,123457,0,-0.000123456");
+  it("keeps every digit, so any camera survives its own link", () => {
+    const far = { position: [1000004, 0, 0], target: [1000000, 0, 0] } as const;
+    expect(modelViewFromHref(formatModelViewHash(far))).toEqual(far);
+    const exact = {
+      position: [1 / 3, 0.1 + 0.2, 1e-9],
+      target: [123456.789, 0, -0.000123456],
+    } as const;
+    expect(modelViewFromHref(formatModelViewHash(exact))).toEqual(exact);
+    expect(formatModelViewHash({ position: [-0, 1, 2], target: [0, 0, 0] })).toBe(
+      "#view=0,1,2,0,0,0",
+    );
   });
 
   it.each([

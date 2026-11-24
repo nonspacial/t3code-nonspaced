@@ -12,7 +12,7 @@ import {
 } from "three";
 import type { PreviewAnnotationHit, PreviewAnnotationVector } from "@t3tools/contracts";
 import type { ModelPreviewFormat } from "@t3tools/shared/filePreview";
-import { roundModelCoordinate } from "@t3tools/shared/modelView";
+import { cleanModelCoordinate } from "@t3tools/shared/modelView";
 
 import { isZUpFormat } from "./modelGeometry.ts";
 
@@ -47,9 +47,9 @@ export function modelSpace(
     toFile: (world) => {
       const file = world.clone().applyMatrix4(worldToFile);
       return [
-        roundModelCoordinate(file.x),
-        roundModelCoordinate(file.y),
-        roundModelCoordinate(file.z),
+        cleanModelCoordinate(file.x),
+        cleanModelCoordinate(file.y),
+        cleanModelCoordinate(file.z),
       ];
     },
     fromFile: (file) => new Vector3(...file).applyMatrix4(fileToWorld),
@@ -57,8 +57,16 @@ export function modelSpace(
 }
 
 function objectName(object: Object3D, root: Object3D): string | null {
-  for (let current: Object3D | null = object; current && current !== root; current = current.parent)
-    if (current.name.trim()) return current.name.trim();
+  for (
+    let current: Object3D | null = object;
+    current && current !== root;
+    current = current.parent
+  ) {
+    // GLTFLoader sanitizes names for animation paths and keeps the file's own in userData.
+    const original: unknown = current.userData.name;
+    const name = (typeof original === "string" ? original : current.name).trim();
+    if (name) return name;
+  }
   return null;
 }
 
@@ -80,8 +88,17 @@ export function hitUnderMark(input: {
     const hit = raycaster
       .intersectObject(input.root, true)
       .find(({ object }) => (object instanceof Mesh || object instanceof Points) && object.visible);
-    if (hit)
-      return { object: objectName(hit.object, input.root), point: input.space.toFile(hit.point) };
+    if (!hit) continue;
+    // A point cloud hit reports the spot on the ray nearest the vertex; the vertex is what was marked.
+    const position =
+      hit.object instanceof Points ? hit.object.geometry.getAttribute("position") : null;
+    const point =
+      position && hit.index !== undefined
+        ? new Vector3()
+            .fromBufferAttribute(position, hit.index)
+            .applyMatrix4(hit.object.matrixWorld)
+        : hit.point;
+    return { object: objectName(hit.object, input.root), point: input.space.toFile(point) };
   }
   return null;
 }

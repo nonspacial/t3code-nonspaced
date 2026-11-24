@@ -81,6 +81,16 @@ describe("3D view links", () => {
       view: { position: [120, 80.5, -40], target: [0, 0.25, 0] },
     });
     expect(resolveMarkdownFileLinkMeta("src/main.ts#L4", "/repo")).not.toHaveProperty("view");
+    // The same link shared as inline code stays a file chip that opens at the camera.
+    expect(
+      resolveInlineCodeFileLinkMeta("out/bracket.stl#view=120,80.5,-40,0,0.25,0", "/repo"),
+    ).toMatchObject({
+      filePath: "/repo/out/bracket.stl",
+      view: { position: [120, 80.5, -40], target: [0, 0.25, 0] },
+    });
+    expect(
+      resolveMarkdownFileLinkMeta("out/bracket.stl#view=120,80.5,-40,0,0.25,0", "/repo"),
+    ).toMatchObject({ filePath: "/repo/out/bracket.stl" });
     expect(resolveMarkdownFileLinkMeta("out/a.stl#view=1,2", "/repo")).not.toHaveProperty("view");
   });
 });

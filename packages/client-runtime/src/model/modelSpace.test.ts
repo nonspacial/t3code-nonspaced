@@ -1,6 +1,8 @@
 import {
   Box3,
   BoxGeometry,
+  BufferAttribute,
+  BufferGeometry,
   Group,
   Mesh,
   MeshBasicMaterial,
@@ -104,6 +106,32 @@ describe("hitUnderMark", () => {
     const cloud = new Points(new BoxGeometry(1, 1, 1, 8, 8, 8), new PointsMaterial());
     cloud.name = "Scan";
     expect(hitUnderMark({ ...scene(cloud), samples: [{ x: 0.5, y: 0.5 }] })?.object).toBe("Scan");
+  });
+
+  it("reports the point cloud's vertex itself, not the nearest spot on the ray", () => {
+    const geometry = new BufferGeometry();
+    geometry.setAttribute(
+      "position",
+      new BufferAttribute(new Float32Array([0.003, 0.004, 0, -1, -1, 0]), 3),
+    );
+    const root = new Group();
+    root.add(new Points(geometry, new PointsMaterial()));
+    root.updateMatrixWorld(true);
+    const camera = new PerspectiveCamera(35, 1, 0.1, 100);
+    camera.position.set(0, 0, 10);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld(true);
+    const space = modelSpace(root, { format: "ply", blenderSource: false });
+    const hit = hitUnderMark({ root, camera, space, samples: [{ x: 0.5, y: 0.5 }] });
+    close(hit?.point ?? [], [0.003, 0.004, 0]);
+  });
+
+  it("keeps a glTF node's original name, which three.js sanitizes", () => {
+    const mesh = box("Mount_Plate001");
+    mesh.userData.name = "Mount Plate.001";
+    expect(hitUnderMark({ ...scene(mesh), samples: [{ x: 0.5, y: 0.5 }] })?.object).toBe(
+      "Mount Plate.001",
+    );
   });
 
   it("returns nothing when every sample misses", () => {

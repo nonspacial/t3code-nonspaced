@@ -13,14 +13,13 @@ export interface ModelView {
 const VIEW_HASH_PATTERN = /#view=([^#]*)$/;
 const DECIMAL_PATTERN = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?$/i;
 
-/** Six significant digits keep links short and stay far finer than a camera needs. */
-export function roundModelCoordinate(value: number): number {
-  const rounded = Number(value.toPrecision(6));
-  return rounded === 0 ? 0 : rounded;
+/** Coordinates keep every digit, so a camera far from the origin survives its own link. */
+export function cleanModelCoordinate(value: number): number {
+  return value === 0 ? 0 : value;
 }
 
 export function formatModelViewHash(view: ModelView): string {
-  return `#view=${[...view.position, ...view.target].map(roundModelCoordinate).join(",")}`;
+  return `#view=${[...view.position, ...view.target].map(cleanModelCoordinate).join(",")}`;
 }
 
 export function modelViewFromHref(href: string): ModelView | null {

@@ -14,6 +14,8 @@ type Size = { readonly width: number; readonly height: number };
 
 const REGION_GRID = 5;
 const STROKE_SAMPLES = 24;
+/** A drawing whose ends meet within this share of its box's diagonal is an outline. */
+const CLOSED_LOOP_GAP = 0.25;
 
 /** A file link that opens the preview at this camera. Parentheses would end a markdown link. */
 export function modelFileLink(path: string, view: PreviewAnnotationCameraView): string {
@@ -30,8 +32,9 @@ export function modelFileLink(path: string, view: PreviewAnnotationCameraView): 
 }
 
 /**
- * Where to look for what a mark covers, as fractions of the view. A mark's middle comes first; a
- * circle drawn around something has it there. Then the rest of a region, or the line of a drawing.
+ * Where to look for what a mark covers, as fractions of the view. A region or a closed loop tries
+ * its middle first, since a circle drawn around something has it there; an open line tries only
+ * the pixels it covers, because the middle of its box can be empty or a different part.
  */
 export function markSamples(
   bounds: PreviewAnnotationRect,
@@ -50,7 +53,11 @@ export function markSamples(
       const point = points[Math.floor(index)]!;
       along.push(toSample(point.x, point.y));
     }
-    return [toSample(centre.x, centre.y), ...along];
+    const first = points[0];
+    const last = points.at(-1);
+    const gap = first && last ? Math.hypot(last.x - first.x, last.y - first.y) : 0;
+    const closed = gap <= Math.hypot(bounds.width, bounds.height) * CLOSED_LOOP_GAP;
+    return closed ? [toSample(centre.x, centre.y), ...along] : along;
   }
   const grid: PreviewAnnotationPoint[] = [];
   for (let row = 0; row < REGION_GRID; row += 1)

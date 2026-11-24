@@ -80,11 +80,16 @@ function resolveInlineCodeFileLinkMetaUncached(
   cwd: string | undefined,
   baseDir: string | undefined,
 ): MarkdownFileLinkMeta | null {
-  const candidate = inlineCodeFilePathCandidate(codeText);
+  // A 3D view link keeps its `#view=` fragment; only the path decides whether it is a file.
+  const trimmed = codeText.trim();
+  const viewFragment = /#view=[^\s#]*$/.exec(trimmed)?.[0] ?? "";
+  const candidate = inlineCodeFilePathCandidate(
+    trimmed.slice(0, trimmed.length - viewFragment.length),
+  );
   if (candidate === null) return null;
 
   return resolveMarkdownFileLinkMeta(
-    candidate,
+    `${candidate}${viewFragment}`,
     cwd,
     inlineCodePathNamesFromWorkspaceRoot(candidate, cwd, baseDir) ? cwd : baseDir,
   );

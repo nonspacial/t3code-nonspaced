@@ -34,15 +34,29 @@ describe("markSamples", () => {
     }
   });
 
-  it("tries a drawing's middle, then the line itself, for a circle around something", () => {
+  it("tries a closed loop's middle first, for a circle around something", () => {
     const points = [
-      { x: 0, y: 150 },
-      { x: 200, y: 0 },
-      { x: 400, y: 150 },
+      { x: 100, y: 150 },
+      { x: 200, y: 50 },
+      { x: 300, y: 150 },
+      { x: 200, y: 250 },
+      { x: 105, y: 155 },
     ];
-    const samples = markSamples({ x: 0, y: 0, width: 400, height: 150 }, size, points);
-    expect(samples[0]).toEqual({ x: 0.5, y: 0.25 });
-    expect(samples).toContainEqual({ x: 0.5, y: 0 });
+    const samples = markSamples({ x: 100, y: 50, width: 200, height: 200 }, size, points);
+    expect(samples[0]).toEqual({ x: 0.5, y: 0.5 });
+    expect(samples).toContainEqual({ x: 0.5, y: 50 / 300 });
+  });
+
+  it("tries only the pixels an open line covers, never the empty middle of its box", () => {
+    const points = [
+      { x: 0, y: 0 },
+      { x: 400, y: 300 },
+    ];
+    const samples = markSamples({ x: 0, y: 0, width: 400, height: 300 }, size, points);
+    expect(samples).toEqual([
+      { x: 0, y: 0 },
+      { x: 1, y: 1 },
+    ]);
   });
 });
 
