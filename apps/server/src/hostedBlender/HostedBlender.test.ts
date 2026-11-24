@@ -129,11 +129,20 @@ event({"type": "ready", "capture": "extImageCopyCapture", "target": "window",
        "encoder": "x264enc", "width": 1280, "height": 720, "cursorTracking": True})
 if scenario != "never-shows":
     event({"type": "windowCaptured", "title": "3D Viewport"})
-    # One frame, presented at 4242 µs; its access unit is a stand-in.
-    frame = struct.pack(">IBBHQ", 0x53454D55, 1, 1, 0, 4242) + b"\x00\x00\x00\x01\x65"
+armed = [None]
+def video(pts):
+    frame = struct.pack(">IBBHQ", 0x53454D55, 1, 1, 0, pts) + b"\x00\x00\x00\x01\x65"
     with lock:
         sys.stdout.buffer.write(struct.pack(">IB", len(frame) + 1, 2) + frame)
         sys.stdout.buffer.flush()
+def redraw():
+    # A frame captured before the redraw is still on its way, at a later time than any sent so
+    # far; then the redrawn frame, the one fresh capture after the mark.
+    video(5000)
+    if scenario != "no-mark" and armed[0] is not None:
+        video(6000)
+        event({"type": "frameMarked", "id": armed[0], "ptsUs": 6000})
+        armed[0] = None
 def control():
     connection, _ = server.accept()
     connection.sendall(b'{"type": "hello", "pid": %d}\n' % os.getpid())
@@ -153,6 +162,10 @@ def control():
         if kind == "hits" and scenario == "slow-hits":
             outstanding[0] += 1
             threading.Thread(target=slow_hits, args=(command,), daemon=True).start()
+            continue
+        if kind == "redraw":
+            redraw()
+            connection.sendall((json.dumps({"type": "reply", "id": command["id"], "result": True}) + "\n").encode())
             continue
         if kind in ("view", "hits", "setView") and scenario == "drop-on-view":
             connection.close()
@@ -201,7 +214,10 @@ def control():
 threading.Thread(target=control, daemon=True).start()
 for line in sys.stdin:
     command = json.loads(line)
-    if command.get("type") not in ("quit", "keyframe", "pause", "resume"):
+    if command.get("type") == "markNextFrame":
+        armed[0] = command["id"]
+        event({"type": "markArmed", "id": armed[0]})
+    if command.get("type") not in ("quit", "keyframe", "pause", "resume", "markNextFrame"):
         with open(os.environ["STANDIN_INPUT"], "a") as log:
             log.write(line)
     # A middle-drag orbit: Blender hides its cursor while the button is down.
@@ -353,8 +369,8 @@ describe("The viewport window", () => {
       yield* openReady;
       const capture = yield* service.captureView(threadId);
       assert.deepStrictEqual(capture, {
-        // The last frame the server had when Blender answered; later ones show this camera.
-        afterFrame: 4242,
+        // The frame Blender redrew from this camera, not the older one that arrived first.
+        frame: 6000,
         cameraView: { position: [7, -7, 5], target: [0, 0, 1], upAxis: "z" },
         projection: {
           matrix: [2, ...Array.from({ length: 15 }, () => 0)],
@@ -460,6 +476,16 @@ describe("The viewport window", () => {
       expect(abandoned._tag).toBe("None");
       const hits = yield* service.findHits(request);
       expect(hits[0]?.object).toBe("in flight 1");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("ties the camera to no frame when the helper marks none", () =>
+    Effect.gen(function* () {
+      const { service, openReady } = yield* standIn("no-mark", "no-mark");
+      yield* openReady;
+      const capture = yield* service.captureView(threadId);
+      expect(capture.frame).toBeNull();
+      expect(capture.cameraView.upAxis).toBe("z");
     }).pipe(Effect.scoped),
   );
 
@@ -972,26 +998,28 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
       );
       expect(firstFrame.data[5]! & 1).toBe(1);
 
-      // The viewport looks through its own local camera, not the scene's (until
-      // the orbit below leaves camera view).
-      // Once the stream is quiet, reading the camera redraws the viewport, so a frame drawn from
-      // that camera follows the answer even in a still scene.
+      // The viewport looks through its own local camera, not the scene's (until the orbit below
+      // leaves camera view). Even with the stream quiet, reading the camera has Blender redraw
+      // the viewport and the helper name that frame, and it reaches the viewer.
       const nextFrame = (wait: Duration.Input) =>
         Queue.take(viewer.output).pipe(
           Effect.repeat({ until: (output) => output._tag === "frame" }),
           Effect.timeoutOption(wait),
         );
+      const framePts = (data: Uint8Array) =>
+        Number(new DataView(data.buffer, data.byteOffset).getBigUint64(8));
       yield* viewer.ack;
       while (Option.isSome(yield* nextFrame("1 second"))) yield* viewer.ack;
       const throughCamera = yield* service.captureView(threadId);
-      const redrawn = yield* nextFrame("5 seconds");
-      assert.isTrue(Option.isSome(redrawn) && redrawn.value._tag === "frame");
-      if (Option.isNone(redrawn) || redrawn.value._tag !== "frame") return;
-      const { data } = redrawn.value;
-      expect(Number(new DataView(data.buffer, data.byteOffset).getBigUint64(8))).toBeGreaterThan(
-        throughCamera.afterFrame,
-      );
-      yield* viewer.ack;
+      assert.isNotNull(throughCamera.frame);
+      const seen: number[] = [];
+      while (!seen.includes(throughCamera.frame!)) {
+        const next = yield* nextFrame("5 seconds");
+        if (Option.isNone(next) || next.value._tag !== "frame") break;
+        seen.push(framePts(next.value.data));
+        yield* viewer.ack;
+      }
+      expect(seen).toContain(throughCamera.frame);
       throughCamera.cameraView.position.forEach((value, index) =>
         expect(value).toBeCloseTo([3, -4, 2][index]!, 3),
       );

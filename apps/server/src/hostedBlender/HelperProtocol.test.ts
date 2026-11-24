@@ -55,6 +55,8 @@ describe("HelperPacketReader", () => {
       delta.packet,
       event({ type: "cursorEnter", x: 640, y: 360 }),
       event({ type: "exited", process: "blender", code: 0, signal: null }),
+      event({ type: "markArmed", id: 7 }),
+      event({ type: "frameMarked", id: 7, ptsUs: 66_000 }),
     );
 
     for (const chunkSize of [1, 7, stream.length]) {
@@ -74,11 +76,13 @@ describe("HelperPacketReader", () => {
             height: 720,
           },
         },
-        { _tag: "video", key: true, pts: 33_000, data: key.semu },
+        { _tag: "video", key: true, data: key.semu },
         { _tag: "event", event: { type: "cursorLeave" } },
-        { _tag: "video", key: false, pts: 33_000, data: delta.semu },
+        { _tag: "video", key: false, data: delta.semu },
         { _tag: "event", event: { type: "cursorEnter" } },
         { _tag: "event", event: { type: "exited", process: "blender", code: 0, signal: null } },
+        { _tag: "event", event: { type: "markArmed", id: 7 } },
+        { _tag: "event", event: { type: "frameMarked", id: 7, ptsUs: 66_000 } },
       ]);
     }
   });

@@ -23,7 +23,11 @@ const IDLE: Duration = Duration::from_millis(1000);
 #[derive(Debug, Clone)]
 enum Packet {
     Event(Value),
-    Video { key: bool, access_unit: Vec<u8> },
+    Video {
+        key: bool,
+        pts_us: u64,
+        access_unit: Vec<u8>,
+    },
 }
 
 fn read_packet(input: &mut impl Read) -> Option<Packet> {
@@ -40,6 +44,7 @@ fn read_packet(input: &mut impl Read) -> Option<Packet> {
             assert_eq!(&semu[0..4], b"SEMU");
             Some(Packet::Video {
                 key: semu[5] & 1 == 1,
+                pts_us: u64::from_be_bytes(semu[8..16].try_into().unwrap()),
                 access_unit: semu[16..].to_vec(),
             })
         }
@@ -207,7 +212,9 @@ impl Helper {
         match self.wait("a video packet", |packet| {
             matches!(packet, Packet::Video { .. })
         }) {
-            Packet::Video { key, access_unit } => (key, access_unit),
+            Packet::Video {
+                key, access_unit, ..
+            } => (key, access_unit),
             Packet::Event(_) => unreachable!(),
         }
     }
@@ -383,6 +390,41 @@ fn exercise(capture: &str) {
     helper.client_logs("key 30 1 A");
     helper.key(30, false);
     helper.key(42, false);
+
+    // A marked frame is the next fresh capture, never a repeat of cached pixels, and the mark
+    // names it by the presentation time its packet carries.
+    helper.quiet();
+    helper.mark();
+    helper.send(json!({"type": "markNextFrame", "id": 3}));
+    assert_eq!(helper.event("markArmed")["id"], 3);
+    helper.send(json!({"type": "keyframe"}));
+    helper.video();
+    helper.quiet();
+    assert!(
+        !helper.seen[helper.mark..]
+            .iter()
+            .any(|packet| matches!(packet, Packet::Event(event) if event["type"] == "frameMarked")),
+        "a keyframe repeats cached pixels, so it is never the marked frame"
+    );
+    let repeats: Vec<u64> = helper.seen[helper.mark..]
+        .iter()
+        .filter_map(|packet| match packet {
+            Packet::Video { pts_us, .. } => Some(*pts_us),
+            Packet::Event(_) => None,
+        })
+        .collect();
+    helper.send(json!({"type": "pointerButton", "button": 272, "pressed": true}));
+    helper.client_logs("button 272 1");
+    let marked = helper.event("frameMarked");
+    assert_eq!(marked["id"], 3);
+    let pts = marked["ptsUs"].as_u64().unwrap();
+    assert!(!repeats.contains(&pts));
+    helper.wait(
+        "the marked frame",
+        |packet| matches!(packet, Packet::Video { pts_us, .. } if *pts_us == pts),
+    );
+    helper.send(json!({"type": "pointerButton", "button": 272, "pressed": false}));
+    helper.client_logs("button 272 0");
 
     helper.quiet();
     helper.mark();

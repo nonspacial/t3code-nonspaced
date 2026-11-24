@@ -32,6 +32,10 @@ const HelperEvent = Schema.Union([
     signal: Schema.NullOr(Schema.Number),
   }),
   Schema.Struct({ type: Schema.Literal("error"), message: Schema.String }),
+  /** `markNextFrame` is in effect: the next fresh capture will be reported as `id`. */
+  Schema.Struct({ type: Schema.Literal("markArmed"), id: Schema.Int }),
+  /** The fresh capture marked `id` goes out with this presentation time. */
+  Schema.Struct({ type: Schema.Literal("frameMarked"), id: Schema.Int, ptsUs: Schema.Number }),
 ]);
 export type HelperEvent = typeof HelperEvent.Type;
 const decodeHelperEvent = Schema.decodeUnknownOption(Schema.fromJsonString(HelperEvent));
@@ -39,13 +43,7 @@ const decodeHelperEvent = Schema.decodeUnknownOption(Schema.fromJsonString(Helpe
 export type HelperPacket =
   | { readonly _tag: "event"; readonly event: HelperEvent }
   /** `data` is the whole SEMU packet, sent to viewers as it is. */
-  | {
-      readonly _tag: "video";
-      readonly key: boolean;
-      /** Presentation time in microseconds; it only grows within a run. */
-      readonly pts: number;
-      readonly data: Uint8Array;
-    };
+  | { readonly _tag: "video"; readonly key: boolean; readonly data: Uint8Array };
 
 export class HelperPacketError extends Schema.TaggedError<HelperPacketError>()(
   "HelperPacketError",
@@ -95,7 +93,6 @@ export class HelperPacketReader {
         packets.push({
           _tag: "video",
           key: (header.getUint8(5) & SEMU_FLAG_KEY) !== 0,
-          pts: Number(header.getBigUint64(8, false)),
           data: payload,
         });
       }
@@ -112,6 +109,7 @@ export type HelperCommand =
   | { readonly type: "keyframe" }
   | { readonly type: "pause" }
   | { readonly type: "resume" }
+  | { readonly type: "markNextFrame"; readonly id: number }
   | { readonly type: "resize"; readonly width: number; readonly height: number }
   | { readonly type: "pointerPosition"; readonly x: number; readonly y: number }
   | { readonly type: "pointerMotion"; readonly dx: number; readonly dy: number }

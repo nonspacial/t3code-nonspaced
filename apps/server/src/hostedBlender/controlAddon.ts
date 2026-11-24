@@ -127,12 +127,10 @@ def _view():
     found = _viewport()
     if found is None:
         return None
-    window, area, region, space = found
+    window, _area, region, space = found
     width, height = window.width, window.height
+    # The matrix the last frame was drawn with; a "redraw" request draws a frame from it.
     matrix = [value for row in space.region_3d.perspective_matrix for value in row]
-    # A frame drawn from this camera then follows the answer, even in a still scene; the pane
-    # freezes that frame, so its pixels and this camera are the same view.
-    area.tag_redraw()
     return {
         "cameraView": _camera_view(space, window.scene),
         "projection": {
@@ -185,6 +183,14 @@ def _hits(command):
     return hits
 
 
+def _redraw():
+    found = _viewport()
+    if found is None:
+        return None
+    found[1].tag_redraw()
+    return True
+
+
 def _set_view(command):
     found = _viewport()
     if found is None:
@@ -204,7 +210,12 @@ def _set_view(command):
 
 def _handle(command):
     kind = command.get("type")
-    requests = {"view": _view, "hits": lambda: _hits(command), "setView": lambda: _set_view(command)}
+    requests = {
+        "view": _view,
+        "redraw": _redraw,
+        "hits": lambda: _hits(command),
+        "setView": lambda: _set_view(command),
+    }
     if kind in requests:
         try:
             result = requests[kind]()

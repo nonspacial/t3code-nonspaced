@@ -44,6 +44,10 @@ pub enum Command {
     },
     Pause,
     Resume,
+    /// Report the next freshly captured frame (never a repeat of cached pixels) as `id`.
+    MarkNextFrame {
+        id: u32,
+    },
     Resize {
         width: u32,
         height: u32,
@@ -164,6 +168,15 @@ pub enum Event {
     Error {
         message: String,
     },
+    /// `markNextFrame` is in effect: any frame captured from now on can carry the mark.
+    MarkArmed {
+        id: u32,
+    },
+    /// The frame marked `id` goes out with this presentation time.
+    FrameMarked {
+        id: u32,
+        pts_us: u64,
+    },
 }
 
 pub fn write_packet(out: &mut impl Write, kind: u8, payload: &[&[u8]]) -> io::Result<()> {
@@ -259,6 +272,10 @@ mod tests {
             ),
             (r#"{"type":"pause"}"#, Command::Pause),
             (r#"{"type":"resume"}"#, Command::Resume),
+            (
+                r#"{"type":"markNextFrame","id":7}"#,
+                Command::MarkNextFrame { id: 7 },
+            ),
             (
                 r#"{"type":"resize","width":1280,"height":720}"#,
                 Command::Resize {
@@ -367,6 +384,18 @@ mod tests {
             })
             .unwrap(),
             serde_json::json!({"type": "exited", "process": "blender", "code": 0, "signal": null})
+        );
+        assert_eq!(
+            serde_json::to_value(Event::MarkArmed { id: 7 }).unwrap(),
+            serde_json::json!({"type": "markArmed", "id": 7})
+        );
+        assert_eq!(
+            serde_json::to_value(Event::FrameMarked {
+                id: 7,
+                pts_us: 66_000
+            })
+            .unwrap(),
+            serde_json::json!({"type": "frameMarked", "id": 7, "ptsUs": 66_000})
         );
     }
 

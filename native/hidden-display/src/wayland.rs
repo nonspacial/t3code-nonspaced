@@ -49,7 +49,7 @@ use wayland_protocols_wlr::virtual_pointer::v1::client::{
 };
 
 use crate::control::{Axis, AxisSource, CaptureBackend, CaptureTarget, Command, Event};
-use crate::encoder::{Encoder, Frame, SETTLE_DELAY, SETTLE_FRAMES, Settle};
+use crate::encoder::{Encoder, Frame, FrameMark, SETTLE_DELAY, SETTLE_FRAMES, Settle};
 use crate::gbm;
 use crate::keyboard::Keyboard;
 
@@ -245,6 +245,7 @@ pub struct State {
     pub events: Vec<Event>,
     pub encoder: Encoder,
     pub settle: Settle,
+    mark: FrameMark,
     shm: wl_shm::WlShm,
     output: wl_output::WlOutput,
     output_size: (u32, u32),
@@ -351,6 +352,7 @@ impl State {
             events: Vec::new(),
             encoder,
             settle: Settle::new(SETTLE_DELAY, SETTLE_FRAMES),
+            mark: FrameMark::default(),
             shm,
             output,
             output_size: (0, 0),
@@ -445,6 +447,10 @@ impl State {
                 }
             }
             Command::Bitrate { kbps } => self.encoder.set_bitrate(kbps),
+            Command::MarkNextFrame { id } => {
+                self.mark.arm(id);
+                self.events.push(Event::MarkArmed { id });
+            }
             Command::Pause => {
                 self.paused = true;
                 self.settle.cancel();
@@ -812,6 +818,9 @@ impl State {
                 width: size.0,
                 height: size.1,
             });
+        }
+        if let Some(id) = self.mark.on_fresh_frame() {
+            self.encoder.mark_last(id);
         }
         self.settle.on_frame(Instant::now());
     }

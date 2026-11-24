@@ -48,10 +48,10 @@ function freezeBlenderFrame(
 }
 
 /**
- * Screenshot & annotate for the Blender pane. Reading the camera makes Blender redraw the
- * viewport, so a frame presented after the capture's `afterFrame` shows that camera and is the
- * one frozen; if none comes, the screenshot goes without camera and hits. The stream calls
- * `frameRef` with each frame's presentation time.
+ * Screenshot & annotate for the Blender pane. The capture names the frame Blender redrew from
+ * its camera, by presentation time, and that frame is the one frozen; without it (none named, or
+ * it never arrives) the screenshot goes without camera and hits. The stream calls `frameRef`
+ * with each frame's presentation time.
  */
 export function useBlenderAnnotation(input: {
   readonly threadRef: ScopedThreadRef;
@@ -76,12 +76,13 @@ export function useBlenderAnnotation(input: {
     if (!hasFrame(canvasRef.current)) return;
     setCapturing(true);
     const result = await captureView({ environmentId, input: { threadId } });
-    if (result._tag !== "Success") {
+    if (result._tag !== "Success" || result.value.frame === null) {
       setCapturing(false);
       setFrozen(freezeBlenderFrame(canvasRef.current, null));
       return;
     }
     const capture = result.value;
+    const marked = result.value.frame;
     const freeze = (redrawn: boolean) => {
       if (frameRef.current !== onFrame) return;
       frameRef.current = null;
@@ -89,9 +90,8 @@ export function useBlenderAnnotation(input: {
       setCapturing(false);
       setFrozen(freezeBlenderFrame(canvasRef.current, redrawn ? capture : null));
     };
-    // A frame already on its way when Blender answered shows an older view; skip it.
     const onFrame = (pts: number | null) => {
-      if (pts !== null && pts > capture.afterFrame) freeze(true);
+      if (pts === marked) freeze(true);
     };
     frameRef.current = onFrame;
     const gaveUp = setTimeout(() => freeze(false), REDRAW_WAIT_MS);

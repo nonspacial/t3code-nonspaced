@@ -98,6 +98,7 @@ const encodeControlCommand = Schema.encodeSync(
 // Requests about the person's viewport window, each answered by one `reply`.
 const ControlRequest = Schema.Union([
   Schema.Struct({ type: Schema.Literal("view"), id: Schema.Int }),
+  Schema.Struct({ type: Schema.Literal("redraw"), id: Schema.Int }),
   Schema.Struct({
     type: Schema.Literal("hits"),
     id: Schema.Int,
@@ -117,15 +118,10 @@ type ControlRequestBody = ControlRequest extends infer Request
     : never
   : never;
 const encodeControlRequest = Schema.encodeSync(Schema.fromJsonString(ControlRequest));
-/** What the add-on reads; the server adds which frame it answered after. */
-const AddonViewCapture = HostedBlenderViewCapture.mapFields(
-  ({ afterFrame: _, ...fields }) => fields,
-);
-/** A reply, with the last frame the helper had delivered when it arrived. */
-interface ControlReply {
-  readonly result: unknown;
-  readonly lastFrame: number;
-}
+/** What the add-on reads; the helper names the frame redrawn from it. */
+const AddonViewCapture = HostedBlenderViewCapture.mapFields(({ frame: _, ...fields }) => fields);
+/** How long to wait for the helper to arm a mark, and then for the marked frame. */
+const FRAME_MARK_TIMEOUT = Duration.seconds(1);
 
 export type HostedBlenderViewerOutput =
   | { readonly _tag: "frame"; readonly data: Uint8Array }
@@ -199,8 +195,11 @@ interface Instance {
   memoryBytes: number | null;
   viewport: { readonly width: number; readonly height: number } | null;
   lastKeyframeRequest: number;
-  /** The presentation time of the last frame the helper delivered; -1 before the first. */
-  lastFramePts: number;
+  /** Frame marks the helper hasn't armed or reported yet, by id. */
+  readonly frameMarks: Map<
+    number,
+    { readonly armed: Deferred.Deferred<void>; readonly marked: Deferred.Deferred<number> }
+  >;
   helper: (command: HelperCommand) => Effect.Effect<void>;
   control: ControlConnection | null;
   /** What the add-on says while `quit` waits on a save. */
@@ -208,7 +207,7 @@ interface Instance {
   /** The one save-and-quit in flight; every caller gets its result. */
   pendingSave: Deferred.Deferred<boolean> | null;
   /** Requests to the add-on awaiting their `reply`, by id. */
-  readonly requests: Map<number, Deferred.Deferred<ControlReply>>;
+  readonly requests: Map<number, Deferred.Deferred<unknown>>;
   /** Casting blocks Blender's UI thread, so one hit request reaches the add-on at a time. */
   readonly hitsLock: Semaphore.Semaphore;
   lastRequestId: number;
@@ -429,7 +428,6 @@ const make = Effect.gen(function* () {
 
   const handlePacket = Effect.fnUntraced(function* (instance: Instance, packet: HelperPacket) {
     if (packet._tag === "video") {
-      instance.lastFramePts = packet.pts;
       let wantsKeyframe = false;
       for (const viewer of instance.viewers) {
         const offered = viewer.flow.offer(packet);
@@ -458,6 +456,16 @@ const make = Effect.gen(function* () {
       case "exited":
         // labwc or Blender is gone; the helper has nothing left to show.
         return yield* instance.helper({ type: "quit" });
+      case "markArmed": {
+        const mark = instance.frameMarks.get(event.id);
+        if (mark) yield* Deferred.succeed(mark.armed, undefined);
+        return;
+      }
+      case "frameMarked": {
+        const mark = instance.frameMarks.get(event.id);
+        if (mark) yield* Deferred.succeed(mark.marked, event.ptsUs);
+        return;
+      }
       case "error":
         return yield* Effect.logWarning("hosted Blender's hidden display reported an error", {
           message: event.message,
@@ -499,12 +507,7 @@ const make = Effect.gen(function* () {
       case "reply": {
         const request = instance.requests.get(message.value.id);
         instance.requests.delete(message.value.id);
-        if (request) {
-          yield* Deferred.succeed(request, {
-            result: message.value.result,
-            lastFrame: instance.lastFramePts,
-          });
-        }
+        if (request) yield* Deferred.succeed(request, message.value.result);
         return;
       }
     }
@@ -795,7 +798,7 @@ const make = Effect.gen(function* () {
       memoryBytes: null,
       viewport: null,
       lastKeyframeRequest: 0,
-      lastFramePts: -1,
+      frameMarks: new Map(),
       helper: () => Effect.void,
       control: null,
       saveReplies: null,
@@ -981,7 +984,7 @@ const make = Effect.gen(function* () {
     }
     const control = instance.control;
     if (control === null) return yield* new HostedBlenderError({ reason: "noReply" });
-    const reply = yield* Deferred.make<ControlReply>();
+    const reply = yield* Deferred.make<unknown>();
     const closed = Deferred.await(control.closed);
     const send = Effect.suspend(() => {
       instance.lastRequestId += 1;
@@ -1011,21 +1014,48 @@ const make = Effect.gen(function* () {
       Effect.map(Option.flatten),
     );
     if (Option.isNone(answer)) return yield* new HostedBlenderError({ reason: "noReply" });
-    const { result: answered, lastFrame } = answer.value;
     // The add-on answers null when Blender has no viewport window to read or move.
-    if (answered === null) return yield* new HostedBlenderError({ reason: "noViewport" });
-    const value = yield* Schema.decodeEffect(result)(answered).pipe(
+    if (answer.value === null) return yield* new HostedBlenderError({ reason: "noViewport" });
+    return yield* Schema.decodeEffect(result)(answer.value).pipe(
       Effect.mapError(() => new HostedBlenderError({ reason: "noReply" })),
     );
-    return { value, lastFrame };
   });
 
   const captureView: HostedBlender["Service"]["captureView"] = Effect.fn(
     "HostedBlender.captureView",
   )(function* (threadId) {
     yield* Effect.annotateCurrentSpan({ threadId });
-    const { value, lastFrame } = yield* ask(threadId, { type: "view" }, AddonViewCapture);
-    return { ...value, afterFrame: lastFrame };
+    const camera = yield* ask(threadId, { type: "view" }, AddonViewCapture);
+    return { ...camera, frame: yield* redrawnFrame(threadId) };
+  });
+
+  /**
+   * Has Blender redraw the person's viewport after its camera was read, and the helper name the
+   * first frame it captures after that, which shows the camera. Null when none comes in time.
+   */
+  const redrawnFrame = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const instance = instances.get(threadId);
+    if (instance === undefined) return null;
+    instance.lastRequestId += 1;
+    const id = instance.lastRequestId;
+    const mark = { armed: yield* Deferred.make<void>(), marked: yield* Deferred.make<number>() };
+    instance.frameMarks.set(id, mark);
+    return yield* Effect.gen(function* () {
+      yield* instance.helper({ type: "markNextFrame", id });
+      const armed = yield* Deferred.await(mark.armed).pipe(
+        Effect.timeoutOption(FRAME_MARK_TIMEOUT),
+      );
+      if (Option.isNone(armed)) return null;
+      // The mark is armed before the redraw, so the redrawn frame is the one it catches.
+      yield* ask(threadId, { type: "redraw" }, Schema.Literal(true));
+      const marked = yield* Deferred.await(mark.marked).pipe(
+        Effect.timeoutOption(FRAME_MARK_TIMEOUT),
+      );
+      return Option.getOrNull(marked);
+    }).pipe(
+      Effect.orElseSucceed(() => null),
+      Effect.ensuring(Effect.sync(() => instance.frameMarks.delete(id))),
+    );
   });
 
   const findHits: HostedBlender["Service"]["findHits"] = Effect.fn("HostedBlender.findHits")(
@@ -1033,13 +1063,12 @@ const make = Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan({ threadId, marks: marks.length });
       const instance = instances.get(threadId);
       if (instance === undefined) return yield* new HostedBlenderError({ reason: "notRunning" });
-      const { value } = yield* ask(
+      return yield* ask(
         threadId,
         { type: "hits", ...projection, marks },
         HostedBlenderHits,
         instance.hitsLock,
       );
-      return value;
     },
   );
 
