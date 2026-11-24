@@ -80,3 +80,50 @@ export class BlendPreviewError extends Schema.TaggedError<BlendPreviewError>()(
 }
 
 export const isBlendPreviewError = Schema.is(BlendPreviewError);
+
+/** Converts a workspace `.blend` to GLB with the environment's Blender. */
+export const BlendConversionInput = Schema.Struct({
+  ...BlendPreviewInput.fields,
+  /** Runs without the time limit, after a conversion was too slow. */
+  keepTrying: Schema.optionalKey(Schema.Boolean),
+  /** Converts again instead of answering from the cache. */
+  refresh: Schema.optionalKey(Schema.Boolean),
+});
+export type BlendConversionInput = typeof BlendConversionInput.Type;
+
+export const BlendConversionUnavailableReason = Schema.Literals([
+  "noBlender",
+  "newerBlender",
+  "outsideWorkspace",
+]);
+export type BlendConversionUnavailableReason = typeof BlendConversionUnavailableReason.Type;
+
+/** A conversion's progress, ending in `ready`, `slow`, `failed` or `unavailable`. */
+export const BlendConversionStatus = Schema.Union([
+  /** `ahead` counts the conversions before this one, the running one included. */
+  Schema.Struct({ status: Schema.Literal("waiting"), ahead: NonNegativeInt }),
+  Schema.Struct({
+    status: Schema.Literal("converting"),
+    blenderVersion: Schema.String,
+    startedAt: Schema.Number,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("ready"),
+    /** A signed asset URL for the GLB. */
+    relativeUrl: Schema.String,
+    byteLength: NonNegativeInt,
+    blenderVersion: Schema.String,
+    convertedAt: Schema.Number,
+    cached: Schema.Boolean,
+  }),
+  /** Stopped at the time limit; `keepTrying` runs it again without one. */
+  Schema.Struct({ status: Schema.Literal("slow") }),
+  Schema.Struct({ status: Schema.Literal("failed"), log: Schema.String }),
+  Schema.Struct({
+    status: Schema.Literal("unavailable"),
+    reason: BlendConversionUnavailableReason,
+    /** The environment's Blender, for `newerBlender`. */
+    blenderVersion: Schema.optionalKey(Schema.String),
+  }),
+]);
+export type BlendConversionStatus = typeof BlendConversionStatus.Type;

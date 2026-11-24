@@ -149,6 +149,8 @@ import * as TaskFolders from "./workspace/TaskFolders.ts";
 import * as TaskFolderStore from "./workspace/TaskFolderStore.ts";
 import * as KnownWorkspaces from "./workspace/KnownWorkspaces.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
+import * as BlendConversion from "./blend/BlendConversion.ts";
+import * as BlenderDetection from "./blend/BlenderDetection.ts";
 import * as BlendPreview from "./blend/BlendPreview.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
@@ -582,6 +584,16 @@ const layerWorkspace = Layer.mergeAll(
   layerWorkspaceEntries,
   layerWorkspaceFileSystem,
   BlendPreview.layer.pipe(Layer.provide(layerWorkspaceFileSystem)),
+  BlendConversion.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerWorkspaceFileSystem,
+        layerKnownWorkspaces,
+        ProcessRunner.layer,
+        BlenderDetection.layer.pipe(Layer.provide(ProcessRunner.layer)),
+      ),
+    ),
+  ),
   WorkspaceFolders.layer.pipe(
     Layer.provide(Layer.merge(ProjectStore.layer, TaskFolderStore.layer)),
   ),

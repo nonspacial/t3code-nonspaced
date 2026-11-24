@@ -491,6 +491,8 @@ import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 import {
   BlendAttachmentPreviewInput,
+  BlendConversionInput,
+  BlendConversionStatus,
   BlendPreview,
   BlendPreviewError,
   BlendPreviewInput,
@@ -502,6 +504,7 @@ export const WS_METHODS = {
   projectsReadFile: "projects.readFile",
   projectsReadBlendPreview: "projects.readBlendPreview",
   assetsReadBlendPreview: "assets.readBlendPreview",
+  projectsSubscribeBlendConversion: "projects.subscribeBlendConversion",
   projectsSearchContents: "projects.searchContents",
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
@@ -1684,6 +1687,17 @@ const WsAssetsReadBlendPreviewRpc = Rpc.make(WS_METHODS.assetsReadBlendPreview, 
   error: Schema.Union([BlendPreviewError, EnvironmentAuthorizationError]),
 });
 
+/** Ending the subscription cancels the conversion, waiting or running. */
+const WsProjectsSubscribeBlendConversionRpc = Rpc.make(
+  WS_METHODS.projectsSubscribeBlendConversion,
+  {
+    payload: BlendConversionInput,
+    success: BlendConversionStatus,
+    error: Schema.Union([BlendPreviewError, EnvironmentAuthorizationError]),
+    stream: true,
+  },
+);
+
 const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
   payload: ProjectWriteFileInput,
   success: ProjectWriteFileResult,
@@ -2663,6 +2677,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsReadFileRpc,
   WsProjectsReadBlendPreviewRpc,
   WsAssetsReadBlendPreviewRpc,
+  WsProjectsSubscribeBlendConversionRpc,
   WsProjectsSearchContentsRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsEnsureScratchRpc,

@@ -80,6 +80,7 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.subscribeDiscoveredLocalServers
   | typeof WS_METHODS.subscribeDeviceState
   | typeof WS_METHODS.hostedBlenderSubscribeThread
+  | typeof WS_METHODS.projectsSubscribeBlendConversion
   | typeof WS_METHODS.subscribeResourceTelemetry
   | typeof WS_METHODS.pullRequestsSubscribeRefreshes
   | typeof WS_METHODS.pullRequestsSubscribeLinkedThreadRefreshes
