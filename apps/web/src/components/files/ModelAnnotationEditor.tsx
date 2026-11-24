@@ -21,6 +21,8 @@ import {
 } from "~/speech/useTextFieldSpeech";
 import { textDirection } from "~/textDirection";
 
+import { strokePieces } from "./modelAnnotation";
+
 export interface ModelAnnotationResult {
   readonly comment: string;
   readonly regions: ReadonlyArray<PreviewAnnotationRegionTarget>;
@@ -46,15 +48,14 @@ const REGION_STROKE_WIDTH = 2;
 const MIN_REGION_SIZE = 3;
 
 function strokePath(points: ReadonlyArray<PreviewAnnotationPoint>): string {
-  const [first, ...rest] = points;
-  if (!first) return "";
-  let path = `M ${first.x} ${first.y}`;
-  let previous = first;
-  for (const point of rest) {
-    path += ` Q ${previous.x} ${previous.y} ${(previous.x + point.x) / 2} ${(previous.y + point.y) / 2}`;
-    previous = point;
-  }
-  return `${path} L ${previous.x} ${previous.y}`;
+  const pieces = strokePieces(points);
+  const last = pieces.at(-1);
+  if (!last) return "";
+  const curves = pieces
+    .slice(0, -1)
+    .map(({ control, to }) => ` Q ${control.x} ${control.y} ${to.x} ${to.y}`)
+    .join("");
+  return `M ${pieces[0]!.from.x} ${pieces[0]!.from.y}${curves} L ${last.to.x} ${last.to.y}`;
 }
 
 /** The topmost mark under a point, for the eraser. */

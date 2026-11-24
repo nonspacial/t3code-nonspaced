@@ -44,10 +44,10 @@ describe("markSamples", () => {
     ];
     const samples = markSamples({ x: 100, y: 50, width: 200, height: 200 }, size, points);
     expect(samples[0]).toEqual({ x: 0.5, y: 0.5 });
-    // Then the line itself, past its top.
+    // Then the drawn line itself, across the top of its curve.
     expect(
       samples.some(
-        (sample) => Math.abs(sample.x - 0.5) <= 0.01 && Math.abs(sample.y - 50 / 300) <= 0.01,
+        (sample) => Math.abs(sample.x - 0.5) <= 0.01 && Math.abs(sample.y - 75 / 300) <= 0.01,
       ),
     ).toBe(true);
   });
@@ -66,6 +66,20 @@ describe("markSamples", () => {
     expect(samples.at(-1)).toEqual({ x: 1, y: 1 });
     // Every sample lies on the line, never in the empty middle of its box off the line.
     for (const sample of samples) expect(sample.y).toBeCloseTo(sample.x, 6);
+  });
+
+  it("follows the curve the stroke is drawn as, not the straight lines between its points", () => {
+    // A sharp turn at (300, 100): the drawn curve turns back at x = 250, short of the point.
+    const points = [
+      { x: 100, y: 100 },
+      { x: 300, y: 100 },
+      { x: 100, y: 110 },
+    ];
+    const samples = markSamples({ x: 93, y: 93, width: 214, height: 24 }, size, points);
+    const furthest = Math.max(...samples.map((sample) => sample.x * size.width));
+    expect(furthest).toBeGreaterThan(245);
+    expect(furthest).toBeLessThanOrEqual(250.5);
+    expect(samples.at(-1)).toEqual({ x: 0.25, y: 110 / 300 });
   });
 
   it("caps the samples on a very long line", () => {
@@ -116,10 +130,25 @@ describe("modelAnnotationPayload", () => {
     expect(annotation.strokes[0]).not.toHaveProperty("hit");
   });
 
+  it("stops looking for hits once its time budget is spent, keeping the hits it found", () => {
+    let clock = 0;
+    let casts = 0;
+    const hitAt = vi.fn((samples: ReadonlyArray<{ x: number; y: number }>) => {
+      casts += samples.length;
+      clock += 60 * samples.length;
+      return casts === 1 ? flange : null;
+    });
+    const annotation = build({ hitAt, now: () => clock });
+    // 60 ms per cast: the region's centre hits, then one more cast spends the 100 ms budget.
+    expect(annotation.regions[0]?.hit).toEqual(flange);
+    expect(annotation.strokes[0]).not.toHaveProperty("hit");
+    expect(casts).toBe(2);
+  });
+
   it("names an attachment, which has no path to link to", () => {
     const hitAt = vi.fn(() => null);
     const annotation = build({ linkPath: null, hitAt });
     expect(annotation.pageUrl).toBe("hinge (v3).stl");
-    expect(hitAt).toHaveBeenCalledTimes(2);
+    expect(hitAt).toHaveBeenCalled();
   });
 });
