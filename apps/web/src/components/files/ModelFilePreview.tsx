@@ -4,16 +4,23 @@ import {
   isModelPreviewError,
   type ModelPreviewErrorCode,
   type ModelPreviewFacts,
+  type ModelSnapshot,
   type ModelViewer,
 } from "@t3tools/client-runtime/model/preview-scene";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
-import type { AssetResource, EnvironmentId } from "@t3tools/contracts";
+import type { AssetResource, EnvironmentId, ProjectId } from "@t3tools/contracts";
 import type { ModelPreviewFormat } from "@t3tools/shared/filePreview";
+import type { ModelView as ModelCameraView } from "@t3tools/shared/modelView";
 import { msg, T, useGT, useLocale, useMessages } from "gt-react";
-import { FocusIcon } from "lucide-react";
+import { CameraIcon, FocusIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { useAssetUrlMinter } from "~/assets/assetUrls";
+import { readComposerImageBytes } from "~/components/chat/composerAttachmentFiles";
+import { stackedThreadToast, toastManager } from "~/components/ui/toast";
+import { useComposerDraftStore, type ComposerThreadTarget } from "~/composerDraftStore";
+import { capturePreviewAnnotationScreenshot } from "~/lib/previewAnnotation";
+import { randomUUID } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
@@ -23,6 +30,8 @@ import { cn } from "~/lib/utils";
 
 import { modelCompanionResource } from "./filePreviewMode";
 import { FileSurfaceFailure, FileSurfaceLoading } from "./fileSurfaceChrome";
+import { ModelAnnotationEditor, type ModelAnnotationResult } from "./ModelAnnotationEditor";
+import { modelAnnotationPayload } from "./modelAnnotation";
 import { PreviewAction, PreviewFacts, PreviewStatusChip } from "./previewChrome";
 
 /** Models parse on the main thread; past this size the window can stall for seconds, so we ask first. */
@@ -125,6 +134,21 @@ export interface ModelPreviewCompanions {
   readonly workspaceRoot: string;
 }
 
+/** Where Screenshot & annotate sends what it captures. */
+export interface ModelAnnotationTarget {
+  readonly composerTarget: ComposerThreadTarget;
+  readonly environmentId: EnvironmentId;
+  readonly projectId?: ProjectId | null | undefined;
+  /** The model's path, for a link back to the annotated view; null for an attachment. */
+  readonly linkPath: string | null;
+}
+
+/** A view link's camera. Each click is a new request, so the same link moves the camera back. */
+export interface ModelViewRequest {
+  readonly view: ModelCameraView;
+  readonly requestId: number;
+}
+
 /** A workspace model can load the files beside it; an attachment or a local file cannot. */
 export function ModelFilePreview(props: {
   readonly src: string;
@@ -134,6 +158,8 @@ export function ModelFilePreview(props: {
   readonly sizeBytes: number;
   readonly companions: ModelPreviewCompanions | null;
   readonly onRefresh: () => void;
+  readonly view?: ModelViewRequest | null;
+  readonly annotation?: ModelAnnotationTarget | null;
 }) {
   const gt = useGT();
   const messages = useMessages();
@@ -146,6 +172,9 @@ export function ModelFilePreview(props: {
     readonly attempt: string;
     readonly view: ModelView;
   } | null>(null);
+  const [snapshot, setSnapshot] = useState<ModelSnapshot | null>(null);
+  const addPreviewAnnotation = useComposerDraftStore((store) => store.addPreviewAnnotation);
+  const addImage = useComposerDraftStore((store) => store.addImage);
   const mint = useAssetUrlMinter(props.companions?.environmentId ?? null);
   const companionModel = props.companions?.resource ?? null;
   const mintCompanion = useStableCallback(async (path: string, signal: AbortSignal) =>
@@ -216,6 +245,76 @@ export function ModelFilePreview(props: {
     : result?.attempt === attempt
       ? result.view
       : { phase: "loading" };
+  const ready = shown.phase === "ready";
+  const linkedView = props.view?.view ?? null;
+  const linkedViewRequest = props.view?.requestId ?? null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- moves the WebGL camera to a view link's camera once the model is in the scene
+  useEffect(() => {
+    if (ready && linkedView) viewerRef.current?.setView(linkedView);
+  }, [
+    ready,
+    linkedView,
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Clicking the same view link again is a new request, which moves the camera back.
+    linkedViewRequest,
+  ]);
+
+  const startAnnotation = () => {
+    const host = hostRef.current;
+    const background =
+      (host && getComputedStyle(host).getPropertyValue("--background").trim()) || "#ffffff";
+    const captured = viewerRef.current?.snapshot(background) ?? null;
+    if (captured) setSnapshot(captured);
+  };
+
+  const attachAnnotation = async (captured: ModelSnapshot, result: ModelAnnotationResult) => {
+    const target = props.annotation;
+    setSnapshot(null);
+    if (!target) return;
+    const id = `model_${randomUUID()}`;
+    const payload = modelAnnotationPayload({
+      id,
+      name: props.name,
+      linkPath: target.linkPath,
+      comment: result.comment,
+      regions: result.regions,
+      strokes: result.strokes,
+      size: captured,
+      hitAt: captured.hitAt,
+      screenshot: {
+        dataUrl: result.screenshot,
+        width: captured.image.width,
+        height: captured.image.height,
+      },
+      cameraView: captured.cameraView,
+      createdAt: new Date().toISOString(),
+    });
+    const capture = capturePreviewAnnotationScreenshot(payload);
+    const annotation = capture.status === "failed" ? { ...payload, screenshot: null } : payload;
+    if (capture.status === "captured") await readComposerImageBytes(capture.file);
+    addPreviewAnnotation(target.composerTarget, annotation);
+    if (capture.status === "failed") {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: gt("Could not capture the 3D view"),
+          description: gt("The annotation was kept without the screenshot."),
+        }),
+      );
+      return;
+    }
+    if (capture.status === "captured" && annotation.screenshot) {
+      addImage(target.composerTarget, {
+        type: "image",
+        id,
+        name: capture.file.name,
+        mimeType: capture.file.type,
+        sizeBytes: capture.file.size,
+        previewUrl: annotation.screenshot.dataUrl,
+        file: capture.file,
+      });
+    }
+  };
+
   const missing = shown.phase === "ready" || shown.phase === "failed" ? shown.missing : [];
   const missingList = new Intl.ListFormat(locale, { type: "conjunction" }).format(missing);
   const texturesOnly = missing.every((file) =>
@@ -320,7 +419,12 @@ export function ModelFilePreview(props: {
         )}
       </div>
       <div className="absolute end-2 top-2 flex gap-1">
-        {shown.phase === "ready" ? (
+        {ready && props.annotation ? (
+          <PreviewAction label={gt("Screenshot & annotate")} onPress={startAnnotation}>
+            <CameraIcon />
+          </PreviewAction>
+        ) : null}
+        {ready ? (
           <PreviewAction label={gt("Reset view")} onPress={() => viewerRef.current?.resetView()}>
             <FocusIcon />
           </PreviewAction>
@@ -333,6 +437,18 @@ export function ModelFilePreview(props: {
         <PreviewFacts
           title={<T>Model details</T>}
           rows={modelFactRows(shown.facts, SIZE_UNITS[format], gt)}
+        />
+      ) : null}
+      {snapshot && ready && props.annotation ? (
+        <ModelAnnotationEditor
+          image={snapshot.image}
+          width={snapshot.width}
+          height={snapshot.height}
+          environmentId={props.annotation.environmentId}
+          projectId={props.annotation.projectId}
+          ownerKey={JSON.stringify(["model-annotation", props.src])}
+          onCancel={() => setSnapshot(null)}
+          onSubmit={(result) => void attachAnnotation(snapshot, result)}
         />
       ) : null}
     </div>

@@ -30,9 +30,13 @@ export function ensureVertexNormals(geometry: BufferGeometry): boolean {
 
 const Z_UP_FORMATS: ReadonlySet<ModelPreviewFormat> = new Set(["stl", "3mf"]);
 
+export function isZUpFormat(format: ModelPreviewFormat) {
+  return Z_UP_FORMATS.has(format);
+}
+
 /** STL and 3MF models are Z-up; three.js is Y-up. */
 export function orientToYUp(root: Object3D, format: ModelPreviewFormat) {
-  if (Z_UP_FORMATS.has(format)) root.rotateX(-Math.PI / 2);
+  if (isZUpFormat(format)) root.rotateX(-Math.PI / 2);
   root.updateMatrixWorld(true);
 }
 

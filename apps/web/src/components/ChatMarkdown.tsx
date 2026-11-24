@@ -959,6 +959,7 @@ function useChatMarkdownState(
             ? resolveWorkspaceFilePath(path, cwd)
             : path,
           fileLinkMeta.line,
+          fileLinkMeta.view,
         );
     if (
       fileLinkMeta.workspaceLookupPath === null ||

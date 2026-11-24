@@ -204,6 +204,38 @@ describe("provider projection", () => {
     expect(projected).toContain("- font-size: 12px → 20px");
   });
 
+  it("tells the agent where a 3D annotation's camera was and what each mark covers", () => {
+    const annotation: ComposerContextRecord = {
+      version: 1,
+      contextId: ctx("ctx_m"),
+      kind: "preview-annotation",
+      label: "bracket.stl",
+      annotationId: "ann_2",
+      pageUrl: "out/bracket.stl#view=120,80.5,-40,0,0.25,0",
+      pageTitle: "bracket.stl",
+      comment: "Thicken this",
+      targetSummary: "1 marked region, 1 drawing",
+      styleChanges: [],
+      regionCount: 1,
+      strokeCount: 1,
+      cameraView: { position: [120, 80.5, -40], target: [0, 0.25, 0], upAxis: "z" },
+      hits: [
+        { mark: "region", index: 1, object: "Flange", point: [1.5, 2, -3] },
+        { mark: "drawing", index: 1, object: null, point: [0, 0, 4] },
+      ],
+    };
+    const projected = projectComposerContextForProvider({
+      text: "[bracket.stl](t3-context://v1/preview-annotation/ctx_m)",
+      records: [annotation],
+    });
+    expect(projected).toContain("url: out/bracket.stl#view=120,80.5,-40,0,0.25,0");
+    expect(projected).toContain(
+      "camera: position 120, 80.5, -40; target 0, 0.25, 0 (file coordinates, Z up)",
+    );
+    expect(projected).toContain("region 1: Flange at 1.5, 2, -3");
+    expect(projected).toContain("drawing 1: an unnamed object at 0, 0, 4");
+  });
+
   it("expands assistant citations with and without context references", () => {
     const citation = serializeAssistantCitation({
       version: 1,

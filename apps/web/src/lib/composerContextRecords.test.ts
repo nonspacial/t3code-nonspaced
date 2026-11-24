@@ -273,6 +273,44 @@ describe("composerContextRecords", () => {
     expect(decodeMessageContext({ version: 1, records: [record] }).records).toEqual([record]);
   });
 
+  it("keeps a 3D annotation's camera and what each mark covers", () => {
+    const hit = (object: string | null) => ({ object, point: [1, 2, 3] as const });
+    const modelAnnotation: PreviewAnnotationPayload = {
+      ...annotation,
+      elements: [],
+      styleChanges: [],
+      regions: [
+        { id: "r1", rect: { x: 0, y: 0, width: 5, height: 5 }, hit: hit("Flange") },
+        { id: "r2", rect: { x: 9, y: 9, width: 5, height: 5 } },
+      ],
+      strokes: [
+        {
+          id: "s1",
+          color: "#000",
+          width: 4,
+          points: [{ x: 1, y: 1 }],
+          bounds: { x: 0, y: 0, width: 2, height: 2 },
+          hit: hit(null),
+        },
+      ],
+      cameraView: { position: [10, 0, 0], target: [0, 0, 0], upAxis: "z" },
+    };
+    const record = previewAnnotationContextRecord(modelAnnotation);
+    expect(record.cameraView).toEqual(modelAnnotation.cameraView);
+    expect(record.hits).toEqual([
+      { mark: "region", index: 1, object: "Flange", point: [1, 2, 3] },
+      { mark: "drawing", index: 1, object: null, point: [1, 2, 3] },
+    ]);
+    expect(decodeMessageContext({ version: 1, records: [record] }).records).toEqual([record]);
+    // A queued message brought back to the composer keeps them for the next send.
+    expect(previewAnnotationContextRecord(previewAnnotationFromRecord(record))).toMatchObject({
+      cameraView: modelAnnotation.cameraView,
+      hits: record.hits,
+    });
+    expect(previewAnnotationContextRecord(annotation)).not.toHaveProperty("cameraView");
+    expect(previewAnnotationContextRecord(annotation)).not.toHaveProperty("hits");
+  });
+
   it("removes an expired terminal chip by its kind-scoped id, not the producer id", () => {
     const context = {
       id: "term-1",

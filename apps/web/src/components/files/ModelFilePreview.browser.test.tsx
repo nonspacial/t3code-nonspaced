@@ -1,9 +1,12 @@
 import "~/index.css";
 
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { EnvironmentId, ThreadId, type AssetResource } from "@t3tools/contracts";
+import type { ReactNode } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
+import { useComposerDraftStore } from "~/composerDraftStore";
 import { render } from "../../../test/render";
 import { MODEL_CONFIRM_BYTES, ModelFilePreview } from "./ModelFilePreview";
 
@@ -14,6 +17,13 @@ const { mint } = vi.hoisted(() => ({
 vi.mock(import("~/assets/assetUrls"), async (original) => ({
   ...(await original()),
   useAssetUrlMinter: () => mint,
+}));
+
+// Dictation needs a connected environment; these tests type the comment.
+vi.mock("~/speech/useTextFieldSpeech", () => ({
+  SpeechTextField: (props: { children: (speech: undefined) => ReactNode }) =>
+    props.children(undefined),
+  TextFieldSpeechControls: () => null,
 }));
 
 function setup(files: Record<string, BlobPart> = {}) {
@@ -182,4 +192,121 @@ it("asks before parsing a very large model", async () => {
   await expect.element(screen.getByText("Large model")).toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: "Load model" }));
   await expect.element(screen.getByText("STL · rendered in the browser")).toBeVisible();
+});
+
+const environmentId = EnvironmentId.make("environment-1");
+
+function annotated(threadId: string, view?: { position: number[]; target: number[] }) {
+  const composerTarget = scopeThreadRef(environmentId, ThreadId.make(threadId));
+  return {
+    composerTarget,
+    draft: () => useComposerDraftStore.getState().getComposerDraft(composerTarget),
+    element: (
+      <ModelFilePreview
+        src={modelUrl(stl())}
+        name="bracket (v2).stl"
+        format="stl"
+        sizeBytes={0}
+        companions={null}
+        onRefresh={() => {}}
+        annotation={{ composerTarget, environmentId, linkPath: "out/bracket (v2).stl" }}
+        {...(view
+          ? {
+              view: {
+                view: {
+                  position: view.position as [number, number, number],
+                  target: view.target as [number, number, number],
+                },
+                requestId: 1,
+              },
+            }
+          : {})}
+      />
+    ),
+  };
+}
+
+function drag(target: Element, from: [number, number], to: [number, number]) {
+  const box = target.getBoundingClientRect();
+  const at = ([x, y]: [number, number]) => ({
+    clientX: box.left + box.width * x,
+    clientY: box.top + box.height * y,
+    pointerId: 1,
+    button: 0,
+    bubbles: true,
+  });
+  target.dispatchEvent(new PointerEvent("pointerdown", at(from)));
+  target.dispatchEvent(
+    new PointerEvent("pointermove", at([(from[0] + to[0]) / 2, (from[1] + to[1]) / 2])),
+  );
+  target.dispatchEvent(new PointerEvent("pointermove", at(to)));
+  target.dispatchEvent(new PointerEvent("pointerup", at(to)));
+}
+
+it("freezes the view to annotate and attaches its camera and what each mark covers", async () => {
+  setup();
+  const model = annotated("thread-annotate");
+  await using screen = await render(model.element, pane());
+  await expect.element(screen.getByText("STL · rendered in the browser")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
+  const surface = screen.getByRole("img", { name: "Frozen 3D view to annotate" });
+  await expect.element(surface).toBeVisible();
+
+  await userEvent.click(screen.getByRole("button", { name: "Mark a region" }));
+  drag(surface.element(), [0.45, 0.45], [0.55, 0.55]);
+  await userEvent.click(screen.getByRole("button", { name: "Draw" }));
+  drag(surface.element(), [0.02, 0.02], [0.06, 0.04]);
+  // A stray line in the middle is erased; the marks around it stay.
+  drag(surface.element(), [0.2, 0.8], [0.3, 0.8]);
+  drag(surface.element(), [0.9, 0.9], [0.95, 0.95]);
+  await userEvent.click(screen.getByRole("button", { name: "Erase a mark" }));
+  drag(surface.element(), [0.25, 0.8], [0.25, 0.8]);
+  await userEvent.fill(screen.getByRole("textbox", { name: "Annotation comment" }), "Thicken");
+  await userEvent.click(screen.getByRole("button", { name: "Add to chat" }));
+
+  await vi.waitFor(() => expect(model.draft()?.previewAnnotations).toHaveLength(1));
+  await expect.element(surface).not.toBeInTheDocument();
+  const annotation = model.draft()!.previewAnnotations[0]!;
+  expect(annotation).toMatchObject({
+    pageTitle: "bracket (v2).stl",
+    comment: "Thicken",
+    cameraView: { upAxis: "z" },
+  });
+  expect(annotation.pageUrl).toMatch(/^out\/bracket%20%28v2%29\.stl#view=/);
+  // The region covers the slanted facets, whose points satisfy z = y / 4 in the STL's own space.
+  const hit = annotation.regions[0]?.hit;
+  expect(hit?.object).toBeNull();
+  expect(hit?.point[2]).toBeCloseTo((hit?.point[1] ?? Number.NaN) / 4, 2);
+  // The drawings in the empty corners cover nothing.
+  expect(annotation.strokes).toHaveLength(2);
+  expect(annotation.strokes[0]).not.toHaveProperty("hit");
+  expect(model.draft()?.images.map((image) => image.id)).toEqual([annotation.id]);
+});
+
+it("cancels an annotation without attaching anything", async () => {
+  setup();
+  const model = annotated("thread-cancel");
+  await using screen = await render(model.element, pane());
+  await expect.element(screen.getByText("STL · rendered in the browser")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
+  await userEvent.keyboard("{Escape}");
+  await expect
+    .element(screen.getByRole("img", { name: "Frozen 3D view to annotate" }))
+    .not.toBeInTheDocument();
+  expect(model.draft()?.previewAnnotations ?? []).toHaveLength(0);
+  await expect.element(screen.getByRole("button", { name: "Screenshot & annotate" })).toBeVisible();
+});
+
+it("opens at the camera a view link carries, in the file's own coordinates", async () => {
+  setup();
+  const model = annotated("thread-view", { position: [30, 40, 50], target: [5, 10, 2.5] });
+  await using screen = await render(model.element, pane());
+  await expect.element(screen.getByText("STL · rendered in the browser")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
+  await userEvent.fill(screen.getByRole("textbox", { name: "Annotation comment" }), "From here");
+  await userEvent.keyboard("{Enter}");
+  await vi.waitFor(() => expect(model.draft()?.previewAnnotations).toHaveLength(1));
+  const camera = model.draft()!.previewAnnotations[0]!.cameraView!;
+  camera.position.forEach((value, index) => expect(value).toBeCloseTo([30, 40, 50][index]!, 3));
+  camera.target.forEach((value, index) => expect(value).toBeCloseTo([5, 10, 2.5][index]!, 3));
 });
