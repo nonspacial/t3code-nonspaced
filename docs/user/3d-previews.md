@@ -30,6 +30,8 @@ Converting a file is like opening it in Blender yourself: Blender reads the file
 
 Files convert one at a time on each machine. A file waiting its turn shows how many are ahead, and Cancel stops it whether it is waiting or converting. A conversion that takes over a minute stops with "Too slow to preview"; Keep trying converts again with no time limit. When Blender fails, Show log shows what it printed. Refresh converts the file again. Results are cached in the T3 Code home folder, never in your project, until the file, a file it links in or Blender changes; the oldest unused results are removed when the cache grows past 2 GB.
 
+While a `.blend` from the project is open, saving it or any file it links in converts it again. The chip names the file that changed, and the old view stays until the new one is ready, with its scene facts updated too. Closing the preview stops watching.
+
 Files outside the project and attachments show only their thumbnail and facts. A file saved by a newer Blender than the machine has, or a machine without Blender, shows the thumbnail with a note saying so.
 
 ## On mobile
