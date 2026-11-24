@@ -324,11 +324,8 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
       ),
   );
 
-  const convertWith = Effect.fnUntraced(function* (
-    input: BlendConversionInput,
-    emit: Emit,
-    onChecked: (source: Source) => void,
-  ) {
+  /** Converts once, returning the file as it was last checked, or null when it can't be. */
+  const convertOnce = Effect.fnUntraced(function* (input: BlendConversionInput, emit: Emit) {
     // Checked again once the conversion gets its turn: the file can be replaced while it waits.
     const check = Effect.fnUntraced(function* () {
       const target = yield* workspaceFileSystem.resolveReadPath(input);
@@ -379,7 +376,6 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
         blender,
         revisions: [{ file: target.realPath, revision }, ...libraries],
       };
-      onChecked(source);
       return source;
     });
     const fromCache = Effect.fnUntraced(function* (key: Source) {
@@ -398,8 +394,11 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
     });
 
     const first = yield* check();
-    if ("status" in first) return yield* emit(first);
-    if (!input.refresh && (yield* fromCache(first)).hit) return;
+    if ("status" in first) {
+      yield* emit(first);
+      return null;
+    }
+    if (!input.refresh && (yield* fromCache(first)).hit) return first;
 
     const job = { emit };
     const leave = Effect.suspend(() => {
@@ -409,18 +408,21 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
     });
     waiting.push(job);
     yield* announce;
-    yield* lock
+    return yield* lock
       .withPermits(1)(
         Effect.gen(function* () {
           running = true;
           yield* leave;
           const source = yield* check();
-          if ("status" in source) return yield* emit(source);
+          if ("status" in source) {
+            yield* emit(source);
+            return null;
+          }
           // A conversion that waited may find the file converted by the one before it.
           const lookup = input.refresh
             ? { cacheFileName: `${yield* cacheKey(source)}.glb`, hit: false }
             : yield* fromCache(source);
-          if (lookup.hit) return;
+          if (lookup.hit) return source;
           yield* run({
             blendPath: source.blendPath,
             blender: source.blender,
@@ -428,6 +430,7 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
             keepTrying: input.keepTrying === true,
             emit,
           });
+          return source;
         }).pipe(
           Effect.ensuring(
             Effect.suspend(() => {
@@ -440,24 +443,14 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
       .pipe(Effect.onInterrupt(() => leave));
   });
 
-  /** Converts once, returning the file as it was last checked, or null if it can't be converted. */
-  const convertOnce = Effect.fnUntraced(function* (input: BlendConversionInput, emit: Emit) {
-    const seen: { source: Source | null; last: BlendConversionStatus | null } = {
-      source: null,
-      last: null,
-    };
-    yield* convertWith(
-      input,
-      (status) => {
-        seen.last = status;
-        return emit(status);
-      },
-      (source) => {
-        seen.source = source;
-      },
+  /** The same files, as they are now. */
+  const reread = (source: Source): Effect.Effect<Source> =>
+    Effect.map(
+      Effect.forEach(source.revisions, ({ file }) =>
+        Effect.map(readFileRevision(file), (revision) => ({ file, revision })),
+      ),
+      (revisions) => ({ ...source, revisions }),
     );
-    return seen.last === null || seen.last.status === "unavailable" ? null : seen.source;
-  });
 
   /** The first file that differs from when it was checked, once one does. */
   const nextChange = (source: Source) =>
@@ -476,26 +469,40 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
     function* (input, emit) {
       let request = input;
       let changed: string | null = null;
-      const announce: Emit = (status) =>
-        changed !== null &&
-        (status.status === "waiting" || status.status === "converting" || status.status === "ready")
+      const seen: { last: BlendConversionStatus | null } = { last: null };
+      const withChange: Emit = (status) => {
+        seen.last = status;
+        return changed !== null &&
+          (status.status === "waiting" ||
+            status.status === "converting" ||
+            status.status === "ready")
           ? emit({ ...status, changed })
           : emit(status);
+      };
+      let source = yield* convertOnce(request, withChange);
       while (true) {
-        const source = yield* convertOnce(request, announce);
-        if (source === null) return;
+        if (source === null || seen.last?.status === "unavailable") return;
         const file = yield* nextChange(source);
         if (file._tag === "None") return;
         changed = path.basename(file.value);
         // A change makes a new cache key, so later rounds may use the cache again.
         request = { ...input, refresh: false };
+        const previous = source;
+        // A file caught mid-save (deleted, then written) fails this round, not the watch.
+        source = yield* convertOnce(request, withChange).pipe(
+          Effect.catch((error) =>
+            withChange({ status: "failed", log: error.message }).pipe(
+              Effect.andThen(reread(previous)),
+            ),
+          ),
+        );
       }
     },
   );
 
   const convert: BlendConversion["Service"]["convert"] = Effect.fn("BlendConversion.convert")(
     function* (input, emit) {
-      return yield* convertWith(input, emit, () => {});
+      yield* convertOnce(input, emit);
     },
   );
 

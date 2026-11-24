@@ -456,6 +456,35 @@ describe("BlendConversion", () => {
     }).pipe(Effect.provide(layerFor({ run })));
   });
 
+  it.effect("keeps watching a file that is missing for a moment while it is saved", () =>
+    Effect.gen(function* () {
+      const { watcher, opened, signal } = yield* makeWatcher;
+      yield* Effect.gen(function* () {
+        const { root, path, fileSystem } = yield* workspace;
+        const bracket = path.join(root, "bracket.blend");
+        const live = yield* startConversion({ cwd: root, relativePath: "bracket.blend" }, "watch");
+        yield* Queue.take(live.progress);
+        expect((yield* Queue.take(live.progress)).status).toBe("ready");
+        yield* Queue.take(opened);
+
+        const saved = yield* fileSystem.readFile(bracket);
+        yield* fileSystem.remove(bracket);
+        yield* signal;
+        expect((yield* Queue.take(live.progress)).status).toBe("failed");
+
+        // The watch compares against the missing file now, so only its return converts again.
+        yield* Queue.take(opened);
+        yield* fileSystem.writeFile(bracket, saved);
+        yield* signal;
+        expect(yield* Queue.take(live.progress)).toEqual(
+          expect.objectContaining({ status: "converting", changed: "bracket.blend" }),
+        );
+        expect((yield* Queue.take(live.progress)).status).toBe("ready");
+        yield* Fiber.interrupt(live.fiber);
+      }).pipe(Effect.provide(layerFor({ run: writeGlb, watcher })));
+    }),
+  );
+
   it.effect("stops watching a file it cannot convert", () =>
     Effect.gen(function* () {
       const { root } = yield* workspace;

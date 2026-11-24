@@ -12,6 +12,7 @@ import * as Stream from "effect/Stream";
 /** Blender saves to `name.blend@` and renames it over the file, so one save is several events. */
 const SETTLE = Duration.millis(250);
 
+// Libraries can sit outside the workspace, where no workspace change event would report them.
 export class BlendFileWatcher extends Context.Service<
   BlendFileWatcher,
   {
