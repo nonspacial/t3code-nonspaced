@@ -23,10 +23,19 @@ import type {
   HostedBlenderThreadState,
   ScopedThreadRef,
 } from "@t3tools/contracts";
+import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { MoreVertical } from "lucide-react";
 import { msg, T, useGT, useMessages, Var } from "gt-react";
-import { type ReactNode, type RefObject, useEffect, useEffectEvent, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  use,
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+} from "react";
 
 import {
   AlertDialog,
@@ -65,9 +74,11 @@ import { resolveShortcutCommand } from "~/keybindings";
 import { getKeyboardLayoutMap } from "~/keyboardLayout";
 import { formatBytes } from "~/lib/formatBytes";
 import { observeResize } from "~/lib/observeResize";
+import { cn } from "~/lib/utils";
 import {
   hostedBlenderEnvironment,
   refreshHostedBlenderStreamAccess,
+  useHostedBlenderSetupState,
   useHostedBlenderState,
   useHostedBlenderStreamAccess,
 } from "~/state/hostedBlender";
@@ -75,6 +86,8 @@ import { formatEnvironmentQueryError } from "~/state/query";
 import { primaryServerKeybindingsAtom } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
+
+import { HiddenThreadContext } from "../chat/backgroundThread";
 
 import { attachBlenderInput, type BlenderInput } from "./blenderInput";
 import { fileName, useQuitHostedBlender } from "./useQuitHostedBlender";
@@ -137,18 +150,16 @@ export function BlenderPanel(props: {
       return (
         <StateCard
           title={<T>Not available on this host</T>}
-          description={
-            <T>
-              Hosted Blender needs a Linux server. You can still open 3D files in the file preview.
-            </T>
-          }
+          description={<UnavailableReason reason={state.reason ?? "platform"} />}
+          action={<OpenBlenderSettings environmentId={props.threadRef.environmentId} />}
         />
       );
     case "notSetUp":
       return (
         <StateCard
-          title={<T>Hosted Blender isn't set up</T>}
+          title={<T>Setup needed</T>}
           description={<MissingRequirements missing={state.missing} />}
+          action={<OpenBlenderSettings environmentId={props.threadRef.environmentId} />}
         />
       );
     case "stopped":
@@ -181,10 +192,40 @@ export function BlenderPanel(props: {
   }
 }
 
+/** The pane floating over chat while the agent works: watch-only, scaled to fit. */
+export function FloatingBlender(props: {
+  readonly threadRef: ScopedThreadRef;
+  readonly onFrameSize: (size: { readonly width: number; readonly height: number }) => void;
+}) {
+  const state = useHostedBlenderState(props.threadRef);
+  const handleRef = useRef<BlenderStreamHandle | null>(null);
+  if (state?.status !== "running") {
+    return (
+      <div className="flex size-full items-center justify-center bg-black">
+        {state?.status === "starting" || state === null ? <Spinner /> : null}
+      </div>
+    );
+  }
+  return (
+    <BlenderStream
+      environmentId={props.threadRef.environmentId}
+      threadId={props.threadRef.threadId}
+      onStats={ignoreStats}
+      onControl={ignoreControl}
+      onFrameSize={props.onFrameSize}
+      handleRef={handleRef}
+      floating
+    />
+  );
+}
+
+const ignoreStats = () => {};
+const ignoreControl = () => {};
+
 function StateCard(props: {
   readonly title: ReactNode;
   readonly description?: ReactNode;
-  readonly actions?: ReactNode;
+  readonly action?: ReactNode;
 }) {
   return (
     <Empty className="h-full">
@@ -192,8 +233,8 @@ function StateCard(props: {
         <EmptyTitle>{props.title}</EmptyTitle>
         {props.description ? <EmptyDescription>{props.description}</EmptyDescription> : null}
       </EmptyHeader>
-      {props.actions ? (
-        <EmptyContent className="flex-row flex-wrap justify-center">{props.actions}</EmptyContent>
+      {props.action ? (
+        <EmptyContent className="flex-row flex-wrap justify-center">{props.action}</EmptyContent>
       ) : null}
     </Empty>
   );
@@ -266,7 +307,7 @@ function ReopenCard(props: {
             </T>
           )
         }
-        actions={
+        action={
           canOperate ? (
             <>
               {crashed ? (
@@ -345,18 +386,80 @@ function ReopenCard(props: {
   );
 }
 
+function OpenBlenderSettings(props: { readonly environmentId: EnvironmentId }) {
+  const navigate = useNavigate();
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={() =>
+        void navigate({
+          to: "/settings/blender",
+          search: { machine: props.environmentId },
+        })
+      }
+    >
+      <T>Open Blender settings</T>
+    </Button>
+  );
+}
+
+function UnavailableReason(props: {
+  readonly reason: NonNullable<
+    Extract<HostedBlenderThreadState, { status: "unavailable" }>["reason"]
+  >;
+}) {
+  switch (props.reason) {
+    case "platform":
+      return (
+        <T>Hosted Blender needs a Linux server. You can still open 3D files in the file preview.</T>
+      );
+    case "distro":
+      return (
+        <T>
+          This server's Linux release ships labwc and GStreamer too old for hosted Blender. You can
+          still open 3D files in the file preview.
+        </T>
+      );
+    case "sandboxedBlender":
+      return (
+        <T>
+          Flatpak and Snap builds of Blender aren't supported yet. Settings › Blender says how to
+          use another Blender.
+        </T>
+      );
+  }
+}
+
 function MissingRequirements(props: { readonly missing: ReadonlyArray<HostedBlenderRequirement> }) {
   const gt = useGT();
-  const names: Record<HostedBlenderRequirement, string> = {
+  if (props.missing.includes("enabled")) {
+    return <T>Switch on Hosted Blender in Settings › Blender to watch and steer Blender here.</T>;
+  }
+  if (props.missing.includes("check")) {
+    return (
+      <T>
+        T3 Code hasn't checked this server yet. Open a .blend in hosted Blender, or check it in
+        Settings › Blender.
+      </T>
+    );
+  }
+  const names: Record<Exclude<HostedBlenderRequirement, "enabled" | "check">, string> = {
     blender: "Blender",
     labwc: "labwc",
     helper: gt("T3 Code's hidden display helper"),
+    gstreamer: "GStreamer",
+    encoder: gt("an H.264 encoder"),
+    glupload: gt("GStreamer's OpenGL plugin"),
   };
-  const list = props.missing.map((requirement) => names[requirement]).join(", ");
+  const list = props.missing
+    .filter((requirement) => requirement !== "enabled" && requirement !== "check")
+    .map((requirement) => names[requirement])
+    .join(", ");
   return (
     <T>
-      This server is missing: <Var>{list}</Var>. Install them on the server, then open this pane
-      again.
+      This server is missing: <Var>{list}</Var>. Settings › Blender can install them with an agent
+      or show you the commands.
     </T>
   );
 }
@@ -398,7 +501,11 @@ function RunningBlender(props: {
       ) : (
         <div className="min-h-0 flex-1" />
       )}
-      <BlenderStatusStrip {...stats} control={control} />
+      <BlenderStatusStrip
+        {...stats}
+        control={control}
+        environmentId={props.threadRef.environmentId}
+      />
     </div>
   );
 }
@@ -546,12 +653,34 @@ const KEYBOARD_LAYOUT_NAMES: Record<HostedBlenderKeyboardLayout, string> = {
   "us-colemak": msg("English (Colemak)"),
 };
 
+/** Calls `onChange` whenever the screen's device pixel ratio changes, as moving windows does. */
+const watchDevicePixelRatio = (onChange: () => void) => {
+  let query: MediaQueryList | null = null;
+  const listen = () => {
+    query?.removeEventListener("change", changed);
+    query = globalThis.matchMedia?.(`(resolution: ${globalThis.devicePixelRatio || 1}dppx)`);
+    query?.addEventListener("change", changed);
+  };
+  const changed = () => {
+    listen();
+    onChange();
+  };
+  listen();
+  return () => query?.removeEventListener("change", changed);
+};
+
+/**
+ * The stream itself. `floating` is the watch-only player over chat: it never takes control or
+ * sizes the display, and just scales what the panel's size gives it.
+ */
 function BlenderStream(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: string;
   readonly onStats: (update: (current: StreamStats) => StreamStats) => void;
   readonly onControl: (control: HostedBlenderControl) => void;
   readonly handleRef: RefObject<BlenderStreamHandle | null>;
+  readonly onFrameSize?: (size: { readonly width: number; readonly height: number }) => void;
+  readonly floating?: boolean;
 }) {
   const gt = useGT();
   const access = useHostedBlenderStreamAccess(props.environmentId);
@@ -563,10 +692,18 @@ function BlenderStream(props: {
   const [status, setStatus] = useState<HostedBlenderStreamStatus>("connecting");
   const [control, setControl] = useState<HostedBlenderControl>(VIEW_ONLY);
   const { environmentId, threadId, onStats, onControl, handleRef } = props;
+  const floating = props.floating === true;
+  const canOperate = control.canOperate && !floating;
   const inControl = control.controller === "you";
   const controllerRef = useRef<HostedBlenderControl["controller"]>("unclaimed");
   // A take sent but not yet answered; leaving before the grant arrives must still undo it.
   const takingRef = useRef(false);
+  // Settings and Usage keep the thread mounted under them while the window stays visible.
+  const hiddenThread = use(HiddenThreadContext);
+  const onScreen = useEffectEvent(() => document.visibilityState === "visible" && !hiddenThread);
+  const reportFrameSize = useEffectEvent(
+    (size: { readonly width: number; readonly height: number }) => props.onFrameSize?.(size),
+  );
   const changeControl = useEffectEvent((next: HostedBlenderControl) => {
     if (controllerRef.current === "you" && next.controller === "another-viewer") {
       toastManager.add(
@@ -596,6 +733,7 @@ function BlenderStream(props: {
       if (width === frameSize.width && height === frameSize.height) return;
       frameSize = { width, height };
       onStats((current) => ({ ...current, frameSize }));
+      reportFrameSize(frameSize);
     });
     const client = createHostedBlenderStreamClient({ access, threadId }, sink, {
       onStatus: setStatus,
@@ -623,20 +761,33 @@ function BlenderStream(props: {
           .catch(() => undefined);
       },
     };
+    // A pane in a hidden tab or a minimized window is not on screen.
+    const showVisibility = () => client.setVisible(onScreen());
+    showVisibility();
+    document.addEventListener("visibilitychange", showVisibility);
+    // Real pixels, so HiDPI screens get a sharp stream.
     const resize = () => {
       const ratio = globalThis.devicePixelRatio || 1;
       client.resize(container.clientWidth * ratio, container.clientHeight * ratio);
     };
-    resize();
-    const stopObserving = observeResize(container, resize);
+    if (!floating) resize();
+    const stopObserving = floating ? () => {} : observeResize(container, resize);
+    const stopWatchingRatio = floating ? () => {} : watchDevicePixelRatio(resize);
     return () => {
+      document.removeEventListener("visibilitychange", showVisibility);
       stopObserving();
+      stopWatchingRatio();
       client.stop();
       clientRef.current = null;
       handleRef.current = null;
       changeControl(VIEW_ONLY);
     };
-  }, [access, environmentId, threadId, onStats, handleRef]);
+  }, [access, environmentId, threadId, onStats, handleRef, floating]);
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the server when Settings or Usage cover or uncover the thread, without reconnecting
+  useEffect(() => {
+    clientRef.current?.setVisible(document.visibilityState === "visible" && !hiddenThread);
+  }, [hiddenThread]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- while in control, the pane owns the DOM's pointer lock, the keyboard and the desktop app's menu shortcuts
   useEffect(() => {
@@ -676,13 +827,18 @@ function BlenderStream(props: {
   return (
     <div
       ref={containerRef}
-      tabIndex={control.canOperate ? 0 : undefined}
+      tabIndex={canOperate ? 0 : undefined}
       aria-label={gt("Blender viewport")}
       data-in-control={inControl ? "" : undefined}
-      className="relative m-2 flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-md bg-black outline-none data-[in-control]:ring-2 data-[in-control]:ring-primary"
+      className={cn(
+        "relative flex items-center justify-center overflow-hidden bg-black",
+        floating
+          ? "size-full"
+          : "m-2 min-h-0 flex-1 rounded-md outline-none data-[in-control]:ring-2 data-[in-control]:ring-primary",
+      )}
       onPointerDown={(event) => {
         // The click that takes control stays out of Blender, so it selects nothing there.
-        if (inControl || !control.canOperate || control.controller !== "unclaimed") return;
+        if (inControl || !canOperate || control.controller !== "unclaimed") return;
         if (event.button !== 0 || clientRef.current === null) return;
         takingRef.current = true;
         clientRef.current.send({ type: "takeControl", takeOver: false });
@@ -727,7 +883,17 @@ function StreamStatus(props: { readonly status: Exclude<HostedBlenderStreamStatu
   }
 }
 
-function BlenderStatusStrip(props: StreamStats & { readonly control: HostedBlenderControl }) {
+function BlenderStatusStrip(
+  props: StreamStats & {
+    readonly control: HostedBlenderControl;
+    readonly environmentId: EnvironmentId;
+  },
+) {
+  const setup = useHostedBlenderSetupState(props.environmentId)?.result;
+  const gpu =
+    setup?.status === "checked"
+      ? setup.checks.find((check) => check.item === "gpu")?.status
+      : undefined;
   const parts = [
     props.frameSize ? `${props.frameSize.width}×${props.frameSize.height}` : null,
     props.rate ? `${props.rate.framesPerSecond} fps` : null,
@@ -748,6 +914,15 @@ function BlenderStatusStrip(props: StreamStats & { readonly control: HostedBlend
       {props.server?.target === "output" ? (
         <span className="min-w-0 truncate text-warning-foreground">
           <T>Showing the whole display</T>
+        </span>
+      ) : null}
+      {gpu === "warning" ? (
+        <span className="min-w-0 truncate text-warning-foreground">
+          <T>No GPU: Blender will be slow</T>
+        </span>
+      ) : gpu === "missing" ? (
+        <span className="min-w-0 truncate text-warning-foreground">
+          <T>No GPU access: Blender will be slow</T>
         </span>
       ) : null}
       {/* Who's in control comes first; in a narrow pane the stats shorten instead of wrapping. */}

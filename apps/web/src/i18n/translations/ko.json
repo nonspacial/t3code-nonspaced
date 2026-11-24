@@ -3311,12 +3311,13 @@
   "90e3c64eab32945e": "{name}의 자동 저장을 버릴까요?",
   "01201ecb830d7c68": "{name}의 저장하지 않은 변경 사항을 버릴까요?",
   "a1628cec6e798a98": "T3 Code's hidden display helper",
+  "759aa5a1a95bc013": "an H.264 encoder",
+  "f5a8efdb194519df": "GStreamer's OpenGL plugin",
   "32cf9ac006229af1": "Blender menu",
   "9287e12fbeade687": "Another device took control of Blender",
   "d2b10ff67d190925": "Blender viewport",
   "2151790bc5e65b31": "Not available on this host",
-  "22e7ff1b5896ba7b": "Hosted Blender needs a Linux server. You can still open 3D files in the file preview.",
-  "3051b6753c63a53e": "Hosted Blender isn't set up",
+  "b94f5fc6d71bc852": "Setup needed",
   "7050870331ac8b9a": "No hosted Blender running",
   "fb2c65328a8a2e17": "Open a .blend file in the file preview and choose Open in hosted Blender.",
   "cb4451ab067ff47d": "Blender didn't start",
@@ -3372,14 +3373,20 @@
   "eb23e8b7b8458cfa": "마지막 저장본 열기",
   "97585565390197f6": "취소",
   "d6c851db16c7dfd8": "마지막으로 저장된 파일은 유지됩니다. 이 작업은 되돌릴 수 없습니다.",
-  "91e40fb96987dd85": [
+  "7dfc4caecd0ca4da": "Open Blender settings",
+  "22e7ff1b5896ba7b": "Hosted Blender needs a Linux server. You can still open 3D files in the file preview.",
+  "ccb9bcd7825f2f99": "This server's Linux release ships labwc and GStreamer too old for hosted Blender. You can still open 3D files in the file preview.",
+  "efd53a6196afbf6d": "Flatpak and Snap builds of Blender aren't supported yet. Settings › Blender says how to use another Blender.",
+  "ec1b57292361ae76": "Switch on Hosted Blender in Settings › Blender to watch and steer Blender here.",
+  "e4ec327ad1a82eb5": "T3 Code hasn't checked this server yet. Open a .blend in hosted Blender, or check it in Settings › Blender.",
+  "af467bacc13f5e57": [
     "This server is missing: ",
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    ". Install them on the server, then open this pane again."
+    ". Settings › Blender can install them with an agent or show you the commands."
   ],
   "f4266902a2c24f1e": "Starting Blender…",
   "9d8acbbea6eafeef": [
@@ -3406,6 +3413,8 @@
   "67ab7e22612414d0": "Another device is in control",
   "81f3ce1d88ecf7bb": "Watching",
   "3906097eebf88153": "Showing the whole display",
+  "27ea83219396f796": "No GPU: Blender will be slow",
+  "156c7543e861dda6": "No GPU access: Blender will be slow",
   "907a0f7ed16a709d": "Couldn't open in hosted Blender",
   "7b0cb06d256e6b28": "Open in hosted Blender",
   "119259d2fa66fadf": "Couldn't quit Blender",
@@ -5705,6 +5714,7 @@
   "5b88b6929848ca03": "{seconds}초 전에 변환됨",
   "ea085b85d5409d6d": "Blender {version}(으)로 변환됨",
   "e1de2d5335083143": "Blender {version}(으)로 변환 중… {seconds}초",
+  "9228469f14b148a6": "{file} 변경됨 · 업데이트 중…",
   "41f9012753a424a9": "변환 실패",
   "047618ba1e0fe59d": "변환 취소됨",
   "53a1519e0b7358cf": "대기 중: 앞에 {ahead}개",
@@ -5846,6 +5856,8 @@
   "c85eef9dc05fa21b": "{files} could not be found next to {model}.",
   "411a4c0012fbdc78": "This model is over {size}. Loading it can slow this window down for a while.",
   "7a4197b6468d9219": "This model is {size}. Loading it can slow this window down for a while.",
+  "0b87945c6568d758": "새 버전이 있습니다",
+  "7805e0174e665cd4": "새 버전을 불러올 수 없습니다",
   "5ec36ad4005866e2": "{files} not found next to {model}",
   "d6fcf229c9306851": "스크린샷 후 주석",
   "164dcb32e690fb3b": "Reset view",
@@ -5855,6 +5867,7 @@
   "db81a08c825964a9": "Size",
   "d51618c38e9c4e73": "{width} × {height} × {depth}",
   "317be90a94ab7326": "{width} × {height} × {depth} {unit}",
+  "a33fd1cd3116533d": "이 버전 유지",
   "c61866d92a739c56": "Load model",
   "800f266a8be8e117": "Model details",
   "3bd23d5083b5d405": "{count, plural, other {셀 {formatted}개}}",
@@ -6627,6 +6640,7 @@
   "b18dda39d9585f3e": "선택한 요소를 캡처할 수 없습니다",
   "4616fb6552fd8875": "페이지가 로드되지 않았습니다. 페이지가 렌더링될 때까지 선택할 수 없습니다",
   "770d6036de8dbcb7": "이 탭은 T3 Code 데스크톱 앱에서 열려 있습니다.",
+  "ce122949162f2073": "떠 있는 Blender 미리 보기",
   "b252602c8f71d6af": "미리 보기를 분리할 수 없습니다",
   "0fc0a2ff438851b5": "떠 있는 브라우저 미리 보기",
   "74892fefe58df8e3": "분리된 미리 보기 닫기",
@@ -8798,6 +8812,122 @@
   "e8622c39abe68f9d": "기본값",
   "5383ef2d2c09cdf7": "글꼴 검색…",
   "ea08337bcadd35b4": "글꼴이 없습니다.",
+  "7660bc93bbd673be": "Let T3 Code run its own Blender on this server, on a hidden display, so you can watch and steer it in the Blender pane. Linux only. Your desktop Blender is never touched.",
+  "41dfe036cd2b2975": "Hosted Blender",
+  "63235832060254a4": "Agents in Claude and Codex threads may start this server's hosted Blenders.",
+  "9dfd275b6a5d4f9a": "Finish setup first, including the official Blender MCP server. Agents use it to work in hosted Blenders.",
+  "1f0df945c5a89af5": "Allow agents to start hosted Blenders",
+  "67c674ad132e17bb": "Hidden display helper",
+  "16da5cd9c2fa80bc": "H.264 encoder",
+  "af0373642246bb1c": "GStreamer OpenGL upload (NVIDIA)",
+  "129d601c223507ec": "GPU",
+  "d87898d465d6309f": "Blender MCP server",
+  "541ee140c8330a2a": "Couldn't check hosted Blender's setup",
+  "428192e9745f36eb": "Couldn't start the setup thread",
+  "31ba36fb9402faa7": "Install commands",
+  "b6554bc1ff014f77": "The official Blender Lab MCP server, such as ~/.local/bin/blender-mcp. Leave empty to find it on PATH or in ~/.local/bin. Check again after changing it.",
+  "e7743bf6a3de9ca3": "Reset Blender MCP path to default",
+  "a9b3c3359bce1e24": "Blender MCP path",
+  "d52b3d6bf9f2a013": "혼합",
+  "6d0cb7390c17be3b": "자동으로 찾기",
+  "0726bb02c4c42175": "Checking this server…",
+  "3a450021c92f3e4e": "T3 Code looks for Blender, labwc, GStreamer and the GPU, and runs a test encode.",
+  "b0537628ad92ed53": "Not checked yet",
+  "33bb3044d9712567": "Check this server for Blender, labwc, GStreamer and the GPU, with a test encode.",
+  "c3f155eda04d9708": "Hosted Blender needs a Linux server. 3D file previews still work on this one.",
+  "60f2565d2d2a6c3e": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ships labwc and GStreamer too old for hosted Blender. Ubuntu 24.04, Debian 13, Fedora 43 and Arch work."
+  ],
+  "66c4a476d0b4abaa": "Flatpak and Snap builds of Blender aren't supported yet. Install Blender from blender.org or your distro, or set its path in Settings › General › 3D previews, then check again.",
+  "cd212c9950bba81d": "Found",
+  "f9ab32870fe2bf3a": "Missing",
+  "d724abd4cc4a85e5": "Too old",
+  "7b01b12da1a9fd17": "Slow",
+  "a5fe3dee0a941705": "Not Blender Lab's",
+  "7174ef3cfccc7a54": "Runs Blender on the hidden display and streams it.",
+  "59e399ec181acb63": "T3 Code's own helper is missing from this install. Update or reinstall T3 Code.",
+  "92a36f954d094a6f": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "759ad8d8187ed946": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Hosted Blender needs Blender 4.5 or later."
+  ],
+  "2cf31d1c821751ac": "Install Blender 4.5 or later, or set its path in Settings › General › 3D previews.",
+  "5d52dcf7276c5199": "The compositor behind the hidden display.",
+  "ac6f1be5c0b72432": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", captured with wlr-screencopy. labwc 0.9 or later captures Blender's window alone."
+  ],
+  "8ca441a272a1c6e1": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Hosted Blender needs GStreamer 1.24 or later."
+  ],
+  "f400a2435a7c9972": "GStreamer 1.24 or later encodes the stream.",
+  "991f74849ed9e582": [
+    "The one-second test encode used ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "ba5e2c560dd26d57": "No H.264 encoder passed the test encode. Install GStreamer's plugins: one of nvh264enc, vah264enc, x264enc or openh264enc.",
+  "2ab5a1fabca22fd0": "NVIDIA's encoder reads Blender's frames straight from the GPU.",
+  "fce6aa0c10874b0c": "NVIDIA's encoder needs GStreamer's OpenGL plugin.",
+  "040d82d74fa9b290": "Blender draws with the GPU.",
+  "b1f3a29faa7594ff": "This server has a GPU, but T3 Code can't open it. Add your user to the render and video groups. Until then, Blender will be slow.",
+  "e4f914bd5e6899bf": "No GPU found. Hosted Blender still works, but Blender will be slow.",
+  "933fa7740fe8c681": {
+    "i": 1,
+    "k": "_gt_value_1",
+    "v": "v"
+  },
+  "92c9412a1a79bb73": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " is a different project with the same name, not the Blender Lab MCP. Install the official one, or set its path below."
+  ],
+  "9a397640135c1803": "Agents need the official Blender Lab MCP server. The pane works without it.",
+  "7c26d4f38c0094aa": "The result is kept until you check again, such as after installing something.",
+  "021b62ff834041f0": "Install what's missing",
+  "ec5d04aa0c3eed05": "An agent is installing what's missing",
+  "26c7f14fb81274cb": "An agent can install it in a new thread, asking for your password in a private card, never in chat. Or run the commands yourself. T3 Code never installs system packages itself.",
+  "0d7eb1eeb33375bb": "T3 Code checks again when the agent finishes.",
+  "a19376d3fce3f52d": "Install with an agent",
+  "5dee7399d93445e1": "Hide the commands",
+  "fbb5ec917cc3451d": "Show me the commands",
+  "db2f53db5e812a59": "Copy commands",
   "d6ad43bc4b700a88": "지울 브라우저 프로필 데이터가 없습니다.",
   "ad8efd437b301a37": "시스템",
   "42e23caa6ef99cad": "라이트",
@@ -9083,7 +9213,6 @@
   "f9904f78d3003f58": "빠른 워크트리 체크아웃",
   "9c2f647882522302": "선택한 컴퓨터의 에이전트 피드백 모드가 서로 다릅니다.",
   "31bbf7bf8c0a5279": "에이전트 피드백",
-  "d52b3d6bf9f2a013": "혼합",
   "ec7623deed751c05": [
     "브라우저에서 실시간으로 지켜보고 승인한 메시지를 보낼 수 있는 게스트와 스레드를 공유합니다. T3 Connect가 필요합니다. 로그인한 뒤",
     " ",
@@ -11638,7 +11767,6 @@
   "a2fc60e4c15eb1de": ".blend 파일을 3D 미리 보기로 바꾸는 Blender입니다. 예: /usr/bin/blender 또는 C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe. 비워 두면 PATH나 Blender 설치 위치에서 찾습니다.",
   "4c0182441f7f746d": "Blender 경로를 기본값으로 재설정",
   "b0e5f2ebaa0f2d56": "Blender 경로",
-  "6d0cb7390c17be3b": "자동으로 찾기",
   "ea6f97bad03faf84": "시스템 고정폭",
   "afa0ba3d124d9b8a": "인터페이스 글꼴 기본값으로 재설정",
   "eb19ce0364bb9a6e": "코드 블록과 터미널을 제외한 모든 부분입니다.",
@@ -12106,6 +12234,9 @@
   "056ba6a180d114b5": "허용 끄기 켜기 열기 조작 미리 보기 도구 세션 프로젝트 재정의",
   "dd6b767f08eff9f7": "실행 중인 Blender",
   "ec2bc06507d0d9af": "호스팅 blender 종료 메모리 3d 스레드",
+  "37d76dab21a26b2a": "blender hosted setup install check labwc gstreamer encoder gpu hidden display linux agent commands",
+  "f74fb1f1e951cb67": "blender hosted agents mcp start allow",
+  "3cf7f8ed35b33c5f": "blender lab mcp server path binary install uv pipx",
   "345075be6cacc171": "기기 호스트 ssh 원격 mac mini ID 키 연결 eas expo 클라우드 simlock 풀 게이트웨이 로컬 시뮬레이터",
   "a6b742430b05d6cc": "에이전트가 기기를 사용할 수 있음",
   "1d5d7418a83575c2": "허용 시뮬레이터 에뮬레이터 iOS Android 조작 도구 세션",

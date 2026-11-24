@@ -116,6 +116,7 @@ import * as DesktopBrowserChannel from "./preview/DesktopBrowserChannel.ts";
 import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
 import * as HiddenDisplayBinary from "./hostedBlender/HiddenDisplayBinary.ts";
 import * as HostedBlender from "./hostedBlender/HostedBlender.ts";
+import * as HostedBlenderSetup from "./hostedBlender/HostedBlenderSetup.ts";
 import * as HostedBlenderStream from "./hostedBlender/HostedBlenderStream.ts";
 import * as PreviewBrowser from "./preview/PreviewBrowser.ts";
 import * as ProcessRunner from "./processRunner.ts";
@@ -150,6 +151,7 @@ import * as TaskFolderStore from "./workspace/TaskFolderStore.ts";
 import * as KnownWorkspaces from "./workspace/KnownWorkspaces.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as BlendConversion from "./blend/BlendConversion.ts";
+import * as BlendFileWatcher from "./blend/BlendFileWatcher.ts";
 import * as BlenderDetection from "./blend/BlenderDetection.ts";
 import * as BlendPreview from "./blend/BlendPreview.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
@@ -565,8 +567,15 @@ const layerDevice = DeviceService.layer.pipe(
   Layer.provide(NetService.layer),
 );
 
-const layerHostedBlender = HostedBlender.layer.pipe(
+// The setup check reuses the 3D preview's Blender detection, so both find the same Blender.
+const layerHostedBlenderSetup = HostedBlenderSetup.layer.pipe(
   Layer.provide(HiddenDisplayBinary.layer),
+  Layer.provide(BlenderDetection.layer.pipe(Layer.provide(ProcessRunner.layer))),
+  Layer.provide(ProcessRunner.layer),
+);
+
+const layerHostedBlender = HostedBlender.layer.pipe(
+  Layer.provideMerge(layerHostedBlenderSetup),
   Layer.provide(WorkspacePaths.layer),
   Layer.provide(NetService.layer),
 );
@@ -591,6 +600,7 @@ const layerWorkspace = Layer.mergeAll(
         layerKnownWorkspaces,
         ProcessRunner.layer,
         BlenderDetection.layer.pipe(Layer.provide(ProcessRunner.layer)),
+        BlendFileWatcher.layer,
       ),
     ),
   ),

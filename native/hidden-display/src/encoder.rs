@@ -35,7 +35,9 @@ pub const ENCODER_ORDER: [EncoderKind; 4] = [
 /// Frames arrive only on change, but a variable frame rate (0/1) makes x264 hold every frame
 /// back until the next one arrives, hiding the last change of a burst. A nominal rate avoids it.
 const NOMINAL_FPS: u32 = 60;
-const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// The probe encodes one second of video at the probe's 30 fps, as setup's test encode.
+const PROBE_FRAMES: u32 = 30;
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl EncoderKind {
     pub fn element(self) -> &'static str {
@@ -140,8 +142,8 @@ impl EncoderKind {
 
     fn probe_description(self) -> String {
         format!(
-            "videotestsrc num-buffers=3 ! video/x-raw,format=BGRx,width=320,height=240,framerate=30/1 ! \
-             {} ! {} ! {} ! fakesink",
+            "videotestsrc num-buffers={PROBE_FRAMES} ! \
+             video/x-raw,format=BGRx,width=320,height=240,framerate=30/1 ! {} ! {} ! {} ! fakesink",
             self.upload(),
             self.encoder_description(2000),
             self.output_caps(),
@@ -157,7 +159,7 @@ pub fn pick_encoder(
     order.iter().copied().find(|kind| works(*kind))
 }
 
-/// Encodes three test frames with `kind`; true when they reach the sink.
+/// Encodes a second of test video with `kind`; true when it all reaches the sink.
 pub fn probe(kind: EncoderKind) -> bool {
     if gst::ElementFactory::find(kind.element()).is_none() {
         return false;
@@ -500,6 +502,23 @@ impl Settle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_probe_is_a_one_second_test_encode() {
+        let description = EncoderKind::X264.probe_description();
+        assert!(description.contains("num-buffers=30 "), "{description}");
+        assert!(description.contains("framerate=30/1"), "{description}");
+    }
+
+    #[test]
+    fn the_x264_probe_encodes_its_second_of_video() {
+        gst::init().unwrap();
+        if gst::ElementFactory::find("x264enc").is_none() {
+            eprintln!("skipped: x264enc is not installed");
+            return;
+        }
+        assert!(probe(EncoderKind::X264));
+    }
 
     #[test]
     fn a_capture_buffer_stays_busy_until_gstreamer_frees_every_copy() {

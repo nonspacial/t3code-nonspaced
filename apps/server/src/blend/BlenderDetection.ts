@@ -71,6 +71,18 @@ export const blenderInstallCandidates = (input: {
   }
 };
 
+/** A path setting typed as `~` or `~/…` means the server's home folder, as in a shell. */
+export const expandHome = (
+  setting: string,
+  homeDirectory: string,
+  join: (...segments: ReadonlyArray<string>) => string,
+) =>
+  setting === "~"
+    ? homeDirectory
+    : setting.startsWith("~/")
+      ? join(homeDirectory, setting.slice(2))
+      : setting;
+
 /** Blender runs with the server's environment minus T3's own variables and Blender overrides. */
 export const blenderEnvironment = (
   parent: Readonly<Record<string, string | undefined>>,
@@ -126,7 +138,7 @@ const make = Effect.gen(function* () {
 
   const find: BlenderDetection["Service"]["find"] = Effect.gen(function* () {
     const configured = yield* settings.getSettings.pipe(
-      Effect.map((current) => current.blenderPath),
+      Effect.map((current) => expandHome(current.blenderPath, homeDirectory, path.join)),
       Effect.orElseSucceed(() => ""),
     );
     // Probed and later run by absolute path, so no working directory can change which program runs.

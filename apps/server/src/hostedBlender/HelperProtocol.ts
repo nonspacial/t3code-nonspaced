@@ -103,6 +103,7 @@ export class HelperPacketReader {
 
 export type HelperCommand =
   | { readonly type: "keyframe" }
+  | { readonly type: "bitrate"; readonly kbps: number }
   | { readonly type: "pause" }
   | { readonly type: "resume" }
   | { readonly type: "resize"; readonly width: number; readonly height: number }

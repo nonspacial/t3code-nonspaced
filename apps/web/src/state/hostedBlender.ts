@@ -8,6 +8,7 @@ import {
   type EnvironmentId,
   HOSTED_BLENDER_STREAM_PATH,
   type HostedBlenderRunningList,
+  type HostedBlenderSetupState,
   type HostedBlenderThreadState,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -48,6 +49,19 @@ export function useRunningHostedBlenders(
     environmentId === null
       ? null
       : hostedBlenderEnvironment.runningBlenders({ environmentId, input: {} }),
+    resolve,
+  ).data;
+}
+
+/** The environment's hosted Blender setup; subscribing starts the first check. */
+export function useHostedBlenderSetupState(
+  environmentId: EnvironmentId | null,
+): HostedBlenderSetupState | null {
+  const resolve = useMessages();
+  return useEnvironmentQuery(
+    environmentId === null
+      ? null
+      : hostedBlenderEnvironment.setupState({ environmentId, input: {} }),
     resolve,
   ).data;
 }

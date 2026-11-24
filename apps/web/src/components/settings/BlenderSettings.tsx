@@ -9,18 +9,25 @@ import { formatBytes } from "~/lib/formatBytes";
 import { useThreadShell } from "~/state/entities";
 import { hostedBlenderEnvironment, useRunningHostedBlenders } from "~/state/hostedBlender";
 import { FoldedSettingsSection } from "./FoldedSettingsSection";
+import { HostedBlenderSetupSettings } from "./HostedBlenderSetupSettings";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
 
 export function BlenderSettingsPanel() {
   const gt = useGT();
   const { environment } = useSettingsScope();
-  const environmentId =
-    environment?.connection.phase === "connected" ? environment.environmentId : null;
+  const connected = environment?.connection.phase === "connected" ? environment : null;
+  const setupEnvironmentId =
+    connected?.serverConfig?.environment.capabilities.hostedBlenderSetup === true
+      ? connected.environmentId
+      : null;
   return (
     <SettingsPageContainer>
       <SettingsSection id="blender" title={gt("Blender")}>
-        <RunningBlenders environmentId={environmentId} />
+        {setupEnvironmentId === null ? null : (
+          <HostedBlenderSetupSettings environmentId={setupEnvironmentId} />
+        )}
+        <RunningBlenders environmentId={connected?.environmentId ?? null} />
       </SettingsSection>
     </SettingsPageContainer>
   );

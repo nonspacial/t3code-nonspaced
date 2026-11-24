@@ -75,6 +75,7 @@ import {
   deriveLockedProvider,
   hasCompactableConversation,
   hasServerAcknowledgedLocalDispatch,
+  shouldRenderPreviewMiniPlayer,
   waitForRevertedMessage,
 } from "./ChatView.logic";
 
@@ -1750,5 +1751,14 @@ describe("resolveThreadErrorBanner", () => {
     },
   ])("$name", ({ input, expected }) => {
     expect(resolveThreadErrorBanner(input)).toEqual(expected);
+  });
+});
+
+describe("shouldRenderPreviewMiniPlayer for the hosted Blender", () => {
+  it("floats the Blender pane unless the right panel already shows it", () => {
+    const blender = { kind: "blender" } as const;
+    expect(shouldRenderPreviewMiniPlayer(blender, null)).toBe(true);
+    expect(shouldRenderPreviewMiniPlayer(blender, { id: "files", kind: "files" })).toBe(true);
+    expect(shouldRenderPreviewMiniPlayer(blender, { id: "blender", kind: "blender" })).toBe(false);
   });
 });

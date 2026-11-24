@@ -368,10 +368,13 @@ import {
 import {
   HostedBlenderDismissInput,
   HostedBlenderError,
+  HostedBlenderInstallResult,
   HostedBlenderOpenInput,
   HostedBlenderQuitInput,
   HostedBlenderReopenInput,
   HostedBlenderRunningList,
+  HostedBlenderSetupError,
+  HostedBlenderSetupState,
   HostedBlenderSubscribeInput,
   HostedBlenderThreadState,
 } from "./hostedBlender.ts";
@@ -607,6 +610,9 @@ export const WS_METHODS = {
   hostedBlenderReopen: "hostedBlender.reopen",
   hostedBlenderDismiss: "hostedBlender.dismiss",
   hostedBlenderSubscribeRunning: "hostedBlender.subscribeRunning",
+  hostedBlenderSubscribeSetup: "hostedBlender.subscribeSetup",
+  hostedBlenderCheckSetup: "hostedBlender.checkSetup",
+  hostedBlenderInstallWithAgent: "hostedBlender.installWithAgent",
 
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
@@ -2183,6 +2189,27 @@ const WsHostedBlenderSubscribeRunningRpc = Rpc.make(WS_METHODS.hostedBlenderSubs
   stream: true,
 });
 
+/** The setup check's last result; the first subscriber starts the first check. */
+const WsHostedBlenderSubscribeSetupRpc = Rpc.make(WS_METHODS.hostedBlenderSubscribeSetup, {
+  payload: Schema.Struct({}),
+  success: HostedBlenderSetupState,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+/** "Check again": runs the setup check and test encode now. */
+const WsHostedBlenderCheckSetupRpc = Rpc.make(WS_METHODS.hostedBlenderCheckSetup, {
+  payload: Schema.Struct({}),
+  error: EnvironmentAuthorizationError,
+});
+
+/** Starts a No project thread whose agent installs what the check found missing. */
+const WsHostedBlenderInstallWithAgentRpc = Rpc.make(WS_METHODS.hostedBlenderInstallWithAgent, {
+  payload: Schema.Struct({}),
+  success: HostedBlenderInstallResult,
+  error: Schema.Union([HostedBlenderSetupError, EnvironmentAuthorizationError]),
+});
+
 const WsOrchestrationV2DispatchCommandRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, {
   payload: OrchestrationV2RpcSchemas.dispatchCommand.input,
   success: OrchestrationV2RpcSchemas.dispatchCommand.output,
@@ -2783,6 +2810,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsHostedBlenderReopenRpc,
   WsHostedBlenderDismissRpc,
   WsHostedBlenderSubscribeRunningRpc,
+  WsHostedBlenderSubscribeSetupRpc,
+  WsHostedBlenderCheckSetupRpc,
+  WsHostedBlenderInstallWithAgentRpc,
   WsSubscribeServerConfigRpc,
   WsSubscribeServerLifecycleRpc,
   WsSubscribeAuthAccessRpc,

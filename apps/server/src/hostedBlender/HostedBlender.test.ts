@@ -13,7 +13,6 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -25,15 +24,16 @@ import * as ServerConfig from "../config.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
-import * as HiddenDisplayBinary from "./HiddenDisplayBinary.ts";
 import * as HostedBlender from "./HostedBlender.ts";
+import * as HostedBlenderSetup from "./HostedBlenderSetup.ts";
 
 const threadId = ThreadId.make("thread-hosted-blender");
 const otherThreadId = ThreadId.make("thread-same-workspace");
 
 interface Host {
-  readonly platform?: NodeJS.Platform;
   readonly helper?: string | null;
+  /** What setup reports; by default ready with `helper` and the first Blender on PATH. */
+  readonly readiness?: HostedBlenderSetup.HostedBlenderReadiness;
   readonly env: NodeJS.ProcessEnv;
   readonly workspaceRoot: string;
   readonly baseDir: string;
@@ -41,16 +41,35 @@ interface Host {
   readonly beforeThreadLookup?: () => Effect.Effect<void>;
 }
 
+const blenderOnPath = (env: NodeJS.ProcessEnv) =>
+  (env.PATH ?? "")
+    .split(NodePath.delimiter)
+    .filter(Boolean)
+    .map((dir) => NodePath.join(dir, "blender"))
+    .find((candidate) => NodeFS.existsSync(candidate));
+
+const readinessFor = (host: Host): HostedBlenderSetup.HostedBlenderReadiness => {
+  if (host.readiness) return host.readiness;
+  const blender = blenderOnPath(host.env);
+  return host.helper == null || blender === undefined
+    ? { status: "notSetUp", missing: ["helper"] }
+    : { status: "ok", helper: host.helper, blender };
+};
+
 const layerFor = (host: Host) =>
   HostedBlender.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.succeed(HiddenDisplayBinary.HiddenDisplayBinary, {
-          resolve:
-            host.helper === null || host.helper === undefined
-              ? Effect.fail(new HiddenDisplayBinary.HiddenDisplayBinaryNotFound({ candidates: [] }))
-              : Effect.succeed(host.helper),
-        }),
+        Layer.succeed(
+          HostedBlenderSetup.HostedBlenderSetup,
+          HostedBlenderSetup.HostedBlenderSetup.of({
+            state: Stream.never,
+            check: Effect.void,
+            ensureChecked: Effect.void,
+            installWithAgent: Effect.die("not used"),
+            readiness: Stream.concat(Stream.succeed(readinessFor(host)), Stream.never),
+          }),
+        ),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadShell: (id) =>
             Effect.suspend(() => host.beforeThreadLookup?.() ?? Effect.void).pipe(
@@ -69,7 +88,7 @@ const layerFor = (host: Host) =>
     ),
     Layer.provide(
       Layer.mergeAll(
-        Layer.succeed(HostProcess.Platform, host.platform ?? "linux"),
+        Layer.succeed(HostProcess.Platform, "linux"),
         Layer.succeed(HostProcess.Environment, host.env),
         Layer.succeed(HostProcess.HomeDirectory, host.baseDir),
       ),
@@ -113,7 +132,8 @@ const WAITING_HELPER = 'while read line; do case "$line" in *quit*) exit 0;; esa
 /**
  * Stands in for the helper and its Blender, answering the control socket as the add-on would
  * (per STANDIN_SCENARIO). Like Blender, a quit without saving leaves quit.blend in its TMPDIR,
- * and SIGUSR1 crashes it leaving an autosave. STANDIN_* files record what it was asked to do.
+ * and SIGUSR1 crashes it leaving an autosave. It answers keyframe requests and resizes, and
+ * STANDIN_* files record what it was asked to do.
  */
 const STANDIN_HELPER = String.raw`
 import json, os, signal, socket, struct, sys, threading
@@ -143,6 +163,12 @@ def crash(*_args):
 signal.signal(signal.SIGUSR1, crash)
 state["finishing"] = threading.Event()
 state["finishing"].set()
+def video(key):
+    # A SEMU header (magic, version, flags, pts) and one byte of "access unit".
+    data = struct.pack(">IBBHQ", 0x53454D55, 1, 1 if key else 0, 0, 0) + b"\x00"
+    with lock:
+        sys.stdout.buffer.write(struct.pack(">IB", len(data) + 1, 2) + data)
+        sys.stdout.buffer.flush()
 server = socket.socket(socket.AF_UNIX)
 def listen():
     # "late-control": the add-on's socket appears only once the test creates STANDIN_BIND.
@@ -225,9 +251,22 @@ def stopped(how):
     os._exit(0)
 for line in sys.stdin:
     command = json.loads(line)
-    if command.get("type") not in ("quit", "keyframe", "pause", "resume"):
+    if command.get("type") != "quit":
+        with open(os.environ["STANDIN_COMMANDS"], "a") as log:
+            log.write(line)
+    if command.get("type") not in ("quit", "keyframe", "pause", "resume", "bitrate"):
         with open(os.environ["STANDIN_INPUT"], "a") as log:
             log.write(line)
+    if command.get("type") == "keyframe":
+        video(True)
+    if command.get("type") == "resize":
+        event({"type": "frameSize", "width": command["width"], "height": command["height"]})
+    # F1: a burst of deltas, then Blender "captures" the cursor to mark the end of it.
+    if command.get("type") == "key" and command.get("code") == 59:
+        if command["pressed"]:
+            for _ in range(12):
+                video(False)
+        event({"type": "cursorLeave"} if command["pressed"] else {"type": "cursorEnter", "x": 1, "y": 2})
     # A middle-drag orbit: Blender hides its cursor while the button is down.
     if command.get("type") == "pointerButton" and command.get("button") == 274:
         event({"type": "cursorLeave"} if command["pressed"] else {"type": "cursorEnter", "x": 1, "y": 2})
@@ -258,6 +297,7 @@ const standIn = Effect.fn(function* (
   const marker = NodePath.join(dir, "helper-quit");
   const savesLog = NodePath.join(dir, "saves.log");
   const inputLog = NodePath.join(dir, "input.log");
+  const commandLog = NodePath.join(dir, "commands.log");
   const launchesLog = NodePath.join(dir, "launches.log");
   const pidFile = NodePath.join(dir, "helper.pid");
   const layer = layerFor({
@@ -268,6 +308,7 @@ const standIn = Effect.fn(function* (
       STANDIN_MARKER: marker,
       STANDIN_SAVES: savesLog,
       STANDIN_INPUT: inputLog,
+      STANDIN_COMMANDS: commandLog,
       STANDIN_LAUNCHES: launchesLog,
       STANDIN_PID: pidFile,
       STANDIN_BIND: NodePath.join(dir, "bind"),
@@ -296,9 +337,11 @@ const standIn = Effect.fn(function* (
   const saveCommands = () =>
     NodeFS.existsSync(savesLog) ? NodeFS.readFileSync(savesLog, "utf8").split("\n").length - 1 : 0;
   /** The input commands the helper got, in order. */
-  const helperInput = (): unknown[] =>
-    NodeFS.existsSync(inputLog)
-      ? NodeFS.readFileSync(inputLog, "utf8")
+  const readLog = (
+    log: string,
+  ): Array<{ readonly type: string; readonly [key: string]: unknown }> =>
+    NodeFS.existsSync(log)
+      ? NodeFS.readFileSync(log, "utf8")
           .split("\n")
           .filter((line) => line.length > 0)
           .map((line) => JSON.parse(line))
@@ -312,6 +355,9 @@ const standIn = Effect.fn(function* (
           .map((line) => JSON.parse(line))
       : [];
   const hostedDir = NodePath.join(dir, "userdata", "hosted-blender");
+  const helperInput = (): unknown[] => readLog(inputLog);
+  /** Every command the helper got but quit, in order. */
+  const helperCommands = () => readLog(commandLog);
   return {
     dir,
     layer,
@@ -321,6 +367,7 @@ const standIn = Effect.fn(function* (
     openReady,
     saveCommands,
     helperInput,
+    helperCommands,
     marker,
     runtime,
     launches,
@@ -904,6 +951,28 @@ describe("Endings and recovery", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("never resumes capture for a Blender that is ending", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, helperCommands } = yield* standIn(
+        "ending-capture",
+        "slow-quit",
+      );
+      yield* openReady;
+      const attached = yield* service.attachViewer(threadId, { canOperate: false });
+      assert.strictEqual(attached._tag, "attached");
+      if (attached._tag !== "attached") return;
+      yield* attached.viewer.setVisible(false);
+      // The settle waits on a quit Blender acknowledged; a pane shown meanwhile stays dark.
+      yield* service.closeOnSettle({ threadId });
+      yield* attached.viewer.setVisible(true);
+      yield* awaitStatus("closed");
+      const capture = helperCommands().filter(
+        (command) => command.type === "pause" || command.type === "resume",
+      );
+      expect(capture.at(-1)?.type).toBe("pause");
+    }).pipe(Effect.scoped),
+  );
+
   it.live("a different file can't start while a settle that keeps a copy finishes", () =>
     Effect.gen(function* () {
       let hold: Deferred.Deferred<void> | null = null;
@@ -1353,6 +1422,149 @@ describe("Taking control", () => {
   );
 });
 
+/** The next frame, skipping messages. */
+const nextFrame = (viewer: Viewer): Effect.Effect<Uint8Array> =>
+  Queue.take(viewer.output).pipe(
+    Effect.flatMap((output) =>
+      output._tag === "frame" ? Effect.succeed(output.data) : nextFrame(viewer),
+    ),
+  );
+/** Whether a frame is waiting for `viewer`; empties its queue. */
+const hasFrame = (viewer: Viewer) =>
+  Queue.clear(viewer.output).pipe(
+    Effect.map((outputs) => outputs.some((output) => output._tag === "frame")),
+  );
+const isKey = (frame: Uint8Array) => (frame[5]! & 1) === 1;
+const ofType = <Command extends { readonly type: string }>(
+  commands: ReadonlyArray<Command>,
+  ...types: ReadonlyArray<string>
+) => commands.filter((command) => types.includes(command.type));
+
+describe("The stream", () => {
+  it.live("stops capturing while no pane is on screen and resumes on a keyframe", () =>
+    Effect.gen(function* () {
+      const { service, openReady, helperCommands } = yield* standIn("visible", "");
+      yield* openReady;
+      const first = yield* attach(service, false);
+      expect(isKey(yield* nextFrame(first))).toBe(true);
+      yield* first.ack;
+      yield* first.setVisible(false);
+      // A second pane on screen resumes capture and joins on a keyframe; the hidden one gets
+      // nothing.
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const second = yield* attach(service, false);
+          expect(isKey(yield* nextFrame(second))).toBe(true);
+          expect(yield* hasFrame(first)).toBe(false);
+        }),
+      );
+      // Showing the first pane again resumes capture, starting on a keyframe.
+      yield* first.setVisible(true);
+      expect(isKey(yield* nextFrame(first))).toBe(true);
+      // Nobody watched while Blender started, so it started paused.
+      expect(ofType(helperCommands(), "pause", "resume", "keyframe")).toEqual([
+        { type: "pause" },
+        { type: "resume" },
+        { type: "keyframe" },
+        { type: "pause" },
+        { type: "resume" },
+        { type: "keyframe" },
+        { type: "pause" },
+        { type: "resume" },
+        { type: "keyframe" },
+      ]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("sizes the display to the latest pane on screen; a pane without a size keeps it", () =>
+    Effect.gen(function* () {
+      const { service, openReady, helperCommands } = yield* standIn("latest", "");
+      yield* openReady;
+      const older = yield* attach(service, false);
+      yield* older.resize(800, 600);
+      yield* nextMessage(older, "viewport");
+      const newer = yield* attach(service, false);
+      yield* newer.resize(1600, 900);
+      yield* nextMessage(older, "viewport");
+      // A floating player sends no size, so opening one leaves the display alone...
+      yield* attach(service, false);
+      // ...hiding the newest pane hands the size back to the older one, and showing it again
+      // takes it back.
+      yield* newer.setVisible(false);
+      yield* nextMessage(older, "viewport");
+      yield* newer.setVisible(true);
+      expect(yield* nextMessage(older, "viewport")).toEqual({
+        type: "viewport",
+        width: 1600,
+        height: 900,
+      });
+      expect(ofType(helperCommands(), "resize")).toEqual([
+        { type: "resize", width: 800, height: 600 },
+        { type: "resize", width: 1600, height: 900 },
+        { type: "resize", width: 800, height: 600 },
+        { type: "resize", width: 1600, height: 900 },
+      ]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("resyncs a viewer that falls behind on a keyframe, without cutting the bitrate", () =>
+    Effect.gen(function* () {
+      const { service, openReady, helperCommands } = yield* standIn("bitrate", "");
+      yield* openReady;
+      const operator = yield* attach(service, true);
+      yield* operator.input({ type: "takeControl", takeOver: false });
+      const cursor = (captured: boolean): Effect.Effect<unknown> =>
+        nextMessage(operator, "cursor").pipe(
+          Effect.flatMap((message) =>
+            message.captured === captured ? Effect.void : cursor(captured),
+          ),
+        );
+      // F1 sends more deltas than a viewer that hasn't acked may have waiting, then Blender
+      // "captures" the cursor; releasing F1 lets it go.
+      yield* operator.input({ type: "key", code: 59, pressed: true });
+      yield* cursor(true);
+      yield* operator.input({ type: "key", code: 59, pressed: false });
+      yield* cursor(false);
+      // Falling behind is a slow viewer, not a congested link: it skips to a keyframe, and only
+      // ack delay moves the bitrate.
+      expect(ofType(helperCommands(), "bitrate")).toEqual([]);
+      // Acking the frame it was stuck on lets the keyframe out.
+      yield* operator.ack;
+      expect(isKey(yield* nextFrame(operator))).toBe(true);
+    }).pipe(Effect.scoped),
+  );
+});
+
+it.effect(
+  "a stalled viewer's keyframe waits out the throttle, and comes even if Blender is idle",
+  () =>
+    Effect.gen(function* () {
+      const { service, awaitStatus, helperCommands } = yield* standIn("deferred", "");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitStatus("running");
+      const operator = yield* attach(service, true);
+      yield* operator.input({ type: "takeControl", takeOver: false });
+      const cursor = (captured: boolean): Effect.Effect<unknown> =>
+        nextMessage(operator, "cursor").pipe(
+          Effect.flatMap((message) =>
+            message.captured === captured ? Effect.void : cursor(captured),
+          ),
+        );
+      // F1 overflows the operator's queue while its first frame is unacked; nothing more comes.
+      yield* operator.input({ type: "key", code: 59, pressed: true });
+      yield* cursor(true);
+      yield* operator.input({ type: "key", code: 59, pressed: false });
+      yield* cursor(false);
+      // Its ack asks for a keyframe, but one went out at join this same instant.
+      yield* operator.ack;
+      yield* syncPoint(operator);
+      expect(ofType(helperCommands(), "keyframe")).toHaveLength(1);
+      yield* TestClock.adjust("250 millis");
+      expect(isKey(yield* nextFrame(operator))).toBe(true);
+      expect(ofType(helperCommands(), "keyframe")).toHaveLength(2);
+    }).pipe(Effect.scoped),
+);
+
 it.effect("gives up on a start that never shows Blender by asking the helper to quit", () =>
   Effect.gen(function* () {
     const { service, awaitStatus, marker, runtime } = yield* standIn("timeout", "never-shows");
@@ -1374,28 +1586,25 @@ it.effect("gives up on a start that never shows Blender by asking the helper to 
 );
 
 describe("HostedBlender availability", () => {
-  it.effect("is not available on hosts other than Linux", () =>
+  it.effect("passes on why setup can't host Blender, and refuses to open files", () =>
     Effect.gen(function* () {
       const dir = yield* tempDir("unavailable");
-      const service = yield* serviceFor(
-        layerFor({ platform: "darwin", env: {}, workspaceRoot: dir, baseDir: dir }),
-      );
-      assert.deepStrictEqual(yield* firstState(service), { status: "unavailable" });
-      const opened = yield* service.open({ threadId, relativePath: "a.blend" }).pipe(Effect.exit);
-      assert.isTrue(Exit.hasFails(opened));
-    }).pipe(Effect.scoped),
-  );
-
-  it.effect("lists what a Linux host is missing", () =>
-    Effect.gen(function* () {
-      const dir = yield* tempDir("missing");
-      const service = yield* serviceFor(
-        layerFor({ env: { PATH: "" }, workspaceRoot: dir, baseDir: dir }),
-      );
-      assert.deepStrictEqual(yield* firstState(service), {
-        status: "notSetUp",
-        missing: ["helper", "blender", "labwc"],
-      });
+      NodeFS.writeFileSync(NodePath.join(dir, "a.blend"), "");
+      for (const readiness of [
+        { status: "unavailable", reason: "platform" },
+        { status: "notSetUp", missing: ["enabled"] },
+        { status: "notSetUp", missing: ["labwc", "encoder"] },
+      ] as const) {
+        const service = yield* serviceFor(
+          layerFor({ readiness, env: {}, workspaceRoot: dir, baseDir: dir }),
+        );
+        assert.deepStrictEqual(yield* firstState(service), readiness);
+        const opened = yield* service.open({ threadId, relativePath: "a.blend" }).pipe(
+          Effect.flip,
+          Effect.map((error) => error.reason),
+        );
+        expect(opened).toBe(readiness.status);
+      }
     }).pipe(Effect.scoped),
   );
 });

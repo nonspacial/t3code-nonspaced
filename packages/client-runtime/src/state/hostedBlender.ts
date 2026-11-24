@@ -56,5 +56,17 @@ export function createHostedBlenderEnvironmentAtoms<R, E>(
       label: "environment-data:hosted-blender:running",
       tag: WS_METHODS.hostedBlenderSubscribeRunning,
     }),
+    setupState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:hosted-blender:setup-state",
+      tag: WS_METHODS.hostedBlenderSubscribeSetup,
+    }),
+    checkSetup: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:hosted-blender:check-setup",
+      tag: WS_METHODS.hostedBlenderCheckSetup,
+    }),
+    installWithAgent: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:hosted-blender:install-with-agent",
+      tag: WS_METHODS.hostedBlenderInstallWithAgent,
+    }),
   };
 }

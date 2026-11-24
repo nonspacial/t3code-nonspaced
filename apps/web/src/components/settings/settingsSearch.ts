@@ -1146,6 +1146,31 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("hosted blender quit memory 3d thread")],
   },
   {
+    id: "hosted-blender",
+    title: msg("Hosted Blender"),
+    to: "/settings/blender",
+    scope: "environment-defaults",
+    searchTerms: [
+      msg(
+        "blender hosted setup install check labwc gstreamer encoder gpu hidden display linux agent commands",
+      ),
+    ],
+  },
+  {
+    id: "hosted-blender-allow-agents",
+    title: msg("Allow agents to start hosted Blenders"),
+    to: "/settings/blender",
+    scope: "environment-defaults",
+    searchTerms: [msg("blender hosted agents mcp start allow")],
+  },
+  {
+    id: "blender-mcp-path",
+    title: msg("Blender MCP path"),
+    to: "/settings/blender",
+    scope: "environment-defaults",
+    searchTerms: [msg("blender lab mcp server path binary install uv pipx")],
+  },
+  {
     id: "device-sources",
     title: msg("Device sources"),
     to: "/settings/devices",
