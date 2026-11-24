@@ -154,7 +154,7 @@ function RunningBlender(props: BlenderPanelProps & { readonly state: HostedBlend
       <BlenderToolbar
         threadRef={props.threadRef}
         state={props.state}
-        onAnnotate={live && annotation.editor === null ? annotation.start : null}
+        onAnnotate={live ? annotation.start : null}
       />
       {props.state.status === "starting" ? (
         <StateCard
@@ -172,6 +172,7 @@ function RunningBlender(props: BlenderPanelProps & { readonly state: HostedBlend
             environmentId={props.threadRef.environmentId}
             threadId={props.threadRef.threadId}
             canvasRef={annotation.canvasRef}
+            frameRef={annotation.frameRef}
             onStats={setStats}
           />
           {annotation.editor}
@@ -297,11 +298,13 @@ function BlenderStream(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: string;
   readonly canvasRef: RefObject<HTMLCanvasElement | null>;
+  /** Called after each frame is drawn. */
+  readonly frameRef: RefObject<(() => void) | null>;
   readonly onStats: (update: (current: StreamStats) => StreamStats) => void;
 }) {
   const access = useHostedBlenderStreamAccess(props.environmentId);
   const containerRef = useRef<HTMLDivElement>(null);
-  const { canvasRef } = props;
+  const { canvasRef, frameRef } = props;
   const [status, setStatus] = useState<HostedBlenderStreamStatus>("connecting");
   const { environmentId, threadId, onStats } = props;
 
@@ -312,6 +315,7 @@ function BlenderStream(props: {
     if (access === null || container === null || canvas === null) return;
     let frameSize = { width: 0, height: 0 };
     const sink = createCanvasFrameSink(canvas, (width, height) => {
+      frameRef.current?.();
       if (width === frameSize.width && height === frameSize.height) return;
       frameSize = { width, height };
       onStats((current) => ({ ...current, frameSize }));
@@ -332,7 +336,7 @@ function BlenderStream(props: {
       stopObserving();
       client.stop();
     };
-  }, [access, environmentId, threadId, onStats, canvasRef]);
+  }, [access, environmentId, threadId, onStats, canvasRef, frameRef]);
 
   return (
     <div

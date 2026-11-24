@@ -105,12 +105,14 @@ def _viewport():
         area = areas[0]
         region = next((region for region in area.regions if region.type == "WINDOW"), None)
         if region is not None:
-            return window, area, region, area.spaces.active.region_3d
+            return window, area, region, area.spaces.active
     return None
 
 
-def _camera_view(rv3d):
-    camera = bpy.context.scene.camera
+def _camera_view(space, scene):
+    # A viewport can look through a camera of its own instead of the scene's.
+    rv3d = space.region_3d
+    camera = space.camera if space.use_local_camera and space.camera else scene.camera
     if rv3d.view_perspective == "CAMERA" and camera is not None:
         position = camera.matrix_world.translation
         forward = camera.matrix_world.to_quaternion() @ Vector((0.0, 0.0, -1.0))
@@ -125,12 +127,12 @@ def _view():
     found = _viewport()
     if found is None:
         return None
-    window, _area, region, rv3d = found
+    window, _area, region, space = found
     width, height = window.width, window.height
     # The matrix the last frame was drawn with, which is the frame the person froze.
-    matrix = [value for row in rv3d.perspective_matrix for value in row]
+    matrix = [value for row in space.region_3d.perspective_matrix for value in row]
     return {
-        "cameraView": _camera_view(rv3d),
+        "cameraView": _camera_view(space, window.scene),
         "projection": {
             "matrix": matrix,
             "region": {
@@ -144,10 +146,17 @@ def _view():
 
 
 def _hits(command):
+    found = _viewport()
+    if found is None:
+        return None
+    window, area, view_region, _space = found
     inverse = Matrix([command["matrix"][row * 4:row * 4 + 4] for row in range(4)]).inverted()
     region = command["region"]
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    scene = bpy.context.scene
+    # Timers run in the main window's context; the marks are on the person's window, whose
+    # scene and view layer can differ from the agent's.
+    with bpy.context.temp_override(window=window, area=area, region=view_region):
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+    scene = window.scene
     deadline = time.perf_counter() + HIT_BUDGET
     hits = []
     for samples in command["marks"]:
@@ -178,7 +187,8 @@ def _set_view(command):
     found = _viewport()
     if found is None:
         return None
-    _window, area, _region, rv3d = found
+    _window, area, _region, space = found
+    rv3d = space.region_3d
     position, target = Vector(command["position"]), Vector(command["target"])
     offset = position - target
     if rv3d.view_perspective == "CAMERA":
@@ -243,9 +253,14 @@ def _tick():
         while b"\n" in _State.buffer:
             line, _State.buffer = _State.buffer.split(b"\n", 1)
             try:
-                _handle(json.loads(line))
+                command = json.loads(line)
+                _handle(command)
             except Exception as error:  # noqa: BLE001 - a bad command must not stop the add-on
                 print("T3 control add-on:", error, file=sys.stderr)
+                continue
+            # Casting blocks Blender's UI; the next request waits for the next tick.
+            if command.get("type") == "hits":
+                break
         snapshot = _snapshot()
         if snapshot != _State.sent:
             _State.sent = snapshot

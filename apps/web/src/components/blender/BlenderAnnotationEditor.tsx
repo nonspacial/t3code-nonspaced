@@ -22,17 +22,24 @@ export interface FrozenBlenderFrame {
   readonly width: number;
   readonly height: number;
   /** Null when Blender couldn't say. */
-  readonly capture: Promise<HostedBlenderViewCapture | null>;
+  readonly capture: HostedBlenderViewCapture | null;
 }
+
+/** With no newer frame by then, the screen hasn't changed and the frame showing is current. */
+const SETTLE_MS = 250;
+
+const hasFrame = (canvas: HTMLCanvasElement | null): canvas is HTMLCanvasElement => {
+  const box = canvas?.getBoundingClientRect();
+  return !!canvas && !!box && canvas.width > 0 && canvas.height > 0 && box.width > 0;
+};
 
 /** Copies the stream's current frame, which keeps changing underneath while the person draws. */
 function freezeBlenderFrame(
-  canvas: HTMLCanvasElement,
-  readCamera: () => Promise<HostedBlenderViewCapture | null>,
+  canvas: HTMLCanvasElement | null,
+  capture: HostedBlenderViewCapture | null,
 ): FrozenBlenderFrame | null {
+  if (!hasFrame(canvas)) return null;
   const { width, height } = canvas.getBoundingClientRect();
-  if (canvas.width === 0 || canvas.height === 0 || width === 0 || height === 0) return null;
-  const capture = readCamera();
   const image = document.createElement("canvas");
   image.width = canvas.width;
   image.height = canvas.height;
@@ -41,9 +48,9 @@ function freezeBlenderFrame(
 }
 
 /**
- * Screenshot & annotate for the Blender pane: freezes the stream's canvas and reads the
- * viewport window's camera at the same moment, then hands the editor's marks to Blender to find
- * what each one covers. `editor` covers the stream while open.
+ * Screenshot & annotate for the Blender pane. It freezes the first frame drawn after Blender
+ * reports its camera, so screenshot and camera show one view; the stream calls `frameRef` per
+ * frame. `start` is null while capturing or while `editor` is open.
  */
 export function useBlenderAnnotation(input: {
   readonly threadRef: ScopedThreadRef;
@@ -54,23 +61,29 @@ export function useBlenderAnnotation(input: {
   readonly wholeDisplay: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const frameRef = useRef<(() => void) | null>(null);
   const [frozen, setFrozen] = useState<FrozenBlenderFrame | null>(null);
+  const [capturing, setCapturing] = useState(false);
   const captureView = useAtomCommand(hostedBlenderEnvironment.captureView, {
     reportFailure: false,
   });
   const findHits = useAtomCommand(hostedBlenderEnvironment.findHits, { reportFailure: false });
   const { environmentId, threadId } = input.threadRef;
 
-  const start = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    setFrozen(
-      freezeBlenderFrame(canvas, () =>
-        captureView({ environmentId, input: { threadId } }).then((result) =>
-          result._tag === "Success" ? result.value : null,
-        ),
-      ),
-    );
+  const start = async () => {
+    if (!hasFrame(canvasRef.current)) return;
+    setCapturing(true);
+    const result = await captureView({ environmentId, input: { threadId } });
+    const capture = result._tag === "Success" ? result.value : null;
+    const freeze = () => {
+      if (frameRef.current !== freeze) return;
+      frameRef.current = null;
+      clearTimeout(settled);
+      setCapturing(false);
+      setFrozen(freezeBlenderFrame(canvasRef.current, capture));
+    };
+    frameRef.current = freeze;
+    const settled = setTimeout(freeze, SETTLE_MS);
   };
 
   const editor = frozen ? (
@@ -95,7 +108,12 @@ export function useBlenderAnnotation(input: {
     />
   ) : null;
 
-  return { canvasRef, start, editor };
+  return {
+    canvasRef,
+    frameRef,
+    start: capturing || frozen ? null : () => void start(),
+    editor,
+  };
 }
 
 function BlenderAnnotationEditor(props: {
@@ -133,7 +151,7 @@ function BlenderAnnotationEditor(props: {
               width: frozen.image.width,
               height: frozen.image.height,
             },
-            capture: await frozen.capture,
+            capture: frozen.capture,
             findHits: props.findHits,
             createdAt: new Date().toISOString(),
           });

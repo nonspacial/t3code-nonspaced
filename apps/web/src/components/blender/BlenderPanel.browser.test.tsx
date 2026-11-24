@@ -22,8 +22,23 @@ const { commands, stream } = vi.hoisted(() => ({
     captureView: vi.fn<(value: unknown) => Promise<unknown>>(),
     findHits: vi.fn<(value: unknown) => Promise<unknown>>(),
   },
-  stream: { target: "window" as "window" | "output", access: {} },
+  stream: {
+    target: "window" as "window" | "output",
+    access: {},
+    sink: null as null | { present: (source: CanvasImageSource, w: number, h: number) => boolean },
+  },
 }));
+
+/** A frame of Blender in one flat colour, as the stream's decoder would hand it over. */
+function frameOf(color: string) {
+  const frame = document.createElement("canvas");
+  frame.width = 320;
+  frame.height = 180;
+  const context = frame.getContext("2d")!;
+  context.fillStyle = color;
+  context.fillRect(0, 0, 320, 180);
+  return frame;
+}
 
 const state: HostedBlenderRunningState = {
   status: "running",
@@ -50,26 +65,12 @@ vi.mock("~/state/use-atom-command", () => ({
     }),
 }));
 
-// A stream that shows one frame of Blender: the sink paints it, the client reports it live.
-vi.mock("@t3tools/client-runtime/device/frame", () => ({
-  createCanvasFrameSink: (
-    canvas: HTMLCanvasElement,
-    onSize: (width: number, height: number) => void,
-  ) => {
-    canvas.width = 320;
-    canvas.height = 180;
-    const context = canvas.getContext("2d")!;
-    context.fillStyle = "#3d3d3d";
-    context.fillRect(0, 0, 320, 180);
-    onSize(320, 180);
-    return {};
-  },
-}));
-
+// A stream that shows one grey frame of Blender through the real canvas sink, then whatever
+// a test presents to `stream.sink`.
 vi.mock("@t3tools/client-runtime/hosted-blender/stream", () => ({
   createHostedBlenderStreamClient: (
     _target: unknown,
-    _sink: unknown,
+    sink: NonNullable<typeof stream.sink>,
     handlers: {
       onStatus: (status: "live") => void;
       onStats: (stats: { encoder: string; target: string; memoryBytes: null }) => void;
@@ -77,6 +78,8 @@ vi.mock("@t3tools/client-runtime/hosted-blender/stream", () => ({
   ) => {
     handlers.onStatus("live");
     handlers.onStats({ encoder: "x264enc", target: stream.target, memoryBytes: null });
+    stream.sink = sink;
+    sink.present(frameOf("#3d3d3d"), 320, 180);
     return { resize: () => {}, stop: () => {} };
   },
 }));
@@ -178,4 +181,43 @@ it("keeps the camera but places no marks when the stream shows the whole display
   expect(annotation.cameraView).toEqual(capture.cameraView);
   expect(annotation.regions[0]).not.toHaveProperty("hit");
   expect(commands.findHits).not.toHaveBeenCalled();
+});
+
+/** The colour in the middle of the frozen frame the editor shows. */
+async function frozenColor(screen: Awaited<ReturnType<typeof render>>) {
+  const surface = screen.getByRole("img", { name: "Frozen 3D view to annotate" });
+  await expect.element(surface).toBeVisible();
+  const href = surface.element().querySelector("image")!.getAttribute("href")!;
+  const image = new Image();
+  image.src = href;
+  await image.decode();
+  const canvas = document.createElement("canvas");
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const context = canvas.getContext("2d")!;
+  context.drawImage(image, 0, 0);
+  return Array.from(context.getImageData(160, 90, 1, 1).data.slice(0, 3));
+}
+
+it("freezes the first frame drawn after Blender reports its view, not the one already showing", async () => {
+  const blender = setup("thread-blender-catch-up", "window");
+  const reply = Promise.withResolvers<HostedBlenderViewCapture>();
+  commands.captureView.mockReset().mockReturnValue(reply.promise);
+  await using screen = await render(blender.element, pane());
+  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
+  // Blender has jumped to a new view; the stream is still showing the old one when it answers.
+  reply.resolve(capture);
+  // The new view's frames keep arriving until one is frozen.
+  await vi.waitFor(() => {
+    stream.sink!.present(frameOf("#ff0000"), 320, 180);
+    expect(screen.getByRole("img", { name: "Frozen 3D view to annotate" }).query()).not.toBeNull();
+  });
+  expect(await frozenColor(screen)).toEqual([255, 0, 0]);
+});
+
+it("freezes the frame on screen when Blender sends no newer one", async () => {
+  const blender = setup("thread-blender-still", "window");
+  await using screen = await render(blender.element, pane());
+  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
+  expect(await frozenColor(screen)).toEqual([0x3d, 0x3d, 0x3d]);
 });

@@ -111,7 +111,7 @@ const WAITING_HELPER = 'while read line; do case "$line" in *quit*) exit 0;; esa
  * reports the file dirty, and it logs each save command it gets to STANDIN_SAVES.
  */
 const STANDIN_HELPER = String.raw`
-import json, os, socket, struct, sys, threading
+import json, os, socket, struct, sys, threading, time
 rest = sys.argv[1:][sys.argv[1:].index("--") + 1:]
 t3 = rest[rest.index("--") + 1:]
 scenario = os.environ.get("STANDIN_SCENARIO", "")
@@ -134,9 +134,20 @@ def control():
     connection.sendall(b'{"type": "state", "filepath": "cube.blend", "dirty": true}\n')
     saves = 0
     view = {"position": [7, -7, 5], "target": [0, 0, 1]}
+    outstanding = [0]
+    def slow_hits(command):
+        # Answers later, saying how many hit requests were waiting when this one arrived.
+        result = [{"object": "in flight %d" % outstanding[0], "point": [0, 0, 0]}]
+        time.sleep(0.3)
+        outstanding[0] -= 1
+        connection.sendall((json.dumps({"type": "reply", "id": command["id"], "result": result}) + "\n").encode())
     for line in connection.makefile():
         command = json.loads(line)
         kind = command.get("type")
+        if kind == "hits" and scenario == "slow-hits":
+            outstanding[0] += 1
+            threading.Thread(target=slow_hits, args=(command,), daemon=True).start()
+            continue
         if kind in ("view", "hits", "setView") and scenario == "drop-on-view":
             connection.close()
             return
@@ -351,6 +362,28 @@ describe("The viewport window", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("sends Blender one hit request at a time", () =>
+    Effect.gen(function* () {
+      const { service, openReady } = yield* standIn("one-cast", "slow-hits");
+      yield* openReady;
+      const projection = {
+        matrix: Array.from({ length: 16 }, () => 0),
+        region: { x: 0, y: 0, width: 1, height: 1 },
+      };
+      const results = yield* Effect.all(
+        Array.from({ length: 3 }, () =>
+          service.findHits({ threadId, projection, marks: [[{ x: 0.5, y: 0.5 }]] }),
+        ),
+        { concurrency: "unbounded" },
+      );
+      expect(results.map((hits) => hits[0]?.object)).toEqual([
+        "in flight 1",
+        "in flight 1",
+        "in flight 1",
+      ]);
+    }).pipe(Effect.scoped),
+  );
+
   it.live("fails when Blender has no viewport window to read", () =>
     Effect.gen(function* () {
       const { service, openReady } = yield* standIn("no-viewport", "no-viewport");
@@ -535,6 +568,20 @@ describe("HostedBlender.open", () => {
   );
 });
 
+// The file's 3D views look through a camera of their own, which isn't the scene's camera.
+const LOCAL_CAMERA_SETUP = String.raw`import bpy
+camera = bpy.data.objects.new("PersonCamera", bpy.data.cameras.new("PersonCamera"))
+bpy.context.scene.collection.objects.link(camera)
+camera.location = (3, -4, 2)
+camera.rotation_euler = (1.2, 0, 0.64)
+for screen in bpy.data.screens:
+    for area in screen.areas:
+        for space in area.spaces:
+            if space.type == "VIEW_3D":
+                space.use_local_camera = True
+                space.camera = camera
+                space.region_3d.view_perspective = "CAMERA"`;
+
 // A real hosted Blender: only on a Linux host with Blender, labwc and a built helper.
 const FAKE_MCP_MANIFEST = `schema_version = "1.0.0"
 id = "mcp"
@@ -594,7 +641,7 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
         "--background",
         "--factory-startup",
         "--python-expr",
-        `import bpy; bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(blendPath)})`,
+        `${LOCAL_CAMERA_SETUP}\nbpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(blendPath)})`,
       ]);
       // Settings of its own to copy, so the developer's Blender config is never read. The link
       // back out stands for one into desktop settings, which the copy must not keep.
@@ -713,6 +760,12 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
       const argv = NodeFS.readFileSync(`/proc/${blenderPid}/cmdline`, "utf8").split("\0");
       expect(argv).toContain("--online-mode");
       expect(Number(argv[argv.indexOf("--t3-mcp-port") + 1])).not.toBe(9876);
+
+      // The viewport looks through its own local camera, not the scene's.
+      const throughCamera = yield* service.captureView(threadId);
+      throughCamera.cameraView.position.forEach((value, index) =>
+        expect(value).toBeCloseTo([3, -4, 2][index]!, 3),
+      );
 
       // A view link moves the person's viewport window; the frame drawn after it is what a
       // freeze would capture, so it is read back once Blender has drawn the new view.

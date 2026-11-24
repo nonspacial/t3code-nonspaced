@@ -182,6 +182,8 @@ interface Instance {
   pendingSave: Deferred.Deferred<boolean> | null;
   /** Requests to the add-on awaiting their `reply`, by id. */
   readonly requests: Map<number, Deferred.Deferred<unknown>>;
+  /** Casting blocks Blender's UI thread, so one hit request reaches the add-on at a time. */
+  readonly hitsLock: Semaphore.Semaphore;
   lastRequestId: number;
   fiber: Fiber.Fiber<void> | null;
   /** Set by `quit`, so stopping a Blender that is still starting doesn't read as a failed start. */
@@ -643,6 +645,7 @@ const make = Effect.gen(function* () {
       saveReplies: null,
       pendingSave: null,
       requests: new Map(),
+      hitsLock: yield* Semaphore.make(1),
       lastRequestId: 0,
       fiber: null,
       quitting: false,
@@ -840,7 +843,11 @@ const make = Effect.gen(function* () {
   const findHits: HostedBlender["Service"]["findHits"] = Effect.fn("HostedBlender.findHits")(
     function* ({ threadId, projection, marks }) {
       yield* Effect.annotateCurrentSpan({ threadId, marks: marks.length });
-      return yield* ask(threadId, { type: "hits", ...projection, marks }, HostedBlenderHits);
+      const instance = instances.get(threadId);
+      if (instance === undefined) return yield* new HostedBlenderError({ reason: "notRunning" });
+      return yield* instance.hitsLock.withPermits(1)(
+        ask(threadId, { type: "hits", ...projection, marks }, HostedBlenderHits),
+      );
     },
   );
 
