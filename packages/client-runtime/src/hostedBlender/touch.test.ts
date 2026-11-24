@@ -1,0 +1,140 @@
+import type { HostedBlenderInputMessage } from "@t3tools/contracts";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+
+import { createHostedBlenderTouch } from "./touch.ts";
+
+const LEFT = 272;
+const RIGHT = 273;
+const MIDDLE = 274;
+const SHIFT = 42;
+
+function gestures() {
+  const sent: HostedBlenderInputMessage[] = [];
+  const touch = createHostedBlenderTouch({ send: (message) => sent.push(message), slop: 10 });
+  return { sent, touch };
+}
+
+describe("hosted Blender touch gestures", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("orbits with a one-finger drag as a middle-button drag", () => {
+    const { sent, touch } = gestures();
+    touch.down(1, { x: 100, y: 100 });
+    touch.move(1, { x: 104, y: 100 });
+    expect(sent).toEqual([]);
+    touch.move(1, { x: 130, y: 110 });
+    touch.up(1, { x: 130, y: 110 });
+    expect(sent).toEqual([
+      { type: "pointer", x: 100, y: 100 },
+      { type: "button", button: MIDDLE, pressed: true },
+      { type: "pointer", x: 130, y: 110 },
+      { type: "button", button: MIDDLE, pressed: false },
+    ]);
+  });
+
+  it("sends relative motion while Blender holds the mouse", () => {
+    const { sent, touch } = gestures();
+    touch.down(1, { x: 100, y: 100 });
+    touch.move(1, { x: 120, y: 100 });
+    touch.setCaptured(true);
+    touch.move(1, { x: 150, y: 90 });
+    expect(sent.at(-1)).toEqual({ type: "pointerMotion", dx: 30, dy: -10 });
+  });
+
+  it("left-clicks on a tap", () => {
+    const { sent, touch } = gestures();
+    touch.down(1, { x: 40, y: 50 });
+    touch.up(1, { x: 42, y: 51 });
+    expect(sent).toEqual([
+      { type: "pointer", x: 40, y: 50 },
+      { type: "button", button: LEFT, pressed: true },
+      { type: "button", button: LEFT, pressed: false },
+    ]);
+  });
+
+  it("right-clicks on a long press, and nothing more until the finger lifts", () => {
+    const { sent, touch } = gestures();
+    touch.down(1, { x: 40, y: 50 });
+    vi.advanceTimersByTime(499);
+    expect(sent).toEqual([]);
+    vi.advanceTimersByTime(1);
+    touch.move(1, { x: 140, y: 150 });
+    touch.up(1, { x: 140, y: 150 });
+    expect(sent).toEqual([
+      { type: "pointer", x: 40, y: 50 },
+      { type: "button", button: RIGHT, pressed: true },
+      { type: "button", button: RIGHT, pressed: false },
+    ]);
+  });
+
+  it("pans with a two-finger drag as a Shift and middle-button drag", () => {
+    const { sent, touch } = gestures();
+    touch.down(1, { x: 100, y: 100 });
+    touch.down(2, { x: 200, y: 100 });
+    touch.move(1, { x: 120, y: 130 });
+    touch.move(2, { x: 220, y: 130 });
+    touch.up(1, { x: 120, y: 130 });
+    touch.up(2, { x: 220, y: 130 });
+    expect(sent).toEqual([
+      { type: "pointer", x: 150, y: 100 },
+      { type: "key", code: SHIFT, pressed: true },
+      { type: "button", button: MIDDLE, pressed: true },
+      { type: "pointer", x: 160, y: 115 },
+      { type: "pointer", x: 170, y: 130 },
+      { type: "button", button: MIDDLE, pressed: false },
+      { type: "key", code: SHIFT, pressed: false },
+    ]);
+    vi.advanceTimersByTime(1000);
+    expect(sent).toHaveLength(7);
+  });
+
+  it("zooms in on a pinch apart and out on a pinch together, one wheel notch at a time", () => {
+    const { sent, touch } = gestures();
+    touch.down(1, { x: 100, y: 100 });
+    touch.down(2, { x: 200, y: 100 });
+    // Spread to 1.5× apart around the same centre: ln(1.5) / 0.15 ≈ 2.7 notches.
+    touch.move(1, { x: 75, y: 100 });
+    touch.move(2, { x: 225, y: 100 });
+    touch.move(1, { x: 100, y: 100 });
+    touch.move(2, { x: 200, y: 100 });
+    touch.up(1, { x: 100, y: 100 });
+    touch.up(2, { x: 200, y: 100 });
+    const notches = sent.flatMap((message) => (message.type === "scroll" ? [message.steps] : []));
+    expect(sent[0]).toEqual({ type: "pointer", x: 150, y: 100 });
+    expect(notches.filter((steps) => steps === -1)).toHaveLength(2);
+    expect(notches.filter((steps) => steps === 1)).toHaveLength(2);
+    expect(sent.some((message) => message.type === "button")).toBe(false);
+  });
+
+  it("lets go of a two-finger drag when the third finger or a cancel lands", () => {
+    const { sent, touch } = gestures();
+    touch.down(1, { x: 100, y: 100 });
+    touch.down(2, { x: 200, y: 100 });
+    touch.move(1, { x: 120, y: 130 });
+    touch.cancel(2);
+    expect(sent.slice(-2)).toEqual([
+      { type: "button", button: MIDDLE, pressed: false },
+      { type: "key", code: SHIFT, pressed: false },
+    ]);
+    touch.move(1, { x: 300, y: 300 });
+    expect(sent.at(-1)).toEqual({ type: "key", code: SHIFT, pressed: false });
+  });
+
+  it("releases a held orbit when disposed, and a cancelled tap clicks nothing", () => {
+    const { sent, touch } = gestures();
+    touch.down(1, { x: 100, y: 100 });
+    touch.move(1, { x: 150, y: 100 });
+    touch.dispose();
+    expect(sent.at(-1)).toEqual({ type: "button", button: MIDDLE, pressed: false });
+    const other = gestures();
+    other.touch.down(1, { x: 10, y: 10 });
+    other.touch.cancel(1);
+    vi.advanceTimersByTime(1000);
+    expect(other.sent).toEqual([]);
+  });
+});

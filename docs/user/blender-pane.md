@@ -35,6 +35,23 @@ One device is in control at a time. While someone else is, the pane offers **Tak
 
 Closing the pane leaves Blender running; open it again from the file preview or a link. To stop Blender, choose **Quit Blender** from the pane's menu. If the file has unsaved changes, you can save them first or quit without saving. If the save fails, Blender keeps running so nothing is lost.
 
+## On a phone
+
+In the mobile app, open a `.blend` from the thread's files and choose **Open in hosted Blender** from the file's menu. Blender opens full screen, view-only, with the same permissions as on desktop: anyone who can see the thread can watch, and taking control needs permission to use terminals.
+
+Tap the stream, or choose **Take control** (**Take over** while another device has it), to control the viewport window by touch:
+
+| Gesture              | Does        |
+| -------------------- | ----------- |
+| Tap                  | Click       |
+| One-finger drag      | Orbit       |
+| Two-finger drag      | Pan         |
+| Pinch                | Zoom        |
+| Long-press           | Right-click |
+| **Z** in the toolbar | Shading pie |
+
+Choose **Done** to give control back. Closing Blender's screen gives it back too and leaves Blender running. Typing on a phone isn't supported yet.
+
 ## Its settings
 
 The first time a hosted Blender starts, T3 Code copies your newest Blender settings (from `~/.config/blender`) into a copy of its own, so your preferences and add-ons come along. Links in your settings folder aren't copied, and changes a hosted Blender makes stay in its copy. Each hosted Blender keeps its own temporary files and add-on ports, so it never clashes with a Blender you're running. Python scripts embedded in `.blend` files don't run in a hosted Blender.
@@ -43,4 +60,4 @@ The first time a hosted Blender starts, T3 Code copies your newest Blender setti
 
 Hosted Blender works when T3 Code runs on Linux, with Blender and the labwc compositor installed. The pane says what's missing if any of them isn't there. On macOS and Windows the pane says it isn't available; the [3D preview](3d-previews.md) still works there.
 
-The pane works on web and desktop, including over a remote connection or T3 Connect. The mobile app doesn't show it yet.
+The pane works on web, desktop and mobile, including over a remote connection or T3 Connect.
