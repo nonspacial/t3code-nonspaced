@@ -63,11 +63,11 @@ it("sends absolute positions in stream pixels and buttons as evdev, without auto
   await vi.waitFor(() => expect(sent).toEqual([{ type: "pointer", x: 200, y: 100 }]));
 
   const middle = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 1 });
-  pointer(canvas, "pointerdown", { button: 1, clientX: 110, clientY: 70 });
+  pointer(canvas, "pointerdown", { button: 1, buttons: 4, clientX: 110, clientY: 70 });
   canvas.dispatchEvent(middle);
   const auxclick = new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1 });
   canvas.dispatchEvent(auxclick);
-  pointer(canvas, "pointerup", { button: 1, clientX: 110, clientY: 70 });
+  pointer(canvas, "pointerup", { button: 1, buttons: 0, clientX: 110, clientY: 70 });
   expect(middle.defaultPrevented).toBe(true);
   expect(auxclick.defaultPrevented).toBe(true);
   expect(sent.slice(1)).toEqual([
@@ -98,7 +98,7 @@ it("releases every held key and button when it lets go", () => {
   using stream = setup();
   const { surface, canvas, sent, input } = stream;
   key(surface, "keydown", { code: "ControlLeft", key: "Control" });
-  pointer(canvas, "pointerdown", { button: 0, clientX: 20, clientY: 30 });
+  pointer(canvas, "pointerdown", { button: 0, buttons: 1, clientX: 20, clientY: 30 });
   sent.length = 0;
   input.releaseAll();
   input.releaseAll();
@@ -149,5 +149,40 @@ it("sends a mouse wheel as notches", () => {
   expect(wheel.defaultPrevented).toBe(true);
   expect(sent).toEqual([
     { type: "scroll", axis: "vertical", source: "wheel", value: 15, steps: 1 },
+  ]);
+});
+
+it("follows chorded buttons from the buttons held, so none is left down in Blender", () => {
+  using stream = setup();
+  const { canvas, sent } = stream;
+  const at = { clientX: 60, clientY: 45 };
+  // Only the first press and the last release are pointerdown and pointerup.
+  pointer(canvas, "pointerdown", { ...at, button: 1, buttons: 4 });
+  pointer(canvas, "pointermove", { ...at, button: 2, buttons: 6 });
+  pointer(canvas, "pointermove", { ...at, button: 1, buttons: 2 });
+  pointer(canvas, "pointerup", { ...at, button: 2, buttons: 0 });
+  pointer(canvas, "pointerdown", { ...at, button: 0, buttons: 1 });
+  pointer(canvas, "pointercancel", { ...at, button: -1, buttons: 0 });
+  expect(sent.filter((message) => message.type === "button")).toEqual([
+    { type: "button", button: 274, pressed: true },
+    { type: "button", button: 273, pressed: true },
+    { type: "button", button: 274, pressed: false },
+    { type: "button", button: 273, pressed: false },
+    { type: "button", button: 272, pressed: true },
+    { type: "button", button: 272, pressed: false },
+  ]);
+});
+
+it("sends the motion queued for the next frame before a button changes", () => {
+  using stream = setup();
+  const { canvas, sent } = stream;
+  pointer(canvas, "pointerdown", { button: 0, buttons: 1, clientX: 20, clientY: 30 });
+  pointer(canvas, "pointermove", { button: -1, buttons: 1, clientX: 110, clientY: 70 });
+  pointer(canvas, "pointerup", { button: 0, buttons: 0, clientX: 110, clientY: 70 });
+  expect(sent).toEqual([
+    { type: "pointer", x: 20, y: 20 },
+    { type: "button", button: 272, pressed: true },
+    { type: "pointer", x: 200, y: 100 },
+    { type: "button", button: 272, pressed: false },
   ]);
 });

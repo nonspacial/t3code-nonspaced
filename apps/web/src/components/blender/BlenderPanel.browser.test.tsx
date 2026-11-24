@@ -1,3 +1,6 @@
+import "@fontsource-variable/inter";
+import "~/index.css";
+
 import type {
   HostedBlenderControl,
   HostedBlenderStreamEvents,
@@ -31,6 +34,14 @@ vi.mock(import("@t3tools/client-runtime/hosted-blender/stream"), async (original
       send: (message: HostedBlenderViewerMessage) => stream.sent.push(message),
       stop: () => undefined,
     };
+  }) as never,
+}));
+// Decoded frames report the stream's size; this one is a tall pane on a HiDPI screen.
+vi.mock(import("@t3tools/client-runtime/device/frame"), async (original) => ({
+  ...(await original()),
+  createCanvasFrameSink: ((_canvas: unknown, onSize?: (width: number, height: number) => void) => {
+    onSize?.(1046, 1336);
+    return { present: () => true };
   }) as never,
 }));
 vi.mock(import("~/state/hostedBlender"), async (original) => ({
@@ -121,4 +132,54 @@ it("offers Take over while another device is in control, and says when control i
     expect.objectContaining({ title: "Another device took control of Blender" }),
   );
   toast.mockRestore();
+});
+
+it("gives back a take still on its way when the user clicks away first", async () => {
+  using _app = startup();
+  await using screen = await render(
+    <div>
+      <button type="button">Outside</button>
+      <div style={{ height: 400, width: 600 }}>
+        <BlenderPanel threadRef={threadRef} visible />
+      </div>
+    </div>,
+  );
+  await control({ canOperate: true, controller: "unclaimed" });
+  await screen.getByLabelText("Blender viewport").click();
+  // The grant hasn't arrived; leaving now must still undo the take.
+  await screen.getByText("Outside").click();
+  expect(stream.sent).toEqual([
+    { type: "takeControl", takeOver: false },
+    { type: "releaseControl" },
+  ]);
+});
+
+it("keeps the status strip on one line in a narrow pane, shortening the stats first", async () => {
+  using _app = startup();
+  await using screen = await render(
+    <div style={{ height: 400, width: 540 }}>
+      <BlenderPanel threadRef={threadRef} visible />
+    </div>,
+  );
+  await control({ canOperate: true, controller: "another-viewer" });
+  await act(() => {
+    stream.events?.onStats({
+      type: "stats",
+      encoder: "nvh264enc",
+      target: "window",
+      memoryBytes: 1_200_000_000,
+    });
+    stream.events?.onFrameRate({ framesPerSecond: 60, bitsPerSecond: 12_400_000 });
+  });
+  const label = screen.getByText("Another device is in control").element();
+  const stats = screen.getByText(/60 fps/).element();
+  await expect.element(screen.getByText(/60 fps/)).toBeInTheDocument();
+  // A Range gives one box per line the text takes, even inside a flex item.
+  const lines = (element: Element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
+  };
+  expect(lines(label)).toBe(1);
+  expect(lines(stats)).toBe(1);
 });

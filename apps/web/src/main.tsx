@@ -16,7 +16,8 @@ import { installKeyboardCapture } from "./lib/keyboardCapture";
 const stopTrackingKeyboardLayout = trackKeyboardLayout();
 import.meta.hot?.dispose(stopTrackingKeyboardLayout);
 // Before any shortcut listener, so the Blender pane in control gets every key first.
-import.meta.hot?.dispose(installKeyboardCapture());
+const stopKeyboardCapture = installKeyboardCapture();
+import.meta.hot?.dispose(stopKeyboardCapture);
 
 const router = startAppServices();
 

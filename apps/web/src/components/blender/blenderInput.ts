@@ -1,6 +1,5 @@
 import {
   EVDEV_KEY_ESCAPE,
-  evdevButton,
   evdevKeyCode,
   type HostedBlenderScrollPreference,
   scrollInput,
@@ -36,6 +35,14 @@ export interface BlenderInput {
 }
 
 const MIDDLE_BUTTON = 1;
+// PointerEvent.buttons bits: primary, secondary, auxiliary (middle), back, forward.
+const BUTTON_BITS: ReadonlyArray<readonly [number, HostedBlenderPointerButton]> = [
+  [1, 272],
+  [2, 273],
+  [4, 274],
+  [8, 275],
+  [16, 276],
+];
 
 /**
  * The mouse and keyboard of the viewer in control. While Blender holds the mouse the pointer
@@ -60,6 +67,7 @@ export function attachBlenderInput(options: BlenderInputOptions): BlenderInput {
   };
 
   const flush = () => {
+    if (frame !== null) cancelAnimationFrame(frame);
     frame = null;
     const at = position === null ? sentPosition : `${position.x},${position.y}`;
     if (position !== null && at !== sentPosition) send({ type: "pointer", ...position });
@@ -95,6 +103,23 @@ export function attachBlenderInput(options: BlenderInputOptions): BlenderInput {
     sendKey(code, event.type === "keydown");
   };
 
+  // Each change of the buttons held, in order. Chorded presses and releases arrive as
+  // pointermove, so the `buttons` bitmask is the truth, not pointerdown and pointerup.
+  const syncButtons = (buttons: number) => {
+    const changes = BUTTON_BITS.filter(
+      ([bit, button]) => ((buttons & bit) !== 0) !== heldButtons.has(button),
+    );
+    if (changes.length === 0) return;
+    // Motion waiting for the next frame happened first; a release must not overtake it.
+    flush();
+    for (const [, button] of changes) {
+      const pressed = !heldButtons.has(button);
+      if (pressed) heldButtons.add(button);
+      else heldButtons.delete(button);
+      send({ type: "button", button, pressed });
+    }
+  };
+
   const onPointerMove = (event: PointerEvent) => {
     const { rect, x, y } = scale();
     if (captured) {
@@ -106,27 +131,20 @@ export function attachBlenderInput(options: BlenderInputOptions): BlenderInput {
       };
     }
     schedule();
+    syncButtons(event.buttons);
   };
 
-  const onButton = (event: PointerEvent) => {
-    const button = evdevButton(event.button);
-    if (button === null) return;
-    const pressed = event.type === "pointerdown";
-    if (pressed) {
-      onPointerMove(event);
-      flush();
-      // Keeps a drag's moves coming once it leaves the pane.
-      if (!captured && surface.hasPointerCapture?.(event.pointerId) === false) {
-        try {
-          surface.setPointerCapture(event.pointerId);
-        } catch {}
-      }
+  const onPointerDown = (event: PointerEvent) => {
+    onPointerMove(event);
+    // Keeps a drag's moves coming once it leaves the pane.
+    if (!captured && surface.hasPointerCapture?.(event.pointerId) === false) {
+      try {
+        surface.setPointerCapture(event.pointerId);
+      } catch {}
     }
-    if (heldButtons.has(button) === pressed) return;
-    if (pressed) heldButtons.add(button);
-    else heldButtons.delete(button);
-    send({ type: "button", button, pressed });
   };
+
+  const onPointerCancel = () => syncButtons(0);
 
   // Middle-click starts autoscroll on press and pastes the primary selection on click.
   const suppressMiddle = (event: MouseEvent) => {
@@ -171,7 +189,6 @@ export function attachBlenderInput(options: BlenderInputOptions): BlenderInput {
   };
 
   const releaseAll = () => {
-    if (frame !== null) cancelAnimationFrame(frame);
     flush();
     for (const code of heldKeys) send({ type: "key", code, pressed: false });
     for (const button of heldButtons) send({ type: "button", button, pressed: false });
@@ -185,9 +202,9 @@ export function attachBlenderInput(options: BlenderInputOptions): BlenderInput {
   const releaseKeyboard = captureKeyboard(surface, { onKey, passThrough: options.passThrough });
   const listeners: Array<[EventTarget, string, EventListener, AddEventListenerOptions?]> = [
     [surface, "pointermove", onPointerMove as EventListener],
-    [surface, "pointerdown", onButton as EventListener],
-    [surface, "pointerup", onButton as EventListener],
-    [surface, "pointercancel", onButton as EventListener],
+    [surface, "pointerdown", onPointerDown as EventListener],
+    [surface, "pointerup", onPointerMove as EventListener],
+    [surface, "pointercancel", onPointerCancel],
     [surface, "mousedown", suppressMiddle as EventListener],
     [surface, "auxclick", suppressMiddle as EventListener],
     [surface, "contextmenu", suppress],

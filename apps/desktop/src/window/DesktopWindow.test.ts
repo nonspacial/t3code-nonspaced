@@ -771,10 +771,17 @@ describe("DesktopWindow", () => {
           MenuShortcuts.setIgnored(1, true);
           beforeInput({ preventDefault: () => {} }, input);
           assert.isTrue(ignored());
+          // Ctrl+Q is Blender's too: T3's hold-to-quit stays out of it while in control.
+          let quitPrevented = false;
+          const quit = { ...input, key: "q", meta: true };
+          beforeInput({ preventDefault: () => (quitPrevented = true) }, quit);
+          assert.isFalse(quitPrevented);
           // A reload drops the renderer's control, so menus work again.
           fakeWindow.webContentsListeners.get("did-start-loading")?.();
           beforeInput({ preventDefault: () => {} }, input);
           assert.isFalse(ignored());
+          beforeInput({ preventDefault: () => (quitPrevented = true) }, quit);
+          assert.isTrue(quitPrevented);
         }).pipe(Effect.provide(layer));
       }),
   );

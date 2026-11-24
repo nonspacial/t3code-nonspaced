@@ -1,13 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  detectKeymap,
-  evdevButton,
-  evdevKeyCode,
-  keymapForLayout,
-  scrollInput,
-  scrollKind,
-} from "./input.ts";
+import { detectKeymap, evdevKeyCode, keymapForLayout, scrollInput, scrollKind } from "./input.ts";
 
 describe("physical keys", () => {
   it("maps KeyboardEvent.code to Linux evdev codes, whatever the layout prints", () => {
@@ -17,10 +10,6 @@ describe("physical keys", () => {
       ),
     ).toEqual([1, 30, 44, 64, 42, 103, 96, 86]);
     expect(evdevKeyCode("Unidentified")).toBeNull();
-  });
-
-  it("maps the browser's mouse buttons to evdev buttons", () => {
-    expect([0, 1, 2, 3, 4, 5].map(evdevButton)).toEqual([272, 274, 273, 275, 276, null]);
   });
 });
 

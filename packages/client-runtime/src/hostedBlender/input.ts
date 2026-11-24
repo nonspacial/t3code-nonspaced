@@ -1,8 +1,4 @@
-import type {
-  HostedBlenderInputMessage,
-  HostedBlenderKeymap,
-  HostedBlenderPointerButton,
-} from "@t3tools/contracts";
+import type { HostedBlenderInputMessage, HostedBlenderKeymap } from "@t3tools/contracts";
 
 // `KeyboardEvent.code` names physical keys; these are their Linux evdev codes
 // (linux/input-event-codes.h). Blender gets the key, and the xkb keymap decides what it types.
@@ -139,12 +135,6 @@ export const evdevKeyCode = (code: string): number | null => EVDEV_KEY_CODES[cod
 
 /** KEY_ESC, for the Esc a browser swallows to end a pointer lock. */
 export const EVDEV_KEY_ESCAPE = 1;
-
-// MouseEvent.button order: main, auxiliary (middle), secondary, back, forward.
-const EVDEV_BUTTONS: ReadonlyArray<HostedBlenderPointerButton> = [272, 274, 273, 275, 276];
-
-export const evdevButton = (button: number): HostedBlenderPointerButton | null =>
-  EVDEV_BUTTONS[button] ?? null;
 
 /** The layouts a device can choose; `auto` detects the layout where the browser can. */
 export const HOSTED_BLENDER_KEYBOARD_LAYOUTS = [

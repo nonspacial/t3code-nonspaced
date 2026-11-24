@@ -453,6 +453,8 @@ function BlenderStream(props: {
   const { environmentId, threadId, onStats, onControl, handleRef } = props;
   const inControl = control.controller === "you";
   const controllerRef = useRef<HostedBlenderControl["controller"]>("unclaimed");
+  // A take sent but not yet answered; leaving before the grant arrives must still undo it.
+  const takingRef = useRef(false);
   const changeControl = useEffectEvent((next: HostedBlenderControl) => {
     if (controllerRef.current === "you" && next.controller === "another-viewer") {
       toastManager.add(
@@ -460,6 +462,7 @@ function BlenderStream(props: {
       );
     }
     controllerRef.current = next.controller;
+    takingRef.current = false;
     setControl(next);
     onControl(next);
   });
@@ -489,6 +492,7 @@ function BlenderStream(props: {
     clientRef.current = client;
     handleRef.current = {
       takeControl: (takeOver) => {
+        takingRef.current = true;
         client.send({ type: "takeControl", takeOver });
         container.focus();
       },
@@ -560,18 +564,20 @@ function BlenderStream(props: {
       onPointerDown={(event) => {
         // The click that takes control stays out of Blender, so it selects nothing there.
         if (inControl || !control.canOperate || control.controller !== "unclaimed") return;
-        if (event.button !== 0) return;
-        clientRef.current?.send({ type: "takeControl", takeOver: false });
+        if (event.button !== 0 || clientRef.current === null) return;
+        takingRef.current = true;
+        clientRef.current.send({ type: "takeControl", takeOver: false });
         event.currentTarget.focus();
       }}
       onBlur={(event) => {
         // Leaving the window keeps control; clicking or tabbing elsewhere in T3 gives it back.
-        if (!inControl || !document.hasFocus()) return;
+        if (!(inControl || takingRef.current) || !document.hasFocus()) return;
         if (
           event.relatedTarget instanceof Node &&
           event.currentTarget.contains(event.relatedTarget)
         )
           return;
+        takingRef.current = false;
         clientRef.current?.send({ type: "releaseControl" });
       }}
     >
@@ -610,8 +616,8 @@ function BlenderStatusStrip(props: StreamStats & { readonly control: HostedBlend
     props.server?.encoder ?? null,
   ].filter((part) => part !== null);
   return (
-    <div className="flex h-7 shrink-0 items-center gap-3 border-t border-border bg-muted/40 px-3 text-xs text-muted-foreground">
-      <span>
+    <div className="flex h-7 shrink-0 items-center gap-3 overflow-hidden border-t border-border bg-muted/40 px-3 text-xs whitespace-nowrap text-muted-foreground">
+      <span className="shrink-0">
         {props.control.controller === "you" ? (
           <T>You're in control</T>
         ) : props.control.controller === "another-viewer" ? (
@@ -621,14 +627,18 @@ function BlenderStatusStrip(props: StreamStats & { readonly control: HostedBlend
         )}
       </span>
       {props.server?.target === "output" ? (
-        <span className="text-warning-foreground">
+        <span className="min-w-0 truncate text-warning-foreground">
           <T>Showing the whole display</T>
         </span>
       ) : null}
-      <span className="flex-1" />
-      {parts.length > 0 ? <span className="font-mono">{parts.join(" · ")}</span> : null}
+      {/* Who's in control comes first; in a narrow pane the stats shorten instead of wrapping. */}
+      {parts.length > 0 ? (
+        <span className="ml-auto min-w-0 truncate font-mono">{parts.join(" · ")}</span>
+      ) : null}
       {props.server?.memoryBytes != null ? (
-        <span className="font-mono">{formatBytes(props.server.memoryBytes)}</span>
+        <span className={`shrink-0 font-mono${parts.length > 0 ? "" : " ml-auto"}`}>
+          {formatBytes(props.server.memoryBytes)}
+        </span>
       ) : null}
     </div>
   );

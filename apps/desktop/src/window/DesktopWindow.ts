@@ -826,12 +826,14 @@ export const make = Effect.gen(function* () {
         void runPromise(electronApp.quit);
       },
     });
+    const webContentsId = window.webContents.id;
     window.webContents.on("before-input-event", (event, input) => {
-      quitShortcutHandler(event, input);
+      // While a hosted Blender has the keyboard, Ctrl/Cmd+Q is Blender's, not T3's quit.
+      if (!MenuShortcuts.isIgnored(webContentsId)) quitShortcutHandler(event, input);
       if (window.isDestroyed()) return;
       // Cmd/Ctrl+W reaches the renderer; DevTools uses the native menu shortcut.
       window.webContents.setIgnoreMenuShortcuts(
-        MenuShortcuts.isIgnored(window.webContents.id) ||
+        MenuShortcuts.isIgnored(webContentsId) ||
           ((environment.platform === "darwin" ? input.meta : input.control) &&
             !input.alt &&
             !input.shift &&
@@ -845,7 +847,6 @@ export const make = Effect.gen(function* () {
       }
     });
     // A reload or a closed window drops the renderer's control, so the flag goes with it.
-    const webContentsId = window.webContents.id;
     window.webContents.on("did-start-loading", () =>
       MenuShortcuts.setIgnored(webContentsId, false),
     );
