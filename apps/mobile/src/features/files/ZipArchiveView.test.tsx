@@ -82,7 +82,7 @@ vi.mock("expo-file-system", () => ({
   File: class {
     constructor(private readonly uri: string) {}
     get exists() {
-      return false;
+      return files.has(this.uri);
     }
     get size() {
       return files.get(this.uri)?.byteLength ?? null;
@@ -292,6 +292,8 @@ it("opens a .blend attachment's facts, and its file viewer from the menu", async
 
 it("does not open an unsent draft .blend labelled application/zip as a ZIP", async () => {
   const screen = setup();
+  // Readable ZIP bytes, so only the .blend guard keeps the ZIP browser from opening.
+  files.set("file:///rig.blend", files.get("file:///first.zip")!);
   appAtomRegistry.set(composerDraftsAtom, {
     "draft-1": {
       text: "",
