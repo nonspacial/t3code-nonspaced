@@ -56,7 +56,7 @@ const layerFor = (input: {
       threadState: () => Stream.succeed(input.state ?? { status: "stopped" }),
     }),
     Layer.mock(HostedBlenderAgents.HostedBlenderAgents)({
-      listening: () => input.listening ?? true,
+      listening: () => Effect.succeed(input.listening ?? true),
     }),
     Layer.mock(ThreadManagementService.ThreadManagementService)({
       getThreadShell: () => Effect.succeed({ worktreePath: input.root, projectId: "p" } as never),

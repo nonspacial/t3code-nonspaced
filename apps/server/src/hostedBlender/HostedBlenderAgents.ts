@@ -43,7 +43,7 @@ export class HostedBlenderAgents extends Context.Service<
      */
     readonly listenerPort: (threadId: ThreadId) => Effect.Effect<number | null>;
     /** Whether the thread's latest hosted Blender started with its agent listener on. */
-    readonly listening: (threadId: ThreadId) => boolean;
+    readonly listening: (threadId: ThreadId) => Effect.Effect<boolean>;
     /** "Allow agents to start hosted Blenders", read now. */
     readonly agentsAllowed: Effect.Effect<boolean>;
     /**
@@ -148,7 +148,9 @@ const make = Effect.gen(function* () {
   return HostedBlenderAgents.of({
     sessionLaunch,
     listenerPort,
-    listening: (threadId) => listeners.get(threadId) === true,
+    listening: Effect.fnUntraced(function* (threadId) {
+      return listeners.get(threadId) === true;
+    }),
     agentsAllowed,
     followSetup,
   });

@@ -89,7 +89,7 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
       (state?.status === "starting" || state?.status === "running") &&
       state.relativePath === relativePath
     ) {
-      if (!agents.listening(input.threadId)) {
+      if (!(yield* agents.listening(input.threadId))) {
         return yield* refuse(
           `${name} is open in this thread's hosted Blender, but it started before your session could reach it. Call blender_quit with save: true, then blender_start again.`,
         );

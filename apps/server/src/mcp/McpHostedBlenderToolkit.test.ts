@@ -79,7 +79,7 @@ const layerFor = (input: {
         }),
         Layer.mock(HostedBlenderAgents.HostedBlenderAgents)({
           agentsAllowed: Effect.succeed(input.allowed ?? true),
-          listening: () => true,
+          listening: () => Effect.succeed(true),
         }),
         Layer.mock(ThreadManagement.ThreadManagementService)({
           getThreadShell: (id) =>

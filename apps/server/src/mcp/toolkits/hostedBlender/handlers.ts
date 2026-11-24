@@ -59,7 +59,7 @@ const handlers = {
             status: state.status,
             file: root === undefined ? state.relativePath : path.join(root, state.relativePath),
             unsavedChanges: state.dirty,
-            agentAccess: agents.listening(threadId),
+            agentAccess: yield* agents.listening(threadId),
           },
         ],
       } satisfies HostedBlenderToolStatusResult;
