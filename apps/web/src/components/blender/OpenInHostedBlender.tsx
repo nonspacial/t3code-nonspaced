@@ -1,5 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { HostedBlenderError, type ScopedThreadRef } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { BoxIcon } from "lucide-react";
 import { useGT, useMessages } from "gt-react";
 import { useState } from "react";
@@ -10,6 +12,8 @@ import { useRightPanelStore } from "~/rightPanelStore";
 import { hostedBlenderEnvironment, useHostedBlenderState } from "~/state/hostedBlender";
 import { formatEnvironmentQueryError } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
+
+const isHostedBlenderError = Schema.is(HostedBlenderError);
 
 /** Opens a workspace `.blend` in the thread's hosted Blender, then shows the Blender pane. */
 export function OpenInHostedBlender(props: {
@@ -42,6 +46,13 @@ export function OpenInHostedBlender(props: {
     });
     setPending(false);
     if (result._tag === "Success") return showPane();
+    // The first open checked the server and found something missing: the pane shows what.
+    const error = squashAtomCommandFailure(result);
+    if (
+      isHostedBlenderError(error) &&
+      (error.reason === "notSetUp" || error.reason === "unavailable")
+    )
+      return showPane();
     toastManager.add(
       stackedThreadToast({
         type: "error",

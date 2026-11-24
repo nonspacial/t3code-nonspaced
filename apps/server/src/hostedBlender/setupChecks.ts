@@ -118,6 +118,13 @@ const tooOldDistro = (release: OsRelease | null) => {
   return false;
 };
 
+/** Releases whose own Blender package is older than the minimum: Ubuntu 24.04 (4.0), Debian 13 (4.3). */
+const distroBlenderTooOld = (release: OsRelease | null) =>
+  release !== null &&
+  (release.ubuntuCodename === "noble" ||
+    (release.id === "ubuntu" && release.versionId?.startsWith("24.") === true) ||
+    (release.id === "debian" && release.versionId === "13"));
+
 const isSandboxed = (blender: NonNullable<SetupFacts["blender"]>) =>
   [blender.path, blender.realPath].some(
     (path) => path.startsWith("/snap/") || path.includes("/flatpak/"),
@@ -152,6 +159,7 @@ const PACKAGES: Record<
   apt: {
     install: "sudo apt install",
     packages: {
+      blender: ["blender"],
       labwc: ["labwc"],
       gstreamer: [
         "gstreamer1.0-tools",
@@ -184,6 +192,7 @@ const PACKAGES: Record<
 const installCommands = (
   packageManager: HostedBlenderPackageManager | null,
   checks: ReadonlyArray<HostedBlenderSetupCheck>,
+  distroBlenderTooOld: boolean,
 ): ReadonlyArray<string> => {
   const needs = (item: HostedBlenderSetupItem, ...statuses: HostedBlenderSetupCheck["status"][]) =>
     checks.some((entry) => entry.item === item && statuses.includes(entry.status));
@@ -197,7 +206,9 @@ const installCommands = (
   if (packageManager !== null) {
     const { install, packages } = PACKAGES[packageManager];
     const wanted = new Set<string>();
-    if (needs("blender", "missing")) for (const name of packages.blender ?? []) wanted.add(name);
+    if (needs("blender", "missing") && !distroBlenderTooOld) {
+      for (const name of packages.blender ?? []) wanted.add(name);
+    }
     if (needs("labwc", "missing")) for (const name of packages.labwc ?? []) wanted.add(name);
     if (needs("gstreamer", "missing", "outdated") || needs("encoder", "missing")) {
       for (const name of packages.gstreamer ?? []) wanted.add(name);
@@ -205,13 +216,12 @@ const installCommands = (
     if (needs("glupload", "missing")) for (const name of packages.glupload ?? []) wanted.add(name);
     if (wanted.size > 0) commands.push(`${install} ${[...wanted].join(" ")}`);
   }
-  // Ubuntu's and Debian's own Blender packages are older than the minimum, so apt never offers one.
-  if (needs("blender", "outdated") || (needs("blender", "missing") && packageManager === "apt")) {
+  if (needs("blender", "outdated") || (needs("blender", "missing") && distroBlenderTooOld)) {
     commands.push(
       `# Your distro's Blender is older than ${MIN_BLENDER}. Download Blender from https://www.blender.org/download/,`,
       "# unpack it (for example into /opt/blender) and set its path in Settings › General › 3D previews.",
     );
-  } else if (needs("blender", "missing") && packageManager !== "pacman") {
+  } else if (needs("blender", "missing") && packageManager === "dnf") {
     commands.push(
       `# If your distro's Blender is older than ${MIN_BLENDER}, download Blender from https://www.blender.org/download/`,
       "# and set its path in Settings › General › 3D previews.",
@@ -299,7 +309,7 @@ export const evaluateSetup = (
         : atLeast(facts.labwcVersion, EXT_CAPTURE_LABWC)
           ? "ext-image-copy-capture"
           : "wlr-screencopy",
-    commands: installCommands(packageManager, checks),
+    commands: installCommands(packageManager, checks, distroBlenderTooOld(facts.osRelease)),
   };
 };
 

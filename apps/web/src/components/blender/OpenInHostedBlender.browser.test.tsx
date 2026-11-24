@@ -1,6 +1,12 @@
 import "~/index.css";
 
-import { EnvironmentId, type HostedBlenderThreadState, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  HostedBlenderError,
+  type HostedBlenderThreadState,
+  ThreadId,
+} from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import { Atom } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
@@ -9,7 +15,7 @@ import { render } from "../../../test/render";
 
 const state = vi.hoisted(() => ({
   thread: null as HostedBlenderThreadState | null,
-  open: vi.fn(async () => ({ _tag: "Success", value: undefined })),
+  open: vi.fn(async (): Promise<unknown> => ({ _tag: "Success", value: undefined })),
 }));
 
 vi.mock(import("~/state/hostedBlender"), async (original) => {
@@ -28,6 +34,7 @@ vi.mock(import("~/state/use-atom-command"), async (original) => ({
   useAtomCommand: (() => state.open) as never,
 }));
 
+import { useRightPanelStore } from "~/rightPanelStore";
 import { OpenInHostedBlender } from "./OpenInHostedBlender";
 
 const threadRef = {
@@ -55,4 +62,19 @@ it("only shows the pane while something else is missing", async () => {
   );
   await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
   expect(state.open).not.toHaveBeenCalled();
+});
+
+it("shows the pane with the fresh result when opening finds setup incomplete", async () => {
+  state.thread = { status: "notSetUp", missing: ["check"] };
+  state.open.mockImplementationOnce(async () => ({
+    _tag: "Failure",
+    cause: Cause.fail(new HostedBlenderError({ reason: "notSetUp" })),
+  }));
+  const showPane = vi.spyOn(useRightPanelStore.getState(), "open");
+  await using _screen = await render(
+    <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
+  );
+  await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
+  await vi.waitFor(() => expect(showPane).toHaveBeenCalledWith(threadRef, "blender"));
+  showPane.mockRestore();
 });

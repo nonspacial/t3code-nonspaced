@@ -101,6 +101,8 @@ interface Options {
   readonly launched?: Queue.Queue<ThreadLaunch.ThreadLaunchInput>;
   readonly agentDone?: Deferred.Deferred<void>;
   readonly blenderMcpPath?: string;
+  /** T3 ships no hidden display helper for this host, as on a musl or riscv64 Linux. */
+  readonly helperUnsupported?: boolean;
   /** Settings written while the service runs, as the Settings page's switch does. */
   readonly settingsChanges?: Queue.Queue<Partial<ServerSettingsValue>>;
 }
@@ -152,7 +154,14 @@ const setupFor = (options: Options) =>
           find: Effect.succeed({ path: options.host.blender, version: "5.0.1" }),
         }),
         Layer.succeed(HiddenDisplayBinary.HiddenDisplayBinary, {
-          resolve: Effect.succeed(options.host.helper),
+          resolve: options.helperUnsupported
+            ? Effect.fail(
+                new HiddenDisplayBinary.HiddenDisplayBinaryUnsupported({
+                  platform: "linux",
+                  architecture: "riscv64",
+                }),
+              )
+            : Effect.succeed(options.host.helper),
         }),
         Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
           namedProjectsRoot: "/unused",
@@ -367,6 +376,27 @@ describe("HostedBlenderSetup", () => {
         status: "unavailable",
         reason: "platform",
       });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("says a host is unsupported before anyone checks, where that needs no probe", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir;
+      const host = fakeHost(dir);
+      const unavailable: HostedBlenderSetupState = {
+        result: { status: "unavailable", reason: "platform", distro: null },
+        checking: false,
+        installThreadId: null,
+      };
+      for (const options of [{ platform: "win32" as const }, { helperUnsupported: true }]) {
+        const service = yield* serviceFor({ host, home: dir, ...options });
+        assert.deepStrictEqual(yield* (yield* watch(service))(() => true), unavailable);
+        assert.deepStrictEqual(Option.getOrThrow(yield* Stream.runHead(service.readiness)), {
+          status: "unavailable",
+          reason: "platform",
+        });
+      }
+      expect(host.probeCount()).toBe(0);
     }).pipe(Effect.scoped),
   );
 

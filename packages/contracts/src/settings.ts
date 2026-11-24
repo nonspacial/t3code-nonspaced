@@ -2084,10 +2084,12 @@ export function requiredScopesForServerSettingsPatch(
     ...(changesSettings || (!changesProviders && !changesAccess) ? [AuthSettingsWriteScope] : []),
     ...(changesProviders ? [AuthProvidersManageScope] : []),
     ...(changesAccess ? [AuthAccessWriteScope] : []),
-    // Saving a script or a Blender or Blender MCP path is choosing a command for the host to run.
+    // Saving a script or a Blender or Blender MCP path is choosing a command for the host to run;
+    // switching Hosted Blender on runs its setup check, as Check again does. Off runs nothing.
     ...(carriesProjectScripts(patch) ||
     patch.blenderPath !== undefined ||
-    patch.blenderMcpPath !== undefined
+    patch.blenderMcpPath !== undefined ||
+    patch.hostedBlenderEnabled === true
       ? [AuthOrchestrationOperateScope]
       : []),
   ];

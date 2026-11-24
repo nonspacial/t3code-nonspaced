@@ -215,10 +215,22 @@ describe("evaluateSetup", () => {
     expect(pacman).toContain("projects.blender.org/lab/blender_mcp.git#subdirectory=mcp");
     const apt = commandsFor('ID=ubuntu\nVERSION_ID="24.04"');
     expect(apt).toContain("sudo apt install labwc gstreamer1.0-tools");
-    // Ubuntu's and Debian's Blender packages are older than 4.5, so apt never installs one.
+    // Ubuntu 24.04's Blender is 4.0, older than 4.5, so apt doesn't install it there.
     expect(apt).not.toMatch(/apt install[^\n]*\bblender\b/);
     expect(apt).toContain("gstreamer1.0-gl");
     expect(apt).toContain("blender.org/download");
+    // Its derivatives, and Debian 13 (Blender 4.3), likewise.
+    for (const release of [
+      'ID=pop\nID_LIKE="ubuntu debian"\nVERSION_ID="24.04"\nUBUNTU_CODENAME=noble',
+      'ID=debian\nVERSION_ID="13"',
+    ]) {
+      expect(commandsFor(release)).not.toMatch(/apt install[^\n]*\bblender\b/);
+      expect(commandsFor(release)).toContain("blender.org/download");
+    }
+    // Ubuntu 26.04 ships Blender 5.0, so apt installs it.
+    const resolute = commandsFor('ID=ubuntu\nVERSION_ID="26.04"\nUBUNTU_CODENAME=resolute');
+    expect(resolute).toContain("sudo apt install blender labwc gstreamer1.0-tools");
+    expect(resolute).not.toContain("is older than");
     const dnf = commandsFor('ID=fedora\nVERSION_ID="43"');
     expect(dnf).toContain("sudo dnf install blender labwc gstreamer1");
     expect(dnf).toContain("gstreamer1-plugin-openh264");

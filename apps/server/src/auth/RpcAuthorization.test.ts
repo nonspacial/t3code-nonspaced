@@ -667,6 +667,8 @@ describe("settings mutation authorization", () => {
           { projectSettingsOverrides: { [projectId]: { defaultProjectScripts: scripts } } },
           { blenderPath: "/tmp/not-blender" },
           { blenderMcpPath: "/tmp/not-blender-mcp" },
+          // Switching Hosted Blender on runs the setup check's programs, as Check again does.
+          { hostedBlenderEnabled: true },
         ];
 
         const settingsOnly = yield* update([AuthSettingsWriteScope]);
@@ -684,6 +686,8 @@ describe("settings mutation authorization", () => {
             defaultAutoPull: true,
             projectScriptOverrides: { [projectId]: null },
             projectSettingsOverrides: { [projectId]: { defaultAutoPull: true } },
+            // Switching it off runs nothing.
+            hostedBlenderEnabled: false,
           },
         });
         expect(settingsOnly.handled()).toBe(1);

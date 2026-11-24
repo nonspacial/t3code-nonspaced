@@ -142,8 +142,23 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
   const serviceScope = yield* Effect.scope;
   const system = (...segments: ReadonlyArray<string>) => path.join(options.systemRoot, ...segments);
 
+  // Hosts T3 ships no helper for are known without running anything, so they start answered.
+  const knownUnavailable =
+    platform !== "linux" ||
+    (yield* hiddenDisplay.resolve.pipe(
+      Effect.as(false),
+      Effect.catchTags({
+        HiddenDisplayBinaryUnsupported: () => Effect.succeed(true),
+        HiddenDisplayBinaryNotFound: () => Effect.succeed(false),
+        HiddenDisplayBinaryNotExecutable: () => Effect.succeed(false),
+      }),
+    ));
   const ref = yield* SubscriptionRef.make<Internal>({
-    state: { result: null, checking: false, installThreadId: null },
+    state: {
+      result: knownUnavailable ? { status: "unavailable", reason: "platform", distro: null } : null,
+      checking: false,
+      installThreadId: null,
+    },
     tools: null,
     osRelease: null,
   });
