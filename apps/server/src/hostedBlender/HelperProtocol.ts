@@ -102,8 +102,6 @@ export type HelperCommand =
   | { readonly type: "pause" }
   | { readonly type: "resume" }
   | { readonly type: "resize"; readonly width: number; readonly height: number }
-  /** Blender is finishing a save or quit copy: when input ends, the helper waits for it. */
-  | { readonly type: "detach" }
   | { readonly type: "quit" };
 
 export const encodeHelperCommand = (command: HelperCommand): string =>

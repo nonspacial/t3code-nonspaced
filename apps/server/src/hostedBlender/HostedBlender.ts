@@ -61,11 +61,11 @@ import {
   isHelperPacketError,
 } from "./HelperProtocol.ts";
 import {
-  afterDeadline,
   type BlenderExit,
+  cleanupOf,
   endingOf,
-  leftoverEnding,
   newestSession,
+  type RestoreState,
 } from "./Recovery.ts";
 import { ViewerFlow } from "./ViewerFlow.ts";
 
@@ -74,8 +74,20 @@ const INITIAL_SIZE = { width: 1280, height: 720 };
 const MEMORY_SAMPLE_INTERVAL = Duration.seconds(5);
 const KEYFRAME_REQUEST_INTERVAL_MS = 250;
 const QUIT_TIMEOUT = Duration.seconds(20);
-// The desktop app kills the server 5 seconds after asking it to stop.
-const SHUTDOWN_QUIT_TIMEOUT = Duration.seconds(3);
+// The desktop app kills the server 5 seconds after asking it to stop. Blenders get this long
+// to finish their quit copies, and the rest is left for stopping them.
+const SHUTDOWN_QUIT_TIMEOUT = Duration.millis(4000);
+const SHUTDOWN_STOP_TIMEOUT = Duration.millis(400);
+// A helper asked to stop gives Blender 5 seconds before killing it.
+const LEFTOVER_STOP_TIMEOUT = Duration.seconds(7);
+
+const signalProcess = (pid: number, signal: NodeJS.Signals) => {
+  try {
+    process.kill(pid, signal);
+  } catch {
+    // Already gone.
+  }
+};
 // A start that shows no viewport window by then has failed (a broken file, no encoder).
 const START_TIMEOUT = Duration.seconds(90);
 const CONTROL_CONNECT_INTERVAL = Duration.millis(200);
@@ -121,7 +133,8 @@ const encodeRecoveryRecord = Schema.encodeSync(RecoveryRecordJson);
 
 /**
  * Written into each launch folder, so one a stopped server left behind can be salvaged. The
- * helper runs in the folder, so a live one is told apart from a reused pid by its cwd.
+ * helper runs in the folder and names it in its arguments, so a live one is told apart from a
+ * reused pid.
  */
 const LaunchRecord = Schema.fromJsonString(
   Schema.Struct({
@@ -132,6 +145,17 @@ const LaunchRecord = Schema.fromJsonString(
 );
 const decodeLaunchRecord = Schema.decodeUnknownOption(LaunchRecord);
 const encodeLaunchRecord = Schema.encodeSync(LaunchRecord);
+
+/** What salvage needs to apply the same cleanup a run's own end would. */
+const RunFacts = Schema.fromJsonString(
+  Schema.Struct({
+    restore: Schema.Literals(["none", "pending", "ok", "failed"]),
+    saved: Schema.Boolean,
+    changed: Schema.Boolean,
+  }),
+);
+const decodeRunFacts = Schema.decodeUnknownOption(RunFacts);
+const encodeRunFacts = Schema.encodeSync(RunFacts);
 
 export type HostedBlenderViewerOutput =
   | { readonly _tag: "frame"; readonly data: Uint8Array }
@@ -214,17 +238,16 @@ interface Instance {
   saved: boolean;
   /** The add-on said it is saving or writing its quit copy; stopping it now could cut that short. */
   acknowledged: boolean;
-  /** Left to finish alone on shutdown; its launch folder stays for the next start. */
-  detached: boolean;
+  /** Stopped as a shutdown runs out of time: the helper gets no grace. */
+  stopNow: boolean;
   /** `pending` until the add-on reports the restore of `recover`. */
-  restore: "none" | "pending" | "ok" | "failed";
+  restore: RestoreState;
   /** Blender showed its viewport window. */
   shown: boolean;
   /** Changed before T3 began ending it. */
   changed: boolean;
   controlReady: Deferred.Deferred<void>;
   stateDir: string | null;
-  unrefHelper: Effect.Effect<void>;
 }
 
 type Availability =
@@ -408,11 +431,57 @@ const make = Effect.gen(function* () {
     return true;
   });
 
-  const helperRunsIn = (pid: number, launchDir: string) =>
-    Effect.all([fileSystem.readLink(`/proc/${pid}/cwd`), fileSystem.realPath(launchDir)]).pipe(
-      Effect.map(([cwd, real]) => cwd === real),
+  /** Saved beside the launch as they change, so salvage can apply the same cleanup. */
+  const writeRunFacts = (instance: Instance) =>
+    instance.stateDir === null
+      ? Effect.void
+      : writeAtomically(path.join(instance.stateDir, "run.json"), (to) =>
+          fileSystem.writeFileString(
+            to,
+            encodeRunFacts({
+              restore: instance.restore,
+              saved: instance.saved,
+              changed: instance.changed,
+            }),
+          ),
+        ).pipe(Effect.ignore);
+
+  /** Applies a run's cleanup, its end or salvaged; a failure leaves the launch for later. */
+  const applyCleanup = Effect.fnUntraced(function* (
+    run: { readonly threadId: ThreadId; readonly relativePath: string; readonly tmpDir: string },
+    cleanup: ReturnType<typeof cleanupOf>,
+  ) {
+    if (cleanup.action === "keep") {
+      yield* keepRecord({ ...run, kind: cleanup.kind, unchanged: cleanup.unchanged });
+    } else if (cleanup.action === "forget") {
+      yield* forgetRecord(run.threadId);
+    }
+  });
+
+  // Only a helper running in this launch folder, with the folder in its arguments, is ours.
+  const leftoverHelperAlive = (pid: number, launchDir: string) =>
+    Effect.all([
+      fileSystem.readLink(`/proc/${pid}/cwd`),
+      fileSystem.readFileString(`/proc/${pid}/cmdline`),
+      fileSystem.realPath(launchDir),
+    ]).pipe(
+      Effect.map(
+        ([cwd, cmdline, real]) =>
+          cwd === real && cmdline.split("\0").some((arg) => arg === launchDir || arg === real),
+      ),
       Effect.orElseSucceed(() => false),
     );
+
+  // A helper from a server that died stops Blender itself once asked; one that won't is killed.
+  const stopLeftoverHelper = Effect.fnUntraced(function* (pid: number, launchDir: string) {
+    if (!(yield* leftoverHelperAlive(pid, launchDir))) return;
+    yield* Effect.sync(() => signalProcess(pid, "SIGTERM"));
+    const stopped = yield* leftoverHelperAlive(pid, launchDir).pipe(
+      Effect.repeat({ while: (alive) => alive, schedule: Schedule.spaced("100 millis") }),
+      Effect.timeoutOption(LEFTOVER_STOP_TIMEOUT),
+    );
+    if (Option.isNone(stopped)) yield* Effect.sync(() => signalProcess(-pid, "SIGKILL"));
+  });
 
   /** Keeps what a launch a stopped server left behind holds, then removes it. */
   const salvage = Effect.fn("HostedBlender.salvage")(
@@ -423,20 +492,23 @@ const make = Effect.gen(function* () {
           .pipe(Effect.orElseSucceed(() => "")),
       );
       if (Option.isSome(launch)) {
-        const tmpDir = path.join(launchDir, "tmp");
-        const outcome = yield* fileSystem
-          .readFileString(path.join(launchDir, "outcome"))
-          .pipe(Effect.orElseSucceed(() => ""));
-        const ending = leftoverEnding({
-          outcome: outcome === "closing" || outcome === "saving" ? outcome : null,
-          hasQuitCopy: yield* fileSystem
-            .exists(path.join(tmpDir, "quit.blend"))
-            .pipe(Effect.orElseSucceed(() => false)),
-        });
-        if (ending !== "saved") {
-          const { threadId, relativePath } = launch.value;
-          yield* keepRecord({ threadId, relativePath, kind: ending, tmpDir, unchanged: false });
-        }
+        const { threadId, relativePath, helperPid } = launch.value;
+        if (helperPid !== undefined) yield* stopLeftoverHelper(helperPid, launchDir);
+        const read = (name: string) =>
+          fileSystem
+            .readFileString(path.join(launchDir, name))
+            .pipe(Effect.orElseSucceed(() => ""));
+        const facts = Option.getOrElse(decodeRunFacts(yield* read("run.json")), () => ({
+          restore: "none" as const,
+          saved: false,
+          changed: true,
+        }));
+        // T3 was closing it, or it stopped with the server: a crash, for all T3 knows.
+        const ending = (yield* read("outcome")) === "closing" ? "closed" : "crashed";
+        yield* applyCleanup(
+          { threadId, relativePath, tmpDir: path.join(launchDir, "tmp") },
+          cleanupOf({ ...facts, ending }),
+        );
       }
       yield* fileSystem.remove(launchDir, { recursive: true, force: true });
     },
@@ -445,7 +517,7 @@ const make = Effect.gen(function* () {
   );
 
   // What earlier runs of this server left: their records, and the launch folders of Blenders a
-  // server stopped without ending, or left to finish alone on shutdown.
+  // stopped server didn't finish ending. This completes before the service takes any request.
   const restoreRecords = Effect.gen(function* () {
     const recoveryRoot = path.join(rootDir, "recovery");
     for (const entry of yield* fileSystem
@@ -465,24 +537,7 @@ const make = Effect.gen(function* () {
     for (const entry of yield* fileSystem
       .readDirectory(launchesDir)
       .pipe(Effect.orElseSucceed(() => []))) {
-      const launchDir = path.join(launchesDir, entry);
-      const launch = decodeLaunchRecord(
-        yield* fileSystem
-          .readFileString(path.join(launchDir, "launch.json"))
-          .pipe(Effect.orElseSucceed(() => "")),
-      );
-      const helperPid = Option.isSome(launch) ? launch.value.helperPid : undefined;
-      if (helperPid !== undefined && (yield* helperRunsIn(helperPid, launchDir))) {
-        // A Blender left to finish its copy on shutdown: collect it once it is done.
-        yield* helperRunsIn(helperPid, launchDir).pipe(
-          Effect.repeat({ while: (alive) => alive, schedule: Schedule.spaced("1 second") }),
-          Effect.andThen(salvage(launchDir)),
-          Effect.andThen(publishNow()),
-          Effect.forkIn(serviceScope),
-        );
-      } else {
-        yield* salvage(launchDir);
-      }
+      yield* salvage(path.join(launchesDir, entry));
     }
   });
   yield* restoreRecords;
@@ -589,6 +644,7 @@ const make = Effect.gen(function* () {
   const updateRestore = Effect.fnUntraced(function* (instance: Instance, result: "ok" | "failed") {
     if (instance.restore !== "pending") return;
     instance.restore = result;
+    yield* writeRunFacts(instance);
     if (result === "ok") {
       if (instance.shown) yield* markRunning(instance);
       return;
@@ -609,7 +665,10 @@ const make = Effect.gen(function* () {
         if (message.value.restore !== undefined) {
           yield* updateRestore(instance, message.value.restore);
         }
-        if (message.value.dirty && !instance.ending) instance.changed = true;
+        if (message.value.dirty && !instance.ending && !instance.changed) {
+          instance.changed = true;
+          yield* writeRunFacts(instance);
+        }
         if (instance.dirty === message.value.dirty) return;
         instance.dirty = message.value.dirty;
         return yield* publishNow();
@@ -618,6 +677,7 @@ const make = Effect.gen(function* () {
         return;
       case "saved":
         instance.saved = true;
+        yield* writeRunFacts(instance);
         if (instance.saveReplies) yield* Queue.offer(instance.saveReplies, "saved");
         return;
       case "saving":
@@ -736,26 +796,24 @@ const make = Effect.gen(function* () {
       // restore that never succeeded leaves the copy it came from alone.
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
-          if (instance.detached) return;
-          const ending = endingOf({
-            wasRunning: instance.status === "running",
-            // A save that finished first leaves nothing to recover, even if the thread settled.
-            ending: instance.ending && !instance.saved,
-            quitting: instance.quitting,
-            blenderExit: instance.blenderExit,
-          });
-          const restoreSucceeded = instance.restore === "none" || instance.restore === "ok";
-          if (restoreSucceeded && (ending === "closed" || ending === "crashed")) {
-            yield* keepRecord({
+          yield* applyCleanup(
+            {
               threadId: instance.threadId,
               relativePath: instance.relativePath,
-              kind: ending,
               tmpDir: path.join(stateDir, "tmp"),
-              unchanged: !instance.changed,
-            });
-          } else if (restoreSucceeded && ending === "stopped") {
-            yield* forgetRecord(instance.threadId);
-          }
+            },
+            cleanupOf({
+              restore: instance.restore,
+              saved: instance.saved,
+              changed: instance.changed,
+              ending: endingOf({
+                wasRunning: instance.status === "running",
+                ending: instance.ending,
+                quitting: instance.quitting,
+                blenderExit: instance.blenderExit,
+              }),
+            }),
+          );
           yield* fileSystem.remove(stateDir, { recursive: true, force: true });
         }).pipe(
           Effect.catch((cause) =>
@@ -763,6 +821,7 @@ const make = Effect.gen(function* () {
           ),
         ),
       );
+      yield* writeRunFacts(instance);
       yield* fileSystem.writeFileString(
         path.join(stateDir, "launch.json"),
         encodeLaunchRecord(launchRecord),
@@ -811,22 +870,25 @@ const make = Effect.gen(function* () {
           ),
         ),
         // Asked to quit, the helper stops Blender and labwc and removes its runtime itself;
-        // killing its process group would take its labwc watchdog down first. A detached one
-        // is left to let Blender finish.
+        // killing its process group would take its labwc watchdog down first. Out of time on
+        // shutdown, it gets a moment, then the group is killed.
         (child) =>
-          instance.detached
-            ? Effect.void
-            : Stream.run(
-                Stream.encodeText(Stream.make(encodeHelperCommand({ type: "quit" }))),
-                child.stdin,
-              ).pipe(
-                Effect.andThen(child.exitCode),
-                Effect.timeout(HELPER_QUIT_TIMEOUT),
-                Effect.catch(() => child.kill()),
-                Effect.ignore,
+          Stream.run(
+            Stream.encodeText(Stream.make(encodeHelperCommand({ type: "quit" }))),
+            child.stdin,
+          ).pipe(
+            Effect.andThen(child.exitCode),
+            Effect.timeout(instance.stopNow ? SHUTDOWN_STOP_TIMEOUT : HELPER_QUIT_TIMEOUT),
+            Effect.catch(() =>
+              child.kill(
+                instance.stopNow
+                  ? { killSignal: "SIGKILL", forceKillAfter: SHUTDOWN_STOP_TIMEOUT }
+                  : undefined,
               ),
+            ),
+            Effect.ignore,
+          ),
       );
-      instance.unrefHelper = handle.unref.pipe(Effect.ignore);
       yield* fileSystem.writeFileString(
         path.join(stateDir, "launch.json"),
         encodeLaunchRecord({ ...launchRecord, helperPid: handle.pid }),
@@ -985,13 +1047,12 @@ const make = Effect.gen(function* () {
       recover,
       saved: false,
       acknowledged: false,
-      detached: false,
+      stopNow: false,
       restore: recover === null ? "none" : "pending",
       shown: false,
       changed: false,
       controlReady,
       stateDir: null,
-      unrefHelper: Effect.void,
     };
     failedStarts.delete(threadId);
     instances.set(threadId, instance);
@@ -1042,50 +1103,42 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Leaves a Blender that is finishing its save or quit copy to exit on its own, as the server
-   * stops. Its launch folder stays, marked with what T3 was doing, for the next start.
+   * How an ending waits: until `until` (epoch ms). Settling never stops a Blender that said it is
+   * saving or writing its quit copy; a shutdown has one deadline for everything, then stops it.
    */
-  const leaveToFinish = Effect.fn("HostedBlender.leaveToFinish")(function* (instance: Instance) {
-    instance.detached = true;
-    if (instance.stateDir !== null) {
-      yield* fileSystem
-        .writeFileString(
-          path.join(instance.stateDir, "outcome"),
-          instance.ending ? "closing" : "saving",
-        )
-        .pipe(Effect.ignore);
-    }
-    yield* instance.helper({ type: "pause" });
-    yield* instance.helper({ type: "detach" });
-    yield* instance.unrefHelper;
-    if (instance.fiber) yield* Fiber.interrupt(instance.fiber);
+  interface Deadline {
+    readonly until: number;
+    readonly shutdown: boolean;
+  }
+
+  const deadlineIn = (timeout: Duration.Input, shutdown: boolean) =>
+    Clock.currentTimeMillis.pipe(
+      Effect.map((now): Deadline => ({ until: now + Duration.toMillis(timeout), shutdown })),
+    );
+
+  const within = <A, E>(effect: Effect.Effect<A, E>, deadline: Deadline) =>
+    Clock.currentTimeMillis.pipe(
+      Effect.flatMap((now) => effect.pipe(Effect.timeoutOption(Math.max(0, deadline.until - now)))),
+    );
+
+  const pastDeadline = Effect.fnUntraced(function* (instance: Instance, deadline: Deadline) {
+    if (!deadline.shutdown && instance.acknowledged) return yield* Deferred.await(instance.ended);
+    // Saves go through a temporary file, so stopping Blender never damages the user's file.
+    instance.stopNow = deadline.shutdown;
+    yield* forceQuit(instance);
   });
 
-  /** After `deadline`, a Blender still busy with acknowledged work is never stopped mid-write. */
-  const awaitEnded = Effect.fnUntraced(function* (
-    instance: Instance,
-    deadline: Duration.Input,
-    shutdown: boolean,
-  ) {
-    const ended = yield* Deferred.await(instance.ended).pipe(Effect.timeoutOption(deadline));
-    if (Option.isSome(ended)) return;
-    switch (afterDeadline({ acknowledged: instance.acknowledged, shutdown })) {
-      case "wait":
-        return yield* Deferred.await(instance.ended);
-      case "detach":
-        return yield* leaveToFinish(instance);
-      case "forceQuit":
-        return yield* forceQuit(instance);
-    }
+  const awaitEnded = Effect.fnUntraced(function* (instance: Instance, deadline: Deadline) {
+    const ended = yield* within(Deferred.await(instance.ended), deadline);
+    if (Option.isNone(ended)) yield* pastDeadline(instance, deadline);
   });
 
-  /** Asks the add-on to quit without saving, waiting within `deadline` for it to connect. */
+  /** Asks the add-on to quit without saving, waiting until the deadline for it to connect. */
   const sendQuitWithoutSaving = Effect.fnUntraced(function* (
     instance: Instance,
-    deadline: Duration.Input,
+    deadline: Deadline,
   ) {
-    const connected = yield* Deferred.await(instance.controlReady).pipe(
-      Effect.timeoutOption(deadline),
+    const connected = yield* within(Deferred.await(instance.controlReady), deadline).pipe(
       Effect.raceFirst(Deferred.await(instance.ended).pipe(Effect.as(Option.none()))),
     );
     const control = instance.control;
@@ -1100,28 +1153,22 @@ const make = Effect.gen(function* () {
     instance: Instance,
   ) {
     instance.quitting = true;
-    if (!(yield* sendQuitWithoutSaving(instance, 0))) return yield* forceQuit(instance);
-    yield* awaitEnded(instance, QUIT_TIMEOUT, false);
+    // Quitting a Blender still starting has nothing of its session to keep.
+    if (instance.control === null) return yield* forceQuit(instance);
+    const deadline = yield* deadlineIn(QUIT_TIMEOUT, false);
+    if (!(yield* sendQuitWithoutSaving(instance, deadline))) return yield* forceQuit(instance);
+    yield* awaitEnded(instance, deadline);
   });
 
   /** Quits without saving, so Blender writes its quit copy, which the run keeps to reopen. */
-  const end = Effect.fn("HostedBlender.end")(function* (instance: Instance, shutdown: boolean) {
-    yield* Effect.annotateCurrentSpan({ threadId: instance.threadId, shutdown });
-    const deadline = shutdown ? SHUTDOWN_QUIT_TIMEOUT : QUIT_TIMEOUT;
+  const end = Effect.fn("HostedBlender.end")(function* (instance: Instance, deadline: Deadline) {
+    yield* Effect.annotateCurrentSpan({ threadId: instance.threadId, shutdown: deadline.shutdown });
     // A Save and quit already under way decides first; only a failed one leaves work to keep.
     const pending = instance.pendingSave;
     if (pending !== null) {
-      const answered = yield* Deferred.await(pending).pipe(Effect.timeoutOption(deadline));
-      let saved: boolean;
-      if (Option.isSome(answered)) {
-        saved = answered.value;
-      } else {
-        const next = afterDeadline({ acknowledged: instance.acknowledged, shutdown });
-        if (next === "detach") return yield* leaveToFinish(instance);
-        if (next === "forceQuit") return yield* forceQuit(instance);
-        saved = yield* Deferred.await(pending);
-      }
-      if (saved) return yield* awaitEnded(instance, deadline, shutdown);
+      const answered = yield* within(Deferred.await(pending), deadline);
+      if (Option.isNone(answered)) return yield* pastDeadline(instance, deadline);
+      if (answered.value) return yield* awaitEnded(instance, deadline);
     }
     if (!instance.ending) {
       instance.ending = true;
@@ -1133,10 +1180,10 @@ const make = Effect.gen(function* () {
           .writeFileString(path.join(instance.stateDir, "outcome"), "closing")
           .pipe(Effect.ignore);
       }
-      // A Blender still starting gets until the deadline to connect, so its session is kept.
+      // A Blender still starting has until the deadline to connect, so its session is kept.
       if (!(yield* sendQuitWithoutSaving(instance, deadline))) return yield* forceQuit(instance);
     }
-    yield* awaitEnded(instance, deadline, shutdown);
+    yield* awaitEnded(instance, deadline);
   });
 
   const closeOnSettle: HostedBlender["Service"]["closeOnSettle"] = Effect.fn(
@@ -1145,14 +1192,19 @@ const make = Effect.gen(function* () {
     yield* Effect.annotateCurrentSpan({ threadId });
     const instance = instances.get(threadId);
     if (instance === undefined) return;
-    yield* end(instance, false).pipe(Effect.forkIn(serviceScope));
+    const deadline = yield* deadlineIn(QUIT_TIMEOUT, false);
+    yield* end(instance, deadline).pipe(Effect.forkIn(serviceScope));
   });
 
-  // Added after `runScope`, so on shutdown every Blender gets to save its copy first.
+  // Added after `runScope`, so on shutdown every Blender gets to save its copy first, all
+  // within one deadline.
   yield* Effect.addFinalizer(() =>
-    Effect.forEach(instances.values(), (instance) => end(instance, true), {
-      concurrency: "unbounded",
-      discard: true,
+    Effect.gen(function* () {
+      const deadline = yield* deadlineIn(SHUTDOWN_QUIT_TIMEOUT, true);
+      yield* Effect.forEach(instances.values(), (instance) => end(instance, deadline), {
+        concurrency: "unbounded",
+        discard: true,
+      });
     }),
   );
 

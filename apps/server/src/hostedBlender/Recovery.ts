@@ -36,23 +36,23 @@ export const newestSession = (
   files.filter((file) => SESSION_FILE.test(file.name)).toSorted((a, b) => b.mtimeMs - a.mtimeMs)[0]
     ?.name;
 
-/**
- * What an ending does once its deadline passes. A Blender that acknowledged its save or quit is
- * still writing, so stopping it could cut the file short: settling waits, and a shutdown leaves
- * it to finish alone.
- */
-export const afterDeadline = (input: {
-  readonly acknowledged: boolean;
-  readonly shutdown: boolean;
-}): "wait" | "detach" | "forceQuit" =>
-  !input.acknowledged ? "forceQuit" : input.shutdown ? "detach" : "wait";
+export type RestoreState = "none" | "pending" | "ok" | "failed";
 
-/** What T3 was doing to a launch it left behind (its `outcome` file), and how that ended. */
-export const leftoverEnding = (input: {
-  readonly outcome: "closing" | "saving" | null;
-  readonly hasQuitCopy: boolean;
-}): "closed" | "crashed" | "saved" => {
-  if (input.outcome === "closing") return "closed";
-  if (input.outcome === "saving" && input.hasQuitCopy) return "saved";
-  return "crashed";
+/** What a run leaves to reopen; the same for a run's own end and for salvaging it later. */
+export type Cleanup =
+  | { readonly action: "keep"; readonly kind: "closed" | "crashed"; readonly unchanged: boolean }
+  | { readonly action: "forget" }
+  | { readonly action: "leave" };
+
+export const cleanupOf = (run: {
+  readonly restore: RestoreState;
+  readonly saved: boolean;
+  readonly changed: boolean;
+  readonly ending: Ending;
+}): Cleanup => {
+  // A restore that never succeeded had the saved file open: the copy it came from stays.
+  if (run.restore === "pending" || run.restore === "failed") return { action: "leave" };
+  if (run.saved || run.ending === "stopped") return { action: "forget" };
+  if (run.ending === "failed") return { action: "leave" };
+  return { action: "keep", kind: run.ending, unchanged: !run.changed };
 };

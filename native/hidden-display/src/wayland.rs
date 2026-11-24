@@ -530,7 +530,7 @@ impl State {
                 }
                 Err(message) => self.events.push(Event::Error { message }),
             },
-            Command::Detach | Command::Quit => {}
+            Command::Quit => {}
         }
     }
 

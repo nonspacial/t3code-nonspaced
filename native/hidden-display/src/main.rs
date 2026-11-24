@@ -41,8 +41,6 @@ const USAGE: &str = "usage:
                              reads the packet stream on stdin and prints it as JSON lines";
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
-// How long a detached Blender may take to finish its save or quit copy before it is stopped.
-const DETACHED_LIMIT: Duration = Duration::from_secs(300);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, PartialEq)]
@@ -283,7 +281,6 @@ fn run(args: RunArgs) -> ExitCode {
         blender: None,
         labwc_process: labwc,
         blender_process: None,
-        detached: false,
     };
     if children.labwc.is_none() {
         let error = io::Error::last_os_error();
@@ -319,7 +316,6 @@ struct Children {
     blender_process: Option<Child>,
     labwc: Option<OwnedFd>,
     blender: Option<OwnedFd>,
-    detached: bool,
 }
 
 fn pidfd(child: &Child) -> io::Result<OwnedFd> {
@@ -329,26 +325,9 @@ fn pidfd(child: &Child) -> io::Result<OwnedFd> {
 impl Children {
     fn shutdown(&mut self) {
         if let Some(mut blender) = self.blender_process.take() {
-            if self.detached {
-                wait_for_exit(&mut blender, DETACHED_LIMIT);
-            }
             stop(&mut blender);
         }
         stop(&mut self.labwc_process);
-    }
-}
-
-/// Whether `child` exited within `limit`.
-fn wait_for_exit(child: &mut Child, limit: Duration) -> bool {
-    let deadline = Instant::now() + limit;
-    loop {
-        if child.try_wait().ok().flatten().is_some() {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -357,8 +336,12 @@ fn stop(child: &mut Child) {
         return;
     }
     unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
-    if wait_for_exit(child, SHUTDOWN_GRACE) {
-        return;
+    let deadline = Instant::now() + SHUTDOWN_GRACE;
+    while Instant::now() < deadline {
+        if child.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
     let _ = child.kill();
     let _ = child.wait();
@@ -530,7 +513,6 @@ fn session(
             }
             match Command::parse(&line) {
                 Ok(Command::Quit) => return Ok(ExitCode::SUCCESS),
-                Ok(Command::Detach) => children.detached = true,
                 Ok(command) => state.handle(command, &qh),
                 Err(message) => state.events.push(Event::Error {
                     message: format!("bad command: {message}"),

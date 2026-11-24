@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { afterDeadline, endingOf, leftoverEnding, newestSession } from "./Recovery.ts";
+import { cleanupOf, endingOf, newestSession } from "./Recovery.ts";
 
 describe("newestSession", () => {
   it("keeps the newest of Blender's quit copy and its autosaves", () => {
@@ -68,27 +68,30 @@ describe("endingOf", () => {
   });
 });
 
-describe("afterDeadline", () => {
-  it("never stops a Blender that said it is saving or writing its quit copy", () => {
-    // Settling waits for it however long the write takes.
-    expect(afterDeadline({ acknowledged: true, shutdown: false })).toBe("wait");
-    // Shutting down leaves it to finish alone; the next start collects its copy.
-    expect(afterDeadline({ acknowledged: true, shutdown: true })).toBe("detach");
+describe("cleanupOf", () => {
+  const run = { restore: "none", saved: false, changed: true, ending: "closed" } as const;
+
+  it("keeps a closed or crashed run's copy, or the waiting one if the run changed nothing", () => {
+    expect(cleanupOf(run)).toEqual({ action: "keep", kind: "closed", unchanged: false });
+    expect(cleanupOf({ ...run, ending: "crashed", changed: false })).toEqual({
+      action: "keep",
+      kind: "crashed",
+      unchanged: true,
+    });
   });
 
-  it("stops one that never answered, as a last resort", () => {
-    expect(afterDeadline({ acknowledged: false, shutdown: false })).toBe("forceQuit");
-    expect(afterDeadline({ acknowledged: false, shutdown: true })).toBe("forceQuit");
+  it("clears what's waiting once the run saved, or someone quit it", () => {
+    expect(cleanupOf({ ...run, saved: true })).toEqual({ action: "forget" });
+    expect(cleanupOf({ ...run, ending: "crashed", saved: true })).toEqual({ action: "forget" });
+    expect(cleanupOf({ ...run, ending: "stopped" })).toEqual({ action: "forget" });
   });
-});
 
-describe("leftoverEnding", () => {
-  it("reads how a launch a stopped server left behind ended", () => {
-    expect(leftoverEnding({ outcome: "closing", hasQuitCopy: true })).toBe("closed");
-    expect(leftoverEnding({ outcome: "closing", hasQuitCopy: false })).toBe("closed");
-    // A save that finished quits Blender, which leaves its quit copy: nothing to recover.
-    expect(leftoverEnding({ outcome: "saving", hasQuitCopy: true })).toBe("saved");
-    expect(leftoverEnding({ outcome: "saving", hasQuitCopy: false })).toBe("crashed");
-    expect(leftoverEnding({ outcome: null, hasQuitCopy: false })).toBe("crashed");
+  it("leaves the waiting copy alone after a restore that never succeeded, or a failed start", () => {
+    expect(cleanupOf({ ...run, restore: "failed" })).toEqual({ action: "leave" });
+    expect(cleanupOf({ ...run, restore: "pending", ending: "crashed" })).toEqual({
+      action: "leave",
+    });
+    expect(cleanupOf({ ...run, restore: "ok" })).toMatchObject({ action: "keep" });
+    expect(cleanupOf({ ...run, ending: "failed" })).toEqual({ action: "leave" });
   });
 });

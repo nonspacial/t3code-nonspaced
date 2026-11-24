@@ -84,9 +84,6 @@ pub enum Command {
         #[serde(default)]
         options: String,
     },
-    /// Blender is finishing a save or its quit copy on its own: when input ends, wait for it to
-    /// exit instead of stopping it.
-    Detach,
     Quit,
 }
 
@@ -318,7 +315,6 @@ mod tests {
                     options: String::new(),
                 },
             ),
-            (r#"{"type":"detach"}"#, Command::Detach),
             (r#"{"type":"quit"}"#, Command::Quit),
         ];
         for (line, expected) in cases {
