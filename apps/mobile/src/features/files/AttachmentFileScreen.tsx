@@ -243,7 +243,7 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
   const refresh = useRefreshAssetUrl(environmentId, resource);
   const capabilities = useEnvironmentServerConfig(environmentId)?.environment.capabilities;
 
-  if (document.kind === "archive" && isZipFile(params) && !document.error) {
+  if (!blendFacts && document.kind === "archive" && isZipFile(params) && !document.error) {
     const threadDraftKey =
       environmentId && params.threadId
         ? scopedThreadKey(environmentId, ThreadId.make(params.threadId))

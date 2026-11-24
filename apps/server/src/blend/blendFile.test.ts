@@ -2,11 +2,12 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeStream from "node:stream";
 import * as NodeZlib from "node:zlib";
 
 import { describe, expect, it } from "vite-plus/test";
 
-import { readBlendFile } from "./blendFile.ts";
+import { parseSdnaFieldName, readBlendFile, streamSource } from "./blendFile.ts";
 
 // Made by fixtures/make-fixtures.sh with Blender 4.5 and 5.3; each version names its own.
 const fixture = (name: string) => NodePath.join(import.meta.dirname, "fixtures", name);
@@ -174,5 +175,26 @@ describe("readBlendFile", () => {
     await withTempFile(bytes, async (path) => {
       await expect(readBlendFile(path, { maxKeptBytes: 10_000 })).rejects.toThrow("too large");
     });
+  });
+
+  it("copies what it keeps out of a compressed stream, so the rest of a chunk can be freed", async () => {
+    const chunk = new Uint8Array(1024 * 1024);
+    const source = streamSource(NodeStream.Readable.from([chunk]), chunk.byteLength);
+    const kept = await source.read(100);
+    expect(kept.buffer.byteLength).toBe(100);
+    await source.close();
+  });
+
+  it("parses a struct field's name, and refuses an oversized one", () => {
+    expect(parseSdnaFieldName("*next")).toEqual({ name: "next", pointer: true, items: 1 });
+    expect(parseSdnaFieldName("(*func)()")).toEqual({ name: "func", pointer: true, items: 1 });
+    expect(parseSdnaFieldName("mat[4][4]")).toEqual({ name: "mat", pointer: false, items: 16 });
+    for (const name of [
+      "x".repeat(300),
+      `a${"[1]".repeat(200)}`,
+      "a[99999][99999][99999][99999]",
+    ]) {
+      expect(() => parseSdnaFieldName(name)).toThrow("damaged");
+    }
   });
 });

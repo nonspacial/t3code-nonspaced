@@ -269,7 +269,8 @@ it("opens a .blend attachment's facts, and its file viewer from the menu", async
             threadId: "thread-1",
             attachmentId: "attachment-1",
             name: "rig.blend",
-            mimeType: "application/octet-stream",
+            // Some uploaders label any binary a ZIP; the .blend view still wins.
+            mimeType: "application/zip",
             sizeBytes: "200",
           },
         }}

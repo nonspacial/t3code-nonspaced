@@ -132,7 +132,7 @@ async function fileSource(handle: NodeFSP.FileHandle, start: number): Promise<By
   };
 }
 
-function streamSource(
+export function streamSource(
   stream: NodeJS.ReadableStream & { destroy: () => void },
   byteLength: number,
 ): ByteSource {
@@ -154,7 +154,9 @@ function streamSource(
     compressed: true,
     read: async (length) => {
       while (pending.byteLength < length && (await fill())) {}
-      const out = pending.subarray(0, length);
+      // A copy, so what the reader keeps does not pin the rest of the inflated chunk.
+      // (Buffer's own slice is a view.)
+      const out = Uint8Array.prototype.slice.call(pending, 0, length);
       pending = pending.subarray(out.byteLength);
       return out;
     },
@@ -267,6 +269,33 @@ interface Sdna {
 }
 
 /** Struct layouts from the DNA1 block, as they were in the Blender that saved the file. */
+// Blender's struct, type and field names run to a few dozen characters.
+const MAX_SDNA_NAME_LENGTH = 256;
+const MAX_SDNA_FIELD_ITEMS = 1 << 24;
+
+/** A field name such as `*next`, `(*func)()` or `mat[4][4]`: its bare name, and its size in items. */
+export function parseSdnaFieldName(rawName: string): {
+  readonly name: string;
+  readonly pointer: boolean;
+  readonly items: number;
+} {
+  const damaged = () => new BlendFileFormatError({ problem: "damaged" });
+  if (rawName.length > MAX_SDNA_NAME_LENGTH) throw damaged();
+  let items = 1;
+  for (let open = rawName.indexOf("["); open !== -1; open = rawName.indexOf("[", open + 1)) {
+    const close = rawName.indexOf("]", open);
+    const dimension = close === -1 ? Number.NaN : Number(rawName.slice(open + 1, close));
+    if (!Number.isInteger(dimension) || dimension < 0) throw damaged();
+    items *= dimension;
+    if (items > MAX_SDNA_FIELD_ITEMS) throw damaged();
+  }
+  return {
+    name: rawName.replace(/^[(*]+/, "").replace(/[)[].*$/, ""),
+    pointer: rawName.startsWith("*") || rawName.startsWith("(*"),
+    items,
+  };
+}
+
 // Each kept block costs a view and an object even when empty; charged against the kept bytes.
 const KEPT_BLOCK_OVERHEAD_BYTES = 256;
 
@@ -303,7 +332,7 @@ function parseSdna(data: Uint8Array, header: Header, maxEntries: number): Sdna {
   const strings = (total: number) =>
     Array.from({ length: total }, () => {
       const end = data.indexOf(0, offset);
-      if (end === -1) throw damaged();
+      if (end === -1 || end - offset > MAX_SDNA_NAME_LENGTH) throw damaged();
       const value = ascii(data.subarray(offset, end));
       offset = end + 1;
       return value;
@@ -324,25 +353,17 @@ function parseSdna(data: Uint8Array, header: Header, maxEntries: number): Sdna {
   const lengths = types.map(() => short());
   expect("STRC");
   // Fields share a few thousand names, so each is parsed once.
-  const parsedNames: Array<
-    { readonly name: string; readonly pointer: boolean; readonly items: number } | undefined
-  > = [];
+  const parsedNames: Array<ReturnType<typeof parseSdnaFieldName> | undefined> = [];
   const nameAt = (index: number) => {
     const cached = parsedNames[index];
     if (cached) return cached;
     const rawName = names[index];
     if (rawName === undefined) throw damaged();
-    const parsed = {
-      name: rawName.replace(/^[(*]+/, "").replace(/[)[].*$/, ""),
-      pointer: rawName.startsWith("*") || rawName.startsWith("(*"),
-      items: [...rawName.matchAll(/\[(\d+)\]/g)].reduce(
-        (product, match) => product * Number(match[1]),
-        1,
-      ),
-    };
+    const parsed = parseSdnaFieldName(rawName);
     parsedNames[index] = parsed;
     return parsed;
   };
+
   const structs = Array.from({ length: charge(count(4)) }, () => {
     const typeIndex = short();
     const type = types[typeIndex];
