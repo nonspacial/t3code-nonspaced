@@ -41,6 +41,7 @@ const USAGE: &str = "usage:
                              reads the packet stream on stdin and prints it as JSON lines";
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, PartialEq)]
 struct RunArgs {
@@ -264,8 +265,9 @@ fn run(args: RunArgs) -> ExitCode {
         blender_process: None,
     };
     if children.labwc.is_none() {
+        let error = io::Error::last_os_error();
         children.shutdown();
-        return fail(format!("pidfd_open: {}", io::Error::last_os_error()));
+        return fail(format!("pidfd_open: {error}"));
     }
 
     let socket = match display::wait_for_socket(&paths.runtime, &mut children.labwc_process) {
@@ -374,9 +376,25 @@ fn session(
         .map_err(|error| error.to_string())?;
 
     state.resize(args.width, args.height, &qh);
+    let deadline = Instant::now() + STARTUP_TIMEOUT;
     while state.output_size() != (args.width, args.height) {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or("labwc did not apply the display size")?;
+        connection.flush().map_err(|error| error.to_string())?;
+        if let Some(guard) = queue.prepare_read() {
+            let mut readable = poll_fd(guard.connection_fd().as_raw_fd());
+            if unsafe { libc::poll(&mut readable, 1, left.as_millis() as i32) } > 0 {
+                match guard.read() {
+                    Ok(_) => {}
+                    Err(wayland_client::backend::WaylandError::Io(error))
+                        if error.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(error) => return Err(format!("lost the hidden display: {error}")),
+                }
+            }
+        }
         queue
-            .blocking_dispatch(&mut state)
+            .dispatch_pending(&mut state)
             .map_err(|error| error.to_string())?;
         if let Some(Event::Error { message }) = state
             .events
@@ -406,7 +424,7 @@ fn session(
     });
     state.start(&qh);
 
-    let (commands, wake) = read_commands();
+    let (commands, wake) = read_commands().map_err(|error| error.to_string())?;
     loop {
         for event in state.events.drain(..) {
             emitter.emit(&event);
@@ -522,9 +540,11 @@ fn poll_fd(fd: RawFd) -> libc::pollfd {
 }
 
 /// Lines from stdin on a thread, with a pipe that wakes the poll loop. `None` is end of input.
-fn read_commands() -> (mpsc::Receiver<Option<String>>, OwnedFd) {
+fn read_commands() -> io::Result<(mpsc::Receiver<Option<String>>, OwnedFd)> {
     let mut pipe = [0; 2];
-    unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
+    if unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
     let (read, write) = unsafe { (OwnedFd::from_raw_fd(pipe[0]), OwnedFd::from_raw_fd(pipe[1])) };
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
@@ -539,7 +559,7 @@ fn read_commands() -> (mpsc::Receiver<Option<String>>, OwnedFd) {
         let _ = sender.send(None);
         wake();
     });
-    (receiver, read)
+    Ok((receiver, read))
 }
 
 fn drain(fd: &OwnedFd) {

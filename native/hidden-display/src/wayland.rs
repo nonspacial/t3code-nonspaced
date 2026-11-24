@@ -53,6 +53,9 @@ use crate::keyboard::Keyboard;
 
 const DRM_FORMAT_XRGB8888: u32 = 0x3432_5258;
 const DRM_FORMAT_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
+/// DMABuf captures reach the encoder without a copy, so the compositor must never write into a
+/// buffer GStreamer still holds: at most the one queued in `appsrc`, the one being encoded and
+/// the retained last frame, all among the three most recent captures.
 const CAPTURE_BUFFERS: usize = 4;
 const XKB_V1: u32 = 1;
 

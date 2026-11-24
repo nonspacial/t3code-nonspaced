@@ -73,7 +73,7 @@ function rustTarget(
   return undefined;
 }
 
-export const make = Effect.fn("HostedBlender.hiddenDisplayBinary.make")(function* () {
+export const make = Effect.fn("hostedBlender.hiddenDisplayBinary.make")(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -85,23 +85,20 @@ export const make = Effect.fn("HostedBlender.hiddenDisplayBinary.make")(function
   const overrides = [environment.T3CODE_HIDDEN_DISPLAY_PATH, config.hiddenDisplayPath].filter(
     (candidate): candidate is string => Boolean(candidate),
   );
-  const bundled =
+  // Only the desktop app ships the helper so far (passed in as `hiddenDisplayPath`); elsewhere
+  // it comes from a cargo build of `native/hidden-display`.
+  const built =
     target === undefined
       ? []
       : [
-          path.resolve(import.meta.dirname, "hidden-display", `linux-${architecture}`, EXECUTABLE),
-          path.resolve(import.meta.dirname, "hidden-display", EXECUTABLE),
-          path.resolve(import.meta.dirname, "../hidden-display", EXECUTABLE),
-          ...[
-            path.resolve(import.meta.dirname, "../../../../native/hidden-display"),
-            path.resolve(import.meta.dirname, "../../../native/hidden-display"),
-          ].flatMap((crate) =>
-            [path.join("target", target, "release"), "target/release", "target/debug"].map(
-              (directory) => path.join(crate, directory, EXECUTABLE),
-            ),
+          path.resolve(import.meta.dirname, "../../../../native/hidden-display"),
+          path.resolve(import.meta.dirname, "../../../native/hidden-display"),
+        ].flatMap((crate) =>
+          [path.join("target", target, "release"), "target/release", "target/debug"].map(
+            (directory) => path.join(crate, directory, EXECUTABLE),
           ),
-        ];
-  const candidates = [...overrides, ...bundled];
+        );
+  const candidates = [...overrides, ...built];
   if (candidates.length === 0) {
     return HiddenDisplayBinary.of({
       resolve: Effect.fail(new HiddenDisplayBinaryUnsupported({ platform, architecture })),

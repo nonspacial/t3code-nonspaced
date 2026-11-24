@@ -80,6 +80,7 @@ impl EncoderKind {
                  gop-size=-1 rc-mode=cbr bitrate={bitrate}"
             ),
             EncoderKind::VaApi => format!(
+                // 1024 is vah264enc's longest GOP.
                 "vah264enc name=enc b-frames=0 key-int-max=1024 rate-control=cbr target-usage=6 \
                  bitrate={bitrate}"
             ),
@@ -114,10 +115,12 @@ impl EncoderKind {
     /// The pipeline between `appsrc` and `appsink`. NVENC gets `glupload`, which imports
     /// captured DMABufs without a CPU copy (and uploads shared memory when that is all there is).
     /// There is deliberately no queue or `glcolorconvert` in front of it: together they took
-    /// encode latency from 7.6 ms to 71 ms in the spike.
+    /// encode latency from 7.6 ms to 71 ms in the spike. `appsrc` holds at most one frame,
+    /// replacing it with a newer one, which also bounds how many capture buffers GStreamer can
+    /// hold at once (see `CAPTURE_BUFFERS`).
     pub fn pipeline_description(self, kbps: u32) -> String {
         format!(
-            "appsrc name=src is-live=true format=time do-timestamp=false max-buffers=3 \
+            "appsrc name=src is-live=true format=time do-timestamp=false max-buffers=1 \
              leaky-type=downstream ! {} ! {} ! {} ! h264parse config-interval=-1 ! \
              appsink name=sink sync=false",
             self.upload(),
