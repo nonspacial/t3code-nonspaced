@@ -49,6 +49,15 @@ describe("requestSave", () => {
       expect(yield* saved.request).toBe(true);
       expect(writes).toEqual(['{"type":"quit","save":true}\n']);
 
+      // Blender confirms, then its connection closes at once, while the request waits.
+      const written = yield* Deferred.make<void>();
+      const closing = yield* setup(() => Deferred.succeed(written, undefined).pipe(Effect.asVoid));
+      const pending = yield* Effect.forkChild(closing.request);
+      yield* Deferred.await(written);
+      yield* Queue.offerAll(closing.replies, ["saving", "saved"]);
+      yield* Deferred.succeed(closing.closed, undefined);
+      expect(yield* Fiber.join(pending)).toBe(true);
+
       const gone = yield* setup(() => Effect.void);
       yield* Queue.offer(gone.replies, "saving");
       const fiber = yield* Effect.forkChild(gone.request);
