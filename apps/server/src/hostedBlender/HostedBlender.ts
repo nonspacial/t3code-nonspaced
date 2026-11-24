@@ -41,6 +41,7 @@ import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import {
   displaySize,
   helperArguments,
+  runtimeParent,
   helperEnvironment,
   newestBlenderConfigVersion,
 } from "./BlenderLaunch.ts";
@@ -113,6 +114,9 @@ export class HostedBlender extends Context.Service<
   }
 >()("t3/hostedBlender/HostedBlender") {}
 
+/** `closed`: the control socket went away before the add-on answered. */
+type SaveReply = "saving" | "saved" | "quitFailed" | "closed";
+
 interface ViewerEntry {
   readonly queue: Queue.Queue<HostedBlenderViewerOutput>;
   readonly flow: ViewerFlow;
@@ -135,7 +139,9 @@ interface Instance {
   helper: (command: HelperCommand) => Effect.Effect<void>;
   control: ((line: string) => Effect.Effect<void>) | null;
   /** What the add-on says while `quit` waits on a save. */
-  saveReplies: Queue.Queue<"saving" | "saved" | "quitFailed"> | null;
+  saveReplies: Queue.Queue<SaveReply> | null;
+  /** The one save-and-quit in flight; every caller gets its result. */
+  pendingSave: Deferred.Deferred<boolean> | null;
   fiber: Fiber.Fiber<void> | null;
   /** Set by `quit`, so stopping a Blender that is still starting doesn't read as a failed start. */
   quitting: boolean;
@@ -304,40 +310,44 @@ const make = Effect.gen(function* () {
     }
   });
 
-  const connectControl = Effect.fn("HostedBlender.connectControl")(function* (
-    instance: Instance,
-    socketPath: string,
-  ) {
-    const socket = yield* NodeSocket.makeNet({ path: socketPath });
-    // The socket appears once Blender has loaded the file and run the add-on.
-    const reader = yield* socket.reader.pipe(
-      Effect.retry({ schedule: Schedule.spaced("200 millis"), times: CONTROL_CONNECT_ATTEMPTS }),
-    );
-    const writer = yield* socket.writer;
-    instance.control = (line) => writer.write(line).pipe(Effect.ignore);
-    // Once Blender's end of the socket closes, `quit` falls back to stopping the helper.
-    yield* Effect.addFinalizer(() =>
-      Effect.sync(() => {
-        instance.control = null;
-      }),
-    );
-    const decoder = new TextDecoder();
-    let buffer = "";
-    return yield* Effect.forever(
-      reader.pull.pipe(
-        Effect.flatMap((chunks) => {
-          for (const chunk of chunks) {
-            buffer += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
-          }
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-          return Effect.forEach(lines, (line) => handleControlLine(instance, line), {
-            discard: true,
-          });
-        }),
+  const connectControl = Effect.fn("HostedBlender.connectControl")(
+    function* (instance: Instance, socketPath: string) {
+      const socket = yield* NodeSocket.makeNet({ path: socketPath });
+      // The socket appears once Blender has loaded the file and run the add-on.
+      const reader = yield* socket.reader.pipe(
+        Effect.retry({ schedule: Schedule.spaced("200 millis"), times: CONTROL_CONNECT_ATTEMPTS }),
+      );
+      const writer = yield* socket.writer;
+      instance.control = (line) => writer.write(line).pipe(Effect.ignore);
+      const decoder = new TextDecoder();
+      let buffer = "";
+      return yield* Effect.forever(
+        reader.pull.pipe(
+          Effect.flatMap((chunks) => {
+            for (const chunk of chunks) {
+              buffer += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
+            }
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";
+            return Effect.forEach(lines, (line) => handleControlLine(instance, line), {
+              discard: true,
+            });
+          }),
+        ),
+      );
+    },
+    // The connection's own scope: when Blender's end closes, `quit` stops waiting on it.
+    Effect.scoped,
+    (effect, instance) =>
+      effect.pipe(
+        Effect.ensuring(
+          Effect.suspend(() => {
+            instance.control = null;
+            return instance.saveReplies ? Queue.offer(instance.saveReplies, "closed") : Effect.void;
+          }),
+        ),
       ),
-    );
-  });
+  );
 
   const sampleMemory = Effect.fnUntraced(function* (instance: Instance) {
     if (instance.pid === null || instance.viewers.length === 0) return;
@@ -398,7 +408,7 @@ const make = Effect.gen(function* () {
       // Unix socket paths are capped near 108 bytes, so the control socket and the helper's
       // Wayland runtime live in a short private dir.
       const controlDir = yield* fileSystem.makeTempDirectoryScoped({
-        directory: environment.XDG_RUNTIME_DIR || "/tmp",
+        directory: runtimeParent(environment.XDG_RUNTIME_DIR),
         prefix: "t3hb-",
       });
       yield* fileSystem.chmod(controlDir, 0o700);
@@ -455,6 +465,16 @@ const make = Effect.gen(function* () {
           )
           .pipe(Effect.ignore);
 
+      // A start that gives up ends the run, so the scope's graceful quit stops the helper.
+      const gaveUp = yield* Deferred.make<void>();
+      yield* Effect.sleep(START_TIMEOUT).pipe(
+        Effect.andThen(
+          Effect.suspend(() =>
+            instance.status === "running" ? Effect.void : Deferred.succeed(gaveUp, undefined),
+          ),
+        ),
+        Effect.forkScoped,
+      );
       // Blender and labwc write here; unread, it would pile up in memory for the whole session.
       yield* handle.stderr.pipe(
         Stream.decodeText(),
@@ -484,19 +504,14 @@ const make = Effect.gen(function* () {
         Effect.forkScoped,
       );
       yield* connectControl(instance, controlSocket).pipe(Effect.ignore, Effect.forkScoped);
-      yield* Effect.sleep(START_TIMEOUT).pipe(
-        Effect.andThen(
-          Effect.suspend(() =>
-            instance.status === "running" ? Effect.void : handle.kill().pipe(Effect.ignore),
-          ),
-        ),
-        Effect.forkScoped,
-      );
       yield* sampleMemory(instance).pipe(
         Effect.repeat(Schedule.spaced(MEMORY_SAMPLE_INTERVAL)),
         Effect.forkScoped,
       );
-      const exitCode = yield* handle.exitCode;
+      const exitCode = yield* Effect.raceFirst(
+        handle.exitCode,
+        Deferred.await(gaveUp).pipe(Effect.as("gave up" as const)),
+      );
       if (exitCode !== 0) {
         yield* Effect.logWarning("hosted Blender's hidden display exited", { exitCode });
       }
@@ -579,6 +594,7 @@ const make = Effect.gen(function* () {
       helper: () => Effect.void,
       control: null,
       saveReplies: null,
+      pendingSave: null,
       fiber: null,
       quitting: false,
     };
@@ -615,23 +631,53 @@ const make = Effect.gen(function* () {
     }
     // Save and quit never stops Blender before the add-on says the file is saved.
     if (control === null) return yield* saveFailed;
-    const replies = yield* Queue.unbounded<"saving" | "saved" | "quitFailed">();
-    instance.saveReplies = replies;
-    yield* control(`${encodeControlCommand({ type: "quit", save })}\n`);
-    const started = yield* Queue.take(replies).pipe(Effect.timeoutOption(CONTROL_REPLY_TIMEOUT));
-    if (Option.isNone(started) || started.value === "quitFailed") return yield* saveFailed;
-    // However long a big file takes, the save finishes or fails before Blender quits.
-    const outcome = yield* Effect.raceFirst(
-      Queue.take(replies),
-      Deferred.await(instance.ended).pipe(Effect.as("ended" as const)),
-    );
-    if (outcome === "quitFailed" || outcome === "saving") return yield* saveFailed;
-    instance.quitting = true;
-    if (outcome === "saved") {
-      const ended = yield* Deferred.await(instance.ended).pipe(Effect.timeoutOption(QUIT_TIMEOUT));
-      if (Option.isNone(ended)) yield* forceQuit;
+    let pending = instance.pendingSave;
+    if (pending === null) {
+      const started = yield* Deferred.make<boolean>();
+      pending = started;
+      instance.pendingSave = started;
+      yield* saveThenQuit(instance, control).pipe(
+        // Cleared before answering, so a retry after this result starts a new save.
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (instance.pendingSave === started) instance.pendingSave = null;
+          }),
+        ),
+        Effect.flatMap((saved) => Deferred.succeed(started, saved)),
+        Effect.onInterrupt(() => Deferred.succeed(started, false)),
+        Effect.forkIn(serviceScope),
+      );
     }
+    if (!(yield* Deferred.await(pending))) return yield* saveFailed;
+    instance.quitting = true;
+    const ended = yield* Deferred.await(instance.ended).pipe(Effect.timeoutOption(QUIT_TIMEOUT));
+    if (Option.isNone(ended)) yield* forceQuit;
   });
+
+  /** True only once the add-on confirms the file is written; Blender then quits itself. */
+  const saveThenQuit = Effect.fn("HostedBlender.saveThenQuit")(
+    function* (instance: Instance, control: (line: string) => Effect.Effect<void>) {
+      const replies = yield* Queue.unbounded<SaveReply>();
+      instance.saveReplies = replies;
+      const next = Effect.raceFirst(
+        Queue.take(replies),
+        Deferred.await(instance.ended).pipe(Effect.as("closed" as const)),
+      );
+      yield* control(`${encodeControlCommand({ type: "quit", save: true })}\n`);
+      const started = yield* next.pipe(Effect.timeoutOption(CONTROL_REPLY_TIMEOUT));
+      if (Option.isNone(started) || started.value !== "saving") return false;
+      // However long a big file takes, the save finishes, fails, or Blender goes away.
+      return (yield* next) === "saved";
+    },
+    (effect, instance) =>
+      effect.pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            instance.saveReplies = null;
+          }),
+        ),
+      ),
+  );
 
   const threadState: HostedBlender["Service"]["threadState"] = (threadId) =>
     Stream.unwrap(

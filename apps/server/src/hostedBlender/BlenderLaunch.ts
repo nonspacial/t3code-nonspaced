@@ -84,3 +84,14 @@ export const displaySize = (width: number, height: number) => {
     Math.min(max, Math.max(min, Math.round(value))) & ~1;
   return { width: even(width, MIN_WIDTH, MAX_WIDTH), height: even(height, MIN_HEIGHT, MAX_HEIGHT) };
 };
+
+// The helper keeps its Wayland runtime beside the control socket only under a parent this short.
+const HELPER_RUNTIME_PARENT_MAX = 64;
+const CONTROL_DIR_NAME_LENGTH = "/t3hb-XXXXXX".length;
+
+/** Where a launch's private control and runtime folder goes, so the helper never falls back. */
+export const runtimeParent = (xdgRuntimeDir: string | undefined): string =>
+  xdgRuntimeDir?.startsWith("/") &&
+  xdgRuntimeDir.length + CONTROL_DIR_NAME_LENGTH <= HELPER_RUNTIME_PARENT_MAX
+    ? xdgRuntimeDir
+    : "/tmp";

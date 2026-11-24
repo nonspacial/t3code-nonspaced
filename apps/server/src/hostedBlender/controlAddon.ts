@@ -145,20 +145,26 @@ def _tick():
     return TICK
 
 
-def _assign_mcp_port():
-    # The copied settings may enable the official MCP add-on on the desktop Blender's port.
-    # Its autostart timer fires after this script runs, so these settings win.
-    if MCP_PORT is None:
-        return
+def _disable_mcp_addon():
+    # The copied settings may enable the official MCP add-on, whose code-execution listener
+    # stays off until T3 can turn away other OS users. Its saved port becomes T3's for this
+    # instance, and disabling it for the session (not in the settings) runs its unregister,
+    # which cancels the autostart timer it registered before this script ran.
+    import addon_utils
+
     preferences = bpy.context.preferences
-    for name, addon in preferences.addons.items():
-        if name.startswith("bl_ext.") and name.endswith(".mcp") and addon.preferences is not None:
+    names = [
+        name
+        for name in preferences.addons.keys()
+        if name.startswith("bl_ext.") and name.endswith(".mcp")
+    ]
+    for name in names:
+        addon = preferences.addons[name]
+        if MCP_PORT is not None and addon.preferences is not None:
             if hasattr(addon.preferences, "port"):
                 addon.preferences.port = int(MCP_PORT)
                 addon.preferences.host = "localhost"
-            # Its code-execution listener stays off until T3 can turn away other OS users.
-            if hasattr(addon.preferences, "use_autostart"):
-                addon.preferences.use_autostart = False
+        addon_utils.disable(name, default_set=False)
     try:
         preferences.is_dirty = False
     except AttributeError:
@@ -196,7 +202,7 @@ def _on_load_post(*_args):
 
 
 def register():
-    _assign_mcp_port()
+    _disable_mcp_addon()
     if SOCKET_PATH is not None:
         _State.server = _listen()
         bpy.app.timers.register(_tick, first_interval=TICK, persistent=True)

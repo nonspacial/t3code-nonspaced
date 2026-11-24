@@ -16,6 +16,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -101,6 +102,155 @@ const fakeTools = (dir: string, helper = "exit 1") => {
 };
 // Stays "starting" until the server asks it to quit, as a helper waiting on Blender does.
 const WAITING_HELPER = 'while read line; do case "$line" in *quit*) exit 0;; esac; done';
+
+/**
+ * Stands in for the helper and the Blender inside it: reports the viewport window on stdout,
+ * answers on the control socket as the add-on would (per STANDIN_SCENARIO), and on the
+ * helper's own `quit` writes STANDIN_MARKER and exits.
+ */
+const STANDIN_HELPER = String.raw`
+import json, os, socket, struct, sys, threading
+rest = sys.argv[1:][sys.argv[1:].index("--") + 1:]
+t3 = rest[rest.index("--") + 1:]
+scenario = os.environ.get("STANDIN_SCENARIO", "")
+lock = threading.Lock()
+def event(value):
+    data = json.dumps(value).encode()
+    with lock:
+        sys.stdout.buffer.write(struct.pack(">IB", len(data) + 1, 1) + data)
+        sys.stdout.buffer.flush()
+server = socket.socket(socket.AF_UNIX)
+server.bind(t3[t3.index("--t3-control") + 1])
+server.listen(1)
+event({"type": "ready", "capture": "extImageCopyCapture", "target": "window",
+       "encoder": "x264enc", "width": 1280, "height": 720, "cursorTracking": True})
+if scenario != "never-shows":
+    event({"type": "windowCaptured", "title": "3D Viewport"})
+def control():
+    connection, _ = server.accept()
+    connection.sendall(b'{"type": "hello", "pid": %d}\n' % os.getpid())
+    saves = 0
+    for line in connection.makefile():
+        command = json.loads(line)
+        if command.get("type") != "quit" or not command.get("save"):
+            continue
+        saves += 1
+        connection.sendall(b'{"type": "saving"}\n')
+        if scenario == "exit-while-saving":
+            os._exit(0)
+        if scenario == "drop-socket":
+            connection.close()
+            server.close()
+            return
+        if scenario == "slow-failing-save" and saves == 1:
+            threading.Timer(1.0, lambda: connection.sendall(
+                b'{"type": "quitFailed", "reason": "saveFailed"}\n')).start()
+threading.Thread(target=control, daemon=True).start()
+for line in sys.stdin:
+    if '"quit"' in line:
+        marker = os.environ.get("STANDIN_MARKER")
+        if marker:
+            open(marker, "w").write("quit")
+        os._exit(0)
+os._exit(0)
+`;
+const python = NodeChildProcess.execFileSync("sh", ["-c", "command -v python3"], {
+  encoding: "utf8",
+}).trim();
+
+/** A workspace with cube.blend, served by the stand-in helper in `scenario`. */
+const standIn = Effect.fn(function* (prefix: string, scenario: string) {
+  const dir = yield* tempDir(prefix);
+  const bin = fakeTools(dir);
+  NodeFS.writeFileSync(NodePath.join(bin, "helper"), `#!${python}\n${STANDIN_HELPER}`, {
+    mode: 0o755,
+  });
+  const runtime = NodePath.join(dir, "run");
+  NodeFS.mkdirSync(runtime);
+  NodeFS.writeFileSync(NodePath.join(dir, "cube.blend"), "");
+  const marker = NodePath.join(dir, "helper-quit");
+  const service = yield* serviceFor(
+    layerFor({
+      env: {
+        PATH: bin,
+        XDG_RUNTIME_DIR: runtime,
+        STANDIN_SCENARIO: scenario,
+        STANDIN_MARKER: marker,
+      },
+      helper: NodePath.join(bin, "helper"),
+      workspaceRoot: dir,
+      baseDir: dir,
+    }),
+  );
+  const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+  yield* service.threadState(threadId).pipe(
+    Stream.runForEach((state) => Queue.offer(states, state)),
+    Effect.forkScoped,
+  );
+  const awaitStatus = (status: HostedBlenderThreadState["status"]) =>
+    Queue.take(states).pipe(Effect.repeat({ until: (state) => state.status === status }));
+  return { service, awaitStatus, marker, runtime };
+});
+
+describe("Save and quit", () => {
+  it.live("fails when Blender exits before confirming the save", () =>
+    Effect.gen(function* () {
+      const { service, awaitStatus } = yield* standIn("exit-saving", "exit-while-saving");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitStatus("running");
+      const failed = yield* service.quit({ threadId, save: true }).pipe(Effect.flip);
+      expect(failed.reason).toBe("saveFailed");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("fails, and leaves Blender running, when the control socket closes mid-save", () =>
+    Effect.gen(function* () {
+      const { service, awaitStatus } = yield* standIn("drop-socket", "drop-socket");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitStatus("running");
+      const failed = yield* service.quit({ threadId, save: true }).pipe(Effect.flip);
+      expect(failed.reason).toBe("saveFailed");
+      expect((yield* firstState(service)).status).toBe("running");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("answers every caller of a save already in flight", () =>
+    Effect.gen(function* () {
+      const { service, awaitStatus } = yield* standIn("shared-save", "slow-failing-save");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitStatus("running");
+      const results = yield* Effect.all(
+        [
+          service.quit({ threadId, save: true }).pipe(Effect.flip),
+          service.quit({ threadId, save: true }).pipe(Effect.flip),
+        ],
+        { concurrency: "unbounded" },
+      );
+      expect(results.map((error) => error.reason)).toEqual(["saveFailed", "saveFailed"]);
+      expect((yield* firstState(service)).status).toBe("running");
+    }).pipe(Effect.scoped),
+  );
+});
+
+it.effect("gives up on a start that never shows Blender by asking the helper to quit", () =>
+  Effect.gen(function* () {
+    const { service, awaitStatus, marker, runtime } = yield* standIn("timeout", "never-shows");
+    yield* service.open({ threadId, relativePath: "cube.blend" });
+    const attached = yield* service.attachViewer(threadId);
+    assert.strictEqual(attached._tag, "attached");
+    if (attached._tag !== "attached") return;
+    // Stats arrive once the helper reports ready, after the start timer is set.
+    yield* Queue.take(attached.viewer.output).pipe(
+      Effect.repeat({
+        until: (output) => output._tag === "message" && output.message.type === "stats",
+      }),
+    );
+    yield* TestClock.adjust("91 seconds");
+    yield* awaitStatus("failed");
+    expect(NodeFS.readFileSync(marker, "utf8")).toBe("quit");
+    expect(NodeFS.readdirSync(runtime)).toEqual([]);
+  }).pipe(Effect.scoped),
+);
 
 describe("HostedBlender availability", () => {
   it.effect("is not available on hosts other than Linux", () =>
@@ -248,6 +398,40 @@ describe("HostedBlender.open", () => {
 });
 
 // A real hosted Blender: only on a Linux host with Blender, labwc and a built helper.
+const FAKE_MCP_MANIFEST = `schema_version = "1.0.0"
+id = "mcp"
+version = "0.0.1"
+name = "Fake MCP"
+tagline = "Stand-in for the Blender Lab MCP add-on"
+maintainer = "T3 tests"
+type = "add-on"
+blender_version_min = "4.2.0"
+license = ["SPDX:GPL-3.0-or-later"]
+`;
+const FAKE_MCP_ADDON = `import os
+import bpy
+
+def _start():
+    port = bpy.context.preferences.addons[__package__].preferences.port
+    with open(os.path.join(os.path.dirname(__file__), "started"), "w") as marker:
+        marker.write(str(port))
+
+class Preferences(bpy.types.AddonPreferences):
+    bl_idname = __package__
+    port: bpy.props.IntProperty(default=39999)
+    use_autostart: bpy.props.BoolProperty(default=True)
+
+def register():
+    bpy.utils.register_class(Preferences)
+    preferences = bpy.context.preferences.addons[__package__].preferences
+    if not bpy.app.background and preferences.use_autostart:
+        bpy.app.timers.register(_start, first_interval=0.0, persistent=True)
+
+def unregister():
+    if bpy.app.timers.is_registered(_start):
+        bpy.app.timers.unregister(_start)
+    bpy.utils.unregister_class(Preferences)
+`;
 const helperBuild = NodePath.resolve(
   import.meta.dirname,
   "../../../../native/hidden-display/target/release/t3-hidden-display",
@@ -282,6 +466,30 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
       NodeFS.writeFileSync(NodePath.join(settings, "config", "nested", "note.txt"), "kept");
       NodeFS.mkdirSync(NodePath.join(dir, "desktop-scripts"));
       NodeFS.symlinkSync(NodePath.join(dir, "desktop-scripts"), NodePath.join(settings, "scripts"));
+      // An enabled stand-in for Blender Lab's MCP add-on: like it, it starts its listener from a
+      // persistent timer it registers when enabled, without reading `use_autostart` again.
+      const fakeMcp = NodePath.join(settings, "extensions", "user_default", "mcp");
+      NodeFS.mkdirSync(fakeMcp, { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(fakeMcp, "blender_manifest.toml"), FAKE_MCP_MANIFEST);
+      NodeFS.writeFileSync(NodePath.join(fakeMcp, "__init__.py"), FAKE_MCP_ADDON);
+      NodeChildProcess.execFileSync(
+        "blender",
+        [
+          "--background",
+          "--python-expr",
+          "import addon_utils, bpy; addon_utils.enable('bl_ext.user_default.mcp', default_set=True); bpy.ops.wm.save_userpref()",
+        ],
+        {
+          env: {
+            ...Object.fromEntries(
+              Object.entries(hostEnvironment).filter(([key]) => !key.startsWith("BLENDER_USER_")),
+            ),
+            BLENDER_USER_RESOURCES: settings,
+            TMPDIR: dir,
+          },
+          stdio: "ignore",
+        },
+      );
       const service = yield* serviceFor(
         layerFor({
           env: {
@@ -311,6 +519,12 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
         NodeFS.readFileSync(NodePath.join(userResources, "config", "nested", "note.txt"), "utf8"),
       ).toBe("kept");
       expect(NodeFS.existsSync(NodePath.join(userResources, "scripts"))).toBe(false);
+      // The viewport window opens after the stand-in's timer would have fired.
+      expect(
+        NodeFS.existsSync(
+          NodePath.join(userResources, "extensions", "user_default", "mcp", "started"),
+        ),
+      ).toBe(false);
       assert.deepStrictEqual(running, {
         status: "running",
         relativePath: "models/cube.blend",

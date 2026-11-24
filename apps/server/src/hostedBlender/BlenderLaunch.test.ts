@@ -5,6 +5,7 @@ import {
   helperArguments,
   helperEnvironment,
   newestBlenderConfigVersion,
+  runtimeParent,
 } from "./BlenderLaunch.ts";
 
 describe("helperArguments", () => {
@@ -72,4 +73,11 @@ it("keeps display sizes even and within the encoder's range", () => {
   expect(displaySize(1601, 901)).toEqual({ width: 1600, height: 900 });
   expect(displaySize(10, 10)).toEqual({ width: 320, height: 240 });
   expect(displaySize(9999, 9999)).toEqual({ width: 3840, height: 2160 });
+});
+
+it("keeps the helper's runtime under a parent short enough that it never falls back to /tmp", () => {
+  expect(runtimeParent("/run/user/1000")).toBe("/run/user/1000");
+  expect(runtimeParent(`/run/user/${"x".repeat(60)}`)).toBe("/tmp");
+  expect(runtimeParent(undefined)).toBe("/tmp");
+  expect(runtimeParent("relative")).toBe("/tmp");
 });
