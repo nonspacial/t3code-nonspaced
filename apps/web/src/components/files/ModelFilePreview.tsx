@@ -169,6 +169,8 @@ export function ModelFilePreview(props: {
   readonly readyChip?: ReactNode;
   /** Replaces the loaded model's details box. */
   readonly facts?: ReactNode;
+  /** Drawn over the view whatever its state, such as a conversion's bottom-left action. */
+  readonly overlay?: ReactNode;
 }) {
   const gt = useGT();
   const messages = useMessages();
@@ -465,6 +467,7 @@ export function ModelFilePreview(props: {
           rows={modelFactRows(shown.facts, SIZE_UNITS[format], gt)}
         />
       ) : null}
+      {props.overlay}
       {snapshot && ready && props.annotation ? (
         <ModelAnnotationEditor
           image={snapshot.image}

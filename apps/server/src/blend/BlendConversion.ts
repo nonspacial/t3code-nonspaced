@@ -12,6 +12,8 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
+import { issueBlendGlbUrl } from "../assets/AssetAccess.ts";
+import * as AssetSigner from "../assets/AssetSigner.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as KnownWorkspaces from "../workspace/KnownWorkspaces.ts";
@@ -27,13 +29,6 @@ export const CONVERSION_TIME_LIMIT = Duration.seconds(60);
 const CACHE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 const LOG_MAX_CHARACTERS = 32 * 1024;
 
-/** A ready conversion names its GLB in the cache; the transport signs a URL for it. */
-export type BlendConversionProgress =
-  | Exclude<BlendConversionStatus, { readonly status: "ready" }>
-  | (Omit<Extract<BlendConversionStatus, { readonly status: "ready" }>, "relativeUrl"> & {
-      readonly cacheFileName: string;
-    });
-
 export class BlendConversion extends Context.Service<
   BlendConversion,
   {
@@ -43,7 +38,7 @@ export class BlendConversion extends Context.Service<
      */
     readonly convert: (
       input: BlendConversionInput,
-      emit: (progress: BlendConversionProgress) => Effect.Effect<void>,
+      emit: (status: BlendConversionStatus) => Effect.Effect<void>,
     ) => Effect.Effect<
       void,
       | BlendFileFormatError
@@ -101,12 +96,13 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
   const knownWorkspaces = yield* KnownWorkspaces.KnownWorkspaces;
   const digest = yield* Digest.Digest;
   const environment = yield* HostProcess.Environment;
+  const signer = yield* AssetSigner.AssetSigner;
   const cacheDir = blendCacheDir(path, config.providerStatusCacheDir);
 
   const lock = yield* Semaphore.make(1);
   // Conversions waiting for the lock, oldest first; each hears its place when the line moves.
   const waiting: Array<{
-    readonly emit: (progress: BlendConversionProgress) => Effect.Effect<void>;
+    readonly emit: (status: BlendConversionStatus) => Effect.Effect<void>;
   }> = [];
   let running = false;
   const announce = Effect.suspend(() =>
@@ -160,8 +156,30 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
 
   /** Marks a hit as recently used, so the size cap evicts other entries first. */
   const touch = (file: string) =>
-    Effect.flatMap(Clock.currentTimeMillis, (now) => fileSystem.utimes(file, now, now)).pipe(
-      Effect.ignore,
+    // Node reads numeric times as seconds.
+    Effect.flatMap(Clock.currentTimeMillis, (now) =>
+      fileSystem.utimes(file, now / 1000, now / 1000),
+    ).pipe(Effect.ignore);
+
+  /** A ready status carries a signed URL for the cache entry; no client can name one itself. */
+  const ready = (
+    cacheFileName: string,
+    facts: Omit<
+      Extract<BlendConversionStatus, { readonly status: "ready" }>,
+      "status" | "relativeUrl"
+    >,
+  ) =>
+    issueBlendGlbUrl(cacheFileName).pipe(
+      Effect.provideService(AssetSigner.AssetSigner, signer),
+      Effect.map((relativeUrl): BlendConversionStatus => ({
+        status: "ready",
+        relativeUrl,
+        ...facts,
+      })),
+      Effect.orElseSucceed((): BlendConversionStatus => ({
+        status: "failed",
+        log: "The converted file could not be served.",
+      })),
     );
 
   const cached = Effect.fnUntraced(function* (cacheFileName: string) {
@@ -192,77 +210,88 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
     }
   });
 
-  const run = Effect.fnUntraced(function* (input: {
-    readonly blendPath: string;
-    readonly blender: BlenderDetection.DetectedBlender;
-    readonly cacheFileName: string;
-    readonly keepTrying: boolean;
-    readonly emit: (progress: BlendConversionProgress) => Effect.Effect<void>;
-  }) {
-    yield* fileSystem.makeDirectory(cacheDir, { recursive: true }).pipe(Effect.orDie);
-    // Beside the cache, so the finished GLB is renamed into place rather than copied.
-    const workDir = yield* fileSystem
-      .makeTempDirectoryScoped({ directory: cacheDir, prefix: ".convert-" })
-      .pipe(Effect.orDie);
-    const scriptPath = path.join(workDir, "t3_export.py");
-    const outputPath = path.join(workDir, "scene.glb");
-    const tempDir = path.join(workDir, "tmp");
-    const userDir = path.join(workDir, "blender-user");
-    yield* Effect.all([
-      fileSystem.writeFileString(scriptPath, BLEND_EXPORT_SCRIPT),
-      fileSystem.makeDirectory(tempDir),
-      fileSystem.makeDirectory(path.join(userDir, "config"), { recursive: true }),
-      fileSystem.makeDirectory(path.join(userDir, "scripts"), { recursive: true }),
-    ]).pipe(Effect.orDie);
-    yield* input.emit({
-      status: "converting",
-      blenderVersion: input.blender.version,
-      startedAt: yield* Clock.currentTimeMillis,
-    });
-    const output = yield* runner
-      .run({
-        command: input.blender.path,
-        args: conversionArguments({ blendPath: input.blendPath, scriptPath, outputPath }),
-        cwd: path.dirname(input.blendPath),
-        env: BlenderDetection.blenderEnvironment(environment, {
-          TMPDIR: tempDir,
-          TEMP: tempDir,
-          TMP: tempDir,
-          // A private config, so nothing reaches or comes from the user's own Blender settings.
-          BLENDER_USER_RESOURCES: userDir,
-          BLENDER_USER_CONFIG: path.join(userDir, "config"),
-          BLENDER_USER_SCRIPTS: path.join(userDir, "scripts"),
-        }),
-        timeout: input.keepTrying ? Duration.infinity : CONVERSION_TIME_LIMIT,
-        timeoutBehavior: "timedOutResult",
-        maxOutputBytes: 256 * 1024,
-        outputMode: "truncate",
-      })
-      .pipe(Effect.result);
-    if (output._tag === "Failure") {
-      return yield* input.emit({ status: "failed", log: output.failure.message });
-    }
-    if (output.success.timedOut) return yield* input.emit({ status: "slow" });
-    const written = yield* modifiedAt(outputPath);
-    if (output.success.code !== 0 || written === null || written.size === 0) {
-      const log = `${output.success.stdout}\n${output.success.stderr}`.trim();
-      return yield* input.emit({
-        status: "failed",
-        log: log.length > LOG_MAX_CHARACTERS ? log.slice(-LOG_MAX_CHARACTERS) : log,
+  const run = Effect.fnUntraced(
+    function* (input: {
+      readonly blendPath: string;
+      readonly blender: BlenderDetection.DetectedBlender;
+      readonly cacheFileName: string;
+      readonly keepTrying: boolean;
+      readonly emit: (status: BlendConversionStatus) => Effect.Effect<void>;
+    }) {
+      yield* fileSystem.makeDirectory(cacheDir, { recursive: true });
+      // Beside the cache, so the finished GLB is renamed into place rather than copied.
+      const workDir = yield* fileSystem.makeTempDirectoryScoped({
+        directory: cacheDir,
+        prefix: ".convert-",
       });
-    }
-    const target = path.join(cacheDir, input.cacheFileName);
-    yield* fileSystem.rename(outputPath, target).pipe(Effect.orDie);
-    yield* evict(input.cacheFileName);
-    yield* input.emit({
-      status: "ready",
-      cacheFileName: input.cacheFileName,
-      byteLength: written.size,
-      blenderVersion: input.blender.version,
-      convertedAt: yield* Clock.currentTimeMillis,
-      cached: false,
-    });
-  }, Effect.scoped);
+      const scriptPath = path.join(workDir, "t3_export.py");
+      const outputPath = path.join(workDir, "scene.glb");
+      const tempDir = path.join(workDir, "tmp");
+      const userDir = path.join(workDir, "blender-user");
+      yield* Effect.all([
+        fileSystem.writeFileString(scriptPath, BLEND_EXPORT_SCRIPT),
+        fileSystem.makeDirectory(tempDir),
+        fileSystem.makeDirectory(path.join(userDir, "config"), { recursive: true }),
+        fileSystem.makeDirectory(path.join(userDir, "scripts"), { recursive: true }),
+      ]);
+      yield* input.emit({
+        status: "converting",
+        blenderVersion: input.blender.version,
+        startedAt: yield* Clock.currentTimeMillis,
+      });
+      const output = yield* runner
+        .run({
+          command: input.blender.path,
+          args: conversionArguments({ blendPath: input.blendPath, scriptPath, outputPath }),
+          cwd: path.dirname(input.blendPath),
+          env: BlenderDetection.blenderEnvironment(environment, {
+            TMPDIR: tempDir,
+            TEMP: tempDir,
+            TMP: tempDir,
+            // A private config, so nothing reaches or comes from the user's own Blender settings.
+            BLENDER_USER_RESOURCES: userDir,
+            BLENDER_USER_CONFIG: path.join(userDir, "config"),
+            BLENDER_USER_SCRIPTS: path.join(userDir, "scripts"),
+          }),
+          timeout: input.keepTrying ? Duration.infinity : CONVERSION_TIME_LIMIT,
+          timeoutBehavior: "timedOutResult",
+          maxOutputBytes: 256 * 1024,
+          outputMode: "truncate",
+        })
+        .pipe(Effect.result);
+      if (output._tag === "Failure") {
+        return yield* input.emit({ status: "failed", log: output.failure.message });
+      }
+      if (output.success.timedOut) return yield* input.emit({ status: "slow" });
+      const written = yield* modifiedAt(outputPath);
+      if (output.success.code !== 0 || written === null || written.size === 0) {
+        const log = `${output.success.stdout}\n${output.success.stderr}`.trim();
+        return yield* input.emit({
+          status: "failed",
+          log: log.length > LOG_MAX_CHARACTERS ? log.slice(-LOG_MAX_CHARACTERS) : log,
+        });
+      }
+      const target = path.join(cacheDir, input.cacheFileName);
+      yield* fileSystem.rename(outputPath, target);
+      yield* evict(input.cacheFileName);
+      yield* input.emit(
+        yield* ready(input.cacheFileName, {
+          byteLength: written.size,
+          blenderVersion: input.blender.version,
+          convertedAt: yield* Clock.currentTimeMillis,
+          cached: false,
+        }),
+      );
+    },
+    (effect, input) =>
+      effect.pipe(
+        Effect.scoped,
+        // A full disk or an unwritable cache fails this conversion, not the server.
+        Effect.catchTags({
+          PlatformError: (error) => input.emit({ status: "failed", log: error.message }),
+        }),
+      ),
+  );
 
   const convert: BlendConversion["Service"]["convert"] = Effect.fn("BlendConversion.convert")(
     function* (input, emit) {
@@ -302,14 +331,14 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
         const cacheFileName = `${yield* cacheKey(key)}.glb`;
         const hit = yield* cached(cacheFileName);
         if (hit === null) return { cacheFileName, hit: false } as const;
-        yield* emit({
-          status: "ready",
-          cacheFileName,
-          byteLength: hit.size,
-          blenderVersion: blender.version,
-          convertedAt: hit.mtime ?? (yield* Clock.currentTimeMillis),
-          cached: true,
-        });
+        yield* emit(
+          yield* ready(cacheFileName, {
+            byteLength: hit.size,
+            blenderVersion: blender.version,
+            convertedAt: hit.mtime ?? (yield* Clock.currentTimeMillis),
+            cached: true,
+          }),
+        );
         return { cacheFileName, hit: true } as const;
       });
       if (!input.refresh && (yield* fromCache()).hit) return;

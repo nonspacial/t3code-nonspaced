@@ -1,6 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import type { BlendConversionStatus } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -12,6 +13,7 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as AssetSigner from "../assets/AssetSigner.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as KnownWorkspaces from "../workspace/KnownWorkspaces.ts";
@@ -38,6 +40,11 @@ const output = (overrides: Partial<ProcessRunner.ProcessRunOutput> = {}) =>
     ...overrides,
   }) satisfies ProcessRunner.ProcessRunOutput;
 
+/** The cache entry a ready status's signed URL names. */
+const cacheFileNameOf = (relativeUrl: string): string =>
+  JSON.parse(Buffer.from(relativeUrl.split("/")[3]!.split(".")[0]!, "base64url").toString())
+    .fileName;
+
 /** Writes a small GLB where Blender would, as a finished export does. */
 const writeGlb = (input: RunInput) =>
   Effect.gen(function* () {
@@ -56,6 +63,7 @@ const layerFor = (options: {
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProcessRunner.ProcessRunner)({ run: options.run }),
+        Layer.mock(AssetSigner.AssetSigner)({ sign: () => Effect.succeed("signature") }),
         Layer.succeed(BlenderDetection.BlenderDetection, {
           find: Effect.succeed(
             options.blender === undefined
@@ -116,7 +124,7 @@ const workspace = Effect.gen(function* () {
 const convertAll = (input: Parameters<BlendConversion.BlendConversion["Service"]["convert"]>[0]) =>
   Effect.gen(function* () {
     const conversion = yield* BlendConversion.BlendConversion;
-    const seen: Array<BlendConversion.BlendConversionProgress> = [];
+    const seen: Array<BlendConversionStatus> = [];
     yield* conversion.convert(input, (progress) => Effect.sync(() => seen.push(progress)));
     return seen.map(({ status }) => status);
   });
@@ -127,7 +135,7 @@ const startConversion = (
 ) =>
   Effect.gen(function* () {
     const conversion = yield* BlendConversion.BlendConversion;
-    const progress = yield* Queue.unbounded<BlendConversion.BlendConversionProgress>();
+    const progress = yield* Queue.unbounded<BlendConversionStatus>();
     const fiber = yield* conversion
       .convert(input, (value) => Queue.offer(progress, value).pipe(Effect.asVoid))
       .pipe(Effect.forkChild);
@@ -170,9 +178,13 @@ describe("BlendConversion", () => {
         expect(first?.env?.T3CODE_HOME).toBeUndefined();
 
         const conversion = yield* BlendConversion.BlendConversion;
-        const hits: Array<BlendConversion.BlendConversionProgress> = [];
+        const hits: Array<BlendConversionStatus> = [];
         yield* conversion.convert(input, (progress) => Effect.sync(() => hits.push(progress)));
         expect(hits).toEqual([expect.objectContaining({ status: "ready", cached: true })]);
+        // A hit counts as a use now, which the size cap's least-recently-used order reads.
+        const hit = hits[0]?.status === "ready" ? cacheFileNameOf(hits[0].relativeUrl) : "";
+        const used = yield* fileSystem.stat(path.join(yield* cacheDirectory, hit));
+        expect(used.mtime._tag === "Some" && used.mtime.value.getTime()).toBe(Date.UTC(2030, 0, 1));
         expect(runs).toHaveLength(1);
         // The work folder, with Blender's temp files and config, is gone.
         expect(
@@ -181,8 +193,8 @@ describe("BlendConversion", () => {
 
         yield* fileSystem.utimes(
           path.join(root, "parts-5.blend"),
-          Date.UTC(2031, 0, 1),
-          Date.UTC(2031, 0, 1),
+          Date.UTC(2031, 0, 1) / 1000,
+          Date.UTC(2031, 0, 1) / 1000,
         );
         expect(yield* convertAll(input)).toEqual(["converting", "ready"]);
         expect(yield* convertAll({ ...input, refresh: true, keepTrying: true })).toEqual([
@@ -244,7 +256,7 @@ describe("BlendConversion", () => {
       const progress = (layer: ReturnType<typeof layerFor>, value = input) =>
         Effect.gen(function* () {
           const conversion = yield* BlendConversion.BlendConversion;
-          const seen: Array<BlendConversion.BlendConversionProgress> = [];
+          const seen: Array<BlendConversionStatus> = [];
           yield* conversion.convert(value, (item) => Effect.sync(() => seen.push(item)));
           return seen.at(-1);
         }).pipe(Effect.provide(layer));
@@ -293,7 +305,8 @@ describe("BlendConversion", () => {
       ]) {
         yield* conversion.convert({ cwd: root, relativePath }, (progress) =>
           Effect.sync(() => {
-            if (progress.status === "ready") names[relativePath] = progress.cacheFileName;
+            if (progress.status === "ready")
+              names[relativePath] = cacheFileNameOf(progress.relativeUrl);
           }),
         );
       }

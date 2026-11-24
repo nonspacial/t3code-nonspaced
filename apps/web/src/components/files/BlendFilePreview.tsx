@@ -157,8 +157,33 @@ export function BlendFilePreview(props: {
     </PreviewAction>
   );
 
+  const chip =
+    preview === null ? null : (
+      <ConversionChip
+        preview={preview}
+        status={status}
+        cancelled={request.cancelled}
+        error={conversion.error}
+      />
+    );
+  const action =
+    preview === null ? null : (
+      <ConversionAction
+        status={status}
+        cancelled={request.cancelled}
+        error={conversion.error}
+        onCancel={() => setRequest({ ...request, cancelled: true })}
+        onKeepTrying={() => convert({ keepTrying: true })}
+        onRetry={() => convert({})}
+      />
+    );
+
   if (glbUrl !== null && shown !== null && preview !== null) {
-    const updating = status !== null && status !== shown && status.status !== "ready";
+    // The last view stays while a refresh converts again, with that conversion's state over it.
+    const pending =
+      request.cancelled ||
+      conversion.error !== null ||
+      (status !== null && status.status !== "ready");
     return (
       <Suspense fallback={<FileSurfaceLoading />}>
         <ModelFilePreview
@@ -174,16 +199,9 @@ export function BlendFilePreview(props: {
           actions={props.actions}
           view={props.view ?? null}
           annotation={props.annotation ?? null}
-          readyChip={
-            updating ? (
-              <PreviewStatusChip tone="info">
-                {gt("{name} changed · updating…", { name })}
-              </PreviewStatusChip>
-            ) : (
-              <ConvertedChip ready={shown} />
-            )
-          }
+          readyChip={pending ? chip : <ConvertedChip ready={shown} />}
           facts={facts}
+          overlay={action}
         />
       </Suspense>
     );
@@ -222,30 +240,14 @@ export function BlendFilePreview(props: {
       ) : (
         <FileSurfaceLoading className="absolute inset-0" />
       )}
-      {preview ? (
-        <div className="absolute start-2 top-2 flex max-w-[calc(100%-4rem)]">
-          <ConversionChip
-            preview={preview}
-            status={status}
-            cancelled={request.cancelled}
-            error={conversion.error}
-          />
-        </div>
+      {chip ? (
+        <div className="absolute start-2 top-2 flex max-w-[calc(100%-4rem)]">{chip}</div>
       ) : null}
       <div className="absolute end-2 top-2 flex gap-1">
         {props.actions}
         {reload}
       </div>
-      {preview ? (
-        <ConversionAction
-          status={status}
-          cancelled={request.cancelled}
-          failed={conversion.error !== null}
-          onCancel={() => setRequest({ ...request, cancelled: true })}
-          onKeepTrying={() => convert({ keepTrying: true })}
-          onRetry={() => convert({})}
-        />
-      ) : null}
+      {action}
       {facts}
     </div>
   );
@@ -285,15 +287,22 @@ function secondsSince(now: number, at: number) {
 
 function ConvertedChip(props: { readonly ready: ReadyStatus }) {
   const gt = useGT();
-  const now = useNowSecond();
-  const seconds = secondsSince(now, props.ready.convertedAt);
+  if (!props.ready.cached) return <FreshlyConvertedChip ready={props.ready} />;
   return (
     <PreviewStatusChip tone="success">
-      {props.ready.cached
-        ? gt("Converted with Blender {version} · cached", { version: props.ready.blenderVersion })
-        : seconds < 60
-          ? gt("Converted {seconds} s ago", { seconds })
-          : gt("Converted with Blender {version}", { version: props.ready.blenderVersion })}
+      {gt("Converted with Blender {version} · cached", { version: props.ready.blenderVersion })}
+    </PreviewStatusChip>
+  );
+}
+
+function FreshlyConvertedChip(props: { readonly ready: ReadyStatus }) {
+  const gt = useGT();
+  const seconds = secondsSince(useNowSecond(), props.ready.convertedAt);
+  return (
+    <PreviewStatusChip tone="success">
+      {seconds < 60
+        ? gt("Converted {seconds} s ago", { seconds })
+        : gt("Converted with Blender {version}", { version: props.ready.blenderVersion })}
     </PreviewStatusChip>
   );
 }
@@ -395,7 +404,8 @@ function ConversionChip(props: {
 function ConversionAction(props: {
   readonly status: BlendConversionStatus | null;
   readonly cancelled: boolean;
-  readonly failed: boolean;
+  /** Why the conversion request itself failed, shown as its log. */
+  readonly error: string | null;
   readonly onCancel: () => void;
   readonly onKeepTrying: () => void;
   readonly onRetry: () => void;
@@ -403,23 +413,12 @@ function ConversionAction(props: {
   const gt = useGT();
   const [logOpen, setLogOpen] = useState(false);
   const { status } = props;
+  const log = props.error ?? (status?.status === "failed" ? status.log : null);
   const buttons: ReactNode = props.cancelled ? (
     <Button size="xs" variant="glass" onClick={props.onRetry}>
       <T>Convert</T>
     </Button>
-  ) : props.failed ? (
-    <Button size="xs" variant="glass" onClick={props.onRetry}>
-      <T>Try again</T>
-    </Button>
-  ) : status?.status === "waiting" || status?.status === "converting" ? (
-    <Button size="xs" variant="glass" onClick={props.onCancel}>
-      <T>Cancel</T>
-    </Button>
-  ) : status?.status === "slow" ? (
-    <Button size="xs" variant="glass" onClick={props.onKeepTrying}>
-      <T>Keep trying</T>
-    </Button>
-  ) : status?.status === "failed" ? (
+  ) : log !== null ? (
     <>
       <Button size="xs" variant="glass" onClick={props.onRetry}>
         <T>Try again</T>
@@ -428,12 +427,20 @@ function ConversionAction(props: {
         <T>Show log</T>
       </Button>
     </>
+  ) : status?.status === "waiting" || status?.status === "converting" ? (
+    <Button size="xs" variant="glass" onClick={props.onCancel}>
+      <T>Cancel</T>
+    </Button>
+  ) : status?.status === "slow" ? (
+    <Button size="xs" variant="glass" onClick={props.onKeepTrying}>
+      <T>Keep trying</T>
+    </Button>
   ) : null;
   if (buttons === null) return null;
   return (
     <div className="absolute start-2 bottom-2 flex gap-1">
       {buttons}
-      {status?.status === "failed" ? (
+      {log !== null ? (
         <Dialog open={logOpen} onOpenChange={setLogOpen}>
           <DialogPopup className="sm:max-w-2xl">
             <DialogHeader>
@@ -441,7 +448,7 @@ function ConversionAction(props: {
             </DialogHeader>
             <DialogPanel>
               <pre className="max-h-96 overflow-auto rounded-md bg-muted p-3 font-mono text-2xs whitespace-pre-wrap break-all">
-                {status.log || gt("Blender wrote nothing to its log.")}
+                {log || gt("Blender wrote nothing to its log.")}
               </pre>
             </DialogPanel>
           </DialogPopup>

@@ -216,8 +216,7 @@ import * as DeviceService from "./device/DeviceService.ts";
 import * as HostedBlender from "./hostedBlender/HostedBlender.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
-import { issueAssetUrl, issueBlendGlbUrl } from "./assets/AssetAccess.ts";
-import * as AssetSigner from "./assets/AssetSigner.ts";
+import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import {
   attachmentRelativePath,
   chatAttachmentStableKey,
@@ -3163,42 +3162,17 @@ export const layerWsRpc = (
         [WS_METHODS.projectsReadBlendPreview]: (input) =>
           blendPreview.read(input).pipe(Effect.mapError(blendPreviewError(input.relativePath))),
         [WS_METHODS.projectsSubscribeBlendConversion]: (input) =>
-          Stream.unwrap(
-            Effect.map(AssetSigner.AssetSigner, (signer) =>
-              Stream.callback<BlendConversionStatus, BlendPreviewError>((queue) =>
-                Effect.gen(function* () {
-                  const toStatus = (progress: BlendConversion.BlendConversionProgress) =>
-                    progress.status === "ready"
-                      ? issueBlendGlbUrl(progress.cacheFileName).pipe(
-                          Effect.provideService(AssetSigner.AssetSigner, signer),
-                          Effect.map((relativeUrl): BlendConversionStatus => {
-                            const { cacheFileName: _, ...ready } = progress;
-                            return { ...ready, relativeUrl };
-                          }),
-                          Effect.orElseSucceed((): BlendConversionStatus => ({
-                            status: "failed",
-                            log: "The converted file could not be served.",
-                          })),
-                        )
-                      : Effect.succeed<BlendConversionStatus>(progress);
-                  yield* blendConversion
-                    .convert(input, (progress) =>
-                      toStatus(progress).pipe(
-                        Effect.flatMap((status) => Queue.offer(queue, status)),
-                        Effect.asVoid,
-                      ),
-                    )
-                    .pipe(
-                      Effect.mapError(blendPreviewError(input.relativePath)),
-                      Effect.matchCauseEffect({
-                        onFailure: (cause) => Queue.failCause(queue, cause),
-                        onSuccess: () => Queue.end(queue),
-                      }),
-                      Effect.forkScoped,
-                    );
+          Stream.callback<BlendConversionStatus, BlendPreviewError>((queue) =>
+            blendConversion
+              .convert(input, (status) => Queue.offer(queue, status).pipe(Effect.asVoid))
+              .pipe(
+                Effect.mapError(blendPreviewError(input.relativePath)),
+                Effect.matchCauseEffect({
+                  onFailure: (cause) => Queue.failCause(queue, cause),
+                  onSuccess: () => Queue.end(queue),
                 }),
+                Effect.forkScoped,
               ),
-            ),
           ),
         [WS_METHODS.assetsReadBlendPreview]: (input) =>
           blendPreview.readAttachment(input).pipe(
