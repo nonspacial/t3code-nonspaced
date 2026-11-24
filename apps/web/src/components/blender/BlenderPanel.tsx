@@ -218,7 +218,6 @@ function RunningBlender(props: BlenderPanelProps & { readonly state: HostedBlend
     relativePath: props.state.relativePath,
     composerTarget: props.composerTarget,
     projectId: props.projectId,
-    wholeDisplay: stats.server?.target === "output",
     onClose: () => streamRef.current?.focus(),
   });
   const live = props.state.status === "running" && props.visible && stats.frameSize !== null;
@@ -249,7 +248,6 @@ function RunningBlender(props: BlenderPanelProps & { readonly state: HostedBlend
           onControl={setControl}
           handleRef={streamRef}
           canvasRef={annotation.canvasRef}
-          frameRef={annotation.frameRef}
           paused={annotation.editor !== null}
           overlay={annotation.editor}
         />
@@ -482,8 +480,6 @@ function BlenderStream(props: {
   readonly onControl: (control: HostedBlenderControl) => void;
   readonly handleRef: RefObject<BlenderStreamHandle | null>;
   readonly canvasRef: RefObject<HTMLCanvasElement | null>;
-  /** Called after each frame is drawn, with its presentation time when it has one. */
-  readonly frameRef: RefObject<((pts: number | null) => void) | null>;
   /** The annotation editor needs the keyboard and pointer; control stays with this device. */
   readonly paused: boolean;
   /** Covers the stream, inside the same focus boundary: focus there hasn't left Blender. */
@@ -493,7 +489,7 @@ function BlenderStream(props: {
   const access = useHostedBlenderStreamAccess(props.environmentId);
   const containerRef = useRef<HTMLDivElement>(null);
   const boundaryRef = useRef<HTMLDivElement>(null);
-  const { canvasRef, frameRef, paused } = props;
+  const { canvasRef, paused } = props;
   const clientRef = useRef<HostedBlenderStreamClient | null>(null);
   const inputRef = useRef<BlenderInput | null>(null);
   const capturedRef = useRef(false);
@@ -529,18 +525,11 @@ function BlenderStream(props: {
     const canvas = canvasRef.current;
     if (access === null || container === null || canvas === null) return;
     let frameSize = { width: 0, height: 0 };
-    const canvasSink = createCanvasFrameSink(canvas, (width, height) => {
+    const sink = createCanvasFrameSink(canvas, (width, height) => {
       if (width === frameSize.width && height === frameSize.height) return;
       frameSize = { width, height };
       onStats((current) => ({ ...current, frameSize }));
     });
-    const sink: typeof canvasSink = {
-      present: (source, width, height) => {
-        const shown = canvasSink.present(source, width, height);
-        if (shown) frameRef.current?.(source instanceof VideoFrame ? source.timestamp : null);
-        return shown;
-      },
-    };
     const client = createHostedBlenderStreamClient({ access, threadId }, sink, {
       onStatus: setStatus,
       onStats: (server) => onStats((current) => ({ ...current, server })),
@@ -581,7 +570,7 @@ function BlenderStream(props: {
       handleRef.current = null;
       changeControl(VIEW_ONLY);
     };
-  }, [access, environmentId, threadId, onStats, handleRef, canvasRef, frameRef]);
+  }, [access, environmentId, threadId, onStats, handleRef, canvasRef]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- while in control, the pane owns the DOM's pointer lock, the keyboard and the desktop app's menu shortcuts
   useEffect(() => {

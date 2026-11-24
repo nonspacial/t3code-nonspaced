@@ -1,6 +1,5 @@
 //! H.264 encoding with GStreamer: the encoder order, the startup probe, and the live pipeline.
 
-use std::collections::HashMap;
 use std::io::Write;
 use std::os::fd::OwnedFd;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,7 +14,7 @@ use gstreamer_allocators::prelude::*;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
 
-use crate::control::{self, Event};
+use crate::control;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EncoderKind {
@@ -263,10 +262,6 @@ pub struct Encoder {
     src: gst_app::AppSrc,
     encoder: gst::Element,
     t0: Instant,
-    /// The presentation time given to the last buffer pushed.
-    last_pts: gst::ClockTime,
-    /// Marked input buffers by presentation time; the encoder's output reports them.
-    marks: Arc<Mutex<HashMap<gst::ClockTime, u32>>>,
     caps: Option<gst::Caps>,
     last: Option<gst::Buffer>,
 }
@@ -292,8 +287,6 @@ impl Encoder {
             .and_then(|element| element.downcast::<gst_app::AppSink>().ok())
             .ok_or("missing appsink")?;
         let encoder = pipeline.by_name("enc").ok_or("missing encoder")?;
-        let marks: Arc<Mutex<HashMap<gst::ClockTime, u32>>> = Arc::default();
-        let output_marks = Arc::clone(&marks);
         sink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
                 .new_sample(move |sink| {
@@ -304,21 +297,10 @@ impl Encoder {
                     let key = !buffer.flags().contains(gst::BufferFlags::DELTA_UNIT);
                     let pts_us = buffer.pts().map(|pts| pts.useconds()).unwrap_or(0);
                     let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                    // Encoders may shift output times (x264 adds 1000 hours); the running time
-                    // is the input buffer's presentation time again.
-                    let mark = sample
-                        .segment()
-                        .and_then(|segment| segment.downcast_ref::<gst::ClockTime>())
-                        .zip(buffer.pts())
-                        .and_then(|(segment, pts)| segment.to_running_time(pts))
-                        .and_then(|input| output_marks.lock().unwrap().remove(&input));
                     let mut out = output.lock().unwrap();
                     if control::write_video(&mut *out, key, pts_us, &map).is_err() {
                         output_closed.store(true, Ordering::Relaxed);
                         return Err(gst::FlowError::Eos);
-                    }
-                    if let Some(id) = mark {
-                        let _ = control::write_event(&mut *out, &Event::FrameMarked { id, pts_us });
                     }
                     Ok(gst::FlowSuccess::Ok)
                 })
@@ -345,8 +327,6 @@ impl Encoder {
             src,
             encoder,
             t0: Instant::now(),
-            last_pts: gst::ClockTime::ZERO,
-            marks,
             caps: None,
             last: None,
         })
@@ -448,14 +428,8 @@ impl Encoder {
             .set_property("bitrate", self.kind.bitrate_value(kbps.max(1)));
     }
 
-    /// Reports the buffer just pushed as `id` once it is encoded, with its output time.
-    pub fn mark_last(&self, id: u32) {
-        self.marks.lock().unwrap().insert(self.last_pts, id);
-    }
-
-    fn stamp(&mut self, buffer: &mut gst::Buffer) {
+    fn stamp(&self, buffer: &mut gst::Buffer) {
         let pts = gst::ClockTime::from_nseconds(self.t0.elapsed().as_nanos() as u64);
-        self.last_pts = pts;
         buffer.get_mut().unwrap().set_pts(pts);
     }
 }
@@ -480,24 +454,6 @@ pub struct Settle {
     frames: u8,
     remaining: u8,
     deadline: Option<Instant>,
-}
-
-/// A request to report the next freshly captured frame. Repeats of cached pixels (settle frames,
-/// keyframe carriers) get a new presentation time but show older pixels, so they never count.
-#[derive(Debug, Default)]
-pub struct FrameMark {
-    pending: Option<u32>,
-}
-
-impl FrameMark {
-    pub fn arm(&mut self, id: u32) {
-        self.pending = Some(id);
-    }
-
-    /// For a fresh capture just pushed: the request it answers, if one is armed.
-    pub fn on_fresh_frame(&mut self) -> Option<u32> {
-        self.pending.take()
-    }
 }
 
 pub const SETTLE_DELAY: Duration = Duration::from_millis(150);
@@ -661,19 +617,6 @@ mod tests {
             Some(EncoderKind::OpenH264)
         );
         assert_eq!(EncoderKind::from_name("ffmpeg"), None);
-    }
-
-    #[test]
-    fn marks_only_the_first_fresh_frame_after_it_is_armed() {
-        let mut mark = FrameMark::default();
-        assert_eq!(mark.on_fresh_frame(), None, "nothing is marked until asked");
-        mark.arm(7);
-        // Repeats of cached pixels (settle and keyframe carriers) never reach `on_fresh_frame`.
-        assert_eq!(mark.on_fresh_frame(), Some(7));
-        assert_eq!(mark.on_fresh_frame(), None, "one frame per request");
-        mark.arm(8);
-        mark.arm(9);
-        assert_eq!(mark.on_fresh_frame(), Some(9), "the newest request wins");
     }
 
     #[test]

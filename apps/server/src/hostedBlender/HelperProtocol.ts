@@ -32,10 +32,6 @@ const HelperEvent = Schema.Union([
     signal: Schema.NullOr(Schema.Number),
   }),
   Schema.Struct({ type: Schema.Literal("error"), message: Schema.String }),
-  /** `markNextFrame` is in effect: the next fresh capture will be reported as `id`. */
-  Schema.Struct({ type: Schema.Literal("markArmed"), id: Schema.Int }),
-  /** The fresh capture marked `id` goes out with this presentation time. */
-  Schema.Struct({ type: Schema.Literal("frameMarked"), id: Schema.Int, ptsUs: Schema.Number }),
 ]);
 export type HelperEvent = typeof HelperEvent.Type;
 const decodeHelperEvent = Schema.decodeUnknownOption(Schema.fromJsonString(HelperEvent));
@@ -109,7 +105,6 @@ export type HelperCommand =
   | { readonly type: "keyframe" }
   | { readonly type: "pause" }
   | { readonly type: "resume" }
-  | { readonly type: "markNextFrame"; readonly id: number }
   | { readonly type: "resize"; readonly width: number; readonly height: number }
   | { readonly type: "pointerPosition"; readonly x: number; readonly y: number }
   | { readonly type: "pointerMotion"; readonly dx: number; readonly dy: number }

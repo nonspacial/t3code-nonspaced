@@ -97,8 +97,8 @@ const encodeControlCommand = Schema.encodeSync(
 
 // Requests about the person's viewport window, each answered by one `reply`.
 const ControlRequest = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("view"), id: Schema.Int }),
-  Schema.Struct({ type: Schema.Literal("redraw"), id: Schema.Int }),
+  /** `screenshot` is a file name for the render, in the control socket's private folder. */
+  Schema.Struct({ type: Schema.Literal("view"), id: Schema.Int, screenshot: Schema.String }),
   Schema.Struct({
     type: Schema.Literal("hits"),
     id: Schema.Int,
@@ -118,10 +118,13 @@ type ControlRequestBody = ControlRequest extends infer Request
     : never
   : never;
 const encodeControlRequest = Schema.encodeSync(Schema.fromJsonString(ControlRequest));
-/** What the add-on reads; the helper names the frame redrawn from it. */
-const AddonViewCapture = HostedBlenderViewCapture.mapFields(({ frame: _, ...fields }) => fields);
-/** How long to wait for the helper to arm a mark, and then for the marked frame. */
-const FRAME_MARK_TIMEOUT = Duration.seconds(1);
+/** What the add-on renders; the server reads the PNG it wrote. */
+const AddonViewCapture = Schema.Struct({
+  ...HostedBlenderViewCapture.fields,
+  screenshot: Schema.Struct({ width: Schema.Int, height: Schema.Int }),
+});
+const MAX_SCREENSHOT_BYTES = 32 * 1024 * 1024;
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 export type HostedBlenderViewerOutput =
   | { readonly _tag: "frame"; readonly data: Uint8Array }
@@ -195,11 +198,8 @@ interface Instance {
   memoryBytes: number | null;
   viewport: { readonly width: number; readonly height: number } | null;
   lastKeyframeRequest: number;
-  /** Frame marks the helper hasn't armed or reported yet, by id. */
-  readonly frameMarks: Map<
-    number,
-    { readonly armed: Deferred.Deferred<void>; readonly marked: Deferred.Deferred<number> }
-  >;
+  /** The private folder of the control socket, where the add-on writes screenshots. */
+  controlDir: string | null;
   helper: (command: HelperCommand) => Effect.Effect<void>;
   control: ControlConnection | null;
   /** What the add-on says while `quit` waits on a save. */
@@ -253,6 +253,7 @@ const make = Effect.gen(function* () {
     | ProjectService.ProjectService
   >();
   const serviceScope = yield* Effect.scope;
+  let screenshots = 0;
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
   let nextViewerId = 0;
 
@@ -456,16 +457,6 @@ const make = Effect.gen(function* () {
       case "exited":
         // labwc or Blender is gone; the helper has nothing left to show.
         return yield* instance.helper({ type: "quit" });
-      case "markArmed": {
-        const mark = instance.frameMarks.get(event.id);
-        if (mark) yield* Deferred.succeed(mark.armed, undefined);
-        return;
-      }
-      case "frameMarked": {
-        const mark = instance.frameMarks.get(event.id);
-        if (mark) yield* Deferred.succeed(mark.marked, event.ptsUs);
-        return;
-      }
       case "error":
         return yield* Effect.logWarning("hosted Blender's hidden display reported an error", {
           message: event.message,
@@ -619,6 +610,7 @@ const make = Effect.gen(function* () {
       });
       yield* fileSystem.chmod(controlDir, 0o700);
       const controlSocket = path.join(controlDir, "control.sock");
+      instance.controlDir = controlDir;
       const mcpPort = yield* net.reserveLoopbackPort();
       // The file `open` checked must still be that file, not a link swapped in since.
       if ((yield* fileSystem.realPath(instance.blendPath)) !== instance.blendPath) {
@@ -798,7 +790,7 @@ const make = Effect.gen(function* () {
       memoryBytes: null,
       viewport: null,
       lastKeyframeRequest: 0,
-      frameMarks: new Map(),
+      controlDir: null,
       helper: () => Effect.void,
       control: null,
       saveReplies: null,
@@ -1025,37 +1017,34 @@ const make = Effect.gen(function* () {
     "HostedBlender.captureView",
   )(function* (threadId) {
     yield* Effect.annotateCurrentSpan({ threadId });
-    const camera = yield* ask(threadId, { type: "view" }, AddonViewCapture);
-    return { ...camera, frame: yield* redrawnFrame(threadId) };
-  });
-
-  /**
-   * Has Blender redraw the person's viewport after its camera was read, and the helper name the
-   * first frame it captures after that, which shows the camera. Null when none comes in time.
-   */
-  const redrawnFrame = Effect.fnUntraced(function* (threadId: ThreadId) {
-    const instance = instances.get(threadId);
-    if (instance === undefined) return null;
-    instance.lastRequestId += 1;
-    const id = instance.lastRequestId;
-    const mark = { armed: yield* Deferred.make<void>(), marked: yield* Deferred.make<number>() };
-    instance.frameMarks.set(id, mark);
-    return yield* Effect.gen(function* () {
-      yield* instance.helper({ type: "markNextFrame", id });
-      const armed = yield* Deferred.await(mark.armed).pipe(
-        Effect.timeoutOption(FRAME_MARK_TIMEOUT),
-      );
-      if (Option.isNone(armed)) return null;
-      // The mark is armed before the redraw, so the redrawn frame is the one it catches.
-      yield* ask(threadId, { type: "redraw" }, Schema.Literal(true));
-      const marked = yield* Deferred.await(mark.marked).pipe(
-        Effect.timeoutOption(FRAME_MARK_TIMEOUT),
-      );
-      return Option.getOrNull(marked);
+    const controlDir = instances.get(threadId)?.controlDir ?? null;
+    if (controlDir === null) return yield* new HostedBlenderError({ reason: "notRunning" });
+    screenshots += 1;
+    const file = path.join(controlDir, `view-${screenshots}.png`);
+    // Blender renders the viewport region with the camera it reports, so the two always agree.
+    const view = yield* ask(
+      threadId,
+      { type: "view", screenshot: path.basename(file) },
+      AddonViewCapture,
+    ).pipe(Effect.onError(() => fileSystem.remove(file, { force: true }).pipe(Effect.ignore)));
+    const png = yield* Effect.gen(function* () {
+      // Only Blender writes in that folder; a link or anything odd there is refused.
+      const info = yield* fileSystem.lstat(file);
+      if (info.type !== "File" || Number(info.size) > MAX_SCREENSHOT_BYTES) return null;
+      const bytes = yield* fileSystem.readFile(file);
+      return PNG_SIGNATURE.every((byte, index) => bytes[index] === byte) ? bytes : null;
     }).pipe(
       Effect.orElseSucceed(() => null),
-      Effect.ensuring(Effect.sync(() => instance.frameMarks.delete(id))),
+      Effect.ensuring(fileSystem.remove(file, { force: true }).pipe(Effect.ignore)),
     );
+    if (png === null) return yield* new HostedBlenderError({ reason: "noReply" });
+    return {
+      ...view,
+      screenshot: {
+        ...view.screenshot,
+        dataUrl: `data:image/png;base64,${Buffer.from(png).toString("base64")}`,
+      },
+    };
   });
 
   const findHits: HostedBlender["Service"]["findHits"] = Effect.fn("HostedBlender.findHits")(

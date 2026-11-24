@@ -10,6 +10,7 @@ import sys
 import time
 
 import bpy
+import gpu
 from bpy.app.handlers import persistent
 from mathutils import Matrix, Vector
 
@@ -109,38 +110,80 @@ def _viewport():
     return None
 
 
-def _camera_view(space, scene):
-    # A viewport can look through a camera of its own instead of the scene's.
-    rv3d = space.region_3d
-    camera = space.camera if space.use_local_camera and space.camera else scene.camera
-    if rv3d.view_perspective == "CAMERA" and camera is not None:
-        position = camera.matrix_world.translation
-        forward = camera.matrix_world.to_quaternion() @ Vector((0.0, 0.0, -1.0))
-        target = position + forward * rv3d.view_distance
-    else:
-        target = rv3d.view_location
-        position = target + rv3d.view_rotation @ Vector((0.0, 0.0, rv3d.view_distance))
+def _camera_view(view_matrix, distance):
+    # From the matrix the screenshot is drawn with, so the camera and the pixels always agree;
+    # a viewport looking through a camera has that camera's matrix here.
+    inverse = view_matrix.inverted()
+    position = inverse.translation
+    forward = (inverse.to_3x3() @ Vector((0.0, 0.0, -1.0))).normalized()
+    target = position + forward * distance
     return {"position": list(position), "target": list(target), "upAxis": "z"}
 
 
-def _view():
+def _write_png(path, width, height, rgba):
+    import numpy
+    import zlib
+
+    # GPU rows run bottom-up; PNG rows top-down, each led by filter byte 0 (none).
+    pixels = numpy.asarray(rgba, dtype=numpy.uint8).reshape(height, width, 4)[::-1, :, :3]
+    rows = numpy.zeros((height, width * 3 + 1), dtype=numpy.uint8)
+    rows[:, 1:] = pixels.reshape(height, width * 3)
+
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data))
+
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(rows.tobytes(), 3))
+        + chunk(b"IEND", b"")
+    )
+    partial = path + ".part"
+    with open(partial, "wb") as file:
+        file.write(png)
+    os.replace(partial, path)
+
+
+def _view(command):
+    # The screenshot goes beside the control socket, in T3's private folder for this Blender.
+    name = command["screenshot"]
+    if os.path.basename(name) != name or not name.endswith(".png"):
+        return None
     found = _viewport()
     if found is None:
         return None
-    window, _area, region, space = found
-    width, height = window.width, window.height
-    # The matrix the last frame was drawn with; a "redraw" request draws a frame from it.
-    matrix = [value for row in space.region_3d.perspective_matrix for value in row]
+    window, area, region, space = found
+    rv3d = space.region_3d
+    view_matrix = rv3d.view_matrix.copy()
+    window_matrix = rv3d.window_matrix.copy()
+    width, height = region.width, region.height
+    # One draw: the pixels and the camera come from the same matrices.
+    offscreen = gpu.types.GPUOffScreen(width, height)
+    try:
+        with bpy.context.temp_override(window=window, area=area, region=region):
+            offscreen.draw_view3d(
+                window.scene,
+                window.view_layer,
+                space,
+                region,
+                view_matrix,
+                window_matrix,
+                do_color_management=True,
+            )
+        with offscreen.bind():
+            framebuffer = gpu.state.active_framebuffer_get()
+            rgba = framebuffer.read_color(0, 0, width, height, 4, 0, "UBYTE")
+    finally:
+        offscreen.free()
+    _write_png(os.path.join(os.path.dirname(SOCKET_PATH), name), width, height, rgba)
+    perspective = window_matrix @ view_matrix
     return {
-        "cameraView": _camera_view(space, window.scene),
+        "screenshot": {"width": width, "height": height},
+        "cameraView": _camera_view(view_matrix, rv3d.view_distance),
         "projection": {
-            "matrix": matrix,
-            "region": {
-                "x": region.x / width,
-                "y": 1 - (region.y + region.height) / height,
-                "width": region.width / width,
-                "height": region.height / height,
-            },
+            "matrix": [value for row in perspective for value in row],
+            # The screenshot is the 3D view's drawing region, so marks on it cover it whole.
+            "region": {"x": 0, "y": 0, "width": 1, "height": 1},
         },
     }
 
@@ -183,14 +226,6 @@ def _hits(command):
     return hits
 
 
-def _redraw():
-    found = _viewport()
-    if found is None:
-        return None
-    found[1].tag_redraw()
-    return True
-
-
 def _set_view(command):
     found = _viewport()
     if found is None:
@@ -211,8 +246,7 @@ def _set_view(command):
 def _handle(command):
     kind = command.get("type")
     requests = {
-        "view": _view,
-        "redraw": _redraw,
+        "view": lambda: _view(command),
         "hits": lambda: _hits(command),
         "setView": lambda: _set_view(command),
     }

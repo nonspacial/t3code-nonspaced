@@ -1,15 +1,14 @@
-import * as Deferred from "effect/Deferred";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Fiber from "effect/Fiber";
-import type * as Scope from "effect/Scope";
+import * as Option from "effect/Option";
+import * as Scope from "effect/Scope";
 import type * as Semaphore from "effect/Semaphore";
 
 /**
  * Takes a permit of `slot` and sends, freeing it once `settled` (the add-on may still be working
- * after its caller gives up). A taker hands the permit over on exit; a caller that gives up
- * cancels it, and a permit granted meanwhile is freed. False when none came within `timeout`.
+ * after its caller gives up). The permit's release is tied to a scope from the moment it's
+ * granted; a caller that gives up closes it. False when no permit came within `timeout`.
  */
 export const sendHoldingSlot = (input: {
   readonly slot: Semaphore.Semaphore;
@@ -20,30 +19,20 @@ export const sendHoldingSlot = (input: {
 }): Effect.Effect<boolean> =>
   Effect.uninterruptibleMask((restore) =>
     Effect.gen(function* () {
-      const handoff = { owner: "waiting" as "waiting" | "caller" | "abandoned" };
-      const handedOver = yield* Deferred.make<void>();
-      const taker = yield* Effect.interruptible(input.slot.take(1)).pipe(
-        Effect.onExit((taken) => {
-          if (Exit.isFailure(taken)) return Effect.void;
-          if (handoff.owner === "abandoned") return Effect.asVoid(input.slot.release(1));
-          handoff.owner = "caller";
-          return Deferred.succeed(handedOver, undefined).pipe(Effect.asVoid);
-        }),
+      const permit = yield* Scope.make();
+      const taken = yield* restore(
+        input.slot
+          .takeScoped(1)
+          .pipe(Effect.provideService(Scope.Scope, permit), Effect.timeoutOption(input.timeout)),
+      ).pipe(Effect.exit);
+      if (Exit.isFailure(taken) || Option.isNone(taken.value)) {
+        yield* Scope.close(permit, Exit.void);
+        return Exit.isFailure(taken) ? yield* Effect.failCause(taken.cause) : false;
+      }
+      yield* input.settled.pipe(
+        Effect.ensuring(Scope.close(permit, Exit.void)),
         Effect.forkIn(input.scope),
       );
-      const waited = yield* restore(
-        Deferred.await(handedOver).pipe(Effect.timeoutOption(input.timeout)),
-      ).pipe(Effect.exit);
-      if (handoff.owner !== "caller") {
-        handoff.owner = "abandoned";
-        yield* Fiber.interrupt(taker);
-        return Exit.isFailure(waited) ? yield* Effect.failCause(waited.cause) : false;
-      }
-      if (Exit.isFailure(waited)) {
-        yield* input.slot.release(1);
-        return yield* Effect.failCause(waited.cause);
-      }
-      yield* input.settled.pipe(Effect.ensuring(input.slot.release(1)), Effect.forkIn(input.scope));
       yield* input.send;
       return true;
     }),

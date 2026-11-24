@@ -15,18 +15,15 @@ import { ModelAnnotationEditor } from "../files/ModelAnnotationEditor";
 import { useAttachModelAnnotation } from "../files/useAttachModelAnnotation";
 import { type BlenderHitsRequest, blenderAnnotationPayload } from "./blenderAnnotation";
 
-/** A pane frame held still to draw on, with the viewport window's camera as it froze. */
+/** A frame held still to draw on, with the camera it was drawn from. */
 export interface FrozenBlenderFrame {
   readonly image: HTMLCanvasElement;
-  /** The frame's size on screen in CSS pixels; marks are measured in it. */
+  /** The frame's size in CSS pixels; marks are measured in it. */
   readonly width: number;
   readonly height: number;
-  /** Null when Blender couldn't say, or the frame can't be tied to its answer. */
+  /** Null for a stream frame, which can't be tied to a camera. */
   readonly capture: HostedBlenderViewCapture | null;
 }
-
-/** How long the pane waits for the frame Blender draws after reporting its camera. */
-const REDRAW_WAIT_MS = 1000;
 
 const hasFrame = (canvas: HTMLCanvasElement | null): canvas is HTMLCanvasElement => {
   const box = canvas?.getBoundingClientRect();
@@ -34,36 +31,48 @@ const hasFrame = (canvas: HTMLCanvasElement | null): canvas is HTMLCanvasElement
 };
 
 /** Copies the stream's current frame, which keeps changing underneath while the person draws. */
-function freezeBlenderFrame(
-  canvas: HTMLCanvasElement | null,
-  capture: HostedBlenderViewCapture | null,
-): FrozenBlenderFrame | null {
+function freezeStreamFrame(canvas: HTMLCanvasElement | null): FrozenBlenderFrame | null {
   if (!hasFrame(canvas)) return null;
   const { width, height } = canvas.getBoundingClientRect();
   const image = document.createElement("canvas");
   image.width = canvas.width;
   image.height = canvas.height;
   image.getContext("2d")?.drawImage(canvas, 0, 0);
-  return { image, width, height, capture };
+  return { image, width, height, capture: null };
+}
+
+/** Blender's own render of the viewport region, drawn with the capture's camera. */
+async function renderedFrame(
+  capture: HostedBlenderViewCapture,
+): Promise<FrozenBlenderFrame | null> {
+  const rendered = new Image();
+  rendered.src = capture.screenshot.dataUrl;
+  try {
+    await rendered.decode();
+  } catch {
+    return null;
+  }
+  const image = document.createElement("canvas");
+  image.width = rendered.naturalWidth;
+  image.height = rendered.naturalHeight;
+  image.getContext("2d")?.drawImage(rendered, 0, 0);
+  const ratio = globalThis.devicePixelRatio || 1;
+  return { image, width: image.width / ratio, height: image.height / ratio, capture };
 }
 
 /**
- * Screenshot & annotate for the Blender pane. The capture names the frame Blender redrew from
- * its camera, by presentation time, and that frame is the one frozen; without it (none named, or
- * it never arrives) the screenshot goes without camera and hits. The stream calls `frameRef`
- * with each frame's presentation time.
+ * Screenshot & annotate for the Blender pane. Blender renders the viewport and reports the
+ * camera it rendered with, so the frozen image and the camera are one view; if it can't, the
+ * stream's frame is frozen instead, without camera or hits.
  */
 export function useBlenderAnnotation(input: {
   readonly threadRef: ScopedThreadRef;
   readonly relativePath: string;
   readonly composerTarget: ComposerThreadTarget;
   readonly projectId?: ProjectId | undefined;
-  /** The stream shows the whole display, so a point on it isn't a point in the viewport window. */
-  readonly wholeDisplay: boolean;
   readonly onClose: () => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const frameRef = useRef<((pts: number | null) => void) | null>(null);
   const [frozen, setFrozen] = useState<FrozenBlenderFrame | null>(null);
   const [capturing, setCapturing] = useState(false);
   const captureView = useAtomCommand(hostedBlenderEnvironment.captureView, {
@@ -76,25 +85,9 @@ export function useBlenderAnnotation(input: {
     if (!hasFrame(canvasRef.current)) return;
     setCapturing(true);
     const result = await captureView({ environmentId, input: { threadId } });
-    if (result._tag !== "Success" || result.value.frame === null) {
-      setCapturing(false);
-      setFrozen(freezeBlenderFrame(canvasRef.current, null));
-      return;
-    }
-    const capture = result.value;
-    const marked = result.value.frame;
-    const freeze = (redrawn: boolean) => {
-      if (frameRef.current !== onFrame) return;
-      frameRef.current = null;
-      clearTimeout(gaveUp);
-      setCapturing(false);
-      setFrozen(freezeBlenderFrame(canvasRef.current, redrawn ? capture : null));
-    };
-    const onFrame = (pts: number | null) => {
-      if (pts === marked) freeze(true);
-    };
-    frameRef.current = onFrame;
-    const gaveUp = setTimeout(() => freeze(false), REDRAW_WAIT_MS);
+    const rendered = result._tag === "Success" ? await renderedFrame(result.value) : null;
+    setCapturing(false);
+    setFrozen(rendered ?? freezeStreamFrame(canvasRef.current));
   };
 
   const editor = frozen ? (
@@ -104,17 +97,10 @@ export function useBlenderAnnotation(input: {
       composerTarget={input.composerTarget}
       environmentId={environmentId}
       projectId={input.projectId}
-      findHits={
-        input.wholeDisplay
-          ? null
-          : async (request) => {
-              const result = await findHits({
-                environmentId,
-                input: { threadId, ...request },
-              });
-              return result._tag === "Success" ? result.value : null;
-            }
-      }
+      findHits={async (request) => {
+        const result = await findHits({ environmentId, input: { threadId, ...request } });
+        return result._tag === "Success" ? result.value : null;
+      }}
       onClose={() => {
         setFrozen(null);
         input.onClose();
@@ -124,7 +110,6 @@ export function useBlenderAnnotation(input: {
 
   return {
     canvasRef,
-    frameRef,
     start: capturing || frozen ? null : () => void start(),
     editor,
   };

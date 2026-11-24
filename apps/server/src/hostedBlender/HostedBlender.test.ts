@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeZlib from "node:zlib";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, expect, it } from "@effect/vitest";
@@ -10,7 +11,6 @@ import { type HostedBlenderThreadState, ThreadId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import * as Context from "effect/Context";
-import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -129,20 +129,20 @@ event({"type": "ready", "capture": "extImageCopyCapture", "target": "window",
        "encoder": "x264enc", "width": 1280, "height": 720, "cursorTracking": True})
 if scenario != "never-shows":
     event({"type": "windowCaptured", "title": "3D Viewport"})
-armed = [None]
-def video(pts):
-    frame = struct.pack(">IBBHQ", 0x53454D55, 1, 1, 0, pts) + b"\x00\x00\x00\x01\x65"
-    with lock:
-        sys.stdout.buffer.write(struct.pack(">IB", len(frame) + 1, 2) + frame)
-        sys.stdout.buffer.flush()
-def redraw():
-    # A frame captured before the redraw is still on its way, at a later time than any sent so
-    # far; then the redrawn frame, the one fresh capture after the mark.
-    video(5000)
-    if scenario != "no-mark" and armed[0] is not None:
-        video(6000)
-        event({"type": "frameMarked", "id": armed[0], "ptsUs": 6000})
-        armed[0] = None
+# A 1x1 PNG, as the add-on renders the viewport into the control socket's private folder.
+PIXEL = bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de"
+    "0000000c4944415408d763f8cfc0000003010100c9fe92ef0000000049454e44ae426082")
+shots = os.path.dirname(t3[t3.index("--t3-control") + 1])
+def screenshot(name):
+    path = os.path.join(shots, name)
+    if scenario == "linked-shot":
+        # A real PNG, but outside the private folder: only a plain file there is read.
+        outside = os.path.join(os.path.dirname(os.environ["STANDIN_SAVES"]), "outside.png")
+        open(outside, "wb").write(PIXEL)
+        os.symlink(outside, path)
+    else:
+        open(path, "wb").write(PIXEL)
 def control():
     connection, _ = server.accept()
     connection.sendall(b'{"type": "hello", "pid": %d}\n' % os.getpid())
@@ -163,17 +163,15 @@ def control():
             outstanding[0] += 1
             threading.Thread(target=slow_hits, args=(command,), daemon=True).start()
             continue
-        if kind == "redraw":
-            redraw()
-            connection.sendall((json.dumps({"type": "reply", "id": command["id"], "result": True}) + "\n").encode())
-            continue
         if kind in ("view", "hits", "setView") and scenario == "drop-on-view":
             connection.close()
             return
         if kind == "view" and scenario == "no-viewport":
             result = None
         elif kind == "view":
-            result = {"cameraView": {**view, "upAxis": "z"},
+            screenshot(command["screenshot"])
+            result = {"screenshot": {"width": 1, "height": 1},
+                      "cameraView": {**view, "upAxis": "z"},
                       "projection": {"matrix": [2] + [0] * 15,
                                      "region": {"x": 0.1, "y": 0.05, "width": 0.8, "height": 0.9}}}
         elif kind == "hits":
@@ -214,10 +212,7 @@ def control():
 threading.Thread(target=control, daemon=True).start()
 for line in sys.stdin:
     command = json.loads(line)
-    if command.get("type") == "markNextFrame":
-        armed[0] = command["id"]
-        event({"type": "markArmed", "id": armed[0]})
-    if command.get("type") not in ("quit", "keyframe", "pause", "resume", "markNextFrame"):
+    if command.get("type") not in ("quit", "keyframe", "pause", "resume"):
         with open(os.environ["STANDIN_INPUT"], "a") as log:
             log.write(line)
     # A middle-drag orbit: Blender hides its cursor while the button is down.
@@ -365,12 +360,12 @@ describe("Save and quit", () => {
 describe("The viewport window", () => {
   it.live("reads its camera and casts each mark through the frozen view", () =>
     Effect.gen(function* () {
-      const { service, openReady } = yield* standIn("view", "");
+      const { service, openReady, runtime } = yield* standIn("view", "");
       yield* openReady;
       const capture = yield* service.captureView(threadId);
       assert.deepStrictEqual(capture, {
-        // The frame Blender redrew from this camera, not the older one that arrived first.
-        frame: 6000,
+        // Blender's own render of the viewport, drawn with this camera, read and then removed.
+        screenshot: { dataUrl: `data:image/png;base64,${STANDIN_PNG}`, width: 1, height: 1 },
         cameraView: { position: [7, -7, 5], target: [0, 0, 1], upAxis: "z" },
         projection: {
           matrix: [2, ...Array.from({ length: 15 }, () => 0)],
@@ -383,6 +378,11 @@ describe("The viewport window", () => {
         marks: [[{ x: 0.5, y: 0.25 }], []],
       });
       assert.deepStrictEqual(hits, [{ object: "m2", point: [0.5, 0.25, 2] }, null]);
+      expect(
+        NodeFS.readdirSync(runtime, { recursive: true }).filter((name) =>
+          String(name).endsWith(".png"),
+        ),
+      ).toEqual([]);
     }).pipe(Effect.scoped),
   );
 
@@ -479,13 +479,12 @@ describe("The viewport window", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("ties the camera to no frame when the helper marks none", () =>
+  it.live("reads a screenshot only as a plain file in Blender's private folder", () =>
     Effect.gen(function* () {
-      const { service, openReady } = yield* standIn("no-mark", "no-mark");
+      const { service, openReady } = yield* standIn("linked-shot", "linked-shot");
       yield* openReady;
-      const capture = yield* service.captureView(threadId);
-      expect(capture.frame).toBeNull();
-      expect(capture.cameraView.upAxis).toBe("z");
+      const failed = yield* service.captureView(threadId).pipe(Effect.flip);
+      expect(failed.reason).toBe("noReply");
     }).pipe(Effect.scoped),
   );
 
@@ -828,6 +827,55 @@ describe("HostedBlender.open", () => {
   );
 });
 
+/** The stand-in add-on's 1x1 screenshot. */
+const STANDIN_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+/** Decodes the add-on's screenshots: 8-bit RGB PNG, every row unfiltered. */
+const decodePng = (dataUrl: string) => {
+  const bytes = Buffer.from(dataUrl.slice("data:image/png;base64,".length), "base64");
+  const width = bytes.readUInt32BE(16);
+  const height = bytes.readUInt32BE(20);
+  expect([bytes[24], bytes[25]]).toEqual([8, 2]);
+  const chunks: Buffer[] = [];
+  for (let offset = 8; offset < bytes.length;) {
+    const length = bytes.readUInt32BE(offset);
+    if (bytes.toString("ascii", offset + 4, offset + 8) === "IDAT")
+      chunks.push(bytes.subarray(offset + 8, offset + 8 + length));
+    offset += 12 + length;
+  }
+  const raw = NodeZlib.inflateSync(Buffer.concat(chunks));
+  const stride = width * 3 + 1;
+  return {
+    width,
+    height,
+    pixel: (x: number, y: number) => {
+      const row = Math.round(y) * stride;
+      expect(raw[row]).toBe(0);
+      const start = row + 1 + Math.round(x) * 3;
+      return [...raw.subarray(start, start + 3)];
+    },
+  };
+};
+
+/** Where a scene point lands in a screenshot, through a row-major perspective matrix. */
+const projectToPixel = (
+  matrix: ReadonlyArray<number>,
+  [x, y, z]: readonly [number, number, number],
+  size: { readonly width: number; readonly height: number },
+) => {
+  const row = (index: number) =>
+    matrix[index * 4]! * x +
+    matrix[index * 4 + 1]! * y +
+    matrix[index * 4 + 2]! * z +
+    matrix[index * 4 + 3]!;
+  const w = row(3);
+  return {
+    x: ((row(0) / w + 1) / 2) * size.width,
+    y: ((1 - row(1) / w) / 2) * size.height,
+  };
+};
+
 // The file's 3D views look through a camera of their own, which isn't the scene's camera.
 const LOCAL_CAMERA_SETUP = String.raw`import bpy
 camera = bpy.data.objects.new("PersonCamera", bpy.data.cameras.new("PersonCamera"))
@@ -999,27 +1047,13 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
       expect(firstFrame.data[5]! & 1).toBe(1);
 
       // The viewport looks through its own local camera, not the scene's (until the orbit below
-      // leaves camera view). Even with the stream quiet, reading the camera has Blender redraw
-      // the viewport and the helper name that frame, and it reaches the viewer.
-      const nextFrame = (wait: Duration.Input) =>
-        Queue.take(viewer.output).pipe(
-          Effect.repeat({ until: (output) => output._tag === "frame" }),
-          Effect.timeoutOption(wait),
-        );
-      const framePts = (data: Uint8Array) =>
-        Number(new DataView(data.buffer, data.byteOffset).getBigUint64(8));
-      yield* viewer.ack;
-      while (Option.isSome(yield* nextFrame("1 second"))) yield* viewer.ack;
+      // leaves camera view), and Blender renders the screenshot from that same view.
       const throughCamera = yield* service.captureView(threadId);
-      assert.isNotNull(throughCamera.frame);
-      const seen: number[] = [];
-      while (!seen.includes(throughCamera.frame!)) {
-        const next = yield* nextFrame("5 seconds");
-        if (Option.isNone(next) || next.value._tag !== "frame") break;
-        seen.push(framePts(next.value.data));
-        yield* viewer.ack;
-      }
-      expect(seen).toContain(throughCamera.frame);
+      const throughShot = decodePng(throughCamera.screenshot.dataUrl);
+      expect([throughShot.width, throughShot.height]).toEqual([
+        throughCamera.screenshot.width,
+        throughCamera.screenshot.height,
+      ]);
       throughCamera.cameraView.position.forEach((value, index) =>
         expect(value).toBeCloseTo([3, -4, 2][index]!, 3),
       );
@@ -1096,6 +1130,13 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
       });
       expect(hits).toHaveLength(2);
       expect(hits[0]?.object).toBe("Cube");
+      // The screenshot and the camera are one view: the cube's hit point, projected through the
+      // returned matrix, lands on cube pixels in the screenshot, not on the background.
+      const shot = decodePng(capture.screenshot.dataUrl);
+      const at = projectToPixel(capture.projection.matrix, hits[0]!.point, shot);
+      expect(Math.abs(at.x - shot.width / 2)).toBeLessThan(2);
+      expect(Math.abs(at.y - shot.height / 2)).toBeLessThan(2);
+      expect(shot.pixel(at.x, at.y)).not.toEqual(shot.pixel(2, 2));
       expect(Math.max(...hits[0]!.point.map(Math.abs))).toBeCloseTo(1, 3);
       expect(hits[1]).toBeNull();
 

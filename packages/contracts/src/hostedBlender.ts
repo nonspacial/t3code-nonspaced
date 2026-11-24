@@ -78,11 +78,12 @@ export type HostedBlenderViewProjection = typeof HostedBlenderViewProjection.Typ
 
 /** The person's viewport window's camera, in Blender's scene coordinates. */
 export const HostedBlenderViewCapture = Schema.Struct({
-  /**
-   * The presentation time (µs) of the stream frame Blender redrew from this camera; null when
-   * no frame could be tied to it.
-   */
-  frame: Schema.NullOr(Schema.Finite),
+  /** Blender's own render of the viewport's 3D region, drawn with this camera, as a PNG. */
+  screenshot: Schema.Struct({
+    dataUrl: Schema.String,
+    width: Schema.Int,
+    height: Schema.Int,
+  }),
   cameraView: PreviewAnnotationCameraViewSchema,
   projection: HostedBlenderViewProjection,
 });
