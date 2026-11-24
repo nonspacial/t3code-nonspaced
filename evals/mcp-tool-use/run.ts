@@ -57,6 +57,7 @@ import { makeSideChatContext } from "../../apps/server/src/orchestration-v2/Cont
 import { withInlineContext } from "../../apps/server/src/orchestration-v2/ContextHandoffDelivery.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
+import { HostedBlenderToolkit } from "../../apps/server/src/mcp/toolkits/hostedBlender/tools.ts";
 import { FeedbackToolkit } from "../../apps/server/src/mcp/toolkits/feedback/tools.ts";
 import {
   FEEDBACK_AWAITING_APPROVAL_NOTE,
@@ -314,6 +315,11 @@ const McpToolUseWorld = Schema.StructWithRest(
     deviceAgentAccess: Schema.optional(Schema.Boolean),
     /** false: agent browser access is off. T3 denies every preview call and drops its browser text. */
     browserAgentAccess: Schema.optional(Schema.Boolean),
+    /**
+     * true: "Allow agents to start hosted Blenders" is on, so the session holds the hosted Blender
+     * MCP; T3 lists its Blender tools and adds its Blender text. Absent is off, as T3 ships.
+     */
+    hostedBlenderAgentAccess: Schema.optional(Schema.Boolean),
     /** The Agent feedback mode; absent is off. On, T3 lists its tools and its text has the mode's line. */
     agentFeedback: Schema.optional(Contracts.AgentFeedbackMode),
     /** Every capture reaches T3 with adb screencap's warning ahead of the PNG: T3 reports 0×0. */
@@ -510,6 +516,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   PreviewToolkit,
   IssuesToolkit,
   DeviceToolkit,
+  HostedBlenderToolkit,
   HtmlToolkit,
   MessageToolkit,
 ].flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools));
@@ -571,6 +578,8 @@ const hiddenWhileLinksOff = enabledWhen(McpInvocationContext.hiddenWhileLinksOff
 const hiddenWhileFeedbackOff = enabledWhen(McpInvocationContext.hiddenWhileFeedbackOff);
 // T3 lists PR and CI tools only to a thread whose project is on a forge it reads.
 const hiddenWithoutForge = enabledWhen(McpInvocationContext.hiddenWithoutForge);
+// T3 lists its hosted Blender tools only to a session it gave the hosted Blender MCP.
+const hiddenWithoutHostedBlender = enabledWhen(McpInvocationContext.hiddenWithoutHostedBlender);
 /**
  * `tools` is T3 as shipped. `raw` takes away T3's PR, CI and issue tools and their instructions,
  * so the agent works the forge with CLIs alone, to measure what the tools save.
@@ -591,10 +600,12 @@ const visibleT3Tools = (options: {
   readonly forge?: boolean;
   readonly agentFeedback?: Contracts.AgentFeedbackMode;
   readonly arm?: Arm;
+  readonly hostedBlender?: boolean;
 }) =>
   t3Tools.filter(
     (tool) =>
       !(options.arm === "raw" && forgeToolNames.has(tool.name)) &&
+      (options.hostedBlender === true || !hiddenWithoutHostedBlender.has(tool.name)) &&
       (options.links === true || !hiddenWhileLinksOff.has(tool.name)) &&
       ((options.agentFeedback ?? "off") !== "off" || !hiddenWhileFeedbackOff.has(tool.name)) &&
       (options.forge !== false || !hiddenWithoutForge.has(tool.name)) &&
@@ -611,11 +622,13 @@ const claudeQueryOptions = (
   device = true,
   browser = true,
   agentFeedback: Contracts.AgentFeedbackMode = "off",
+  hostedBlender = false,
 ) => {
   // Refs whose text follows a capability read its flag; older ones ignore it.
   const input: Parameters<typeof makeClaudeQueryOptions>[0] & {
     readonly deviceToolsAvailable?: boolean;
     readonly browserToolsAvailable?: boolean;
+    readonly hostedBlenderToolsAvailable?: boolean;
   } = {
     modelSelection: { instanceId: ProviderInstanceId.make(CLAUDE_PROVIDER), model },
     nativeThreadId: "mcp-tool-use-eval",
@@ -625,6 +638,7 @@ const claudeQueryOptions = (
     agentFeedback,
     deviceToolsAvailable: device,
     browserToolsAvailable: browser,
+    hostedBlenderToolsAvailable: hostedBlender,
   };
   return makeClaudeQueryOptions(input);
 };
@@ -635,8 +649,9 @@ export const t3SystemAppend = (
   device = true,
   browser = true,
   agentFeedback: Contracts.AgentFeedbackMode = "off",
+  hostedBlender = false,
 ) => {
-  const { systemPrompt } = claudeQueryOptions(model, device, browser, agentFeedback);
+  const { systemPrompt } = claudeQueryOptions(model, device, browser, agentFeedback, hostedBlender);
   if (isRecord(systemPrompt) && systemPrompt.type === "preset" && systemPrompt.append) {
     return systemPrompt.append;
   }
@@ -729,6 +744,8 @@ export const buildBase = (
     /** The Agent feedback mode: on, T3 lists its tools and its text includes the mode's line. */
     readonly agentFeedback?: Contracts.AgentFeedbackMode;
     readonly arm?: Arm;
+    /** true: the session holds the hosted Blender MCP, so T3 lists its Blender tools and text. */
+    readonly hostedBlender?: boolean;
   },
 ) => {
   const t3 = visibleT3Tools(options);
@@ -755,7 +772,13 @@ export const buildBase = (
   const append = options.nativeSubagent
     ? ""
     : forArm(
-        t3SystemAppend(model, options.deviceAccess, options.browserAccess, options.agentFeedback),
+        t3SystemAppend(
+          model,
+          options.deviceAccess,
+          options.browserAccess,
+          options.agentFeedback,
+          options.hostedBlender,
+        ),
         options.arm,
       );
   const modelLine = `You are powered by the model named ${MODELS[model]}. The exact model ID is ${model}.`;
@@ -830,6 +853,7 @@ const buildCodexBase = (
     /** The Agent feedback mode: on, T3 lists its tools and its text includes the mode's line. */
     readonly agentFeedback?: Contracts.AgentFeedbackMode;
     readonly arm?: Arm;
+    readonly hostedBlender?: boolean;
   },
 ): Base => {
   const t3 = visibleT3Tools(options);
@@ -869,7 +893,11 @@ const buildCodexBase = (
       reasoningEffort: effort,
       agentFeedback: options.agentFeedback ?? "off",
     },
-    { browser: options.browserAccess ?? true, device: options.deviceAccess ?? true },
+    {
+      browser: options.browserAccess ?? true,
+      device: options.deviceAccess ?? true,
+      hostedBlender: options.hostedBlender ?? false,
+    },
   );
   input.push(
     ...Object.entries(context).map(([key, entry]) =>
@@ -3292,6 +3320,7 @@ const main = Effect.gen(function* () {
     links: boolean,
     forge: boolean,
     agentFeedback: Contracts.AgentFeedbackMode = "off",
+    hostedBlender = false,
   ): Effect.Effect<Base, Schema.SchemaError> =>
     codex
       ? decodeCodexCapture(template).pipe(
@@ -3307,6 +3336,7 @@ const main = Effect.gen(function* () {
               browserAccess,
               agentFeedback,
               arm: flags.arm,
+              hostedBlender,
             }),
           ),
         )
@@ -3323,6 +3353,7 @@ const main = Effect.gen(function* () {
               browserAccess,
               agentFeedback,
               arm: flags.arm,
+              hostedBlender,
             });
             return role === "native-subagent"
               ? Effect.promise(() =>
@@ -3333,20 +3364,15 @@ const main = Effect.gen(function* () {
         );
   // Codex has no native subagents; its cases with that role run as top-level threads.
   const baseKey = ({ setup }: McpToolUseCase) =>
-    `${codex && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.world?.browserAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.forge !== false}:${setup.world?.agentFeedback ?? "off"}`;
+    `${codex && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.world?.browserAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.forge !== false}:${setup.world?.agentFeedback ?? "off"}:${setup.world?.hostedBlenderAgentAccess === true}`;
   const base = yield* buildFor("top", true, true, false, true);
-  const bases = new Map<string, Base>([["top:true:true:false:true:off", base]]);
+  const bases = new Map<string, Base>([["top:true:true:false:true:off:false", base]]);
   for (const testCase of selected) {
     const key = baseKey(testCase);
     if (bases.has(key)) continue;
-    const [role = "top", device, browser, links, forge, feedback] = key.split(":") as [
-      McpToolUseCase["setup"]["role"],
-      string,
-      string,
-      string,
-      string,
-      string,
-    ];
+    const [role = "top", device, browser, links, forge, feedback, hostedBlender] = key.split(
+      ":",
+    ) as [McpToolUseCase["setup"]["role"], string, string, string, string, string, string];
     bases.set(
       key,
       yield* buildFor(
@@ -3356,6 +3382,7 @@ const main = Effect.gen(function* () {
         links === "true",
         forge === "true",
         feedback as Contracts.AgentFeedbackMode,
+        hostedBlender === "true",
       ),
     );
   }

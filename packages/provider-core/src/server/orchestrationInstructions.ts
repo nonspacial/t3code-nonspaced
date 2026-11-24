@@ -55,6 +55,24 @@ export const T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH = deviceToolInstr
   ` Load them with ToolSearch \`select:${T3_CODE_DEVICE_TOOLS.map((tool) => `mcp__t3-code__${tool}`).join(",")}\`.`,
 );
 
+const T3_CODE_HOSTED_BLENDER_TOOLS = ["blender_start", "blender_status", "blender_quit"];
+
+const hostedBlenderToolInstructions = (loadTools: string) => `## T3 Code hosted Blender
+
+To change a \`.blend\` file, work in a hosted working copy unless the user says to use their desktop Blender (then use their own \`blender\` MCP tools).${loadTools}
+1. Call \`blender_start\` with the path of the file the user wants changed, the master. T3 copies it to \`<name>.wip-<id>.blend\` beside it and opens the copy in this thread's hosted Blender. Call it again after a crash.
+2. Edit the copy with the \`blender-hosted\` MCP tools. \`blender_status\` shows what is running; \`blender_quit\` quits it, with \`save: true\` to save first.
+3. When you finish, or the user asks to watch, post the working copy as a file link; it opens the Blender pane. To point at something, add \`#view=x,y,z,tx,ty,tz\` (camera position, then target, in scene coordinates), as in \`[hero](/abs/models/hero.wip-1a2b3c4d.blend#view=4,-6,3,0,0,1)\`.
+
+After you edit a file open in the user's desktop Blender, run \`bpy.ops.ed.undo_push(message="…")\` so the change can be undone and counts as unsaved.`;
+
+/** For sessions T3 gave the hosted Blender MCP: Claude and Codex threads, with agents allowed. */
+export const T3_CODE_HOSTED_BLENDER_INSTRUCTIONS = hostedBlenderToolInstructions("");
+
+export const T3_CODE_HOSTED_BLENDER_INSTRUCTIONS_WITH_TOOL_SEARCH = hostedBlenderToolInstructions(
+  ` Load T3's tools with ToolSearch \`select:${T3_CODE_HOSTED_BLENDER_TOOLS.map((tool) => `mcp__t3-code__${tool}`).join(",")}\`.`,
+);
+
 // ACP only: some ACP agents accept the injected MCP server but never expose
 // its tools, so they need the terminal transport other harnesses never use.
 const T3_CODE_ACP_MCP_FALLBACK_INSTRUCTIONS = `ACP fallback: if the T3 tools are absent and \`T3_ACP_MCP_NODE\` is present, call them through the terminal: \`ELECTRON_RUN_AS_NODE=1 "$T3_ACP_MCP_NODE" \${T3_ACP_MCP_ENTRYPOINT:+"$T3_ACP_MCP_ENTRYPOINT"} acp-mcp-call orchestrator_capabilities '{}'\` (\`T3_ACP_MCP_ENTRYPOINT\` is unset for a standalone executable). Delegate with \`acp-mcp-call delegate_task '{"task":"...","target":{"providerInstanceId":"...","model":"..."},"mode":"async","clientRequestId":"..."}'\`. On Windows, run \`T3_ACP_MCP_CALL\` instead and pipe the JSON to stdin, as in PowerShell \`'{}' | & $env:T3_ACP_MCP_CALL orchestrator_capabilities -\`, writing non-ASCII characters as \`\\uXXXX\` escapes.`;

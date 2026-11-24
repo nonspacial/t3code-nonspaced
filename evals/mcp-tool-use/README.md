@@ -290,6 +290,10 @@ Passes per case, main's runtime text (3 samples) → this branch's "Link every o
 
 After the change, the first reference to a file is an absolute link. The remaining failures come from two other kinds of span. Some repeat the file later as relative inline code (Sonnet's other-checkout failures). Others quote values rather than cite files, such as `main` set to `src/index.ts` or the import `./ws`. Chat still turns those spans into pills.
 
+## Hosted Blender cases
+
+`cases/hosted-blender.ndjson` checks the hosted Blender instructions and tools (`blender_start`, `blender_status`, `blender_quit`) that T3 gives Claude and Codex threads while "Allow agents to start hosted Blenders" is on. `world.hostedBlenderAgentAccess: true` turns them on; every other case runs with them off, as T3 ships. A change to a `.blend` should start a hosted working copy from the master's path, a user who names their desktop Blender should not get one, and the control is ordinary code work. The official Blender MCP's own tools (`blender-hosted`, `blender-master`) are not in the templates, so these cases stop at T3's tools.
+
 ## PR tools vs raw CLIs
 
 `cases/pr-tools-vs-cli.ndjson` asks whether T3's PR, CI and issue tools pay for the context they add. Each case is a forge task from a real failure in 2026-09/11 Claude and Codex sessions. `--arm raw` removes those tools and the `<pull_request_linking>` instructions, so the agent has only `gh`, `cafe` and the shell. `--arm tools` (the default) is T3 as shipped. Run both arms on the same model and compare:

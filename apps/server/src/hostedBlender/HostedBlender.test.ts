@@ -7,10 +7,11 @@ import * as NodeZlib from "node:zlib";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, expect, it } from "@effect/vitest";
-import { type HostedBlenderThreadState, ThreadId } from "@t3tools/contracts";
+import { type HostedBlenderThreadState, type RuntimeMode, ThreadId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -26,6 +27,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
 import * as HostedBlender from "./HostedBlender.ts";
+import * as HostedBlenderAgents from "./HostedBlenderAgents.ts";
 import * as HostedBlenderSetup from "./HostedBlenderSetup.ts";
 
 const threadId = ThreadId.make("thread-hosted-blender");
@@ -38,6 +40,12 @@ interface Host {
   readonly env: NodeJS.ProcessEnv;
   readonly workspaceRoot: string;
   readonly baseDir: string;
+  readonly runtimeMode?: RuntimeMode;
+  readonly interactionMode?: "default" | "plan";
+  /** The thread's agent session holds the hosted Blender MCP on this port. */
+  readonly agentPort?: number;
+  /** Agent access T3 takes back, by thread (null for every thread). */
+  readonly revocations?: Stream.Stream<ThreadId | null>;
 }
 
 const blenderOnPath = (env: NodeJS.ProcessEnv) =>
@@ -52,7 +60,7 @@ const readinessFor = (host: Host): HostedBlenderSetup.HostedBlenderReadiness => 
   const blender = blenderOnPath(host.env);
   return host.helper == null || blender === undefined
     ? { status: "notSetUp", missing: ["helper"] }
-    : { status: "ok", helper: host.helper, blender };
+    : { status: "ok", helper: host.helper, blender, blenderMcp: null };
 };
 
 const layerFor = (host: Host) =>
@@ -73,11 +81,20 @@ const layerFor = (host: Host) =>
           getThreadShell: (id) =>
             Effect.succeed(
               id === threadId || id === otherThreadId
-                ? ({ worktreePath: host.workspaceRoot, projectId: "project" } as never)
+                ? ({
+                    worktreePath: host.workspaceRoot,
+                    projectId: "project",
+                    runtimeMode: host.runtimeMode ?? "approval-required",
+                    interactionMode: host.interactionMode ?? "default",
+                  } as never)
                 : null,
             ),
         }),
         Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(HostedBlenderAgents.HostedBlenderAgents)({
+          listenerPort: () => Effect.succeed(host.agentPort ?? null),
+          revocations: host.revocations ?? Stream.never,
+        }),
         WorkspacePaths.layer,
         NetService.layer,
         ServerConfig.layerTest(host.workspaceRoot, host.baseDir),
@@ -1503,6 +1520,197 @@ print("T3-RESULT", json.dumps(results))`,
       expect((yield* firstState(service)).status).toBe("running");
       yield* service.quit({ threadId, save: true });
       yield* awaitStatus("stopped");
+    }).pipe(Effect.scoped),
+  );
+});
+
+// Records Blender's command line, then shows the viewport window and waits to be asked to quit.
+const ARGS_HELPER = String.raw`
+import json, os, struct, sys
+with open(os.environ["STANDIN_ARGS"], "w") as log:
+    log.write("\n".join(sys.argv[1:]))
+def event(value):
+    data = json.dumps(value).encode()
+    sys.stdout.buffer.write(struct.pack(">IB", len(data) + 1, 1) + data)
+    sys.stdout.buffer.flush()
+event({"type": "ready", "capture": "extImageCopyCapture", "target": "window",
+       "encoder": "x264enc", "width": 1280, "height": 720, "cursorTracking": True})
+event({"type": "windowCaptured", "title": "3D Viewport"})
+# Answers the control socket as the add-on would: its listener, and what T3 asks of it.
+import socket, threading
+t3 = sys.argv[sys.argv.index("--t3-control"):]
+# Like the add-on: starting until T3's grant, then ready.
+listener = ["starting" if "--t3-mcp-listen" in t3 else "off"]
+blend = next(arg for arg in sys.argv if arg.endswith(".blend"))
+def control():
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(t3[1])
+    server.listen(1)
+    connection, _ = server.accept()
+    def state(filepath):
+        connection.sendall((json.dumps({"type": "state", "filepath": filepath, "dirty": False,
+                                        "agentListener": listener[0]}) + "\n").encode())
+    after = os.environ.get("STANDIN_AFTER")
+    # Another file already open by the time T3 hears, claiming its listener is ready.
+    if after == "otherFileFirst":
+        listener[0] = "ready"
+        state("/elsewhere/other.blend")
+    else:
+        state(blend)
+    for line in connection.makefile():
+        with open(os.environ["STANDIN_ARGS"] + ".control", "a") as log:
+            log.write(line)
+        kind = json.loads(line).get("type")
+        if kind == "grantAgentListener" and listener[0] == "starting":
+            listener[0] = "ready"
+            state(blend)
+            if after == "otherFile":
+                # Someone opens another file through Blender's own UI.
+                state("/elsewhere/other.blend")
+        if kind == "stopAgentListener":
+            # Gone once it has heard the stop, so a test can wait for the stopped state.
+            os._exit(0)
+threading.Thread(target=control, daemon=True).start()
+for line in sys.stdin:
+    if '"quit"' in line:
+        break
+`;
+
+describe("Agent access at launch", () => {
+  const launch = Effect.fn(function* (
+    host: Pick<Host, "runtimeMode" | "interactionMode" | "agentPort" | "revocations">,
+    options: { readonly agentWorkingCopy?: boolean } = { agentWorkingCopy: true },
+    after?: "otherFile" | "otherFileFirst",
+  ) {
+    const dir = yield* tempDir("agent-access");
+    const bin = fakeTools(dir);
+    NodeFS.writeFileSync(NodePath.join(bin, "helper"), `#!${python}\n${ARGS_HELPER}`, {
+      mode: 0o755,
+    });
+    const runtime = NodePath.join(dir, "run");
+    NodeFS.mkdirSync(runtime);
+    NodeFS.writeFileSync(NodePath.join(dir, "cube.blend"), "");
+    const argsLog = NodePath.join(dir, "args.log");
+    const service = yield* serviceFor(
+      layerFor({
+        env: {
+          PATH: bin,
+          XDG_RUNTIME_DIR: runtime,
+          STANDIN_ARGS: argsLog,
+          ...(after === undefined ? {} : { STANDIN_AFTER: after }),
+        },
+        helper: NodePath.join(bin, "helper"),
+        workspaceRoot: dir,
+        baseDir: dir,
+        ...host,
+      }),
+    );
+    yield* service.open({ threadId, relativePath: "cube.blend" }, options);
+    yield* service.threadState(threadId).pipe(
+      Stream.filter((state) => state.status === "running"),
+      Stream.runHead,
+    );
+    const args = NodeFS.readFileSync(argsLog, "utf8").split("\n");
+    const controlLog = () =>
+      NodeFS.existsSync(`${argsLog}.control`)
+        ? NodeFS.readFileSync(`${argsLog}.control`, "utf8")
+        : "";
+    return { service, args, controlLog };
+  });
+  const launchArgs = Effect.fn(function* (
+    host: Pick<Host, "runtimeMode" | "interactionMode" | "agentPort">,
+    options?: { readonly agentWorkingCopy?: boolean },
+  ) {
+    const { service, args } = yield* launch(host, options);
+    yield* service.quit({ threadId, save: false });
+    return args;
+  });
+  it.live("starts the Blender Lab listener on the port the thread's agent session holds", () =>
+    Effect.gen(function* () {
+      const args = yield* launchArgs({ agentPort: 41234 });
+      expect(args).toContain("--t3-mcp-listen");
+      expect(args[args.indexOf("--t3-mcp-port") + 1]).toBe("41234");
+      expect(yield* launchArgs({})).not.toContain("--t3-mcp-listen");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("lets embedded scripts follow the user's setting only in full-access threads", () =>
+    Effect.gen(function* () {
+      expect(yield* launchArgs({ runtimeMode: "full-access" })).not.toContain("--disable-autoexec");
+      for (const runtimeMode of ["approval-required", "auto-accept-edits", "auto"] as const) {
+        expect(yield* launchArgs({ runtimeMode })).toContain("--disable-autoexec");
+      }
+      // Plan mode is read-only whatever the runtime mode.
+      expect(yield* launchArgs({ runtimeMode: "full-access", interactionMode: "plan" })).toContain(
+        "--disable-autoexec",
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("never listens for the agent in a file the pane opened, even the working copy", () =>
+    Effect.gen(function* () {
+      const { service, args } = yield* launch({ agentPort: 41234 }, {});
+      expect(args).not.toContain("--t3-mcp-listen");
+      expect((yield* service.agentListener(threadId))?.state).toBe("off");
+      yield* service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("reports the listener as Blender's add-on does, and closes it when access ends", () =>
+    Effect.gen(function* () {
+      const revoked = yield* Queue.unbounded<ThreadId | null>();
+      const { service, controlLog } = yield* launch({
+        agentPort: 41234,
+        revocations: Stream.fromQueue(revoked),
+      });
+      expect((yield* service.agentListener(threadId))?.state).toBe("ready");
+      // Another thread's session ending leaves this one alone.
+      yield* Queue.offer(revoked, otherThreadId);
+      yield* Queue.offer(revoked, threadId);
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "stopped"),
+        Stream.runHead,
+      );
+      expect(controlLog().match(/stopAgentListener/g)).toHaveLength(1);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("closes the listener once Blender opens a file other than the working copy", () =>
+    Effect.gen(function* () {
+      const { service, controlLog } = yield* launch({ agentPort: 41234 }, undefined, "otherFile");
+      // The stand-in exits when it hears the stop.
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "stopped"),
+        Stream.runHead,
+      );
+      expect(controlLog()).toContain("stopAgentListener");
+    }).pipe(Effect.scoped),
+  );
+
+  it("waits for the control connection as long as Blender may take to start", () => {
+    expect(HostedBlender.CONTROL_CONNECT_ATTEMPTS * 200).toBeGreaterThanOrEqual(90_000);
+    expect(Duration.toMillis(HostedBlender.AGENT_LISTENER_TIMEOUT)).toBeGreaterThan(90_000);
+  });
+
+  it.live("never takes a listener state from a Blender that has another file open", () =>
+    Effect.gen(function* () {
+      const { service, controlLog } = yield* launch(
+        { agentPort: 41234 },
+        undefined,
+        "otherFileFirst",
+      );
+      const report = yield* service.agentListener(threadId);
+      expect(report).toEqual({
+        state: "off",
+        ended: "otherFile",
+        openFile: "/elsewhere/other.blend",
+      });
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "stopped"),
+        Stream.runHead,
+      );
+      // The grant waits for a snapshot of the launch file, which never came.
+      expect(controlLog()).not.toContain("grantAgentListener");
     }).pipe(Effect.scoped),
   );
 });

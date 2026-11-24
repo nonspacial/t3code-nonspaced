@@ -5,6 +5,7 @@ import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeI
 import {
   T3_CODE_BROWSER_TOOL_INSTRUCTIONS,
   T3_CODE_DEVICE_TOOL_INSTRUCTIONS,
+  T3_CODE_HOSTED_BLENDER_INSTRUCTIONS,
   T3_CODE_ORCHESTRATION_SECTIONS,
 } from "@t3tools/provider-core/server/orchestrationInstructions";
 
@@ -14,6 +15,8 @@ export const CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES = 4_000;
 export interface T3CodeToolAvailability {
   readonly browser: boolean;
   readonly device: boolean;
+  /** T3 gave the session its hosted Blender MCP servers. */
+  readonly hostedBlender?: boolean;
 }
 
 const normalizeAvailability = (
@@ -45,6 +48,8 @@ export function buildCodexAdditionalContext(
   toolsAvailable: boolean | T3CodeToolAvailability = true,
 ): Record<string, V2TurnStartParams__AdditionalContextEntry> {
   const tools = toolInstructions(toolsAvailable);
+  const hostedBlender =
+    typeof toolsAvailable !== "boolean" && toolsAvailable.hostedBlender === true;
   // Split values to fit per-entry caps; number keys because Codex emits them in key order.
   return {
     ...Object.fromEntries(
@@ -58,5 +63,14 @@ export function buildCodexAdditionalContext(
       value: buildRuntimeInstructions({ harness: "Codex", ...runtime }),
     },
     ...(tools ? { t3_code_tools: { kind: "application", value: tools } } : {}),
+    // Its own entry: with the browser and device text it would pass the per-entry cap.
+    ...(hostedBlender
+      ? {
+          t3_code_hosted_blender: {
+            kind: "application",
+            value: T3_CODE_HOSTED_BLENDER_INSTRUCTIONS,
+          },
+        }
+      : {}),
   };
 }

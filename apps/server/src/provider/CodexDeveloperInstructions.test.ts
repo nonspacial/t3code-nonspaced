@@ -1,6 +1,9 @@
 import * as NodeAssert from "node:assert/strict";
 
-import { T3_CODE_DEVICE_TOOL_INSTRUCTIONS } from "@t3tools/provider-core/server/orchestrationInstructions";
+import {
+  T3_CODE_DEVICE_TOOL_INSTRUCTIONS,
+  T3_CODE_HOSTED_BLENDER_INSTRUCTIONS,
+} from "@t3tools/provider-core/server/orchestrationInstructions";
 import { describe, it } from "vite-plus/test";
 
 import {
@@ -12,7 +15,7 @@ describe("buildCodexAdditionalContext", () => {
   describe.each([
     { model: "custom-model", modelName: "Custom 🦊 Model", reasoningEffort: "xhigh" },
   ])("with runtime $model", (runtime) => {
-    it.each([undefined, { browser: true, device: true }])(
+    it.each([undefined, { browser: true, device: true, hostedBlender: true }])(
       "keeps every entry within Codex's per-entry cap with tools %j",
       (availability) => {
         const context = buildCodexAdditionalContext(runtime, availability);
@@ -82,3 +85,23 @@ describe("Codex device context", () => {
 function runtimeInstructions(runtime: Parameters<typeof buildCodexAdditionalContext>[0]) {
   return buildCodexAdditionalContext(runtime).t3_code_runtime!.value;
 }
+
+describe("Codex hosted Blender context", () => {
+  it("adds the hosted Blender block, in its own entry, only when T3 gave the session its MCP", () => {
+    const runtime = { model: "gpt-6.1-sol" };
+    const withBlender = buildCodexAdditionalContext(runtime, {
+      browser: true,
+      device: true,
+      hostedBlender: true,
+    });
+    NodeAssert.equal(
+      withBlender.t3_code_hosted_blender?.value,
+      T3_CODE_HOSTED_BLENDER_INSTRUCTIONS,
+    );
+    NodeAssert.ok(!withBlender.t3_code_tools?.value.includes("hosted Blender"));
+    NodeAssert.equal(
+      buildCodexAdditionalContext(runtime, { browser: true, device: true }).t3_code_hosted_blender,
+      undefined,
+    );
+  });
+});
