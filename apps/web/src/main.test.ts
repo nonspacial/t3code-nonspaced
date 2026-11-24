@@ -35,3 +35,19 @@ it("reloads only once when a lazy chunk fails after every boot", async () => {
   expect(await bootThenFailLazyChunk(sessionStorage)).toHaveBeenCalledTimes(1);
   expect(await bootThenFailLazyChunk(sessionStorage)).not.toHaveBeenCalled();
 });
+
+it("installs keyboard capture when it boots without HMR, as production builds do", async () => {
+  vi.resetModules();
+  const page = new EventTarget();
+  const install = vi.spyOn(page, "addEventListener");
+  vi.stubGlobal("window", page);
+  vi.stubGlobal("document", { getElementById: () => ({}) });
+  try {
+    // Vitest has no `import.meta.hot`, so this is the path a production bundle takes.
+    await import("./main");
+    expect(install).toHaveBeenCalledWith("keydown", expect.any(Function), true);
+    expect(install).toHaveBeenCalledWith("keyup", expect.any(Function), true);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});

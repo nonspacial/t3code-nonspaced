@@ -1,223 +1,207 @@
+import "@fontsource-variable/inter";
 import "~/index.css";
 
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import {
-  EnvironmentId,
-  type HostedBlenderViewCapture,
-  type HostedBlenderRunningState,
-  ThreadId,
-} from "@t3tools/contracts";
-import { modelViewFromHref } from "@t3tools/shared/modelView";
-import { Atom } from "effect/reactivity";
-import type { ReactNode } from "react";
+import type {
+  HostedBlenderControl,
+  HostedBlenderStreamEvents,
+} from "@t3tools/client-runtime/hosted-blender/stream";
+import { EnvironmentId, type HostedBlenderViewerMessage, ThreadId } from "@t3tools/contracts";
 import { expect, it, vi } from "vite-plus/test";
-import { userEvent } from "vite-plus/test/browser";
 
-import { useComposerDraftStore } from "~/composerDraftStore";
-import { render } from "../../../test/render";
+import { toastManager } from "~/components/ui/toast";
+import { installKeyboardCapture } from "~/lib/keyboardCapture";
+
+import { act, render } from "../../../test/render";
+
+const stream = vi.hoisted(() => ({
+  events: null as HostedBlenderStreamEvents | null,
+  sent: [] as HostedBlenderViewerMessage[],
+  access: { httpBase: "https://t3", wsBase: "wss://t3/blender", credentials: false, query: {} },
+  state: { status: "running", relativePath: "models/hero.blend", dirty: false },
+}));
+
+vi.mock(import("@t3tools/client-runtime/hosted-blender/stream"), async (original) => ({
+  ...(await original()),
+  createHostedBlenderStreamClient: ((
+    _target: unknown,
+    _sink: unknown,
+    events: HostedBlenderStreamEvents,
+  ) => {
+    stream.events = events;
+    events.onStatus("live");
+    return {
+      resize: () => undefined,
+      send: (message: HostedBlenderViewerMessage) => stream.sent.push(message),
+      stop: () => undefined,
+    };
+  }) as never,
+}));
+// Decoded frames report the stream's size; this one is a tall pane on a HiDPI screen.
+vi.mock(import("@t3tools/client-runtime/device/frame"), async (original) => ({
+  ...(await original()),
+  createCanvasFrameSink: ((_canvas: unknown, onSize?: (width: number, height: number) => void) => {
+    onSize?.(1046, 1336);
+    return { present: () => true };
+  }) as never,
+}));
+vi.mock(import("~/state/hostedBlender"), async (original) => ({
+  ...(await original()),
+  useHostedBlenderState: (() => stream.state) as never,
+  useHostedBlenderStreamAccess: (() => stream.access) as never,
+}));
+
 import { BlenderPanel } from "./BlenderPanel";
 
-const { commands, stream } = vi.hoisted(() => ({
-  commands: {
-    captureView: vi.fn<(value: unknown) => Promise<unknown>>(),
-    findHits: vi.fn<(value: unknown) => Promise<unknown>>(),
-  },
-  stream: {
-    target: "window" as "window" | "output",
-    access: {},
-    sink: null as null | { present: (source: CanvasImageSource, w: number, h: number) => boolean },
-  },
-}));
+const threadRef = {
+  environmentId: EnvironmentId.make("environment-1"),
+  threadId: ThreadId.make("thread-1"),
+};
+const control = (next: HostedBlenderControl) => act(() => stream.events?.onControl?.(next));
 
-/** A frame of Blender in one flat colour, as the stream's decoder would hand it over. */
-function frameOf(color: string) {
-  const frame = document.createElement("canvas");
-  frame.width = 320;
-  frame.height = 180;
-  const context = frame.getContext("2d")!;
-  context.fillStyle = color;
-  context.fillRect(0, 0, 320, 180);
-  return frame;
-}
-
-const state: HostedBlenderRunningState = {
-  status: "running",
-  relativePath: "models/hero.wip-a1b2.blend",
-  dirty: false,
+/** The app installs keyboard capture at startup; each test starts with a fresh stream. */
+const startup = (): Disposable => {
+  stream.sent = [];
+  stream.events = null;
+  return { [Symbol.dispose]: installKeyboardCapture() };
 };
 
-vi.mock("~/state/hostedBlender", () => ({
-  hostedBlenderEnvironment: {
-    quit: { label: "quit", permissionAtom: () => Atom.make(false) },
-    captureView: { label: "captureView" },
-    findHits: { label: "findHits" },
-  },
-  useHostedBlenderState: () => state,
-  useHostedBlenderStreamAccess: () => stream.access,
-  refreshHostedBlenderStreamAccess: () => {},
-}));
+it("takes control on a click, sends keys to Blender, and gives control back on a click outside", async () => {
+  using _app = startup();
+  await using screen = await render(
+    <div>
+      <button type="button">Outside</button>
+      <div style={{ height: 400, width: 600 }}>
+        <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+      </div>
+    </div>,
+  );
+  await expect.element(screen.getByText("Watching")).toBeInTheDocument();
+  // Without terminal:operate, the pane stays view-only.
+  await expect.element(screen.getByText("Take control")).not.toBeInTheDocument();
 
-vi.mock("~/state/use-atom-command", () => ({
-  useAtomCommand:
-    (command: { label: "captureView" | "findHits" | "quit" }) => async (value: unknown) => ({
-      _tag: "Success",
-      value: await commands[command.label as "captureView" | "findHits"](value),
-    }),
-}));
+  await control({ canOperate: true, controller: "unclaimed" });
+  const viewport = screen.getByLabelText("Blender viewport");
+  await viewport.click();
+  expect(stream.sent).toEqual([{ type: "takeControl", takeOver: false }]);
+  await control({ canOperate: true, controller: "you" });
+  await expect.element(screen.getByText("You're in control")).toBeInTheDocument();
+  await expect.element(screen.getByText("Fullscreen")).toBeInTheDocument();
 
-// A stream that shows one grey frame of Blender through the real canvas sink, then whatever
-// a test presents to `stream.sink`.
-vi.mock("@t3tools/client-runtime/hosted-blender/stream", () => ({
-  createHostedBlenderStreamClient: (
-    _target: unknown,
-    sink: NonNullable<typeof stream.sink>,
-    handlers: {
-      onStatus: (status: "live") => void;
-      onStats: (stats: { encoder: string; target: string; memoryBytes: null }) => void;
-    },
-  ) => {
-    handlers.onStatus("live");
-    handlers.onStats({ encoder: "x264enc", target: stream.target, memoryBytes: null });
-    stream.sink = sink;
-    sink.present(frameOf("#3d3d3d"), 320, 180);
-    return { resize: () => {}, stop: () => {} };
-  },
-}));
+  // Shift+F6 is Blender's; the window's own shortcut listeners never see it.
+  const appShortcut = vi.fn();
+  window.addEventListener("keydown", appShortcut, true);
+  const target = viewport.element();
+  target.dispatchEvent(
+    new KeyboardEvent("keydown", { code: "F6", key: "F6", shiftKey: true, bubbles: true }),
+  );
+  window.removeEventListener("keydown", appShortcut, true);
+  expect(appShortcut).not.toHaveBeenCalled();
+  expect(stream.sent.slice(1)).toEqual([
+    { type: "keymap", layout: "us", variant: "" },
+    { type: "key", code: 64, pressed: true },
+  ]);
 
-// Dictation needs a connected environment; these tests type the comment.
-vi.mock("~/speech/useTextFieldSpeech", () => ({
-  SpeechTextField: (props: { children: (speech: undefined) => ReactNode }) =>
-    props.children(undefined),
-  TextFieldSpeechControls: () => null,
-}));
+  stream.sent = [];
+  await screen.getByText("Outside").click();
+  expect(stream.sent).toEqual([
+    { type: "key", code: 64, pressed: false },
+    { type: "releaseControl" },
+  ]);
+});
 
-const capture: HostedBlenderViewCapture = {
-  cameraView: { position: [6, -6, 5], target: [0, 0, 0], upAxis: "z" },
-  projection: {
-    matrix: Array.from({ length: 16 }, (_, index) => (index % 5 === 0 ? 1 : 0)),
-    region: { x: 0.05, y: 0.1, width: 0.9, height: 0.85 },
-  },
-};
+it("offers Take over while another device is in control, and says when control is lost", async () => {
+  using _app = startup();
+  await using screen = await render(
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>,
+  );
+  await control({ canOperate: true, controller: "another-viewer" });
+  await expect.element(screen.getByText("Another device is in control")).toBeInTheDocument();
+  // A click on the stream never takes control from someone else.
+  await screen.getByLabelText("Blender viewport").click();
+  expect(stream.sent).toEqual([]);
+  await screen.getByText("Take over").click();
+  expect(stream.sent).toEqual([{ type: "takeControl", takeOver: true }]);
 
-function pane() {
-  const container = document.createElement("div");
-  container.className = "flex h-96 w-[32rem] flex-col";
-  return { container };
-}
+  const toast = vi.spyOn(toastManager, "add");
+  await control({ canOperate: true, controller: "you" });
+  expect(toast).not.toHaveBeenCalled();
+  await control({ canOperate: true, controller: "another-viewer" });
+  expect(toast).toHaveBeenCalledWith(
+    expect.objectContaining({ title: "Another device took control of Blender" }),
+  );
+  toast.mockRestore();
+});
 
-function drag(target: Element, from: [number, number], to: [number, number]) {
-  const box = target.getBoundingClientRect();
-  const at = ([x, y]: [number, number]) => ({
-    clientX: box.left + box.width * x,
-    clientY: box.top + box.height * y,
-    pointerId: 1,
-    button: 0,
-    bubbles: true,
+it("gives back a take still on its way when the user clicks away first", async () => {
+  using _app = startup();
+  await using screen = await render(
+    <div>
+      <button type="button">Outside</button>
+      <div style={{ height: 400, width: 600 }}>
+        <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+      </div>
+    </div>,
+  );
+  await control({ canOperate: true, controller: "unclaimed" });
+  await screen.getByLabelText("Blender viewport").click();
+  // The grant hasn't arrived; leaving now must still undo the take.
+  await screen.getByText("Outside").click();
+  expect(stream.sent).toEqual([
+    { type: "takeControl", takeOver: false },
+    { type: "releaseControl" },
+  ]);
+});
+
+it("keeps the status strip on one line in a narrow pane, shortening the stats first", async () => {
+  using _app = startup();
+  await using screen = await render(
+    <div style={{ height: 400, width: 540 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>,
+  );
+  await control({ canOperate: true, controller: "another-viewer" });
+  await act(() => {
+    stream.events?.onStats({
+      type: "stats",
+      encoder: "nvh264enc",
+      target: "window",
+      memoryBytes: 1_200_000_000,
+    });
+    stream.events?.onFrameRate({ framesPerSecond: 60, bitsPerSecond: 12_400_000 });
   });
-  target.dispatchEvent(new PointerEvent("pointerdown", at(from)));
-  target.dispatchEvent(new PointerEvent("pointermove", at(to)));
-  target.dispatchEvent(new PointerEvent("pointerup", at(to)));
-}
-
-function setup(threadId: string, target: "window" | "output") {
-  stream.target = target;
-  commands.captureView.mockReset().mockResolvedValue(capture);
-  commands.findHits
-    .mockReset()
-    .mockResolvedValue([{ object: "Cube", point: [0.2, -1, 0.4] as const }]);
-  const threadRef = scopeThreadRef(EnvironmentId.make("environment-1"), ThreadId.make(threadId));
-  return {
-    element: <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
-    draft: () => useComposerDraftStore.getState().getComposerDraft(threadRef),
+  const label = screen.getByText("Another device is in control").element();
+  const stats = screen.getByText(/60 fps/).element();
+  await expect.element(screen.getByText(/60 fps/)).toBeInTheDocument();
+  // A Range gives one box per line the text takes, even inside a flex item.
+  const lines = (element: Element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
   };
-}
-
-async function annotateRegion(screen: Awaited<ReturnType<typeof render>>) {
-  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
-  const surface = screen.getByRole("img", { name: "Frozen 3D view to annotate" });
-  await expect.element(surface).toBeVisible();
-  await userEvent.click(screen.getByRole("button", { name: "Mark a region" }));
-  drag(surface.element(), [0.4, 0.4], [0.6, 0.6]);
-  await userEvent.fill(screen.getByRole("textbox", { name: "Annotation comment" }), "Bevel");
-  await userEvent.click(screen.getByRole("button", { name: "Add to chat" }));
-  await expect.element(surface).not.toBeInTheDocument();
-}
-
-it("freezes the pane's frame and attaches the viewport window's camera and what each mark covers", async () => {
-  const blender = setup("thread-blender-annotate", "window");
-  await using screen = await render(blender.element, pane());
-  await annotateRegion(screen);
-
-  await vi.waitFor(() => expect(blender.draft()?.previewAnnotations).toHaveLength(1));
-  const annotation = blender.draft()!.previewAnnotations[0]!;
-  expect(annotation).toMatchObject({
-    pageTitle: "hero.wip-a1b2.blend · Working copy",
-    comment: "Bevel",
-    cameraView: capture.cameraView,
-  });
-  expect(annotation.regions[0]?.hit).toEqual({ object: "Cube", point: [0.2, -1, 0.4] });
-  expect(modelViewFromHref(annotation.pageUrl)).toEqual({
-    position: [6, -6, 5],
-    target: [0, 0, 0],
-  });
-  expect(commands.captureView).toHaveBeenCalledTimes(1);
-  const request = commands.findHits.mock.calls[0]?.[0] as {
-    input: { threadId: string; projection: unknown; marks: Array<Array<{ x: number }>> };
-  };
-  expect(request.input.projection).toEqual(capture.projection);
-  // The region's middle, as a fraction of the frozen frame, is tried first.
-  expect(request.input.marks).toHaveLength(1);
-  expect(request.input.marks[0]![0]!.x).toBeCloseTo(0.5, 2);
-  expect(blender.draft()?.images.map((image) => image.id)).toEqual([annotation.id]);
+  expect(lines(label)).toBe(1);
+  expect(lines(stats)).toBe(1);
 });
 
-it("keeps the camera but places no marks when the stream shows the whole display", async () => {
-  const blender = setup("thread-blender-display", "output");
-  await using screen = await render(blender.element, pane());
-  await annotateRegion(screen);
-
-  await vi.waitFor(() => expect(blender.draft()?.previewAnnotations).toHaveLength(1));
-  const annotation = blender.draft()!.previewAnnotations[0]!;
-  expect(annotation.cameraView).toEqual(capture.cameraView);
-  expect(annotation.regions[0]).not.toHaveProperty("hit");
-  expect(commands.findHits).not.toHaveBeenCalled();
-});
-
-/** The colour in the middle of the frozen frame the editor shows. */
-async function frozenColor(screen: Awaited<ReturnType<typeof render>>) {
-  const surface = screen.getByRole("img", { name: "Frozen 3D view to annotate" });
-  await expect.element(surface).toBeVisible();
-  const href = surface.element().querySelector("image")!.getAttribute("href")!;
-  const image = new Image();
-  image.src = href;
-  await image.decode();
-  const canvas = document.createElement("canvas");
-  canvas.width = image.width;
-  canvas.height = image.height;
-  const context = canvas.getContext("2d")!;
-  context.drawImage(image, 0, 0);
-  return Array.from(context.getImageData(160, 90, 1, 1).data.slice(0, 3));
-}
-
-it("freezes the first frame drawn after Blender reports its view, not the one already showing", async () => {
-  const blender = setup("thread-blender-catch-up", "window");
-  const reply = Promise.withResolvers<HostedBlenderViewCapture>();
-  commands.captureView.mockReset().mockReturnValue(reply.promise);
-  await using screen = await render(blender.element, pane());
-  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
-  // Blender has jumped to a new view; the stream is still showing the old one when it answers.
-  reply.resolve(capture);
-  // The new view's frames keep arriving until one is frozen.
-  await vi.waitFor(() => {
-    stream.sink!.present(frameOf("#ff0000"), 320, 180);
-    expect(screen.getByRole("img", { name: "Frozen 3D view to annotate" }).query()).not.toBeNull();
-  });
-  expect(await frozenColor(screen)).toEqual([255, 0, 0]);
-});
-
-it("freezes the frame on screen when Blender sends no newer one", async () => {
-  const blender = setup("thread-blender-still", "window");
-  await using screen = await render(blender.element, pane());
-  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
-  expect(await frozenColor(screen)).toEqual([0x3d, 0x3d, 0x3d]);
+it("gives control straight back when it's granted after focus has moved elsewhere in T3", async () => {
+  using _app = startup();
+  await using screen = await render(
+    <div>
+      <button type="button">Outside</button>
+      <div style={{ height: 400, width: 600 }}>
+        <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+      </div>
+    </div>,
+  );
+  await control({ canOperate: true, controller: "another-viewer" });
+  await screen.getByText("Take over").click();
+  // The previous controller lets go while the take over is on its way.
+  await control({ canOperate: true, controller: "unclaimed" });
+  await screen.getByText("Outside").click();
+  await control({ canOperate: true, controller: "you" });
+  expect(stream.sent).toEqual([
+    { type: "takeControl", takeOver: true },
+    { type: "releaseControl" },
+  ]);
 });

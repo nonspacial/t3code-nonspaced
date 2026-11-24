@@ -1,6 +1,7 @@
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import {
   AuthOrchestrationReadScope,
+  AuthTerminalOperateScope,
   HOSTED_BLENDER_STREAM_FULL_CLOSE_CODE,
   HOSTED_BLENDER_STREAM_PATH,
   HOSTED_BLENDER_STREAM_STOPPED_CLOSE_CODE,
@@ -37,12 +38,14 @@ const makeHandler = Effect.fnUntraced(function* (blender: HostedBlender.HostedBl
   }
   // Watching needs only read access; guest links have no session and never reach this.
   const session = yield* authenticateMediaRequest(AuthOrchestrationReadScope);
+  // Taking control is a shell's worth of power: Blender's Python console runs anything.
+  const canOperate = session.scopes.includes(AuthTerminalOperateScope);
   const threadId = url.value.searchParams.get("threadId") ?? "";
   if (threadId.length === 0) return HttpServerResponse.text("Not Found", { status: 404 });
   const sessions = yield* SessionStore.SessionStore;
   const stream = Effect.scoped(
     Effect.gen(function* () {
-      const attached = yield* blender.attachViewer(threadId);
+      const attached = yield* blender.attachViewer(threadId, { canOperate });
       const incoming = NodeHttpServerRequest.toIncomingMessage(request);
       // H.264 is already compressed; without deflate every pending write stays in the socket
       // buffer bounded below.
@@ -84,14 +87,18 @@ const makeHandler = Effect.fnUntraced(function* (blender: HostedBlender.HostedBl
           }
         }),
       );
-      // Acks arrive for every frame; they share the session span.
+      // Acks and input arrive for every frame and pointer move; they share the session span.
       const receive = Effect.fnUntraced(function* (chunk: Uint8Array | string) {
         const message = decodeClientMessage(
           typeof chunk === "string" ? chunk : textDecoder.decode(chunk),
         );
         if (Option.isNone(message)) return;
         if (message.value.type === "ack") return yield* viewer.ack;
-        return yield* viewer.resize(message.value.width, message.value.height);
+        if (message.value.type === "resize") {
+          return yield* viewer.resize(message.value.width, message.value.height);
+        }
+        // In order and one at a time, so a flood of input waits on the socket, not in memory.
+        return yield* viewer.input(message.value);
       });
       const receiveInput = reader.pull.pipe(
         Effect.flatMap((chunks) => Effect.forEach(chunks, receive, { discard: true })),

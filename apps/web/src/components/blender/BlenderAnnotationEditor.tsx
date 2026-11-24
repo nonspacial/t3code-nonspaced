@@ -59,6 +59,7 @@ export function useBlenderAnnotation(input: {
   readonly projectId?: ProjectId | undefined;
   /** The stream shows the whole display, so a point on it isn't a point in the viewport window. */
   readonly wholeDisplay: boolean;
+  readonly onClose: () => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<(() => void) | null>(null);
@@ -104,7 +105,10 @@ export function useBlenderAnnotation(input: {
               return result._tag === "Success" ? result.value : null;
             }
       }
-      onClose={() => setFrozen(null)}
+      onClose={() => {
+        setFrozen(null);
+        input.onClose();
+      }}
     />
   ) : null;
 

@@ -133,3 +133,43 @@ it("acks a frame only once the decoder has taken it, and sizes the display", asy
   expect(FakeSocket.instances).toHaveLength(1);
   client.stop();
 });
+
+it("reports who controls Blender and whether it holds the mouse, and sends input while open", () => {
+  FakeSocket.instances = [];
+  vi.stubGlobal("WebSocket", FakeSocket);
+  vi.stubGlobal("EncodedVideoChunk", vi.fn());
+  vi.stubGlobal("VideoDecoder", vi.fn());
+  const control = vi.fn();
+  const cursor = vi.fn();
+  const client = createHostedBlenderStreamClient(
+    {
+      access: { httpBase: "https://t3", wsBase: "wss://t3/blender", credentials: false, query: {} },
+      threadId: "thread-1",
+    },
+    { present: vi.fn(() => true) },
+    {
+      onStatus: vi.fn(),
+      onStats: vi.fn(),
+      onFrameRate: vi.fn(),
+      onUnauthorized: vi.fn(),
+      onControl: control,
+      onCursor: cursor,
+    },
+  );
+  const socket = FakeSocket.instances[0]!;
+  // Input before the socket opens would land on a stale controller; it is dropped.
+  client.send({ type: "key", code: 30, pressed: true });
+  socket.open();
+  client.send({ type: "takeControl", takeOver: false });
+  expect(socket.sent).toEqual([JSON.stringify({ type: "takeControl", takeOver: false })]);
+  socket.receive(JSON.stringify({ type: "control", canOperate: true, controller: "you" }));
+  socket.receive(JSON.stringify({ type: "cursor", captured: true }));
+  expect(control).toHaveBeenCalledWith({ canOperate: true, controller: "you" });
+  expect(cursor).toHaveBeenCalledWith(true);
+
+  // A reconnect starts view-only until the server says otherwise.
+  socket.closeWith(1012);
+  expect(control).toHaveBeenLastCalledWith({ canOperate: false, controller: "unclaimed" });
+  expect(cursor).toHaveBeenLastCalledWith(false);
+  client.stop();
+});

@@ -159,6 +159,54 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
   }
 }
 
+export const HostedBlenderController = Schema.Literals(["unclaimed", "you", "another-viewer"]);
+export type HostedBlenderController = typeof HostedBlenderController.Type;
+
+/** Linux evdev pointer buttons: left, right, middle, back, forward. */
+export const HostedBlenderPointerButton = Schema.Literals([272, 273, 274, 275, 276]);
+export type HostedBlenderPointerButton = typeof HostedBlenderPointerButton.Type;
+
+const StreamCoordinate = Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 7680 }));
+const MotionDelta = Schema.Number.check(Schema.isBetween({ minimum: -10_000, maximum: 10_000 }));
+const XkbName = (maxLength: number) =>
+  Schema.String.check(Schema.isPattern(new RegExp(`^[a-z0-9_]{0,${maxLength}}$`)));
+
+/** An xkb layout and variant, such as `de` or `us` with `dvorak`. */
+export const HostedBlenderKeymap = Schema.Struct({
+  layout: XkbName(16).check(Schema.isMinLength(1)),
+  variant: XkbName(32),
+});
+export type HostedBlenderKeymap = typeof HostedBlenderKeymap.Type;
+
+/** Input from the viewer in control; the server drops it from anyone else. */
+export const HostedBlenderInputMessage = Schema.Union([
+  /** Where the local cursor is, in stream pixels. */
+  Schema.Struct({ type: Schema.Literal("pointer"), x: StreamCoordinate, y: StreamCoordinate }),
+  /** Relative motion in stream pixels, sent while Blender holds the mouse. */
+  Schema.Struct({ type: Schema.Literal("pointerMotion"), dx: MotionDelta, dy: MotionDelta }),
+  Schema.Struct({
+    type: Schema.Literal("button"),
+    button: HostedBlenderPointerButton,
+    pressed: Schema.Boolean,
+  }),
+  /** `wheel` scrolls in notches (`steps`); `finger` is a trackpad's continuous scroll. */
+  Schema.Struct({
+    type: Schema.Literal("scroll"),
+    axis: Schema.Literals(["vertical", "horizontal"]),
+    source: Schema.Literals(["wheel", "finger"]),
+    value: MotionDelta,
+    steps: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: -100, maximum: 100 }))),
+  }),
+  /** A physical key as a Linux evdev code. */
+  Schema.Struct({
+    type: Schema.Literal("key"),
+    code: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 767 })),
+    pressed: Schema.Boolean,
+  }),
+  Schema.Struct({ type: Schema.Literal("keymap"), ...HostedBlenderKeymap.fields }),
+]);
+export type HostedBlenderInputMessage = typeof HostedBlenderInputMessage.Type;
+
 /** Server → viewer text messages on the stream route. Frames are binary SEMU packets. */
 export const HostedBlenderStreamServerMessage = Schema.Union([
   /** The size of the frames that follow, in stream pixels. */
@@ -167,12 +215,17 @@ export const HostedBlenderStreamServerMessage = Schema.Union([
     width: Schema.Int,
     height: Schema.Int,
   }),
-  /** View-only for now: nobody can take control yet. */
+  /**
+   * Who controls the viewport window's mouse and keyboard. `canOperate` is whether this viewer
+   * may take control at all. A viewer that goes from `you` to `another-viewer` was taken over.
+   */
   Schema.Struct({
     type: Schema.Literal("control"),
     canOperate: Schema.Boolean,
-    controller: Schema.Literal("unclaimed"),
+    controller: HostedBlenderController,
   }),
+  /** Blender captured the mouse (a grab or an orbit) and hid its cursor, or let it go. */
+  Schema.Struct({ type: Schema.Literal("cursor"), captured: Schema.Boolean }),
   Schema.Struct({
     type: Schema.Literal("stats"),
     encoder: Schema.String,
@@ -193,5 +246,18 @@ export const HostedBlenderStreamClientMessage = Schema.Union([
     width: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 7680 })),
     height: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 4320 })),
   }),
+  /**
+   * Needs `terminal:operate`. With `takeOver`, control moves here from whoever has it;
+   * otherwise it is taken only when nobody has it.
+   */
+  Schema.Struct({ type: Schema.Literal("takeControl"), takeOver: Schema.Boolean }),
+  Schema.Struct({ type: Schema.Literal("releaseControl") }),
+  ...HostedBlenderInputMessage.members,
 ]);
 export type HostedBlenderStreamClientMessage = typeof HostedBlenderStreamClientMessage.Type;
+
+/** What a viewer sends besides acks and its size: taking control, and input. */
+export type HostedBlenderViewerMessage = Exclude<
+  HostedBlenderStreamClientMessage,
+  { readonly type: "ack" | "resize" }
+>;

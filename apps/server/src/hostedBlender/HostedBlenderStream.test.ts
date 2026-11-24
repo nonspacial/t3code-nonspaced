@@ -5,6 +5,7 @@ import { expect, it } from "@effect/vitest";
 import {
   AuthSessionId,
   AuthOrchestrationReadScope,
+  AuthTerminalOperateScope,
   AuthTerminalReadScope,
   HOSTED_BLENDER_STREAM_STOPPED_CLOSE_CODE,
   type AuthEnvironmentScope,
@@ -87,18 +88,19 @@ it.effect(
         message: { type: "viewport", width: 1280, height: 720 },
       });
       yield* Queue.offer(output, { _tag: "frame", data: frame });
-      const attached: string[] = [];
+      const attached: unknown[] = [];
       const resized = Promise.withResolvers<readonly [number, number]>();
       const acked = Promise.withResolvers<void>();
-      const socket = yield* serve([AuthOrchestrationReadScope], (threadId) =>
+      const socket = yield* serve([AuthOrchestrationReadScope], (threadId, options) =>
         Effect.sync(() => {
-          attached.push(threadId);
+          attached.push([threadId, options]);
           return {
             _tag: "attached" as const,
             viewer: {
               output,
               ack: Effect.sync(() => acked.resolve()),
               resize: (width, height) => Effect.sync(() => resized.resolve([width, height])),
+              input: () => Effect.void,
             },
           };
         }),
@@ -116,7 +118,7 @@ it.effect(
       yield* Effect.promise(() => acked.promise);
       expect(messages).toEqual([{ type: "viewport", width: 1280, height: 720 }]);
       expect(frames).toEqual([frame]);
-      expect(attached).toEqual(["thread-1"]);
+      expect(attached).toEqual([["thread-1", { canOperate: false }]]);
     }),
 );
 
@@ -148,5 +150,49 @@ it.effect("refuses sessions that can't read threads", () =>
     );
     expect(closed).not.toBe(HOSTED_BLENDER_STREAM_STOPPED_CLOSE_CODE);
     expect(attached).toBe(false);
+  }),
+);
+
+it.effect("lets a session that can operate terminals take control and send input", () =>
+  Effect.gen(function* () {
+    const output = yield* Queue.make<HostedBlender.HostedBlenderViewerOutput>();
+    const inputs: unknown[] = [];
+    const received = Promise.withResolvers<void>();
+    let canOperate: boolean | undefined;
+    const socket = yield* serve(
+      [AuthOrchestrationReadScope, AuthTerminalOperateScope],
+      (_threadId, options) =>
+        Effect.sync(() => {
+          canOperate = options.canOperate;
+          return {
+            _tag: "attached" as const,
+            viewer: {
+              output,
+              ack: Effect.void,
+              resize: () => Effect.void,
+              input: (message) =>
+                Effect.sync(() => {
+                  inputs.push(message);
+                  if (inputs.length === 3) received.resolve();
+                }),
+            },
+          };
+        }),
+    );
+    socket.addEventListener("open", () => {
+      socket.send(JSON.stringify({ type: "takeControl", takeOver: true }));
+      // Out of range and unknown input never reaches the service.
+      socket.send(JSON.stringify({ type: "key", code: 99_999, pressed: true }));
+      socket.send(JSON.stringify({ type: "keymap", layout: "us;rm", variant: "" }));
+      socket.send(JSON.stringify({ type: "key", code: 30, pressed: true }));
+      socket.send(JSON.stringify({ type: "releaseControl" }));
+    });
+    yield* Effect.promise(() => received.promise);
+    expect(canOperate).toBe(true);
+    expect(inputs).toEqual([
+      { type: "takeControl", takeOver: true },
+      { type: "key", code: 30, pressed: true },
+      { type: "releaseControl" },
+    ]);
   }),
 );

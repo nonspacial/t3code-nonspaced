@@ -194,6 +194,13 @@ def control():
                 b'{"type": "quitFailed", "reason": "saveFailed"}\n')).start()
 threading.Thread(target=control, daemon=True).start()
 for line in sys.stdin:
+    command = json.loads(line)
+    if command.get("type") not in ("quit", "keyframe", "pause", "resume"):
+        with open(os.environ["STANDIN_INPUT"], "a") as log:
+            log.write(line)
+    # A middle-drag orbit: Blender hides its cursor while the button is down.
+    if command.get("type") == "pointerButton" and command.get("button") == 274:
+        event({"type": "cursorLeave"} if command["pressed"] else {"type": "cursorEnter", "x": 1, "y": 2})
     if '"quit"' in line:
         marker = os.environ.get("STANDIN_MARKER")
         if marker:
@@ -217,6 +224,7 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
   NodeFS.writeFileSync(NodePath.join(dir, "cube.blend"), "");
   const marker = NodePath.join(dir, "helper-quit");
   const savesLog = NodePath.join(dir, "saves.log");
+  const inputLog = NodePath.join(dir, "input.log");
   const service = yield* serviceFor(
     layerFor({
       env: {
@@ -225,6 +233,7 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
         STANDIN_SCENARIO: scenario,
         STANDIN_MARKER: marker,
         STANDIN_SAVES: savesLog,
+        STANDIN_INPUT: inputLog,
       },
       helper: NodePath.join(bin, "helper"),
       workspaceRoot: dir,
@@ -248,7 +257,24 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
     .pipe(Effect.andThen(awaitDirty(true)));
   const saveCommands = () =>
     NodeFS.existsSync(savesLog) ? NodeFS.readFileSync(savesLog, "utf8").split("\n").length - 1 : 0;
-  return { service, awaitStatus, awaitDirty, openReady, saveCommands, marker, runtime };
+  /** The input commands the helper got, in order. */
+  const helperInput = (): unknown[] =>
+    NodeFS.existsSync(inputLog)
+      ? NodeFS.readFileSync(inputLog, "utf8")
+          .split("\n")
+          .filter((line) => line.length > 0)
+          .map((line) => JSON.parse(line))
+      : [];
+  return {
+    service,
+    awaitStatus,
+    awaitDirty,
+    openReady,
+    saveCommands,
+    helperInput,
+    marker,
+    runtime,
+  };
 });
 
 describe("Save and quit", () => {
@@ -403,11 +429,166 @@ describe("The viewport window", () => {
   );
 });
 
+type Viewer = HostedBlender.HostedBlenderViewer;
+type ViewerMessage = Extract<
+  HostedBlender.HostedBlenderViewerOutput,
+  { _tag: "message" }
+>["message"];
+
+const attach = (service: HostedBlender.HostedBlender["Service"], canOperate: boolean) =>
+  service.attachViewer(threadId, { canOperate }).pipe(
+    Effect.map((attached) => {
+      assert.strictEqual(attached._tag, "attached");
+      return (attached as Extract<typeof attached, { _tag: "attached" }>).viewer;
+    }),
+  );
+
+/** The next message of `type`, skipping frames and other messages. */
+const nextMessage = <Type extends ViewerMessage["type"]>(
+  viewer: Viewer,
+  type: Type,
+): Effect.Effect<Extract<ViewerMessage, { type: Type }>> =>
+  Queue.take(viewer.output).pipe(
+    Effect.flatMap((output) =>
+      output._tag === "message" && output.message.type === type
+        ? Effect.succeed(output.message as Extract<ViewerMessage, { type: Type }>)
+        : nextMessage(viewer, type),
+    ),
+  );
+const controller = (viewer: Viewer) =>
+  nextMessage(viewer, "control").pipe(Effect.map((message) => message.controller));
+
+// A middle-button press makes the stand-in hide Blender's cursor, so it marks where the helper
+// has every command sent before it.
+const syncPoint = (viewer: Viewer) =>
+  viewer
+    .input({ type: "button", button: 274, pressed: true })
+    .pipe(Effect.andThen(nextMessage(viewer, "cursor")));
+
+describe("Taking control", () => {
+  it.live("moves control between viewers one at a time, releasing what the last one held", () =>
+    Effect.gen(function* () {
+      const { service, openReady, helperInput } = yield* standIn("control", "");
+      yield* openReady;
+      const first = yield* attach(service, true);
+      const second = yield* attach(service, true);
+      const watcher = yield* attach(service, false);
+      expect(yield* nextMessage(watcher, "control")).toEqual({
+        type: "control",
+        canOperate: false,
+        controller: "unclaimed",
+      });
+      expect(yield* controller(first)).toBe("unclaimed");
+      expect(yield* controller(second)).toBe("unclaimed");
+
+      yield* first.input({ type: "takeControl", takeOver: false });
+      expect(yield* controller(first)).toBe("you");
+      expect(yield* controller(second)).toBe("another-viewer");
+      expect(yield* controller(watcher)).toBe("another-viewer");
+
+      // Only a take over moves control away from the viewer that has it.
+      yield* second.input({ type: "takeControl", takeOver: false });
+      yield* second.input({ type: "key", code: 16, pressed: true });
+      yield* watcher.input({ type: "takeControl", takeOver: true });
+      yield* first.input({ type: "key", code: 42, pressed: true });
+      yield* first.input({ type: "key", code: 42, pressed: true });
+      yield* first.input({ type: "pointer", x: 100, y: 50 });
+      yield* syncPoint(first);
+      expect(helperInput()).toEqual([
+        { type: "key", code: 42, pressed: true },
+        { type: "pointerPosition", x: 100, y: 50 },
+        { type: "pointerButton", button: 274, pressed: true },
+      ]);
+      expect(yield* nextMessage(second, "cursor")).toEqual({ type: "cursor", captured: true });
+
+      yield* second.input({ type: "takeControl", takeOver: true });
+      expect(yield* controller(second)).toBe("you");
+      expect(yield* controller(first)).toBe("another-viewer");
+      yield* first.input({ type: "key", code: 30, pressed: true });
+      yield* second.input({ type: "pointerMotion", dx: 3, dy: -2 });
+      // The stand-in shows the cursor again once the held middle button is released.
+      expect(yield* nextMessage(second, "cursor")).toEqual({ type: "cursor", captured: false });
+      yield* syncPoint(second);
+      expect(helperInput().slice(3)).toEqual([
+        { type: "key", code: 42, pressed: false },
+        { type: "pointerButton", button: 274, pressed: false },
+        { type: "pointerMotion", dx: 3, dy: -2 },
+        { type: "pointerButton", button: 274, pressed: true },
+      ]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("sizes the display to the viewer in control, and answers a refused take", () =>
+    Effect.gen(function* () {
+      const { service, openReady, helperInput } = yield* standIn("size", "");
+      yield* openReady;
+      const operator = yield* attach(service, true);
+      yield* operator.resize(800, 600);
+      expect(yield* controller(operator)).toBe("unclaimed");
+      yield* operator.input({ type: "takeControl", takeOver: false });
+      expect(yield* controller(operator)).toBe("you");
+      // A newer viewer opening the pane doesn't resize the controller's display...
+      const newer = yield* attach(service, true);
+      yield* newer.resize(1600, 900);
+      expect(yield* controller(newer)).toBe("another-viewer");
+      // ...and a take it lost the race for still tells it who has control.
+      yield* newer.input({ type: "takeControl", takeOver: false });
+      expect(yield* controller(newer)).toBe("another-viewer");
+      yield* operator.resize(1024, 768);
+      yield* syncPoint(operator);
+      expect(yield* nextMessage(newer, "cursor")).toEqual({ type: "cursor", captured: true });
+      // Taking over resizes the display to the new controller's pane.
+      yield* newer.input({ type: "takeControl", takeOver: true });
+      expect(yield* nextMessage(newer, "cursor")).toEqual({ type: "cursor", captured: false });
+      yield* syncPoint(newer);
+      expect(
+        helperInput().filter((command) => (command as { type: string }).type === "resize"),
+      ).toEqual([
+        { type: "resize", width: 800, height: 600 },
+        { type: "resize", width: 1024, height: 768 },
+        { type: "resize", width: 1600, height: 900 },
+      ]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("tells viewers when Blender captures the mouse, and frees control on leaving", () =>
+    Effect.gen(function* () {
+      const { service, openReady, helperInput } = yield* standIn("cursor", "");
+      yield* openReady;
+      const other = yield* attach(service, true);
+      expect(yield* controller(other)).toBe("unclaimed");
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const leaving = yield* attach(service, true);
+          expect(yield* controller(leaving)).toBe("unclaimed");
+          yield* leaving.input({ type: "takeControl", takeOver: false });
+          expect(yield* controller(leaving)).toBe("you");
+          expect(yield* syncPoint(leaving)).toEqual({ type: "cursor", captured: true });
+          expect(yield* controller(other)).toBe("another-viewer");
+          expect(yield* nextMessage(other, "cursor")).toEqual({ type: "cursor", captured: true });
+        }),
+      );
+      // Leaving released the middle button it held, and nobody is in control.
+      expect(yield* controller(other)).toBe("unclaimed");
+      expect(yield* nextMessage(other, "cursor")).toEqual({ type: "cursor", captured: false });
+      expect(helperInput()).toEqual([
+        { type: "pointerButton", button: 274, pressed: true },
+        { type: "pointerButton", button: 274, pressed: false },
+      ]);
+      // A viewer that joins late learns the cursor state with its first messages.
+      yield* other.input({ type: "takeControl", takeOver: false });
+      yield* syncPoint(other);
+      const late = yield* attach(service, false);
+      expect(yield* nextMessage(late, "cursor")).toEqual({ type: "cursor", captured: true });
+    }).pipe(Effect.scoped),
+  );
+});
+
 it.effect("gives up on a start that never shows Blender by asking the helper to quit", () =>
   Effect.gen(function* () {
     const { service, awaitStatus, marker, runtime } = yield* standIn("timeout", "never-shows");
     yield* service.open({ threadId, relativePath: "cube.blend" });
-    const attached = yield* service.attachViewer(threadId);
+    const attached = yield* service.attachViewer(threadId, { canOperate: false });
     assert.strictEqual(attached._tag, "attached");
     if (attached._tag !== "attached") return;
     // Stats arrive once the helper reports ready, after the start timer is set.
@@ -723,7 +904,7 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
         .pipe(Effect.flip);
       expect(otherFile.reason).toBe("otherFileOpen");
 
-      const attached = yield* service.attachViewer(threadId);
+      const attached = yield* service.attachViewer(threadId, { canOperate: false });
       assert.strictEqual(attached._tag, "attached");
       if (attached._tag !== "attached") return;
       const viewer = attached.viewer;
@@ -737,6 +918,32 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
         0x53454d55,
       );
       expect(firstFrame.data[5]! & 1).toBe(1);
+
+      // The viewport looks through its own local camera, not the scene's (until
+      // the orbit below leaves camera view).
+      const throughCamera = yield* service.captureView(threadId);
+      throughCamera.cameraView.position.forEach((value, index) =>
+        expect(value).toBeCloseTo([3, -4, 2][index]!, 3),
+      );
+
+      // A middle-drag orbit in the viewport: Blender hides its cursor while it holds the mouse.
+      const operator = yield* attach(service, true);
+      yield* operator.input({ type: "takeControl", takeOver: false });
+      expect(yield* controller(operator).pipe(Effect.repeat({ until: (c) => c === "you" }))).toBe(
+        "you",
+      );
+      yield* operator.input({ type: "pointer", x: 640, y: 400 });
+      yield* operator.input({ type: "button", button: 274, pressed: true });
+      expect(yield* nextMessage(operator, "cursor").pipe(Effect.timeout("20 seconds"))).toEqual({
+        type: "cursor",
+        captured: true,
+      });
+      yield* operator.input({ type: "pointerMotion", dx: 40, dy: 0 });
+      yield* operator.input({ type: "button", button: 274, pressed: false });
+      expect(yield* nextMessage(operator, "cursor").pipe(Effect.timeout("20 seconds"))).toEqual({
+        type: "cursor",
+        captured: false,
+      });
 
       const blenderPid = NodeFS.readdirSync("/proc")
         .filter((entry) => /^\d+$/.test(entry))
@@ -760,12 +967,6 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
       const argv = NodeFS.readFileSync(`/proc/${blenderPid}/cmdline`, "utf8").split("\0");
       expect(argv).toContain("--online-mode");
       expect(Number(argv[argv.indexOf("--t3-mcp-port") + 1])).not.toBe(9876);
-
-      // The viewport looks through its own local camera, not the scene's.
-      const throughCamera = yield* service.captureView(threadId);
-      throughCamera.cameraView.position.forEach((value, index) =>
-        expect(value).toBeCloseTo([3, -4, 2][index]!, 3),
-      );
 
       // A view link moves the person's viewport window; the frame drawn after it is what a
       // freeze would capture, so it is read back once Blender has drawn the new view.
