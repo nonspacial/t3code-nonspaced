@@ -1,5 +1,6 @@
 import type { AssetResource, ProjectReadFileError, ScopedThreadRef } from "@t3tools/contracts";
 import { mediaFileReference } from "@t3tools/client-runtime/media-reference";
+import { hostPreviewMimeTypeFromExtension } from "@t3tools/shared/filePreview";
 import { isHostPath, workspaceRelativeFilePath } from "@t3tools/shared/path";
 import { msg } from "gt-react";
 
@@ -70,4 +71,20 @@ export function workspaceAssetResource(input: {
     threadId: input.threadRef.threadId,
     path: input.absolutePath,
   };
+}
+
+/** The server signs only known preview types for inline use; anything else, such as a 3D model, is fetched as a download. */
+export function servedAsDownload(path: string): boolean {
+  return hostPreviewMimeTypeFromExtension(path.slice(path.lastIndexOf("."))) === null;
+}
+
+/** One file a 3D model references, signed on its own like the model. */
+export function modelCompanionResource(
+  model: Extract<AssetResource, { _tag: "media-file" | "draft-workspace-file" }>,
+  path: string,
+): AssetResource {
+  const disposition = servedAsDownload(path) ? { disposition: "attachment" as const } : {};
+  return model._tag === "media-file"
+    ? { _tag: "media-file", threadId: model.threadId, path, ...disposition }
+    : { _tag: "draft-workspace-file", cwd: model.cwd, path, ...disposition };
 }
