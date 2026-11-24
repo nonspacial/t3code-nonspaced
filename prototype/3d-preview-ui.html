@@ -1,0 +1,182 @@
+<!doctype html>
+<!--
+  PROTOTYPE, throwaway. Wayfinder ticket #16 "Prototype the 3D file preview UI".
+  Question: what should the 3D file preview look like across its states?
+  Three structurally different variants (A/B/C). Standalone page using T3's theme tokens.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: var(--font-sans); color: var(--foreground); font-size: 13px; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  .app { position: relative; display: flex; flex-direction: column; height: 560px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card); }
+  .tabs { display: flex; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--border); background: var(--secondary); }
+  .tab { font-size: 12px; padding: 5px 10px; border-radius: 6px 6px 0 0; color: var(--muted-foreground); border: 1px solid transparent; }
+  .tab.on { background: var(--card); color: var(--foreground); border-color: var(--border); border-bottom-color: var(--card); margin-bottom: -1px; }
+  .crumb { padding: 6px 10px; font-size: 12px; color: var(--muted-foreground); border-bottom: 1px solid var(--border); }
+  .crumb b { color: var(--foreground); }
+  .body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .toolbar { display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .strip { display: flex; gap: 14px; align-items: center; padding: 5px 10px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--muted-foreground); background: var(--secondary); flex-wrap: wrap; }
+  .btn { border: 1px solid var(--border); background: var(--background); border-radius: 6px; padding: 4px 10px; font-size: 12px; white-space: nowrap; }
+  .btn.primary { background: var(--primary); color: var(--primary-foreground); border-color: transparent; }
+  .btn.ghost { background: transparent; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .seg span { padding: 3px 9px; font-size: 12px; color: var(--muted-foreground); }
+  .seg span.on { background: var(--accent); color: var(--accent-foreground); }
+  .seg span.off { opacity: .45; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--popover); color: var(--popover-foreground); white-space: nowrap; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); display: inline-block; }
+  .dot.warn { background: var(--warning); } .dot.bad { background: var(--destructive); } .dot.info { background: var(--info); }
+  .muted { color: var(--muted-foreground); }
+  .wa { color: var(--warning); } .no { color: var(--destructive); }
+  .mono { font-family: var(--font-mono); font-size: 11.5px; }
+  .viewer { position: relative; flex: 1; min-height: 0; background: radial-gradient(ellipse at 50% 40%, color-mix(in oklab, var(--muted) 70%, var(--card)), var(--card) 75%); overflow: hidden; }
+  .viewer svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .thumb { position: absolute; inset: 0; display: grid; place-items: center; }
+  .thumb .img { width: 128px; height: 128px; border-radius: 6px; border: 1px solid var(--border); image-rendering: pixelated; background: linear-gradient(160deg, #6b6f78, #3a3d44); display: grid; place-items: center; box-shadow: 0 6px 18px rgb(0 0 0 / .25); }
+  .thumb .img.stale { filter: saturate(.6); }
+  .center { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; }
+  .card { background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; max-width: 380px; box-shadow: 0 8px 24px rgb(0 0 0 / .25); }
+  .card h4 { margin: 0 0 6px; font-size: 14px; }
+  .card p { margin: 0 0 10px; line-height: 1.45; font-size: 12.5px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .ov-tl { position: absolute; top: 8px; left: 8px; display: flex; gap: 6px; z-index: 3; }
+  .ov-tr { position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; z-index: 3; }
+  .ov-bl { position: absolute; bottom: 8px; left: 8px; z-index: 3; }
+  .ov-br { position: absolute; bottom: 8px; right: 8px; z-index: 3; }
+  .facts { background: color-mix(in oklab, var(--popover) 86%, transparent); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 11.5px; line-height: 1.6; min-width: 170px; }
+  .split { display: grid; grid-template-columns: 1fr 210px; flex: 1; min-height: 0; }
+  .side { border-left: 1px solid var(--border); padding: 10px; font-size: 12px; overflow: auto; }
+  .side h5 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted-foreground); }
+  .kv { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; margin-bottom: 10px; }
+  .doc { overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; flex: 1; }
+  .doc .head { display: grid; grid-template-columns: 96px 1fr; gap: 12px; align-items: start; }
+  .doc .head .img { width: 96px; height: 96px; border-radius: 6px; background: linear-gradient(160deg, #6b6f78, #3a3d44); border: 1px solid var(--border); }
+  .doc .section { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .doc .section .title { padding: 6px 10px; border-bottom: 1px solid var(--border); font-size: 12px; display: flex; gap: 8px; align-items: center; background: var(--secondary); }
+  .doc .section .viewer { height: 260px; flex: none; }
+  .banner { display: flex; align-items: center; gap: 10px; padding: 7px 10px; font-size: 12px; border-bottom: 1px solid var(--border); background: var(--secondary); }
+  .banner.warn { background: var(--warning-surface, var(--secondary)); } .banner.bad { background: var(--destructive-surface, var(--secondary)); }
+  .grow { flex: 1; }
+  .bar { height: 4px; background: var(--secondary); border-radius: 2px; overflow: hidden; width: 140px; }
+  .bar i { display: block; height: 100%; width: 40%; background: var(--primary); }
+  /* prototype controls */
+  .proto { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; align-items: center; }
+  .switcher { display: inline-flex; align-items: center; gap: 4px; background: #111; color: #fff; border-radius: 999px; padding: 4px; font-size: 12px; }
+  .switcher button { background: #2a2a2a; border: 0; color: #fff; border-radius: 999px; width: 28px; height: 26px; }
+  .switcher .lbl { padding: 0 10px; min-width: 250px; text-align: center; }
+  .states { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
+  .states button { background: #222; color: #ddd; border: 1px solid #444; border-radius: 999px; padding: 2px 9px; font-size: 11px; }
+  .states button.on { background: #fff; color: #111; }
+  .note { font-size: 11px; color: var(--muted-foreground); text-align: center; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="tabs"><div class="tab">Files</div><div class="tab on" id="tabname">hero.blend</div><div class="tab">Terminal</div></div>
+  <div class="crumb">models / <b id="crumbname">hero.blend</b></div>
+  <div class="body" id="body"></div>
+</div>
+<div class="proto">
+  <div class="switcher"><button id="prev">←</button><span class="lbl" id="vlabel"></span><button id="next">→</button></div>
+  <div class="states" id="states"></div>
+  <div class="note" id="note"></div>
+</div>
+<script>
+const VARIANTS = { A: "Viewer fills the pane, info floats in corners", B: "Toolbar, viewer, scene-info sidebar, status strip", C: "Document: thumbnail and facts first, 3D view as a section" };
+const STATES = [
+  ["queued", "Queued"], ["converting", "Converting"], ["ready", "3D ready"], ["updating", "Updating after change"],
+  ["slow", "Too slow"], ["noblender", "No Blender"], ["newer", "Newer Blender file"], ["outside", "Outside workspace"],
+  ["failed", "Failed"], ["glb", "GLB file"], ["siblings", "Missing textures"],
+];
+let variant = "A", state = "converting";
+
+const figure = `<svg viewBox="0 0 700 300" preserveAspectRatio="xMidYMid meet"><g stroke="var(--border)">
+  <line x1="130" y1="260" x2="570" y2="260"/><line x1="200" y1="230" x2="500" y2="230"/><line x1="350" y1="215" x2="350" y2="290"/></g>
+  <ellipse cx="350" cy="245" rx="62" ry="10" fill="var(--foreground)" opacity=".10"/>
+  <g stroke="var(--card)" stroke-width="1.2" stroke-linejoin="round">
+  <polygon points="330,170 348,170 346,240 332,240" fill="var(--chart-1)" opacity=".75"/><polygon points="352,170 370,170 368,240 354,240" fill="var(--chart-1)" opacity=".6"/>
+  <polygon points="318,100 382,100 376,172 324,172" fill="var(--chart-1)" opacity=".95"/>
+  <polygon points="318,104 300,112 294,166 305,168 316,120" fill="var(--chart-1)" opacity=".8"/><polygon points="382,104 400,112 406,166 395,168 384,120" fill="var(--chart-1)" opacity=".55"/>
+  <polygon points="334,58 366,58 372,76 366,96 334,96 328,76" fill="var(--chart-2)" opacity=".95"/></g>
+  <g transform="translate(650,40)" font-size="9" font-family="var(--font-mono)"><circle r="18" fill="none" stroke="var(--border)"/>
+  <line x2="13" y2="5" stroke="var(--destructive)" stroke-width="2"/><line x2="-9" y2="9" stroke="var(--success)" stroke-width="2"/><line y2="-14" stroke="var(--info)" stroke-width="2"/></g></svg>`;
+const isGlb = () => state === "glb" || state === "siblings";
+const name = () => state === "glb" ? "statue.glb" : state === "siblings" ? "crate.gltf" : state === "outside" ? "~/Downloads/kitbash.blend" : "hero.blend";
+const has3d = () => ["ready", "updating", "glb", "siblings"].includes(state);
+const facts = [["Objects", "14"], ["Meshes", "9"], ["Materials", "6"], ["Frames", "1–250"], ["Linked files", "rig.blend, ref_front.png"]];
+const status = () => ({
+  queued: `<span class="chip"><span class="dot warn"></span>Waiting: 1 conversion ahead · <u>Cancel</u></span>`,
+  converting: `<span class="chip"><span class="dot info"></span>Converting with Blender 5.3… 12 s · <u>Cancel</u></span>`,
+  ready: `<span class="chip"><span class="dot"></span>Converted 3 s ago · cached</span>`,
+  updating: `<span class="chip"><span class="dot info"></span>rig.blend changed · updating…</span>`,
+  slow: `<span class="chip"><span class="dot warn"></span>Too slow to preview (60 s)</span>`,
+  noblender: `<span class="chip"><span class="dot warn"></span>No Blender on this server</span>`,
+  newer: `<span class="chip"><span class="dot warn"></span>Saved by Blender 5.4 · server has 5.3</span>`,
+  outside: `<span class="chip"><span class="dot warn"></span>Outside the workspace: thumbnail only</span>`,
+  failed: `<span class="chip"><span class="dot bad"></span>Conversion failed</span>`,
+  glb: `<span class="chip"><span class="dot"></span>GLB · rendered in the browser</span>`,
+  siblings: `<span class="chip"><span class="dot warn"></span>2 textures not found</span>`,
+})[state];
+const action = () => state === "slow" ? `<button class="btn primary">Keep trying</button>`
+  : state === "failed" ? `<button class="btn primary">Try again</button> <button class="btn ghost">Show log</button>`
+  : state === "noblender" ? `<button class="btn">How to install Blender</button>` : "";
+const openBtn = () => isGlb() ? "" : `<button class="btn" ${state === "outside" ? "disabled" : ""}>Open in hosted Blender</button>`;
+function viewerInner() {
+  if (has3d()) return figure + (state === "updating" ? `<div class="ov-bl"><span class="chip"><span class="dot info"></span>Updating…</span></div>` : "")
+    + (state === "siblings" ? `<div class="ov-bl"><span class="chip"><span class="dot warn"></span>crate_diffuse.png, crate_normal.png not found next to crate.gltf</span></div>` : "");
+  const stale = ["converting", "queued"].includes(state);
+  return `<div class="thumb"><div><div class="img ${stale ? "stale" : ""}"><svg viewBox="0 0 64 64" width="64"><polygon points="26,10 38,10 41,18 38,26 26,26 23,18" fill="#9fb4d6"/><polygon points="20,28 44,28 42,50 22,50" fill="#7d93bb"/></svg></div>
+    <div class="muted" style="text-align:center;margin-top:6px;font-size:11px">Saved thumbnail${stale ? " · 3D view on its way" : ""}</div></div></div>`;
+}
+function variantA() {
+  let h = `<div class="viewer">${viewerInner()}<div class="ov-tl">${status()}</div><div class="ov-tr"><button class="btn">↻</button>${openBtn()}</div>`;
+  if (!isGlb()) h += `<div class="ov-br"><div class="facts">${facts.map(([k, v]) => `<div><span class="muted">${k}</span> ${v}</div>`).join("")}</div></div>`;
+  if (["slow", "failed", "noblender", "newer"].includes(state)) h += `<div class="ov-bl"><div class="row">${action()}</div></div>`;
+  return h + `</div>`;
+}
+function variantB() {
+  const toolbar = `<div class="toolbar"><span class="mono"><b>${name()}</b></span>
+    <span class="seg"><span class="${has3d() ? "" : "on"}">Thumbnail</span><span class="${has3d() ? "on" : "off"}">3D</span></span>
+    <span style="flex:1"></span><button class="btn">↻ Refresh</button>${openBtn()}</div>`;
+  const side = isGlb() ? `<div class="side"><h5>Model</h5><div class="kv"><span class="muted">Meshes</span><span>3</span><span class="muted">Triangles</span><span>48k</span><span class="muted">Textures</span><span>${state === "siblings" ? "1 of 3" : "2"}</span></div></div>`
+    : `<div class="side"><h5>Scene</h5><div class="kv">${facts.map(([k, v]) => `<span class="muted">${k}</span><span>${v}</span>`).join("")}</div><h5>Preview notes</h5><div class="muted" style="line-height:1.5">Still pose at the current frame. Materials approximated. No scripts were run.</div></div>`;
+  let main = `<div class="viewer">${viewerInner()}`;
+  if (["slow", "failed", "noblender", "newer", "outside"].includes(state)) {
+    const msg = { slow: "Conversion passed 60 s.", failed: "Blender couldn't convert this file.", noblender: "Install Blender on this server for 3D previews.", newer: "Update Blender on the server to see this file in 3D.", outside: "3D previews only cover files in the workspace." }[state];
+    main += `<div class="center" style="align-items:end"><div class="card"><p>${msg}</p><div class="row">${action()}</div></div></div>`;
+  }
+  main += `</div>`;
+  const strip = `<div class="strip">${status()}<span style="flex:1"></span><span class="mono">${isGlb() ? "three.js · client" : "Blender 5.3 · GLB 4.2 MB · cached"}</span></div>`;
+  return toolbar + `<div class="split">${main}${side}</div>` + strip;
+}
+function variantC() {
+  let banner = "";
+  if (["slow", "failed", "noblender", "newer", "outside", "siblings"].includes(state)) banner = `<div class="banner ${state === "failed" ? "bad" : "warn"}"><span class="grow">${status()}</span>${action()}</div>`;
+  const head = isGlb() ? "" : `<div class="head"><div class="img"></div><div><div style="font-weight:600;margin-bottom:4px">${name()}</div>
+    <div class="muted" style="line-height:1.6">${facts.map(([k, v]) => `${k}: ${v}`).join(" · ")}</div><div class="row" style="margin-top:8px">${openBtn()}<button class="btn">↻ Refresh</button></div></div></div>`;
+  const section = `<div class="section"><div class="title"><b>3D view</b><span style="flex:1"></span>${["queued", "converting", "updating", "ready", "glb", "siblings"].includes(state) ? status() : ""}</div><div class="viewer">${has3d() ? viewerInner() : `<div class="center muted">${["queued", "converting"].includes(state) ? `<div><div class="bar"><i></i></div><div style="margin-top:6px">Converting…</div></div>` : "No 3D view"}</div>`}</div></div>`;
+  return banner + `<div class="doc">${head}${section}</div>`;
+}
+function render() {
+  document.getElementById("tabname").textContent = name().split("/").pop();
+  document.getElementById("crumbname").textContent = name();
+  document.getElementById("body").innerHTML = variant === "A" ? variantA() : variant === "B" ? variantB() : variantC();
+  document.getElementById("vlabel").textContent = `${variant} (${VARIANTS[variant]})`;
+  document.getElementById("states").innerHTML = STATES.map(([k, l]) => `<button class="${k === state ? "on" : ""}" data-state="${k}">${l}</button>`).join("");
+  document.getElementById("note").textContent = "←/→ switch variant · click a state";
+}
+document.addEventListener("click", (e) => {
+  const t = e.target.closest("[data-state],#prev,#next"); if (!t) return;
+  if (t.dataset.state) state = t.dataset.state;
+  else { const k = Object.keys(VARIANTS); variant = k[(k.indexOf(variant) + (t.id === "next" ? 1 : k.length - 1)) % k.length]; }
+  render();
+});
+document.addEventListener("keydown", (e) => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") document.getElementById(e.key === "ArrowRight" ? "next" : "prev").click(); });
+render();
+</script>
+</body>
+</html>
