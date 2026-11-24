@@ -796,6 +796,7 @@ const make = Effect.gen(function* () {
     };
   });
 
+  // Each request runs inside its caller's span (captureView, findHits, setView).
   const ask = Effect.fnUntraced(function* <A>(
     threadId: ThreadId,
     body: ControlRequestBody,
@@ -823,7 +824,8 @@ const make = Effect.gen(function* () {
       );
     if (Option.isNone(answer)) return yield* new HostedBlenderError({ reason: "noReply" });
     // The add-on answers null when Blender has no viewport window to read or move.
-    return yield* Schema.decodeUnknownEffect(result)(answer.value).pipe(
+    if (answer.value === null) return yield* new HostedBlenderError({ reason: "noViewport" });
+    return yield* Schema.decodeEffect(result)(answer.value).pipe(
       Effect.mapError(() => new HostedBlenderError({ reason: "noReply" })),
     );
   });

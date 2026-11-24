@@ -192,7 +192,7 @@ def _set_view(command):
 
 def _handle(command):
     kind = command.get("type")
-    requests = {"view": lambda: _view(), "hits": lambda: _hits(command), "setView": lambda: _set_view(command)}
+    requests = {"view": _view, "hits": lambda: _hits(command), "setView": lambda: _set_view(command)}
     if kind in requests:
         try:
             result = requests[kind]()

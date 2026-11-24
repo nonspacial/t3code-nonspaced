@@ -28,10 +28,11 @@ export interface FrozenBlenderFrame {
 /** Copies the stream's current frame, which keeps changing underneath while the person draws. */
 function freezeBlenderFrame(
   canvas: HTMLCanvasElement,
-  capture: Promise<HostedBlenderViewCapture | null>,
+  readCamera: () => Promise<HostedBlenderViewCapture | null>,
 ): FrozenBlenderFrame | null {
   const { width, height } = canvas.getBoundingClientRect();
   if (canvas.width === 0 || canvas.height === 0 || width === 0 || height === 0) return null;
+  const capture = readCamera();
   const image = document.createElement("canvas");
   image.width = canvas.width;
   image.height = canvas.height;
@@ -63,10 +64,13 @@ export function useBlenderAnnotation(input: {
   const start = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const capture = captureView({ environmentId, input: { threadId } }).then((result) =>
-      result._tag === "Success" ? result.value : null,
+    setFrozen(
+      freezeBlenderFrame(canvas, () =>
+        captureView({ environmentId, input: { threadId } }).then((result) =>
+          result._tag === "Success" ? result.value : null,
+        ),
+      ),
     );
-    setFrozen(freezeBlenderFrame(canvas, capture));
   };
 
   const editor = frozen ? (

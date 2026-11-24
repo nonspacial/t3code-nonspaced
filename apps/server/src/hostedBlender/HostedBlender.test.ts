@@ -140,7 +140,9 @@ def control():
         if kind in ("view", "hits", "setView") and scenario == "drop-on-view":
             connection.close()
             return
-        if kind == "view":
+        if kind == "view" and scenario == "no-viewport":
+            result = None
+        elif kind == "view":
             result = {"cameraView": {**view, "upAxis": "z"},
                       "projection": {"matrix": [2] + [0] * 15,
                                      "region": {"x": 0.1, "y": 0.05, "width": 0.8, "height": 0.9}}}
@@ -346,6 +348,15 @@ describe("The viewport window", () => {
         .setView({ threadId, view: { position: [1, 0, 0], target: [0, 0, 0] } })
         .pipe(Effect.flip);
       expect(refused.reason).toBe("notRunning");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("fails when Blender has no viewport window to read", () =>
+    Effect.gen(function* () {
+      const { service, openReady } = yield* standIn("no-viewport", "no-viewport");
+      yield* openReady;
+      const failed = yield* service.captureView(threadId).pipe(Effect.flip);
+      expect(failed.reason).toBe("noViewport");
     }).pipe(Effect.scoped),
   );
 
