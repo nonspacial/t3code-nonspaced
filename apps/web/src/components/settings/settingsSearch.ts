@@ -31,6 +31,7 @@ export type SettingsPath =
   | "/settings/threads"
   | "/settings/browser"
   | "/settings/devices"
+  | "/settings/blender"
   | "/settings/scheduled-tasks"
   | "/settings/source-control"
   | "/settings/worktrees"
@@ -109,6 +110,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/threads": msg("Threads"),
   "/settings/browser": msg("Browser"),
   "/settings/devices": msg("Devices"),
+  "/settings/blender": msg("Blender"),
   "/settings/scheduled-tasks": msg("Scheduled tasks"),
   "/settings/source-control": msg("Source control & issues"),
   "/settings/worktrees": msg("Worktrees"),
@@ -159,6 +161,7 @@ const ALL_SETTINGS_NAV_GROUPS: ReadonlyArray<SettingsNavGroup> = [
       "/settings/threads",
       "/settings/browser",
       "/settings/devices",
+      "/settings/blender",
       "/settings/scheduled-tasks",
     ],
   },
@@ -1136,6 +1139,31 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("allow disable enable open drive preview tools sessions project override")],
   },
   {
+    id: "hosted-blender",
+    title: msg("Hosted Blender"),
+    to: "/settings/blender",
+    scope: "environment-defaults",
+    searchTerms: [
+      msg(
+        "blender hosted setup install check labwc gstreamer encoder gpu hidden display linux agent commands",
+      ),
+    ],
+  },
+  {
+    id: "hosted-blender-allow-agents",
+    title: msg("Allow agents to start hosted Blenders"),
+    to: "/settings/blender",
+    scope: "environment-defaults",
+    searchTerms: [msg("blender hosted agents mcp start allow")],
+  },
+  {
+    id: "blender-mcp-path",
+    title: msg("Blender MCP path"),
+    to: "/settings/blender",
+    scope: "environment-defaults",
+    searchTerms: [msg("blender lab mcp server path binary install uv pipx")],
+  },
+  {
     id: "device-sources",
     title: msg("Device sources"),
     to: "/settings/devices",
@@ -1543,6 +1571,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/threads": null,
   "/settings/browser": null,
   "/settings/devices": null,
+  "/settings/blender": null,
   "/settings/source-control": "environment-defaults",
   "/settings/worktrees": "project-defaults",
   "/settings/connections": "connections",

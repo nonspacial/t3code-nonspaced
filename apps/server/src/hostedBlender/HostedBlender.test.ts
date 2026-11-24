@@ -11,7 +11,6 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -23,30 +22,50 @@ import * as ServerConfig from "../config.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
-import * as HiddenDisplayBinary from "./HiddenDisplayBinary.ts";
 import * as HostedBlender from "./HostedBlender.ts";
+import * as HostedBlenderSetup from "./HostedBlenderSetup.ts";
 
 const threadId = ThreadId.make("thread-hosted-blender");
 const otherThreadId = ThreadId.make("thread-same-workspace");
 
 interface Host {
-  readonly platform?: NodeJS.Platform;
   readonly helper?: string | null;
+  /** What setup reports; by default ready with `helper` and the first Blender on PATH. */
+  readonly readiness?: HostedBlenderSetup.HostedBlenderReadiness;
   readonly env: NodeJS.ProcessEnv;
   readonly workspaceRoot: string;
   readonly baseDir: string;
 }
 
+const blenderOnPath = (env: NodeJS.ProcessEnv) =>
+  (env.PATH ?? "")
+    .split(NodePath.delimiter)
+    .filter(Boolean)
+    .map((dir) => NodePath.join(dir, "blender"))
+    .find((candidate) => NodeFS.existsSync(candidate));
+
+const readinessFor = (host: Host): HostedBlenderSetup.HostedBlenderReadiness => {
+  if (host.readiness) return host.readiness;
+  const blender = blenderOnPath(host.env);
+  return host.helper == null || blender === undefined
+    ? { status: "notSetUp", missing: ["helper"] }
+    : { status: "ok", helper: host.helper, blender };
+};
+
 const layerFor = (host: Host) =>
   HostedBlender.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.succeed(HiddenDisplayBinary.HiddenDisplayBinary, {
-          resolve:
-            host.helper === null || host.helper === undefined
-              ? Effect.fail(new HiddenDisplayBinary.HiddenDisplayBinaryNotFound({ candidates: [] }))
-              : Effect.succeed(host.helper),
-        }),
+        Layer.succeed(
+          HostedBlenderSetup.HostedBlenderSetup,
+          HostedBlenderSetup.HostedBlenderSetup.of({
+            state: Stream.never,
+            check: Effect.void,
+            ensureChecked: Effect.void,
+            installWithAgent: Effect.die("not used"),
+            readiness: Stream.concat(Stream.succeed(readinessFor(host)), Stream.never),
+          }),
+        ),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadShell: (id) =>
             Effect.succeed(
@@ -63,7 +82,7 @@ const layerFor = (host: Host) =>
     ),
     Layer.provide(
       Layer.mergeAll(
-        Layer.succeed(HostProcess.Platform, host.platform ?? "linux"),
+        Layer.succeed(HostProcess.Platform, "linux"),
         Layer.succeed(HostProcess.Environment, host.env),
         Layer.succeed(HostProcess.HomeDirectory, host.baseDir),
       ),
@@ -669,28 +688,25 @@ it.effect("gives up on a start that never shows Blender by asking the helper to 
 );
 
 describe("HostedBlender availability", () => {
-  it.effect("is not available on hosts other than Linux", () =>
+  it.effect("passes on why setup can't host Blender, and refuses to open files", () =>
     Effect.gen(function* () {
       const dir = yield* tempDir("unavailable");
-      const service = yield* serviceFor(
-        layerFor({ platform: "darwin", env: {}, workspaceRoot: dir, baseDir: dir }),
-      );
-      assert.deepStrictEqual(yield* firstState(service), { status: "unavailable" });
-      const opened = yield* service.open({ threadId, relativePath: "a.blend" }).pipe(Effect.exit);
-      assert.isTrue(Exit.hasFails(opened));
-    }).pipe(Effect.scoped),
-  );
-
-  it.effect("lists what a Linux host is missing", () =>
-    Effect.gen(function* () {
-      const dir = yield* tempDir("missing");
-      const service = yield* serviceFor(
-        layerFor({ env: { PATH: "" }, workspaceRoot: dir, baseDir: dir }),
-      );
-      assert.deepStrictEqual(yield* firstState(service), {
-        status: "notSetUp",
-        missing: ["helper", "blender", "labwc"],
-      });
+      NodeFS.writeFileSync(NodePath.join(dir, "a.blend"), "");
+      for (const readiness of [
+        { status: "unavailable", reason: "platform" },
+        { status: "notSetUp", missing: ["enabled"] },
+        { status: "notSetUp", missing: ["labwc", "encoder"] },
+      ] as const) {
+        const service = yield* serviceFor(
+          layerFor({ readiness, env: {}, workspaceRoot: dir, baseDir: dir }),
+        );
+        assert.deepStrictEqual(yield* firstState(service), readiness);
+        const opened = yield* service.open({ threadId, relativePath: "a.blend" }).pipe(
+          Effect.flip,
+          Effect.map((error) => error.reason),
+        );
+        expect(opened).toBe(readiness.status);
+      }
     }).pipe(Effect.scoped),
   );
 });

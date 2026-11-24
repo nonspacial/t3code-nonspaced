@@ -8,9 +8,116 @@ export const HOSTED_BLENDER_STREAM_STOPPED_CLOSE_CODE = 4404;
 /** Too many viewers are already watching this hosted Blender. */
 export const HOSTED_BLENDER_STREAM_FULL_CLOSE_CODE = 4429;
 
-/** What the server lacks to host Blender. */
-export const HostedBlenderRequirement = Schema.Literals(["helper", "blender", "labwc"]);
+/**
+ * What the server lacks to host Blender. `enabled` is the Hosted Blender switch in Settings;
+ * `check` means nobody with permission to run it has checked the server yet.
+ */
+export const HostedBlenderRequirement = Schema.Literals([
+  "enabled",
+  "check",
+  "helper",
+  "blender",
+  "labwc",
+  "gstreamer",
+  "encoder",
+  "glupload",
+]);
 export type HostedBlenderRequirement = typeof HostedBlenderRequirement.Type;
+
+/** What the setup check looks at. `gpu` and `blenderMcp` never stop the pane. */
+export const HostedBlenderSetupItem = Schema.Literals([
+  "helper",
+  "blender",
+  "labwc",
+  "gstreamer",
+  "encoder",
+  "glupload",
+  "gpu",
+  "blenderMcp",
+]);
+export type HostedBlenderSetupItem = typeof HostedBlenderSetupItem.Type;
+
+export const HostedBlenderSetupCheck = Schema.Struct({
+  item: HostedBlenderSetupItem,
+  /**
+   * `warning` works, but slowly or only partly: no GPU. `unrecognized` is a program by the right
+   * name that isn't the expected one, such as PyPI's unrelated `blender-mcp`.
+   */
+  status: Schema.Literals(["ok", "missing", "outdated", "warning", "unrecognized"]),
+  /** What was found: a version, a path or an encoder. */
+  found: Schema.optionalKey(Schema.String),
+});
+export type HostedBlenderSetupCheck = typeof HostedBlenderSetupCheck.Type;
+
+export const HostedBlenderPackageManager = Schema.Literals(["pacman", "apt", "dnf"]);
+export type HostedBlenderPackageManager = typeof HostedBlenderPackageManager.Type;
+
+/** The last setup check's outcome. */
+export const HostedBlenderSetupResult = Schema.Union([
+  /**
+   * `platform`: not Linux. `distro`: a release too old for labwc and GStreamer (Ubuntu 22.04,
+   * Debian 12). `sandboxedBlender`: the only Blender is a Flatpak or Snap build.
+   */
+  Schema.Struct({
+    status: Schema.Literal("unavailable"),
+    reason: Schema.Literals(["platform", "distro", "sandboxedBlender"]),
+    distro: Schema.NullOr(Schema.String),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("checked"),
+    /** Everything the pane needs is there. */
+    ready: Schema.Boolean,
+    checks: Schema.Array(HostedBlenderSetupCheck),
+    distro: Schema.NullOr(Schema.String),
+    packageManager: Schema.NullOr(HostedBlenderPackageManager),
+    /** How the helper captures labwc's windows: labwc 0.9 and later, or the older fallback. */
+    capture: Schema.NullOr(Schema.Literals(["ext-image-copy-capture", "wlr-screencopy"])),
+    /** Shell commands that install what is missing, for "Show me the commands". */
+    commands: Schema.Array(Schema.String),
+    checkedAt: Schema.Number,
+  }),
+]);
+export type HostedBlenderSetupResult = typeof HostedBlenderSetupResult.Type;
+
+export const HostedBlenderSetupState = Schema.Struct({
+  /** Null until the first check finishes. Kept until "Check again". */
+  result: Schema.NullOr(HostedBlenderSetupResult),
+  checking: Schema.Boolean,
+  /** The "Install with an agent" thread, until its agent finishes and T3 checks again. */
+  installThreadId: Schema.NullOr(ThreadId),
+});
+export type HostedBlenderSetupState = typeof HostedBlenderSetupState.Type;
+
+export const HostedBlenderInstallResult = Schema.Struct({ threadId: ThreadId });
+export type HostedBlenderInstallResult = typeof HostedBlenderInstallResult.Type;
+
+export class HostedBlenderSetupError extends Schema.TaggedError<HostedBlenderSetupError>()(
+  "HostedBlenderSetupError",
+  {
+    reason: Schema.Literals([
+      "unavailable",
+      "nothingToInstall",
+      "noProject",
+      "noDefaultModel",
+      "launchFailed",
+    ]),
+  },
+) {
+  override get message(): string {
+    switch (this.reason) {
+      case "unavailable":
+        return "Hosted Blender is not available on this host.";
+      case "nothingToInstall":
+        return "Hosted Blender has everything it needs. Check again if something changed.";
+      case "noProject":
+        return "This server cannot start threads without a project.";
+      case "noDefaultModel":
+        return "Choose a default model for new threads first.";
+      case "launchFailed":
+        return "T3 Code could not start the setup thread.";
+    }
+  }
+}
 
 export const HostedBlenderRunningState = Schema.Struct({
   status: Schema.Literals(["starting", "running"]),
@@ -26,7 +133,10 @@ export type HostedBlenderRunningState = typeof HostedBlenderRunningState.Type;
  * `notSetUp` is a Linux host missing `missing`.
  */
 export const HostedBlenderThreadState = Schema.Union([
-  Schema.Struct({ status: Schema.Literal("unavailable") }),
+  Schema.Struct({
+    status: Schema.Literal("unavailable"),
+    reason: Schema.optionalKey(Schema.Literals(["platform", "distro", "sandboxedBlender"])),
+  }),
   Schema.Struct({
     status: Schema.Literal("notSetUp"),
     missing: Schema.Array(HostedBlenderRequirement),
