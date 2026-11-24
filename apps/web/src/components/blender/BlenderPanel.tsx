@@ -20,8 +20,10 @@ import type {
   EnvironmentId,
   HostedBlenderRequirement,
   HostedBlenderRunningState,
+  HostedBlenderThreadState,
   ScopedThreadRef,
 } from "@t3tools/contracts";
+import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { MoreVertical } from "lucide-react";
 import { msg, T, useGT, useMessages, Var } from "gt-react";
@@ -37,7 +39,13 @@ import {
   AlertDialogTitle,
 } from "~/components/ui/alert-dialog";
 import { Button } from "~/components/ui/button";
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "~/components/ui/empty";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "~/components/ui/empty";
 import {
   Menu,
   MenuItem,
@@ -61,6 +69,7 @@ import { observeResize } from "~/lib/observeResize";
 import {
   hostedBlenderEnvironment,
   refreshHostedBlenderStreamAccess,
+  useHostedBlenderSetupState,
   useHostedBlenderState,
   useHostedBlenderStreamAccess,
 } from "~/state/hostedBlender";
@@ -131,18 +140,16 @@ export function BlenderPanel(props: {
       return (
         <StateCard
           title={<T>Not available on this host</T>}
-          description={
-            <T>
-              Hosted Blender needs a Linux server. You can still open 3D files in the file preview.
-            </T>
-          }
+          description={<UnavailableReason reason={state.reason ?? "platform"} />}
+          action={<OpenBlenderSettings environmentId={props.threadRef.environmentId} />}
         />
       );
     case "notSetUp":
       return (
         <StateCard
-          title={<T>Hosted Blender isn't set up</T>}
+          title={<T>Setup needed</T>}
           description={<MissingRequirements missing={state.missing} />}
+          action={<OpenBlenderSettings environmentId={props.threadRef.environmentId} />}
         />
       );
     case "stopped":
@@ -172,29 +179,88 @@ export function BlenderPanel(props: {
   }
 }
 
-function StateCard(props: { readonly title: ReactNode; readonly description?: ReactNode }) {
+function StateCard(props: {
+  readonly title: ReactNode;
+  readonly description?: ReactNode;
+  readonly action?: ReactNode;
+}) {
   return (
     <Empty className="h-full">
       <EmptyHeader>
         <EmptyTitle>{props.title}</EmptyTitle>
         {props.description ? <EmptyDescription>{props.description}</EmptyDescription> : null}
       </EmptyHeader>
+      {props.action ? <EmptyContent>{props.action}</EmptyContent> : null}
     </Empty>
   );
 }
 
+function OpenBlenderSettings(props: { readonly environmentId: EnvironmentId }) {
+  const navigate = useNavigate();
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={() =>
+        void navigate({
+          to: "/settings/blender",
+          search: { machine: props.environmentId },
+        })
+      }
+    >
+      <T>Open Blender settings</T>
+    </Button>
+  );
+}
+
+function UnavailableReason(props: {
+  readonly reason: NonNullable<
+    Extract<HostedBlenderThreadState, { status: "unavailable" }>["reason"]
+  >;
+}) {
+  switch (props.reason) {
+    case "platform":
+      return (
+        <T>Hosted Blender needs a Linux server. You can still open 3D files in the file preview.</T>
+      );
+    case "distro":
+      return (
+        <T>
+          This server's Linux release ships labwc and GStreamer too old for hosted Blender. You can
+          still open 3D files in the file preview.
+        </T>
+      );
+    case "sandboxedBlender":
+      return (
+        <T>
+          Flatpak and Snap builds of Blender aren't supported yet. Settings › Blender says how to
+          use another Blender.
+        </T>
+      );
+  }
+}
+
 function MissingRequirements(props: { readonly missing: ReadonlyArray<HostedBlenderRequirement> }) {
   const gt = useGT();
-  const names: Record<HostedBlenderRequirement, string> = {
+  if (props.missing.includes("enabled")) {
+    return <T>Switch on Hosted Blender in Settings › Blender to watch and steer Blender here.</T>;
+  }
+  const names: Record<Exclude<HostedBlenderRequirement, "enabled">, string> = {
     blender: "Blender",
     labwc: "labwc",
     helper: gt("T3 Code's hidden display helper"),
+    gstreamer: "GStreamer",
+    encoder: gt("an H.264 encoder"),
+    glupload: gt("GStreamer's OpenGL plugin"),
   };
-  const list = props.missing.map((requirement) => names[requirement]).join(", ");
+  const list = props.missing
+    .filter((requirement) => requirement !== "enabled")
+    .map((requirement) => names[requirement])
+    .join(", ");
   return (
     <T>
-      This server is missing: <Var>{list}</Var>. Install them on the server, then open this pane
-      again.
+      This server is missing: <Var>{list}</Var>. Settings › Blender can install them with an agent
+      or show you the commands.
     </T>
   );
 }
@@ -236,7 +302,11 @@ function RunningBlender(props: {
       ) : (
         <div className="min-h-0 flex-1" />
       )}
-      <BlenderStatusStrip {...stats} control={control} />
+      <BlenderStatusStrip
+        {...stats}
+        control={control}
+        environmentId={props.threadRef.environmentId}
+      />
     </div>
   );
 }
@@ -615,7 +685,16 @@ function StreamStatus(props: { readonly status: Exclude<HostedBlenderStreamStatu
   }
 }
 
-function BlenderStatusStrip(props: StreamStats & { readonly control: HostedBlenderControl }) {
+function BlenderStatusStrip(
+  props: StreamStats & {
+    readonly control: HostedBlenderControl;
+    readonly environmentId: EnvironmentId;
+  },
+) {
+  const setup = useHostedBlenderSetupState(props.environmentId)?.result;
+  const noGpu =
+    setup?.status === "checked" &&
+    setup.checks.some((check) => check.item === "gpu" && check.status !== "ok");
   const parts = [
     props.frameSize ? `${props.frameSize.width}×${props.frameSize.height}` : null,
     props.rate ? `${props.rate.framesPerSecond} fps` : null,
@@ -636,6 +715,11 @@ function BlenderStatusStrip(props: StreamStats & { readonly control: HostedBlend
       {props.server?.target === "output" ? (
         <span className="min-w-0 truncate text-warning-foreground">
           <T>Showing the whole display</T>
+        </span>
+      ) : null}
+      {noGpu ? (
+        <span className="min-w-0 truncate text-warning-foreground">
+          <T>No GPU: Blender will be slow</T>
         </span>
       ) : null}
       {/* Who's in control comes first; in a narrow pane the stats shorten instead of wrapping. */}

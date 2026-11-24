@@ -17,7 +17,8 @@ const stream = vi.hoisted(() => ({
   events: null as HostedBlenderStreamEvents | null,
   sent: [] as HostedBlenderViewerMessage[],
   access: { httpBase: "https://t3", wsBase: "wss://t3/blender", credentials: false, query: {} },
-  state: { status: "running", relativePath: "models/hero.blend", dirty: false },
+  state: { status: "running", relativePath: "models/hero.blend", dirty: false } as unknown,
+  setup: null as unknown,
 }));
 
 vi.mock(import("@t3tools/client-runtime/hosted-blender/stream"), async (original) => ({
@@ -47,6 +48,7 @@ vi.mock(import("@t3tools/client-runtime/device/frame"), async (original) => ({
 vi.mock(import("~/state/hostedBlender"), async (original) => ({
   ...(await original()),
   useHostedBlenderState: (() => stream.state) as never,
+  useHostedBlenderSetupState: (() => stream.setup) as never,
   useHostedBlenderStreamAccess: (() => stream.access) as never,
 }));
 
@@ -204,4 +206,58 @@ it("gives control straight back when it's granted after focus has moved elsewher
     { type: "takeControl", takeOver: true },
     { type: "releaseControl" },
   ]);
+});
+
+it("shows Setup needed, saying what is missing, with a way into Settings › Blender", async () => {
+  using _app = startup();
+  const running = stream.state;
+  try {
+    stream.state = { status: "notSetUp", missing: ["enabled"] };
+    await using screen = await render(<BlenderPanel threadRef={threadRef} visible />);
+    await expect.element(screen.getByText("Setup needed")).toBeInTheDocument();
+    await expect
+      .element(screen.getByText("Switch on Hosted Blender in Settings › Blender", { exact: false }))
+      .toBeInTheDocument();
+    stream.state = { status: "notSetUp", missing: ["labwc", "encoder"] };
+    await screen.rerender(<BlenderPanel threadRef={threadRef} visible />);
+    await expect
+      .element(screen.getByText("labwc, an H.264 encoder", { exact: false }))
+      .toBeInTheDocument();
+    await screen.getByRole("button", { name: "Open Blender settings" }).click();
+    expect(screen.router?.state.location.pathname).toBe("/settings/blender");
+    expect(screen.router?.state.location.search).toEqual({ machine: "environment-1" });
+
+    stream.state = { status: "unavailable", reason: "sandboxedBlender" };
+    await screen.rerender(<BlenderPanel threadRef={threadRef} visible />);
+    await expect.element(screen.getByText("Not available on this host")).toBeInTheDocument();
+    await expect
+      .element(screen.getByText("Flatpak and Snap builds of Blender", { exact: false }))
+      .toBeInTheDocument();
+  } finally {
+    stream.state = running;
+  }
+});
+
+it("warns in the status strip when the server has no usable GPU", async () => {
+  using _app = startup();
+  stream.setup = {
+    result: {
+      status: "checked",
+      ready: true,
+      checks: [{ item: "gpu", status: "warning" }],
+      distro: null,
+      packageManager: null,
+      capture: null,
+      commands: [],
+      checkedAt: 0,
+    },
+    checking: false,
+    installThreadId: null,
+  };
+  try {
+    await using screen = await render(<BlenderPanel threadRef={threadRef} visible />);
+    await expect.element(screen.getByText("No GPU: Blender will be slow")).toBeInTheDocument();
+  } finally {
+    stream.setup = null;
+  }
 });
