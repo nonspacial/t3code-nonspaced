@@ -173,3 +173,70 @@ it("reports who controls Blender and whether it holds the mouse, and sends input
   expect(cursor).toHaveBeenLastCalledWith(false);
   client.stop();
 });
+
+it("starts a new decoder when a keyframe brings a new frame size, and keeps it otherwise", async () => {
+  FakeSocket.instances = [];
+  const decoders: Array<{ codec: string | null; decoded: string[]; state: string }> = [];
+  vi.stubGlobal("WebSocket", FakeSocket);
+  vi.stubGlobal(
+    "EncodedVideoChunk",
+    class {
+      readonly init: EncodedVideoChunkInit;
+      constructor(init: EncodedVideoChunkInit) {
+        this.init = init;
+      }
+    },
+  );
+  vi.stubGlobal(
+    "VideoDecoder",
+    class extends EventTarget {
+      static isConfigSupported = async () => ({ supported: true });
+      readonly record = {
+        codec: null as string | null,
+        decoded: [] as string[],
+        state: "unconfigured",
+      };
+      decodeQueueSize = 0;
+      constructor() {
+        super();
+        decoders.push(this.record);
+      }
+      get state() {
+        return this.record.state;
+      }
+      configure(config: VideoDecoderConfig) {
+        this.record.state = "configured";
+        this.record.codec = config.codec;
+      }
+      decode(chunk: { init: EncodedVideoChunkInit }) {
+        this.record.decoded.push(chunk.init.type);
+      }
+      close() {
+        this.record.state = "closed";
+      }
+    },
+  );
+  const client = createHostedBlenderStreamClient(
+    {
+      access: { httpBase: "https://t3", wsBase: "wss://t3/blender", credentials: false, query: {} },
+      threadId: "thread-1",
+    },
+    { present: vi.fn(() => true) },
+    { onStatus: vi.fn(), onStats: vi.fn(), onFrameRate: vi.fn(), onUnauthorized: vi.fn() },
+  );
+  const socket = FakeSocket.instances[0]!;
+  socket.open();
+  socket.receive(keyframe);
+  await vi.waitFor(() => expect(decoders[0]?.decoded).toEqual(["key"]));
+  // The same SPS again, with a different slice: the same decoder carries on.
+  socket.receive(semu(true, [0, 0, 0, 1, 0x67, 0x64, 0x00, 0x1f, 0, 0, 0, 1, 0x65, 0x99]));
+  expect(decoders).toHaveLength(1);
+  expect(decoders[0]!.decoded).toEqual(["key", "key"]);
+  // The display resized: a different SPS (here level 4.0) starts a decoder of its own, since some
+  // decoders (Android's WebView) keep the first frame size.
+  socket.receive(semu(true, [0, 0, 0, 1, 0x67, 0x64, 0x00, 0x28, 0, 0, 0, 1, 0x65, 0x88]));
+  await vi.waitFor(() => expect(decoders[1]?.decoded).toEqual(["key"]));
+  expect(decoders[0]!.state).toBe("closed");
+  expect(decoders[1]!.codec).toBe("avc1.640028");
+  client.stop();
+});

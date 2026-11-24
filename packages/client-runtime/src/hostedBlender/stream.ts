@@ -60,6 +60,18 @@ const decodeServerMessage = Schema.decodeUnknownOption(
   Schema.fromJsonString(HostedBlenderStreamServerMessage),
 );
 
+/** The SPS NAL alone: `scanAccessUnit` returns it with the rest of the access unit after it. */
+const spsNal = (sps: Uint8Array) => {
+  for (let i = 0; i + 2 < sps.length; i++) {
+    if (sps[i] === 0 && sps[i + 1] === 0 && (sps[i + 2] === 1 || sps[i + 2] === 0)) {
+      return sps.subarray(0, i);
+    }
+  }
+  return sps;
+};
+const sameBytes = (a: Uint8Array, b: Uint8Array) =>
+  a.length === b.length && a.every((byte, index) => byte === b[index]);
+
 const webCodecsAvailable = () => "VideoDecoder" in globalThis && "EncodedVideoChunk" in globalThis;
 
 /**
@@ -80,6 +92,8 @@ export function createHostedBlenderStreamClient(
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let failures = 0;
   let decoder: VideoDecoder | null = null;
+  // The SPS the decoder was configured with; a keyframe with another one is a new frame size.
+  let decoderSps: Uint8Array | null = null;
   let configuring = false;
   let size: { readonly width: number; readonly height: number } | null = null;
   let live = false;
@@ -93,6 +107,7 @@ export function createHostedBlenderStreamClient(
       decoder?.close();
     } catch {}
     decoder = null;
+    decoderSps = null;
     configuring = false;
     ackOwed = false;
   };
@@ -162,6 +177,7 @@ export function createHostedBlenderStreamClient(
     next.addEventListener("dequeue", sendAck);
     next.configure(config);
     decoder = next;
+    decoderSps = spsNal(sps).slice();
     configuring = false;
     decode(data, true, pts);
     sendAck();
@@ -172,11 +188,25 @@ export function createHostedBlenderStreamClient(
     const timestamp = packet.timestamp ?? 0;
     countFrame(raw.byteLength);
     ackOwed = true;
-    if (decoder?.state === "configured") {
-      decode(packet.data, packet.isKey ?? false, timestamp);
-      return sendAck();
-    }
     const scanned = packet.isKey === false ? null : scanAccessUnit(packet.data);
+    if (decoder?.state === "configured") {
+      const resized =
+        scanned?.isKey === true &&
+        scanned.sps !== null &&
+        decoderSps !== null &&
+        !sameBytes(spsNal(scanned.sps), decoderSps);
+      if (!resized) {
+        decode(packet.data, packet.isKey ?? false, timestamp);
+        return sendAck();
+      }
+      // The display resized. Some decoders (Android's WebView) keep the first frame size across
+      // an in-band SPS change, so the new size starts a decoder of its own.
+      try {
+        decoder.close();
+      } catch {}
+      decoder = null;
+      decoderSps = null;
+    }
     // Without a decoder only a keyframe with its SPS can start one.
     if (configuring || !scanned?.isKey || scanned.sps === null) return sendAck();
     void configure(ws, scanned.sps, packet.data, timestamp);

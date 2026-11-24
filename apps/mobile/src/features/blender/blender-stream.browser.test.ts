@@ -142,6 +142,94 @@ describe("mobile Blender stream", () => {
     ]);
   });
 
+  it("resizes the canvas to each new frame size and fits it again, while watching", async () => {
+    using fixture = viewer();
+    const size = { width: 1280, height: 720 };
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      drawImage: () => undefined,
+    } as unknown as RenderingContext);
+    vi.stubGlobal(
+      "VideoDecoder",
+      class extends EventTarget {
+        static isConfigSupported = async () => ({ supported: true });
+        state = "unconfigured";
+        decodeQueueSize = 0;
+        // Like Android's WebView decoder: frames keep the size it was configured at.
+        frameSize = { width: 0, height: 0 };
+        constructor(readonly init: VideoDecoderInit) {
+          super();
+        }
+        configure() {
+          this.state = "configured";
+          this.frameSize = { ...size };
+        }
+        decode() {
+          this.init.output({
+            displayWidth: this.frameSize.width,
+            displayHeight: this.frameSize.height,
+            close: () => undefined,
+          } as unknown as VideoFrame);
+        }
+        close() {
+          this.state = "closed";
+        }
+      },
+    );
+    const keyframe = (level: number) => {
+      const bytes = new Uint8Array([
+        // SEMU header (version 1, keyframe), then an SPS and an IDR slice.
+        0x53,
+        0x45,
+        0x4d,
+        0x55,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0x67,
+        0x64,
+        0x00,
+        level,
+        0,
+        0,
+        0,
+        1,
+        0x65,
+        0x88,
+      ]);
+      fixture.socket.emit("message", { data: bytes.buffer });
+    };
+    fixture.socket.serverSays({ type: "control", canOperate: true, controller: "another-viewer" });
+    const { canvas } = fixture;
+    keyframe(0x1f);
+    await vi.waitFor(() => expect([canvas.width, canvas.height]).toEqual([1280, 720]));
+    expect([canvas.style.width, canvas.style.height, canvas.style.top]).toEqual([
+      "400px",
+      "225px",
+      "287.5px",
+    ]);
+    // The display followed a portrait controller: the next keyframe is 1046×2004.
+    size.width = 1046;
+    size.height = 2004;
+    keyframe(0x28);
+    await vi.waitFor(() => expect([canvas.width, canvas.height]).toEqual([1046, 2004]));
+    expect(Number.parseFloat(canvas.style.width)).toBeCloseTo(400);
+    expect(Number.parseFloat(canvas.style.height)).toBeCloseTo((2004 * 400) / 1046);
+    expect(Number.parseFloat(canvas.style.top)).toBeCloseTo((800 - (2004 * 400) / 1046) / 2);
+  });
+
   it("takes control on the first tap without clicking in Blender", () => {
     using fixture = viewer();
     const { socket, touch, input } = fixture;
