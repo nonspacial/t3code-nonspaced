@@ -414,6 +414,13 @@ const make = Effect.gen(function* () {
       return instance.helper({ type: wanted ? "resume" : "pause" });
     });
 
+  // A viewer that joins or shows its pane starts on a keyframe, whatever was asked for lately.
+  const joinOnKeyframe = (instance: Instance) =>
+    Effect.suspend(() => {
+      instance.lastKeyframeRequest = 0;
+      return requestKeyframe(instance);
+    });
+
   const handlePacket = Effect.fnUntraced(function* (instance: Instance, packet: HelperPacket) {
     if (packet._tag === "video") {
       const now = yield* Clock.currentTimeMillis;
@@ -896,20 +903,18 @@ const make = Effect.gen(function* () {
   });
 
   // Showing a pane joins on a keyframe, as attaching does; a hidden pane gets no frames.
-  const setVisible = Effect.fnUntraced(function* (
+  const setVisible = Effect.fn("HostedBlender.setVisible")(function* (
     instance: Instance,
     entry: ViewerEntry,
     visible: boolean,
   ) {
     if (entry.visible === visible) return;
     entry.visible = visible;
-    entry.flow = new ViewerFlow();
+    entry.flow.resync();
     if (visible) entry.shownAt = nextShownAt++;
     yield* applyCapture(instance);
     yield* applySize(instance);
-    if (!visible) return;
-    instance.lastKeyframeRequest = 0;
-    yield* requestKeyframe(instance);
+    if (visible) yield* joinOnKeyframe(instance);
   });
 
   // Acks arrive for every frame; they share the viewer's stream span.
@@ -956,9 +961,7 @@ const make = Effect.gen(function* () {
       initial.map((message) => ({ _tag: "message" as const, message })),
     );
     yield* applyCapture(instance);
-    // Each viewer joins on a keyframe.
-    instance.lastKeyframeRequest = 0;
-    yield* requestKeyframe(instance);
+    yield* joinOnKeyframe(instance);
     return {
       _tag: "attached" as const,
       viewer: {

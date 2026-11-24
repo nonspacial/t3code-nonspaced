@@ -36,6 +36,17 @@ describe("ViewerFlow", () => {
     expect(flow.ack(300).latencyMs).toBeNull();
   });
 
+  it("resyncs on the next keyframe without a second frame going out", () => {
+    const flow = new ViewerFlow();
+    flow.offer(frame(true, 1), 0);
+    flow.offer(frame(false, 2), 0);
+    flow.resync();
+    expect(flow.offer(frame(false, 3), 0).requestKeyframe).toBe(true);
+    // Frame 1 is still on the wire, so the keyframe waits for its ack.
+    expect(flow.offer(frame(true, 4), 0).send).toBeNull();
+    expect(ids([flow.ack(0).next])).toEqual([4]);
+  });
+
   it("drops queued deltas when a keyframe supersedes them", () => {
     const flow = new ViewerFlow();
     flow.offer(frame(true, 1), 0);

@@ -8,6 +8,11 @@ export const BITRATE = {
   /** Acks within this much of the quickest leave room to rise. */
   headroomMs: 25,
   increaseIntervalMs: 2000,
+  /** Each rise adds this share of the rate, and at least `minIncreaseKbps`. */
+  increaseFactor: 1.1,
+  minIncreaseKbps: 250,
+  /** Each fall keeps this share of the rate. */
+  decreaseFactor: 0.7,
   decreaseHoldMs: 500,
 } as const;
 
@@ -42,7 +47,10 @@ export class BitrateControl {
     if (queueing > BITRATE.headroomMs || now - this.lastChange < BITRATE.increaseIntervalMs) {
       return null;
     }
-    return this.set(Math.max(this.kbps + 250, Math.round(this.kbps * 1.1)), now);
+    return this.set(
+      Math.max(this.kbps + BITRATE.minIncreaseKbps, Math.round(this.kbps * BITRATE.increaseFactor)),
+      now,
+    );
   }
 
   /** The lead viewer fell so far behind that it skips to the next keyframe. */
@@ -60,7 +68,7 @@ export class BitrateControl {
     if (now - this.lastDecrease < BITRATE.decreaseHoldMs) return null;
     this.lastDecrease = now;
     this.slow = 0;
-    return this.set(Math.round(this.kbps * 0.7), now);
+    return this.set(Math.round(this.kbps * BITRATE.decreaseFactor), now);
   }
 
   private set(kbps: number, now: number): number | null {

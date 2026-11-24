@@ -47,6 +47,15 @@ export class ViewerFlow {
   }
 
   /**
+   * Drops what's queued and waits for the next keyframe. A frame still on the wire stays there,
+   * so its late ack can't let a second one out.
+   */
+  resync(): void {
+    this.synced = false;
+    this.pending = [];
+  }
+
+  /**
    * The frame on the wire arrived. Returns the next one to send, and how long the acked frame
    * took from going out to its ack.
    */

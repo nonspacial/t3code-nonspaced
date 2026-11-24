@@ -1756,10 +1756,9 @@ describe("resolveThreadErrorBanner", () => {
 
 describe("shouldRenderPreviewMiniPlayer for the hosted Blender", () => {
   it("floats the Blender pane unless the right panel already shows it", () => {
-    const shouldRender = shouldRenderPreviewMiniPlayer;
     const blender = { kind: "blender" } as const;
-    expect(shouldRender(blender, null)).toBe(true);
-    expect(shouldRender(blender, { id: "files", kind: "files" })).toBe(true);
-    expect(shouldRender(blender, { id: "blender", kind: "blender" })).toBe(false);
+    expect(shouldRenderPreviewMiniPlayer(blender, null)).toBe(true);
+    expect(shouldRenderPreviewMiniPlayer(blender, { id: "files", kind: "files" })).toBe(true);
+    expect(shouldRenderPreviewMiniPlayer(blender, { id: "blender", kind: "blender" })).toBe(false);
   });
 });

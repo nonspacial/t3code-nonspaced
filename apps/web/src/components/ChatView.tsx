@@ -2165,10 +2165,9 @@ export default function ChatView(props: ChatViewProps) {
   // The thread's hosted Blender is only watched while a turn runs or its pane floats.
   const floatingBlenderThreadRef =
     isServerThread && !embedded && !shouldUsePlanSidebarSheet ? activeThreadRef : null;
-  const floatingBlenderSource = activePreviewMiniPlayer?.source ?? null;
+  const floatingSource = activePreviewMiniPlayer?.source ?? null;
   const floatingBlenderState = useHostedBlenderState(
-    floatingBlenderThreadRef &&
-      (activeRunningTurnId !== null || floatingBlenderSource?.kind === "blender")
+    floatingBlenderThreadRef && (activeRunningTurnId !== null || floatingSource?.kind === "blender")
       ? floatingBlenderThreadRef
       : null,
   );
@@ -2182,7 +2181,7 @@ export default function ChatView(props: ChatViewProps) {
       decidedTurnId: decidedBlenderTurnId.current,
       state: floatingBlenderState,
       autoShowFloatingPreview: getClientSettings().browserAutoShowFloatingPreview,
-      floating: floatingBlenderSource,
+      floating: floatingSource,
       panelShown: blenderPanelShown,
     });
     decidedBlenderTurnId.current = decidedTurnId;
@@ -2193,7 +2192,7 @@ export default function ChatView(props: ChatViewProps) {
     floatingBlenderThreadRef,
     activeRunningTurnId,
     floatingBlenderState,
-    floatingBlenderSource,
+    floatingSource,
     blenderPanelShown,
   ]);
   useProactivePanels({

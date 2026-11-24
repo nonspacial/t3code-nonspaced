@@ -58,6 +58,7 @@ import { resolveShortcutCommand } from "~/keybindings";
 import { getKeyboardLayoutMap } from "~/keyboardLayout";
 import { formatBytes } from "~/lib/formatBytes";
 import { observeResize } from "~/lib/observeResize";
+import { cn } from "~/lib/utils";
 import {
   hostedBlenderEnvironment,
   refreshHostedBlenderStreamAccess,
@@ -71,7 +72,7 @@ import { appAtomRegistry } from "~/rpc/atomRegistry";
 
 import { attachBlenderInput, type BlenderInput } from "./blenderInput";
 
-export interface StreamStats {
+interface StreamStats {
   readonly frameSize: { readonly width: number; readonly height: number } | null;
   readonly rate: HostedBlenderFrameRate | null;
   readonly server: HostedBlenderStreamStats | null;
@@ -111,7 +112,7 @@ const leavesBlender = (event: KeyboardEvent) => {
   return command === "workspace.focusNext" || command === "workspace.focusPrevious";
 };
 
-export interface BlenderStreamHandle {
+interface BlenderStreamHandle {
   readonly takeControl: (takeOver: boolean) => void;
   readonly fullscreen: () => void;
 }
@@ -484,7 +485,7 @@ const watchDevicePixelRatio = (onChange: () => void) => {
  * The stream itself. `floating` is the watch-only player over chat: it never takes control or
  * sizes the display, and just scales what the panel's size gives it.
  */
-export function BlenderStream(props: {
+function BlenderStream(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: string;
   readonly onStats: (update: (current: StreamStats) => StreamStats) => void;
@@ -633,11 +634,12 @@ export function BlenderStream(props: {
       tabIndex={canOperate ? 0 : undefined}
       aria-label={gt("Blender viewport")}
       data-in-control={inControl ? "" : undefined}
-      className={
+      className={cn(
+        "relative flex items-center justify-center overflow-hidden bg-black",
         floating
-          ? "relative flex size-full items-center justify-center overflow-hidden bg-black"
-          : "relative m-2 flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-md bg-black outline-none data-[in-control]:ring-2 data-[in-control]:ring-primary"
-      }
+          ? "size-full"
+          : "m-2 min-h-0 flex-1 rounded-md outline-none data-[in-control]:ring-2 data-[in-control]:ring-primary",
+      )}
       onPointerDown={(event) => {
         // The click that takes control stays out of Blender, so it selects nothing there.
         if (inControl || !canOperate || control.controller !== "unclaimed") return;

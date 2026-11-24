@@ -245,21 +245,18 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
   const saveCommands = () =>
     NodeFS.existsSync(savesLog) ? NodeFS.readFileSync(savesLog, "utf8").split("\n").length - 1 : 0;
   /** The input commands the helper got, in order. */
-  const helperInput = (): unknown[] =>
-    NodeFS.existsSync(inputLog)
-      ? NodeFS.readFileSync(inputLog, "utf8")
+  const readLog = (
+    log: string,
+  ): Array<{ readonly type: string; readonly [key: string]: unknown }> =>
+    NodeFS.existsSync(log)
+      ? NodeFS.readFileSync(log, "utf8")
           .split("\n")
           .filter((line) => line.length > 0)
           .map((line) => JSON.parse(line))
       : [];
+  const helperInput = (): unknown[] => readLog(inputLog);
   /** Every command the helper got but quit, in order. */
-  const helperCommands = (): Array<{ readonly type: string; readonly [key: string]: unknown }> =>
-    NodeFS.existsSync(commandLog)
-      ? NodeFS.readFileSync(commandLog, "utf8")
-          .split("\n")
-          .filter((line) => line.length > 0)
-          .map((line) => JSON.parse(line))
-      : [];
+  const helperCommands = () => readLog(commandLog);
   return {
     service,
     awaitStatus,
@@ -516,6 +513,7 @@ describe("The stream", () => {
       yield* openReady;
       const first = yield* attach(service, false);
       expect(isKey(yield* nextFrame(first))).toBe(true);
+      yield* first.ack;
       yield* first.setVisible(false);
       // A second pane on screen resumes capture and joins on a keyframe; the hidden one gets
       // nothing.
