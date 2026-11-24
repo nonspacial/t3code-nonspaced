@@ -482,8 +482,8 @@ function BlenderStream(props: {
   readonly onControl: (control: HostedBlenderControl) => void;
   readonly handleRef: RefObject<BlenderStreamHandle | null>;
   readonly canvasRef: RefObject<HTMLCanvasElement | null>;
-  /** Called after each frame is drawn. */
-  readonly frameRef: RefObject<(() => void) | null>;
+  /** Called after each frame is drawn, with its presentation time when it has one. */
+  readonly frameRef: RefObject<((pts: number | null) => void) | null>;
   /** The annotation editor needs the keyboard and pointer; control stays with this device. */
   readonly paused: boolean;
   /** Covers the stream, inside the same focus boundary: focus there hasn't left Blender. */
@@ -529,12 +529,18 @@ function BlenderStream(props: {
     const canvas = canvasRef.current;
     if (access === null || container === null || canvas === null) return;
     let frameSize = { width: 0, height: 0 };
-    const sink = createCanvasFrameSink(canvas, (width, height) => {
-      frameRef.current?.();
+    const canvasSink = createCanvasFrameSink(canvas, (width, height) => {
       if (width === frameSize.width && height === frameSize.height) return;
       frameSize = { width, height };
       onStats((current) => ({ ...current, frameSize }));
     });
+    const sink: typeof canvasSink = {
+      present: (source, width, height) => {
+        const shown = canvasSink.present(source, width, height);
+        if (shown) frameRef.current?.(source instanceof VideoFrame ? source.timestamp : null);
+        return shown;
+      },
+    };
     const client = createHostedBlenderStreamClient({ access, threadId }, sink, {
       onStatus: setStatus,
       onStats: (server) => onStats((current) => ({ ...current, server })),

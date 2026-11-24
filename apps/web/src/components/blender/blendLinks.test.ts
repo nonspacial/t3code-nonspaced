@@ -113,4 +113,29 @@ describe("openBlendLink", () => {
     expect(openFile).toHaveBeenCalled();
     expect(surfaces(threadRef)).not.toContain("blender");
   });
+
+  it("gives way to whatever the user opened in the panel while the view was moving", async () => {
+    const threadRef = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-blend-6"));
+    const moving = Promise.withResolvers<"moved" | "otherFile" | "failed">();
+    const asked = Promise.withResolvers<void>();
+    const openFile = vi.fn();
+    const opening = openBlendLink({
+      threadRef,
+      path: "models/hero.blend",
+      workspaceRoot: "/work",
+      view: { position: [6, -6, 5], target: [0, 0, 1] },
+      openFile,
+      readState: async () => running,
+      setView: () => {
+        asked.resolve();
+        return moving.promise;
+      },
+    });
+    await asked.promise;
+    useRightPanelStore.getState().openFile(threadRef, "notes.md");
+    moving.resolve("otherFile");
+    await opening;
+    expect(surfaces(threadRef)).not.toContain("blender");
+    expect(openFile).not.toHaveBeenCalled();
+  });
 });

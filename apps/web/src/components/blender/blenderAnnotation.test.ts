@@ -6,6 +6,7 @@ import { markSamples } from "../files/modelAnnotation";
 import { blenderAnnotationPayload, blenderAnnotationTitle } from "./blenderAnnotation";
 
 const capture: HostedBlenderViewCapture = {
+  afterFrame: 0,
   cameraView: { position: [6, -6, 5], target: [0, 0, 0], upAxis: "z" },
   projection: {
     matrix: Array.from({ length: 16 }, (_, index) => index),

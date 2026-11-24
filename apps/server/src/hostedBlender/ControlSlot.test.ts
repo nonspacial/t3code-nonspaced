@@ -46,3 +46,50 @@ it.effect("sends the request it took a permit for, though its caller is cancelle
     expect(yield* hasFreePermit(slot)).toBe(true);
   }).pipe(Effect.scoped),
 );
+
+it.effect("frees the permit of a caller cancelled as the permit reaches it", () =>
+  Effect.gen(function* () {
+    // A slot whose take has acquired its permit but not yet returned, as a semaphore's does
+    // for a moment, so the caller can be cancelled right at the handoff.
+    let held = 0;
+    const acquired = yield* Deferred.make<void>();
+    const handOver = yield* Deferred.make<void>();
+    const slot = {
+      take: () =>
+        Effect.uninterruptible(
+          Effect.sync(() => {
+            held += 1;
+          }).pipe(
+            Effect.andThen(Deferred.succeed(acquired, undefined)),
+            Effect.andThen(Deferred.await(handOver)),
+            Effect.as(1),
+          ),
+        ),
+      release: () =>
+        Effect.sync(() => {
+          held -= 1;
+          return 1;
+        }),
+    } as unknown as Semaphore.Semaphore;
+    const settled = yield* Deferred.make<void>();
+    let sent = false;
+    const caller = yield* sendHoldingSlot({
+      slot,
+      send: Effect.sync(() => {
+        sent = true;
+      }),
+      settled: Deferred.await(settled),
+      scope: yield* Effect.scope,
+      timeout: "5 seconds",
+    }).pipe(Effect.forkChild);
+    yield* Deferred.await(acquired);
+    const cancelling = yield* Fiber.interrupt(caller).pipe(Effect.forkChild);
+    yield* Effect.yieldNow;
+    yield* Deferred.succeed(handOver, undefined);
+    yield* Fiber.join(cancelling);
+    yield* Deferred.succeed(settled, undefined);
+    yield* Effect.yieldNow;
+    // Either the request went out and its permit freed once settled, or neither happened.
+    expect({ sent, held }).toEqual({ sent, held: 0 });
+  }).pipe(Effect.scoped),
+);

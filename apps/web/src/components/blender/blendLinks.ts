@@ -43,26 +43,25 @@ export async function openBlendLink(input: {
   const panelRef = rightPanelHostRef(input.threadRef);
   const panelKey = scopedThreadKey(panelRef);
   const revision = panels.markUserAction(panelRef);
-  const state = await (input.readState ?? readHostedBlenderState)(input.threadRef);
-  const latest = useRightPanelStore.getState();
-  if (
+  // Each round trip gives the panel time to move on; a newer action there wins.
+  const superseded = () =>
     scopedThreadKey(rightPanelHostRef(input.threadRef)) !== panelKey ||
-    latest.getUserActionRevision(panelRef) !== revision
-  ) {
+    useRightPanelStore.getState().getUserActionRevision(panelRef) !== revision;
+  const state = await (input.readState ?? readHostedBlenderState)(input.threadRef);
+  if (superseded()) return;
+  if (!hostedBlenderOpensLink(input.path, input.workspaceRoot, state)) {
+    input.openFile();
     return;
   }
-  if (hostedBlenderOpensLink(input.path, input.workspaceRoot, state)) {
-    const moved = input.view
-      ? await (input.setView ?? setHostedBlenderView)(
-          input.threadRef,
-          workspaceRelative(input.path, input.workspaceRoot),
-          input.view,
-        )
-      : "moved";
-    // The state read may be from before a reconnect; the server has the last word on the file.
-    if (moved === "otherFile") input.openFile();
-    else latest.open(input.threadRef, "blender");
-  } else {
-    input.openFile();
-  }
+  const moved = input.view
+    ? await (input.setView ?? setHostedBlenderView)(
+        input.threadRef,
+        workspaceRelative(input.path, input.workspaceRoot),
+        input.view,
+      )
+    : "moved";
+  if (superseded()) return;
+  // The state read may be from before a reconnect; the server has the last word on the file.
+  if (moved === "otherFile") input.openFile();
+  else useRightPanelStore.getState().open(input.threadRef, "blender");
 }

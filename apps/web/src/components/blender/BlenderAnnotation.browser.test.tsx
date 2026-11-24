@@ -39,16 +39,19 @@ const { commands, stream } = vi.hoisted(() => ({
   },
 }));
 
-/** A frame of Blender in one flat colour, as the stream's decoder would hand it over. */
-function frameOf(color: string) {
+/** A decoded frame of Blender in one flat colour, presented at `pts` microseconds. */
+function frameOf(color: string, pts = 0) {
   const frame = document.createElement("canvas");
   frame.width = 320;
   frame.height = 180;
   const context = frame.getContext("2d")!;
   context.fillStyle = color;
   context.fillRect(0, 0, 320, 180);
-  return frame;
+  return new VideoFrame(frame, { timestamp: pts });
 }
+
+/** Sent before Blender answered, still on its way: older than the capture's `afterFrame`. */
+const STALE = { color: "#00ff00", pts: 40 };
 
 const state: HostedBlenderRunningState = {
   status: "running",
@@ -67,14 +70,18 @@ vi.mock("~/state/hostedBlender", () => ({
   refreshHostedBlenderStreamAccess: () => {},
 }));
 
-// Reading the camera makes Blender redraw its viewport, so a frame follows the answer.
+// After Blender answers, a frame it drew before answering arrives first, then the frame its
+// redraw draws from the camera it reported (unless `redraw` is null).
 vi.mock("~/state/use-atom-command", () => ({
   useAtomCommand:
     (command: { label: "captureView" | "findHits" | "quit" }) => async (value: unknown) => {
       const result = await commands[command.label as "captureView" | "findHits"](value);
       const redraw = stream.redraw;
-      if (command.label === "captureView" && redraw !== null)
-        setTimeout(() => stream.sink?.present(frameOf(redraw), 320, 180));
+      if (command.label === "captureView")
+        setTimeout(() => {
+          stream.sink?.present(frameOf(STALE.color, STALE.pts), 320, 180);
+          if (redraw !== null) stream.sink?.present(frameOf(redraw, 60), 320, 180);
+        });
       return { _tag: "Success", value: result };
     },
 }));
@@ -109,6 +116,7 @@ vi.mock("~/speech/useTextFieldSpeech", () => ({
 }));
 
 const capture: HostedBlenderViewCapture = {
+  afterFrame: 50,
   cameraView: { position: [6, -6, 5], target: [0, 0, 0], upAxis: "z" },
   projection: {
     matrix: Array.from({ length: 16 }, (_, index) => (index % 5 === 0 ? 1 : 0)),
@@ -218,7 +226,7 @@ async function frozenColor(screen: Awaited<ReturnType<typeof render>>) {
   return Array.from(context.getImageData(160, 90, 1, 1).data.slice(0, 3));
 }
 
-it("freezes the frame Blender draws after it reports its camera, with that camera", async () => {
+it("freezes the frame drawn from the reported camera, not an older one that arrives first", async () => {
   const blender = setup("thread-blender-after-reply", "window");
   stream.redraw = "#ff0000";
   await using screen = await render(blender.element, pane());
@@ -241,7 +249,7 @@ it("keeps the screenshot but not the camera when no frame follows Blender's answ
   await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
   const surface = screen.getByRole("img", { name: "Frozen 3D view to annotate" });
   await expect.element(surface, { timeout: 3000 }).toBeVisible();
-  expect(await frozenColor(screen)).toEqual([0x3d, 0x3d, 0x3d]);
+  expect(await frozenColor(screen)).toEqual([0, 255, 0]);
   await userEvent.click(screen.getByRole("button", { name: "Mark a region" }));
   drag(surface.element(), [0.4, 0.4], [0.6, 0.6]);
   await userEvent.click(screen.getByRole("button", { name: "Add to chat" }));

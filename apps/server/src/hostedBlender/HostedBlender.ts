@@ -117,6 +117,15 @@ type ControlRequestBody = ControlRequest extends infer Request
     : never
   : never;
 const encodeControlRequest = Schema.encodeSync(Schema.fromJsonString(ControlRequest));
+/** What the add-on reads; the server adds which frame it answered after. */
+const AddonViewCapture = HostedBlenderViewCapture.mapFields(
+  ({ afterFrame: _, ...fields }) => fields,
+);
+/** A reply, with the last frame the helper had delivered when it arrived. */
+interface ControlReply {
+  readonly result: unknown;
+  readonly lastFrame: number;
+}
 
 export type HostedBlenderViewerOutput =
   | { readonly _tag: "frame"; readonly data: Uint8Array }
@@ -190,6 +199,8 @@ interface Instance {
   memoryBytes: number | null;
   viewport: { readonly width: number; readonly height: number } | null;
   lastKeyframeRequest: number;
+  /** The presentation time of the last frame the helper delivered; -1 before the first. */
+  lastFramePts: number;
   helper: (command: HelperCommand) => Effect.Effect<void>;
   control: ControlConnection | null;
   /** What the add-on says while `quit` waits on a save. */
@@ -197,7 +208,7 @@ interface Instance {
   /** The one save-and-quit in flight; every caller gets its result. */
   pendingSave: Deferred.Deferred<boolean> | null;
   /** Requests to the add-on awaiting their `reply`, by id. */
-  readonly requests: Map<number, Deferred.Deferred<unknown>>;
+  readonly requests: Map<number, Deferred.Deferred<ControlReply>>;
   /** Casting blocks Blender's UI thread, so one hit request reaches the add-on at a time. */
   readonly hitsLock: Semaphore.Semaphore;
   lastRequestId: number;
@@ -418,6 +429,7 @@ const make = Effect.gen(function* () {
 
   const handlePacket = Effect.fnUntraced(function* (instance: Instance, packet: HelperPacket) {
     if (packet._tag === "video") {
+      instance.lastFramePts = packet.pts;
       let wantsKeyframe = false;
       for (const viewer of instance.viewers) {
         const offered = viewer.flow.offer(packet);
@@ -487,7 +499,12 @@ const make = Effect.gen(function* () {
       case "reply": {
         const request = instance.requests.get(message.value.id);
         instance.requests.delete(message.value.id);
-        if (request) yield* Deferred.succeed(request, message.value.result);
+        if (request) {
+          yield* Deferred.succeed(request, {
+            result: message.value.result,
+            lastFrame: instance.lastFramePts,
+          });
+        }
         return;
       }
     }
@@ -778,6 +795,7 @@ const make = Effect.gen(function* () {
       memoryBytes: null,
       viewport: null,
       lastKeyframeRequest: 0,
+      lastFramePts: -1,
       helper: () => Effect.void,
       control: null,
       saveReplies: null,
@@ -963,7 +981,7 @@ const make = Effect.gen(function* () {
     }
     const control = instance.control;
     if (control === null) return yield* new HostedBlenderError({ reason: "noReply" });
-    const reply = yield* Deferred.make<unknown>();
+    const reply = yield* Deferred.make<ControlReply>();
     const closed = Deferred.await(control.closed);
     const send = Effect.suspend(() => {
       instance.lastRequestId += 1;
@@ -993,18 +1011,21 @@ const make = Effect.gen(function* () {
       Effect.map(Option.flatten),
     );
     if (Option.isNone(answer)) return yield* new HostedBlenderError({ reason: "noReply" });
+    const { result: answered, lastFrame } = answer.value;
     // The add-on answers null when Blender has no viewport window to read or move.
-    if (answer.value === null) return yield* new HostedBlenderError({ reason: "noViewport" });
-    return yield* Schema.decodeEffect(result)(answer.value).pipe(
+    if (answered === null) return yield* new HostedBlenderError({ reason: "noViewport" });
+    const value = yield* Schema.decodeEffect(result)(answered).pipe(
       Effect.mapError(() => new HostedBlenderError({ reason: "noReply" })),
     );
+    return { value, lastFrame };
   });
 
   const captureView: HostedBlender["Service"]["captureView"] = Effect.fn(
     "HostedBlender.captureView",
   )(function* (threadId) {
     yield* Effect.annotateCurrentSpan({ threadId });
-    return yield* ask(threadId, { type: "view" }, HostedBlenderViewCapture);
+    const { value, lastFrame } = yield* ask(threadId, { type: "view" }, AddonViewCapture);
+    return { ...value, afterFrame: lastFrame };
   });
 
   const findHits: HostedBlender["Service"]["findHits"] = Effect.fn("HostedBlender.findHits")(
@@ -1012,12 +1033,13 @@ const make = Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan({ threadId, marks: marks.length });
       const instance = instances.get(threadId);
       if (instance === undefined) return yield* new HostedBlenderError({ reason: "notRunning" });
-      return yield* ask(
+      const { value } = yield* ask(
         threadId,
         { type: "hits", ...projection, marks },
         HostedBlenderHits,
         instance.hitsLock,
       );
+      return value;
     },
   );
 

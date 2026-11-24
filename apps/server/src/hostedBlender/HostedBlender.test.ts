@@ -129,6 +129,11 @@ event({"type": "ready", "capture": "extImageCopyCapture", "target": "window",
        "encoder": "x264enc", "width": 1280, "height": 720, "cursorTracking": True})
 if scenario != "never-shows":
     event({"type": "windowCaptured", "title": "3D Viewport"})
+    # One frame, presented at 4242 µs; its access unit is a stand-in.
+    frame = struct.pack(">IBBHQ", 0x53454D55, 1, 1, 0, 4242) + b"\x00\x00\x00\x01\x65"
+    with lock:
+        sys.stdout.buffer.write(struct.pack(">IB", len(frame) + 1, 2) + frame)
+        sys.stdout.buffer.flush()
 def control():
     connection, _ = server.accept()
     connection.sendall(b'{"type": "hello", "pid": %d}\n' % os.getpid())
@@ -348,6 +353,8 @@ describe("The viewport window", () => {
       yield* openReady;
       const capture = yield* service.captureView(threadId);
       assert.deepStrictEqual(capture, {
+        // The last frame the server had when Blender answered; later ones show this camera.
+        afterFrame: 4242,
         cameraView: { position: [7, -7, 5], target: [0, 0, 1], upAxis: "z" },
         projection: {
           matrix: [2, ...Array.from({ length: 15 }, () => 0)],
@@ -977,7 +984,13 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
       yield* viewer.ack;
       while (Option.isSome(yield* nextFrame("1 second"))) yield* viewer.ack;
       const throughCamera = yield* service.captureView(threadId);
-      expect((yield* nextFrame("5 seconds"))._tag).toBe("Some");
+      const redrawn = yield* nextFrame("5 seconds");
+      assert.isTrue(Option.isSome(redrawn) && redrawn.value._tag === "frame");
+      if (Option.isNone(redrawn) || redrawn.value._tag !== "frame") return;
+      const { data } = redrawn.value;
+      expect(Number(new DataView(data.buffer, data.byteOffset).getBigUint64(8))).toBeGreaterThan(
+        throughCamera.afterFrame,
+      );
       yield* viewer.ack;
       throughCamera.cameraView.position.forEach((value, index) =>
         expect(value).toBeCloseTo([3, -4, 2][index]!, 3),
