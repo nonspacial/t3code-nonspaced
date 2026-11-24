@@ -35,7 +35,13 @@ import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { assetFileResponse } from "../http.ts";
-import { ASSET_ROUTE_PREFIX, issueAssetUrl, readMcpAppHtml, resolveAsset } from "./AssetAccess.ts";
+import {
+  ASSET_ROUTE_PREFIX,
+  issueAssetUrl,
+  issueBlendGlbUrl,
+  readMcpAppHtml,
+  resolveAsset,
+} from "./AssetAccess.ts";
 import * as NativeAppIconResolver from "./NativeAppIconResolver.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
@@ -238,6 +244,29 @@ describe("AssetAccess", () => {
 
       yield* fs.remove(imagePath);
       expect(yield* resolveAsset(token, suffix.slice(separator + 1))).toBeNull();
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("serves a converted .blend's cached GLB only by a name the server signed", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { providerStatusCacheDir } = yield* ServerConfig.ServerConfig;
+      const cacheDir = path.join(providerStatusCacheDir, "blend-glb");
+      yield* fs.makeDirectory(cacheDir, { recursive: true });
+      const fileName = `${"a".repeat(64)}.glb`;
+      yield* fs.writeFileString(path.join(cacheDir, fileName), "glTF");
+      const tokenOf = (relativeUrl: string) =>
+        relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length).split("/")[0] ?? "";
+
+      const asset = yield* resolveAsset(tokenOf(yield* issueBlendGlbUrl(fileName)), "scene.glb");
+      expect(asset).toMatchObject({ kind: "file", mimeType: "model/gltf-binary" });
+      if (asset?.kind !== "file") return;
+      expect(asset.path).toBe(path.join(yield* fs.realPath(cacheDir), fileName));
+      // A signed name that is not a cache entry never leaves the cache folder.
+      expect(
+        yield* resolveAsset(tokenOf(yield* issueBlendGlbUrl("../secrets.json")), "scene.glb"),
+      ).toBeNull();
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 

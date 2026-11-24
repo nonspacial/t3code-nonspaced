@@ -83,6 +83,7 @@ import {
   ProjectListEntriesError,
   ProjectReadFileError,
   BlendPreviewError,
+  type BlendConversionStatus,
   ProjectSearchContentsError,
   ProjectSearchEntriesError,
   ProjectWriteFileError,
@@ -229,6 +230,8 @@ import * as WorkspaceFolders from "./workspace/WorkspaceFolders.ts";
 import * as TaskFolders from "./workspace/TaskFolders.ts";
 import * as KnownWorkspaces from "./workspace/KnownWorkspaces.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
+import * as BlendConversion from "./blend/BlendConversion.ts";
+import type { BlendFileFormatError } from "./blend/blendFile.ts";
 import * as BlendPreview from "./blend/BlendPreview.ts";
 import { readWorkflowScript } from "./orchestration-v2/workflowScriptQuery.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
@@ -690,6 +693,31 @@ function filesystemBrowseFailureContext(error: WorkspaceEntries.WorkspaceEntries
       return unexpectedCompatibilityError(error);
   }
 }
+
+/** A `.blend` read's failure as the error clients get. */
+const blendPreviewError =
+  (relativePath: string) =>
+  (
+    cause:
+      | BlendFileFormatError
+      | WorkspaceFileSystem.WorkspaceFileSystemError
+      | WorkspacePaths.WorkspacePathOutsideRootError,
+  ): BlendPreviewError => {
+    if (cause._tag === "BlendFileFormatError")
+      return new BlendPreviewError({
+        relativePath,
+        failure: cause.problem === "too_large" ? "blend_file_too_large" : "unreadable_blend_file",
+        cause,
+      });
+    const { failure, resolvedPath, operation } = projectFileFailureContext(cause);
+    return new BlendPreviewError({
+      relativePath,
+      failure,
+      ...(resolvedPath === undefined ? {} : { resolvedPath }),
+      ...(operation === undefined ? {} : { operation }),
+      cause,
+    });
+  };
 
 function projectFileFailureContext(
   error:
@@ -1599,6 +1627,7 @@ export const layerWsRpc = (
       const taskFolders = yield* TaskFolders.TaskFolders;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
       const blendPreview = yield* BlendPreview.BlendPreview;
+      const blendConversion = yield* BlendConversion.BlendConversion;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
@@ -3131,26 +3160,19 @@ export const layerWsRpc = (
             ),
           ),
         [WS_METHODS.projectsReadBlendPreview]: (input) =>
-          blendPreview.read(input).pipe(
-            Effect.mapError((cause) => {
-              if (cause._tag === "BlendFileFormatError")
-                return new BlendPreviewError({
-                  relativePath: input.relativePath,
-                  failure:
-                    cause.problem === "too_large"
-                      ? "blend_file_too_large"
-                      : "unreadable_blend_file",
-                  cause,
-                });
-              const { failure, resolvedPath, operation } = projectFileFailureContext(cause);
-              return new BlendPreviewError({
-                relativePath: input.relativePath,
-                failure,
-                ...(resolvedPath === undefined ? {} : { resolvedPath }),
-                ...(operation === undefined ? {} : { operation }),
-                cause,
-              });
-            }),
+          blendPreview.read(input).pipe(Effect.mapError(blendPreviewError(input.relativePath))),
+        [WS_METHODS.projectsSubscribeBlendConversion]: (input) =>
+          Stream.callback<BlendConversionStatus, BlendPreviewError>((queue) =>
+            blendConversion
+              .convert(input, (status) => Queue.offer(queue, status).pipe(Effect.asVoid))
+              .pipe(
+                Effect.mapError(blendPreviewError(input.relativePath)),
+                Effect.matchCauseEffect({
+                  onFailure: (cause) => Queue.failCause(queue, cause),
+                  onSuccess: () => Queue.end(queue),
+                }),
+                Effect.forkScoped,
+              ),
           ),
         [WS_METHODS.assetsReadBlendPreview]: (input) =>
           blendPreview.readAttachment(input).pipe(

@@ -1842,6 +1842,13 @@ export default function FilePreviewPanel({
                   <OpenInHostedBlender threadRef={threadRef} relativePath={relativePath} />
                 ) : null
               }
+              view={revealView ? { view: revealView, requestId: revealRequestId } : null}
+              annotation={{
+                composerTarget: composerDraftTarget,
+                environmentId,
+                projectId,
+                linkPath: relativePath,
+              }}
             />
           ) : relativePath &&
             absolutePath &&

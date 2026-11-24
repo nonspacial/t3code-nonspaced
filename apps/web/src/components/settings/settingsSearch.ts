@@ -287,6 +287,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
+    id: "blender-path",
+    title: msg("Blender path"),
+    to: "/settings/general",
+    scope: "environment-defaults",
+    searchTerms: [msg("blender 3d preview blend file convert glb model path binary install")],
+  },
+  {
     id: "storage-worktrees-location",
     title: msg("Worktree location"),
     to: "/settings/worktrees",

@@ -1,3 +1,4 @@
+import type { HostedBlenderInputMessage } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -21,6 +22,9 @@ const HelperEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("frameSize"), width: Schema.Number, height: Schema.Number }),
   Schema.Struct({ type: Schema.Literal("windowCaptured"), title: Schema.String }),
   Schema.Struct({ type: Schema.Literal("windowClosed") }),
+  /** Blender captured the mouse; its cursor left the display. */
+  Schema.Struct({ type: Schema.Literal("cursorLeave") }),
+  Schema.Struct({ type: Schema.Literal("cursorEnter") }),
   Schema.Struct({
     type: Schema.Literal("exited"),
     process: Schema.Literals(["labwc", "blender"]),
@@ -102,7 +106,40 @@ export type HelperCommand =
   | { readonly type: "pause" }
   | { readonly type: "resume" }
   | { readonly type: "resize"; readonly width: number; readonly height: number }
+  | { readonly type: "pointerPosition"; readonly x: number; readonly y: number }
+  | { readonly type: "pointerMotion"; readonly dx: number; readonly dy: number }
+  | { readonly type: "pointerButton"; readonly button: number; readonly pressed: boolean }
+  | {
+      readonly type: "pointerAxis";
+      readonly axis: "vertical" | "horizontal";
+      readonly source: "wheel" | "finger";
+      readonly value: number;
+      readonly discrete?: number;
+    }
+  | { readonly type: "key"; readonly code: number; readonly pressed: boolean }
+  | { readonly type: "keymap"; readonly layout: string; readonly variant: string }
   | { readonly type: "quit" };
+
+export const helperCommandForInput = (input: HostedBlenderInputMessage): HelperCommand => {
+  switch (input.type) {
+    case "pointer":
+      return { type: "pointerPosition", x: input.x, y: input.y };
+    case "pointerMotion":
+      return { type: "pointerMotion", dx: input.dx, dy: input.dy };
+    case "button":
+      return { type: "pointerButton", button: input.button, pressed: input.pressed };
+    case "scroll": {
+      const { axis, source, value } = input;
+      return input.steps === undefined
+        ? { type: "pointerAxis", axis, source, value }
+        : { type: "pointerAxis", axis, source, value, discrete: input.steps };
+    }
+    case "key":
+      return { type: "key", code: input.code, pressed: input.pressed };
+    case "keymap":
+      return { type: "keymap", layout: input.layout, variant: input.variant };
+  }
+};
 
 export const encodeHelperCommand = (command: HelperCommand): string =>
   `${JSON.stringify(command)}\n`;

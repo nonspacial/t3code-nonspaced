@@ -45,6 +45,7 @@ import { m } from "../i18n/messages.ts";
 import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
 import { makeQuitShortcutHandler } from "./QuitHold.ts";
 import { copyContextMenuImage } from "./ContextMenuImage.ts";
+import * as MenuShortcuts from "./MenuShortcuts.ts";
 import { installMainWindowRemoteRequestHeaderPolicy } from "./RemoteRequestHeaders.ts";
 
 const TITLEBAR_HEIGHT = 40;
@@ -825,15 +826,18 @@ export const make = Effect.gen(function* () {
         void runPromise(electronApp.quit);
       },
     });
+    const webContentsId = window.webContents.id;
     window.webContents.on("before-input-event", (event, input) => {
-      quitShortcutHandler(event, input);
+      // While a hosted Blender has the keyboard, Ctrl/Cmd+Q is Blender's, not T3's quit.
+      if (!MenuShortcuts.isIgnored(webContentsId)) quitShortcutHandler(event, input);
       if (window.isDestroyed()) return;
       // Cmd/Ctrl+W reaches the renderer; DevTools uses the native menu shortcut.
       window.webContents.setIgnoreMenuShortcuts(
-        (environment.platform === "darwin" ? input.meta : input.control) &&
-          !input.alt &&
-          !input.shift &&
-          input.key.toLowerCase() === "w",
+        MenuShortcuts.isIgnored(webContentsId) ||
+          ((environment.platform === "darwin" ? input.meta : input.control) &&
+            !input.alt &&
+            !input.shift &&
+            input.key.toLowerCase() === "w"),
       );
       // A held Cmd/Ctrl+W closes one tab or terminal, not each one behind it.
       if (input.type !== "keyDown" || !input.isAutoRepeat) return;
@@ -842,6 +846,11 @@ export const make = Effect.gen(function* () {
         event.preventDefault();
       }
     });
+    // A reload or a closed window drops the renderer's control, so the flag goes with it.
+    window.webContents.on("did-start-loading", () =>
+      MenuShortcuts.setIgnored(webContentsId, false),
+    );
+    window.webContents.on("destroyed", () => MenuShortcuts.setIgnored(webContentsId, false));
     window.webContents.on("input-event", (_event, input) => {
       if (window.isDestroyed()) return;
       if (input.type === "gestureScrollBegin") {

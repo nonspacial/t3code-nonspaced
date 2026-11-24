@@ -193,6 +193,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.projectsListIgnoredFiles]: "workspace",
   [WS_METHODS.projectsReadFile]: "workspace",
   [WS_METHODS.projectsReadBlendPreview]: "workspace",
+  [WS_METHODS.projectsSubscribeBlendConversion]: "workspace",
   [WS_METHODS.projectsSearchContents]: "workspace",
   [WS_METHODS.projectsSearchEntries]: "workspace",
   [WS_METHODS.projectsWriteFile]: "workspace",
