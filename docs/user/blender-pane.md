@@ -2,6 +2,24 @@
 
 A hosted Blender is a Blender that T3 Code runs for a thread on the computer it's connected to. It draws to a hidden display rather than your screen, and the Blender pane shows it live in the side panel. It's separate from any Blender you run yourself: T3 Code never opens, closes or changes your own Blender or its settings.
 
+Hosted Blender is off until you set it up. Until then, the pane says **Setup needed**.
+
+## Set it up
+
+1. Open **Settings › Blender** and switch on **Hosted Blender**.
+2. When you switch it on, T3 Code checks the server for Blender 4.5 or later, labwc, GStreamer 1.24 or later with an H.264 encoder (and its OpenGL plugin on NVIDIA), access to the GPU, and the official Blender Lab MCP server. It also runs a one-second test encode and keeps the first encoder that works. The result stays until you choose **Check again**, so check again after you install or change something. Only someone who may run programs on the server starts a check; after a restart, the first **Open in hosted Blender** or **Check again** does.
+3. If something is missing, choose either:
+   - **Install with an agent**, which starts a thread in No project with your default agent and tells it what to install for your Linux distribution. When a command needs your password, the agent asks for it in a private card, never in the chat. T3 Code checks again when the agent finishes.
+   - **Show me the commands**, which shows `pacman`, `apt` or `dnf` commands you can copy and run yourself.
+
+   T3 Code never installs system packages itself.
+
+4. Switch on **Allow agents to start hosted Blenders**. It needs the setup finished, including the Blender MCP server. If T3 Code doesn't find `blender-mcp` on your PATH or in `~/.local/bin`, set **Blender MCP path** (a path starting with `~/` means the server's home folder). An unrelated project on PyPI is also called `blender-mcp`; T3 Code says so if that's the one it finds.
+
+Without a GPU, or without access to it, hosted Blender still works, but Blender is slow; Settings and the pane's status strip say so.
+
+Switching Hosted Blender off stops new hosted Blenders from starting. One that is already running keeps running until you quit it.
+
 ## Open a file
 
 Open a `.blend` from the file tree or a file link, then choose **Open in hosted Blender** above the preview. T3 Code starts Blender with that file and the Blender pane opens. The pane shows a 3D Viewport window of its own, with its header and menus, so whatever happens in Blender's main window stays out of it.
@@ -47,8 +65,8 @@ Closing the pane leaves Blender running; open it again from the file preview or 
 
 The first time a hosted Blender starts, T3 Code copies your newest Blender settings (from `~/.config/blender`) into a copy of its own, so your preferences and add-ons come along. Links in your settings folder aren't copied, and changes a hosted Blender makes stay in its copy. Each hosted Blender keeps its own temporary files and add-on ports, so it never clashes with a Blender you're running. Python scripts embedded in `.blend` files don't run in a hosted Blender.
 
-## What it needs
+## Where it works
 
-Hosted Blender works when T3 Code runs on Linux, with Blender and the labwc compositor installed. The pane says what's missing if any of them isn't there. On macOS and Windows the pane says it isn't available; the [3D preview](3d-previews.md) still works there.
+Hosted Blender works when T3 Code runs on Arch, Fedora 43 or later, Ubuntu 24.04 or later, or Debian 13 or later. Ubuntu 22.04 and Debian 12 ship labwc and GStreamer too old for it, and Flatpak and Snap builds of Blender aren't supported yet, so the pane and Settings say it isn't available there. On macOS and Windows it isn't available either; the [3D preview](3d-previews.md) still works there.
 
 The pane works on web and desktop, including over a remote connection or T3 Connect. The mobile app doesn't show it yet.

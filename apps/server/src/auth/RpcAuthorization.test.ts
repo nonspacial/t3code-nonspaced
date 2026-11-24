@@ -70,6 +70,19 @@ describe("RPC authorization scopes", () => {
     }
   });
 
+  it("lets readers see hosted Blender's setup, and only operators check again or install", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.hostedBlenderSubscribeSetup)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    // Both run programs on the host; installing also starts an agent thread.
+    for (const method of [
+      WS_METHODS.hostedBlenderCheckSetup,
+      WS_METHODS.hostedBlenderInstallWithAgent,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+    }
+  });
+
   it("keeps triage, which seeds an agent that reads logs and the database, behind operate scope", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.serverPrepareTriage)).toBe(
       AuthOrchestrationOperateScope,
@@ -653,6 +666,9 @@ describe("settings mutation authorization", () => {
           { projectScriptOverrides: { [projectId]: scripts } },
           { projectSettingsOverrides: { [projectId]: { defaultProjectScripts: scripts } } },
           { blenderPath: "/tmp/not-blender" },
+          { blenderMcpPath: "/tmp/not-blender-mcp" },
+          // Switching Hosted Blender on runs the setup check's programs, as Check again does.
+          { hostedBlenderEnabled: true },
         ];
 
         const settingsOnly = yield* update([AuthSettingsWriteScope]);
@@ -670,6 +686,8 @@ describe("settings mutation authorization", () => {
             defaultAutoPull: true,
             projectScriptOverrides: { [projectId]: null },
             projectSettingsOverrides: { [projectId]: { defaultAutoPull: true } },
+            // Switching it off runs nothing.
+            hostedBlenderEnabled: false,
           },
         });
         expect(settingsOnly.handled()).toBe(1);

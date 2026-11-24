@@ -1398,6 +1398,12 @@ export const ServerSettings = Schema.Struct({
   worktreesDirectory: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   /** Converts `.blend` previews. Empty finds Blender on PATH and in its usual install folders. */
   blenderPath: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  /** Linux only: T3 may run hosted Blenders here. Off until the user switches it on. */
+  hostedBlenderEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** Agents may start hosted Blenders, through the official Blender Lab MCP. */
+  hostedBlenderAllowAgents: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** The official `blender-mcp` server. Empty finds it on PATH and in `~/.local/bin`. */
+  blenderMcpPath: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   /** macOS only, Labs beta: clone new worktrees from a cached checkout instead of writing every file. */
   fastWorktreeCheckout: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Server-maintained history keeps old worktrees eligible for cleanup and review diffs. */
@@ -1882,6 +1888,9 @@ export const ServerSettingsPatch = Schema.Struct({
   ),
   worktreesDirectory: Schema.optionalKey(TrimmedString),
   blenderPath: Schema.optionalKey(TrimmedString),
+  hostedBlenderEnabled: Schema.optionalKey(Schema.Boolean),
+  hostedBlenderAllowAgents: Schema.optionalKey(Schema.Boolean),
+  blenderMcpPath: Schema.optionalKey(TrimmedString),
   fastWorktreeCheckout: Schema.optionalKey(Schema.Boolean),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
   agentFeedback: Schema.optionalKey(Schema.Struct({ mode: AgentFeedbackMode })),
@@ -2075,8 +2084,12 @@ export function requiredScopesForServerSettingsPatch(
     ...(changesSettings || (!changesProviders && !changesAccess) ? [AuthSettingsWriteScope] : []),
     ...(changesProviders ? [AuthProvidersManageScope] : []),
     ...(changesAccess ? [AuthAccessWriteScope] : []),
-    // Saving a script or a Blender path is choosing a command for the host to run.
-    ...(carriesProjectScripts(patch) || patch.blenderPath !== undefined
+    // Saving a script or a Blender or Blender MCP path is choosing a command for the host to run;
+    // switching Hosted Blender on runs its setup check, as Check again does. Off runs nothing.
+    ...(carriesProjectScripts(patch) ||
+    patch.blenderPath !== undefined ||
+    patch.blenderMcpPath !== undefined ||
+    patch.hostedBlenderEnabled === true
       ? [AuthOrchestrationOperateScope]
       : []),
   ];
