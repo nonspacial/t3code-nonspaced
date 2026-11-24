@@ -117,6 +117,8 @@ const useHeldSourceSize = create<{
 
 // Before its first frame, the Blender player assumes the hidden display's starting size.
 const BLENDER_DEFAULT_SOURCE_SIZE = { width: 1280, height: 720 } as const;
+// A phone in control can make the display tall; the float still leaves most of the chat clear.
+const BLENDER_MAX_HEIGHT_RATIO = 0.45;
 const FloatingBlender = lazy(() =>
   import("../blender/BlenderPanel").then((module) => ({ default: module.FloatingBlender })),
 );
@@ -216,6 +218,7 @@ export function useThreadPreviewCanvasSource(
         : source.kind === "device"
           ? resolveDeviceMiniPlayerSourceSize(source.platform, screen)
           : (blenderSize ?? BLENDER_DEFAULT_SOURCE_SIZE)),
+    ...(source.kind === "blender" ? { maxHeightRatio: BLENDER_MAX_HEIGHT_RATIO } : {}),
   };
 }
 
