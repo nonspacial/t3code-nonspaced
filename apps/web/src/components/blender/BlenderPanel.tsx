@@ -10,6 +10,7 @@ import type {
   EnvironmentId,
   HostedBlenderRequirement,
   HostedBlenderRunningState,
+  HostedBlenderThreadState,
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { MoreVertical } from "lucide-react";
@@ -26,7 +27,13 @@ import {
   AlertDialogTitle,
 } from "~/components/ui/alert-dialog";
 import { Button } from "~/components/ui/button";
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "~/components/ui/empty";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "~/components/ui/empty";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "~/components/ui/menu";
 import { Spinner } from "~/components/ui/spinner";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
@@ -40,6 +47,7 @@ import {
 } from "~/state/hostedBlender";
 import { formatEnvironmentQueryError } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { useQuitHostedBlender } from "./useQuitHostedBlender";
 
 interface StreamStats {
   readonly frameSize: { readonly width: number; readonly height: number } | null;
@@ -96,20 +104,171 @@ export function BlenderPanel(props: {
           }
         />
       );
+    case "closed":
+    case "crashed":
+      return <ReopenCard threadRef={props.threadRef} state={state} />;
     case "starting":
     case "running":
       return <RunningBlender {...props} state={state} />;
   }
 }
 
-function StateCard(props: { readonly title: ReactNode; readonly description?: ReactNode }) {
+function StateCard(props: {
+  readonly title: ReactNode;
+  readonly description?: ReactNode;
+  readonly actions?: ReactNode;
+}) {
   return (
     <Empty className="h-full">
       <EmptyHeader>
         <EmptyTitle>{props.title}</EmptyTitle>
         {props.description ? <EmptyDescription>{props.description}</EmptyDescription> : null}
       </EmptyHeader>
+      {props.actions ? (
+        <EmptyContent className="flex-row flex-wrap justify-center">{props.actions}</EmptyContent>
+      ) : null}
     </Empty>
+  );
+}
+
+/** A Blender T3 closed, or one that crashed: it stays stopped until someone reopens it. */
+function ReopenCard(props: {
+  readonly threadRef: ScopedThreadRef;
+  readonly state: Extract<HostedBlenderThreadState, { status: "closed" | "crashed" }>;
+}) {
+  const gt = useGT();
+  const m = useMessages();
+  const environmentId = props.threadRef.environmentId;
+  const canOperate = useAtomValue(hostedBlenderEnvironment.reopen.permissionAtom(environmentId));
+  const reopen = useAtomCommand(hostedBlenderEnvironment.reopen, { reportFailure: false });
+  const dismiss = useAtomCommand(hostedBlenderEnvironment.quit, { reportFailure: false });
+  const [pending, setPending] = useState(false);
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+  const name = fileName(props.state.relativePath);
+  const crashed = props.state.status === "crashed";
+  const run = async (action: "restore" | "fresh" | "dismiss") => {
+    setPending(true);
+    const input = { threadId: props.threadRef.threadId };
+    const result =
+      action === "dismiss"
+        ? await dismiss({ environmentId, input: { ...input, save: false } })
+        : await reopen({ environmentId, input: { ...input, restore: action === "restore" } });
+    setPending(false);
+    setConfirmingDiscard(false);
+    if (result._tag === "Failure") {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: crashed ? gt("Couldn't restart Blender") : gt("Couldn't reopen Blender"),
+          description: formatEnvironmentQueryError(result.cause, m),
+        }),
+      );
+    }
+  };
+  const { recovery } = props.state;
+  return (
+    <>
+      <StateCard
+        title={crashed ? <T>Blender crashed</T> : <T>Blender was closed</T>}
+        description={
+          crashed ? (
+            recovery ? (
+              <T>
+                <Var>{name}</Var> stopped unexpectedly. Restart opens the file as last saved, or
+                restore its newest autosave.
+              </T>
+            ) : (
+              <T>
+                <Var>{name}</Var> stopped unexpectedly. Restart opens the file as last saved.
+              </T>
+            )
+          ) : recovery ? (
+            <T>
+              T3 Code closed <Var>{name}</Var> when this thread settled or T3 Code stopped, and kept
+              its unsaved changes. Reopen restores them.
+            </T>
+          ) : (
+            <T>
+              T3 Code closed <Var>{name}</Var> when this thread settled or T3 Code stopped.
+            </T>
+          )
+        }
+        actions={
+          canOperate ? (
+            <>
+              {crashed ? (
+                <>
+                  <Button size="sm" disabled={pending} onClick={() => void run("fresh")}>
+                    <T>Restart</T>
+                  </Button>
+                  {recovery ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={pending}
+                      onClick={() => void run("restore")}
+                    >
+                      <T>Restore autosave</T>
+                    </Button>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  <Button size="sm" disabled={pending} onClick={() => void run("restore")}>
+                    <T>Reopen</T>
+                  </Button>
+                  {recovery ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={pending}
+                      onClick={() => void run("fresh")}
+                    >
+                      <T>Open as last saved</T>
+                    </Button>
+                  ) : null}
+                </>
+              )}
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={pending}
+                onClick={() => (recovery ? setConfirmingDiscard(true) : void run("dismiss"))}
+              >
+                {recovery ? <T>Discard</T> : <T>Dismiss</T>}
+              </Button>
+            </>
+          ) : null
+        }
+      />
+      <AlertDialog open={confirmingDiscard} onOpenChange={setConfirmingDiscard}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {crashed
+                ? gt("Discard the autosave of {name}?", { name })
+                : gt("Discard the unsaved changes to {name}?", { name })}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              <T>The file as last saved is kept. This can't be undone.</T>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" size="sm" />}>
+              <T>Cancel</T>
+            </AlertDialogClose>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={pending}
+              onClick={() => void run("dismiss")}
+            >
+              <T>Discard</T>
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+    </>
   );
 }
 
@@ -170,29 +329,8 @@ function BlenderToolbar(props: {
   const canQuit = useAtomValue(
     hostedBlenderEnvironment.quit.permissionAtom(props.threadRef.environmentId),
   );
-  const m = useMessages();
-  const quit = useAtomCommand(hostedBlenderEnvironment.quit, { reportFailure: false });
-  const [confirming, setConfirming] = useState(false);
-  const [quitting, setQuitting] = useState(false);
   const name = fileName(props.state.relativePath);
-  const quitBlender = async (save: boolean) => {
-    setQuitting(true);
-    const result = await quit({
-      environmentId: props.threadRef.environmentId,
-      input: { threadId: props.threadRef.threadId, save },
-    });
-    setQuitting(false);
-    setConfirming(false);
-    if (result._tag === "Failure") {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: gt("Couldn't quit Blender"),
-          description: formatEnvironmentQueryError(result.cause, m),
-        }),
-      );
-    }
-  };
+  const quit = useQuitHostedBlender(props.threadRef, name);
   return (
     <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
       <span className="min-w-0 flex-1 truncate font-mono text-xs font-semibold">{name}</span>
@@ -211,43 +349,13 @@ function BlenderToolbar(props: {
             <MoreVertical />
           </MenuTrigger>
           <MenuPopup align="end" sideOffset={6}>
-            <MenuItem
-              disabled={quitting}
-              onClick={() => (props.state.dirty ? setConfirming(true) : void quitBlender(false))}
-            >
+            <MenuItem disabled={quit.quitting} onClick={() => quit.request(props.state.dirty)}>
               <T>Quit Blender</T>
             </MenuItem>
           </MenuPopup>
         </Menu>
       ) : null}
-      <AlertDialog open={confirming} onOpenChange={setConfirming}>
-        <AlertDialogPopup>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {gt("Save changes to {name} before quitting?", { name })}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              <T>Changes Blender hasn't saved are lost if you quit without saving.</T>
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogClose render={<Button variant="outline" size="sm" />}>
-              <T>Cancel</T>
-            </AlertDialogClose>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={quitting}
-              onClick={() => void quitBlender(false)}
-            >
-              <T>Quit without saving</T>
-            </Button>
-            <Button size="sm" disabled={quitting} onClick={() => void quitBlender(true)}>
-              <T>Save and quit</T>
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogPopup>
-      </AlertDialog>
+      {quit.dialog}
     </div>
   );
 }

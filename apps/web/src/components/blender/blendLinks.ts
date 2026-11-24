@@ -14,14 +14,17 @@ const workspaceRelative = (path: string, workspaceRoot: string | undefined) => {
   return relative.replace(/^(\.\/)+/, "");
 };
 
-/** A `.blend` link shows the Blender pane only when that file is open in the thread's Blender. */
+/**
+ * A `.blend` link shows the Blender pane only when that file is open in the thread's Blender, or
+ * was open in one that closed or crashed, whose pane offers to reopen it.
+ */
 export const hostedBlenderOpensLink = (
   path: string,
   workspaceRoot: string | undefined,
   state: HostedBlenderThreadState | null,
 ): boolean =>
   state !== null &&
-  (state.status === "starting" || state.status === "running") &&
+  "relativePath" in state &&
   state.relativePath === workspaceRelative(path, workspaceRoot);
 
 /**

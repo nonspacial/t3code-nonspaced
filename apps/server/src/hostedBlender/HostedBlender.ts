@@ -3,11 +3,14 @@ import {
   HostedBlenderError,
   type HostedBlenderOpenInput,
   type HostedBlenderQuitInput,
+  type HostedBlenderReopenInput,
   type HostedBlenderRequirement,
+  type HostedBlenderRunningList,
   type HostedBlenderRunningState,
   type HostedBlenderStreamServerMessage,
   type HostedBlenderThreadState,
-  type ThreadId,
+  ThreadId,
+  TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
@@ -56,6 +59,7 @@ import {
   HelperPacketReader,
   isHelperPacketError,
 } from "./HelperProtocol.ts";
+import { type BlenderExit, endingOf, newestSession } from "./Recovery.ts";
 import { ViewerFlow } from "./ViewerFlow.ts";
 
 const MAX_VIEWERS = 4;
@@ -63,6 +67,8 @@ const INITIAL_SIZE = { width: 1280, height: 720 };
 const MEMORY_SAMPLE_INTERVAL = Duration.seconds(5);
 const KEYFRAME_REQUEST_INTERVAL_MS = 250;
 const QUIT_TIMEOUT = Duration.seconds(20);
+// The desktop app kills the server 5 seconds after asking it to stop.
+const SHUTDOWN_QUIT_TIMEOUT = Duration.seconds(3);
 const CONTROL_CONNECT_ATTEMPTS = 150;
 // A start that shows no viewport window by then has failed (a broken file, no encoder).
 const START_TIMEOUT = Duration.seconds(90);
@@ -81,6 +87,26 @@ const decodeControlMessage = Schema.decodeUnknownOption(Schema.fromJsonString(Co
 const encodeControlCommand = Schema.encodeSync(
   Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("quit"), save: Schema.Boolean })),
 );
+
+/** What a thread's last hosted Blender left to reopen, kept on disk across restarts. */
+const RecoveryRecord = Schema.Struct({
+  threadId: ThreadId,
+  kind: Schema.Literals(["closed", "crashed"]),
+  relativePath: TrimmedNonEmptyString,
+  /** Its session file (`session.blend` beside the record) holds a copy to restore. */
+  recovery: Schema.Boolean,
+});
+type RecoveryRecord = typeof RecoveryRecord.Type;
+const RecoveryRecordJson = Schema.fromJsonString(RecoveryRecord);
+const decodeRecoveryRecord = Schema.decodeUnknownOption(RecoveryRecordJson);
+const encodeRecoveryRecord = Schema.encodeSync(RecoveryRecordJson);
+
+/** Written into each launch folder, so one a dead server left behind can be salvaged. */
+const LaunchRecord = Schema.fromJsonString(
+  Schema.Struct({ threadId: ThreadId, relativePath: TrimmedNonEmptyString }),
+);
+const decodeLaunchRecord = Schema.decodeUnknownOption(LaunchRecord);
+const encodeLaunchRecord = Schema.encodeSync(LaunchRecord);
 
 export type HostedBlenderViewerOutput =
   | { readonly _tag: "frame"; readonly data: Uint8Array }
@@ -108,6 +134,15 @@ export class HostedBlender extends Context.Service<
   {
     readonly open: (input: HostedBlenderOpenInput) => Effect.Effect<void, HostedBlenderError>;
     readonly quit: (input: HostedBlenderQuitInput) => Effect.Effect<void, HostedBlenderError>;
+    /** Reopens the thread's closed or crashed Blender, restoring its recovery copy if asked. */
+    readonly reopen: (input: HostedBlenderReopenInput) => Effect.Effect<void, HostedBlenderError>;
+    /**
+     * Saves a recovery copy and quits the thread's Blender, without waiting for it: the thread
+     * settled, was archived or was deleted.
+     */
+    readonly closeOnSettle: (input: { readonly threadId: ThreadId }) => Effect.Effect<void>;
+    /** Every hosted Blender on this server, for Settings. */
+    readonly runningBlenders: Stream.Stream<HostedBlenderRunningList>;
     readonly threadState: (threadId: ThreadId) => Stream.Stream<HostedBlenderThreadState>;
     readonly attachViewer: (
       threadId: string,
@@ -143,13 +178,25 @@ interface Instance {
   fiber: Fiber.Fiber<void> | null;
   /** Set by `quit`, so stopping a Blender that is still starting doesn't read as a failed start. */
   quitting: boolean;
+  /** Set when T3 quits it for its thread or a shutdown, which keeps a recovery copy. */
+  ending: boolean;
+  blenderExit: BlenderExit | null;
+  /** The recovery copy or autosave this run restored over the file. */
+  recover: string | null;
 }
 
 type Availability =
   | { readonly status: "ok"; readonly helper: string; readonly blender: string }
   | Extract<HostedBlenderThreadState, { status: "unavailable" | "notSetUp" }>;
 
-type PublishedState = HostedBlenderRunningState | { readonly status: "failed" };
+type PublishedState =
+  | HostedBlenderRunningState
+  | { readonly status: "failed" }
+  | {
+      readonly status: "closed" | "crashed";
+      readonly relativePath: string;
+      readonly recovery: boolean;
+    };
 
 const sameState = (a: HostedBlenderThreadState, b: HostedBlenderThreadState) =>
   JSON.stringify(a) === JSON.stringify(b);
@@ -172,14 +219,41 @@ const make = Effect.gen(function* () {
     | ProjectService.ProjectService
   >();
   const serviceScope = yield* Effect.scope;
+  // Runs live here, so on shutdown they are ended with recovery copies before it closes.
+  const runScope = yield* Scope.fork(serviceScope);
 
   const instances = new Map<string, Instance>();
   const states = yield* SubscriptionRef.make<ReadonlyMap<string, PublishedState>>(new Map());
+  const running = yield* SubscriptionRef.make<HostedBlenderRunningList>([]);
   // Threads whose last start failed, until they open a file again.
   const failedStarts = new Set<string>();
+  // Each thread's last closed or crashed Blender, until it is reopened and ends again, or is
+  // dismissed. Mirrors the records under `recovery/`.
+  const records = new Map<string, RecoveryRecord>();
   const userResourcesLock = yield* Semaphore.make(1);
   const rootDir = path.join(config.stateDir, "hosted-blender");
+  const launchesDir = path.join(rootDir, "launches");
+  // Thread ids are opaque, so each gets a folder name that can't leave `recovery/`.
+  const recoveryDir = (threadId: string) =>
+    path.join(rootDir, "recovery", Buffer.from(threadId).toString("base64url"));
+  const sessionPath = (threadId: string) => path.join(recoveryDir(threadId), "session.blend");
 
+  const publishRunning = () =>
+    Effect.suspend(() =>
+      SubscriptionRef.set(
+        running,
+        Array.from(instances.values(), (instance) => ({
+          threadId: instance.threadId,
+          status: instance.status,
+          relativePath: instance.relativePath,
+          dirty: instance.dirty,
+          memoryBytes: instance.memoryBytes,
+        })),
+      ),
+    );
+
+  // A running Blender outranks what an earlier one left to reopen, and that outranks a failed
+  // start, so a restore that fails to start still offers its recovery copy.
   const publishNow = () =>
     Effect.suspend(() =>
       SubscriptionRef.set(
@@ -189,13 +263,135 @@ const make = Effect.gen(function* () {
             threadId,
             { status: "failed" },
           ]),
+          ...Array.from(records.values(), (record): [string, PublishedState] => [
+            record.threadId,
+            { status: record.kind, relativePath: record.relativePath, recovery: record.recovery },
+          ]),
           ...Array.from(instances.values(), (instance): [string, PublishedState] => [
             instance.threadId,
             { status: instance.status, relativePath: instance.relativePath, dirty: instance.dirty },
           ]),
         ]),
       ),
+    ).pipe(Effect.andThen(publishRunning()));
+
+  // Each write goes through a temporary name, so a crash mid-write never leaves half a file.
+  const writeAtomically = Effect.fnUntraced(function* (
+    target: string,
+    write: (to: string) => Effect.Effect<void, PlatformError>,
+  ) {
+    const partial = `${target}.partial`;
+    yield* write(partial);
+    yield* fileSystem.rename(partial, target);
+  });
+
+  /**
+   * Keeps the newest session Blender left in `tmpDir` as the thread's recovery copy. With none,
+   * an earlier copy of the same file stays: it is still the newest unsaved work T3 has.
+   */
+  const keepRecord = Effect.fn("HostedBlender.keepRecord")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly relativePath: string;
+    readonly kind: RecoveryRecord["kind"];
+    readonly tmpDir: string;
+  }) {
+    const dir = recoveryDir(input.threadId);
+    yield* fileSystem.makeDirectory(dir, { recursive: true });
+    const names = yield* fileSystem
+      .readDirectory(input.tmpDir)
+      .pipe(Effect.orElseSucceed(() => []));
+    const files = yield* Effect.forEach(names, (name) =>
+      fileSystem.stat(path.join(input.tmpDir, name)).pipe(
+        Effect.map((info) => ({
+          name,
+          mtimeMs:
+            info.type === "File"
+              ? Option.match(info.mtime, { onNone: () => 0, onSome: (date) => date.getTime() })
+              : -1,
+        })),
+        Effect.orElseSucceed(() => ({ name, mtimeMs: -1 })),
+      ),
     );
+    const newest = newestSession(files.filter((file) => file.mtimeMs >= 0));
+    const previous = records.get(input.threadId);
+    let recovery = false;
+    if (newest !== undefined) {
+      yield* writeAtomically(sessionPath(input.threadId), (to) =>
+        fileSystem.copyFile(path.join(input.tmpDir, newest), to),
+      );
+      recovery = true;
+    } else if (previous?.recovery === true && previous.relativePath === input.relativePath) {
+      recovery = true;
+    } else {
+      yield* fileSystem.remove(sessionPath(input.threadId), { force: true });
+    }
+    const record: RecoveryRecord = {
+      threadId: input.threadId,
+      kind: input.kind,
+      relativePath: input.relativePath,
+      recovery,
+    };
+    yield* writeAtomically(path.join(dir, "record.json"), (to) =>
+      fileSystem.writeFileString(to, encodeRecoveryRecord(record)),
+    );
+    records.set(input.threadId, record);
+  });
+
+  const forgetRecord = Effect.fn("HostedBlender.forgetRecord")(function* (threadId: string) {
+    if (!records.delete(threadId)) return false;
+    yield* fileSystem
+      .remove(recoveryDir(threadId), { recursive: true, force: true })
+      .pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("couldn't remove a hosted Blender's recovery copy", { cause }),
+        ),
+      );
+    return true;
+  });
+
+  // What earlier runs of this server left: their records, and the launch folders of Blenders a
+  // server that died without ending them left behind, whose autosaves are salvaged as crashes.
+  const restoreRecords = Effect.gen(function* () {
+    const recoveryRoot = path.join(rootDir, "recovery");
+    for (const entry of yield* fileSystem
+      .readDirectory(recoveryRoot)
+      .pipe(Effect.orElseSucceed(() => []))) {
+      const text = yield* fileSystem
+        .readFileString(path.join(recoveryRoot, entry, "record.json"))
+        .pipe(Effect.orElseSucceed(() => ""));
+      const record = decodeRecoveryRecord(text);
+      if (
+        Option.isSome(record) &&
+        recoveryDir(record.value.threadId) === path.join(recoveryRoot, entry)
+      ) {
+        records.set(record.value.threadId, record.value);
+      }
+    }
+    for (const entry of yield* fileSystem
+      .readDirectory(launchesDir)
+      .pipe(Effect.orElseSucceed(() => []))) {
+      const launchDir = path.join(launchesDir, entry);
+      const launch = decodeLaunchRecord(
+        yield* fileSystem
+          .readFileString(path.join(launchDir, "launch.json"))
+          .pipe(Effect.orElseSucceed(() => "")),
+      );
+      if (Option.isSome(launch)) {
+        yield* keepRecord({
+          ...launch.value,
+          kind: "crashed",
+          tmpDir: path.join(launchDir, "tmp"),
+        });
+      }
+      yield* fileSystem.remove(launchDir, { recursive: true, force: true });
+    }
+  }).pipe(
+    Effect.catch((cause) =>
+      Effect.logWarning("couldn't restore hosted Blender recovery copies", { cause }),
+    ),
+  );
+  yield* restoreRecords;
+  yield* publishNow();
 
   const availability = Effect.gen(function* (): Effect.fn.Return<
     Availability,
@@ -272,6 +468,9 @@ const make = Effect.gen(function* () {
         instance.viewport = { width: event.width, height: event.height };
         return yield* broadcast(instance, { type: "viewport", ...instance.viewport });
       case "exited":
+        if (event.process === "blender") {
+          instance.blenderExit = { code: event.code, signal: event.signal };
+        }
         // labwc or Blender is gone; the helper has nothing left to show.
         return yield* instance.helper({ type: "quit" });
       case "error":
@@ -348,15 +547,19 @@ const make = Effect.gen(function* () {
       ),
   );
 
+  // Settings lists every Blender's memory, so it is sampled whether or not anyone watches.
   const sampleMemory = Effect.fnUntraced(function* (instance: Instance) {
-    if (instance.pid === null || instance.viewers.length === 0) return;
+    if (instance.pid === null) return;
     const status = yield* fileSystem
       .readFileString(`/proc/${instance.pid}/status`)
       .pipe(Effect.orElseSucceed(() => ""));
     const kilobytes = /^VmRSS:\s+(\d+)\s+kB$/m.exec(status)?.[1];
-    instance.memoryBytes = kilobytes === undefined ? null : Number(kilobytes) * 1024;
+    const memoryBytes = kilobytes === undefined ? null : Number(kilobytes) * 1024;
+    if (memoryBytes === instance.memoryBytes) return;
+    instance.memoryBytes = memoryBytes;
+    yield* publishRunning();
     const stats = statsMessage(instance);
-    if (stats) yield* broadcast(instance, stats);
+    if (stats && instance.viewers.length > 0) yield* broadcast(instance, stats);
   });
 
   // Links are skipped, so nothing in the copy leads back to the desktop Blender's files.
@@ -398,9 +601,39 @@ const make = Effect.gen(function* () {
     function* (instance: Instance, tools: { readonly helper: string; readonly blender: string }) {
       yield* Effect.annotateCurrentSpan({ threadId: instance.threadId });
       // Everything a launch writes (labwc config, Blender's TMPDIR) goes when it ends.
-      const launchesDir = path.join(rootDir, "launches");
       yield* fileSystem.makeDirectory(launchesDir, { recursive: true });
       const stateDir = yield* fileSystem.makeTempDirectoryScoped({ directory: launchesDir });
+      yield* fileSystem.writeFileString(
+        path.join(stateDir, "launch.json"),
+        encodeLaunchRecord({ threadId: instance.threadId, relativePath: instance.relativePath }),
+      );
+      // Runs once the helper and Blender have stopped and before the launch folder goes: a
+      // closed or crashed Blender's quit copy or newest autosave is kept to reopen; a quit
+      // Blender's earlier record goes with it.
+      yield* Effect.addFinalizer(() =>
+        Effect.gen(function* () {
+          const ending = endingOf({
+            wasRunning: instance.status === "running",
+            ending: instance.ending,
+            quitting: instance.quitting,
+            blenderExit: instance.blenderExit,
+          });
+          if (ending === "closed" || ending === "crashed") {
+            yield* keepRecord({
+              threadId: instance.threadId,
+              relativePath: instance.relativePath,
+              kind: ending,
+              tmpDir: path.join(stateDir, "tmp"),
+            });
+          } else if (ending === "stopped") {
+            yield* forgetRecord(instance.threadId);
+          }
+        }).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("couldn't keep a hosted Blender's recovery copy", { cause }),
+          ),
+        ),
+      );
       const addonPath = path.join(stateDir, "t3_control.py");
       yield* fileSystem.writeFileString(addonPath, CONTROL_ADDON_SOURCE);
       const userResources = yield* ensureUserResources;
@@ -430,6 +663,7 @@ const make = Effect.gen(function* () {
               blendPath: instance.blendPath,
               controlSocket,
               mcpPort,
+              recover: instance.recover,
               ...INITIAL_SIZE,
             }),
             {
@@ -540,11 +774,12 @@ const make = Effect.gen(function* () {
   const threadRoot = (threadId: ThreadId) =>
     threadWorkspaceRoot(threadId).pipe(Effect.provideContext(lookupContext));
 
-  const open: HostedBlender["Service"]["open"] = Effect.fn("HostedBlender.open")(function* ({
-    threadId,
-    relativePath,
-  }) {
-    yield* Effect.annotateCurrentSpan({ threadId });
+  // Shared by open and reopen, whose spans it runs in.
+  const start = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    relativePath: string,
+    recover: string | null,
+  ) {
     const tools = yield* availability;
     if (tools.status !== "ok") return yield* new HostedBlenderError({ reason: tools.status });
     if (!relativePath.toLowerCase().endsWith(".blend"))
@@ -596,12 +831,82 @@ const make = Effect.gen(function* () {
       pendingSave: null,
       fiber: null,
       quitting: false,
+      ending: false,
+      blenderExit: null,
+      recover,
     };
     failedStarts.delete(threadId);
     instances.set(threadId, instance);
     yield* publishNow();
-    instance.fiber = yield* run(instance, tools).pipe(Effect.forkIn(serviceScope));
+    instance.fiber = yield* run(instance, tools).pipe(Effect.forkIn(runScope));
   });
+
+  const open: HostedBlender["Service"]["open"] = Effect.fn("HostedBlender.open")(function* ({
+    threadId,
+    relativePath,
+  }) {
+    yield* Effect.annotateCurrentSpan({ threadId });
+    yield* start(threadId, relativePath, null);
+  });
+
+  const reopen: HostedBlender["Service"]["reopen"] = Effect.fn("HostedBlender.reopen")(function* ({
+    threadId,
+    restore,
+  }) {
+    yield* Effect.annotateCurrentSpan({ threadId, restore });
+    if (instances.has(threadId)) return;
+    const record = records.get(threadId);
+    if (record === undefined) return yield* new HostedBlenderError({ reason: "nothingToReopen" });
+    // The record stays until this Blender ends too, so a restore that fails keeps its copy.
+    yield* start(
+      threadId,
+      record.relativePath,
+      restore && record.recovery ? sessionPath(threadId) : null,
+    );
+  });
+
+  // Last resort: the helper stops Blender with SIGTERM, then SIGKILL.
+  const forceQuit = Effect.fn("HostedBlender.forceQuit")(function* (instance: Instance) {
+    instance.quitting = true;
+    if (instance.fiber) yield* Fiber.interrupt(instance.fiber);
+  });
+
+  /** Quits without saving, so Blender writes its quit copy, which the run keeps to reopen. */
+  const end = Effect.fn("HostedBlender.end")(function* (
+    instance: Instance,
+    timeout: Duration.Input,
+  ) {
+    yield* Effect.annotateCurrentSpan({ threadId: instance.threadId });
+    if (!instance.ending) {
+      instance.ending = true;
+      instance.quitting = true;
+      const control = instance.control;
+      // Still starting, there's nothing of this session to keep yet.
+      if (control === null) return yield* forceQuit(instance);
+      yield* control
+        .write(`${encodeControlCommand({ type: "quit", save: false })}\n`)
+        .pipe(Effect.raceFirst(Deferred.await(control.closed)));
+    }
+    const ended = yield* Deferred.await(instance.ended).pipe(Effect.timeoutOption(timeout));
+    if (Option.isNone(ended)) yield* forceQuit(instance);
+  });
+
+  const closeOnSettle: HostedBlender["Service"]["closeOnSettle"] = Effect.fn(
+    "HostedBlender.closeOnSettle",
+  )(function* ({ threadId }) {
+    yield* Effect.annotateCurrentSpan({ threadId });
+    const instance = instances.get(threadId);
+    if (instance === undefined) return;
+    yield* end(instance, QUIT_TIMEOUT).pipe(Effect.forkIn(serviceScope));
+  });
+
+  // Added after `runScope`, so on shutdown every Blender gets to save its copy first.
+  yield* Effect.addFinalizer(() =>
+    Effect.forEach(instances.values(), (instance) => end(instance, SHUTDOWN_QUIT_TIMEOUT), {
+      concurrency: "unbounded",
+      discard: true,
+    }),
+  );
 
   const quit: HostedBlender["Service"]["quit"] = Effect.fn("HostedBlender.quit")(function* ({
     threadId,
@@ -610,24 +915,22 @@ const make = Effect.gen(function* () {
     yield* Effect.annotateCurrentSpan({ threadId, save });
     const instance = instances.get(threadId);
     if (instance === undefined) {
-      if (!failedStarts.delete(threadId)) return;
+      // Dismisses what's left to reopen as well as a failed start.
+      const failed = failedStarts.delete(threadId);
+      if (!(yield* forgetRecord(threadId)) && !failed) return;
       return yield* publishNow();
     }
     const control = instance.control;
-    const forceQuit = Effect.gen(function* () {
-      instance.quitting = true;
-      if (instance.fiber) yield* Fiber.interrupt(instance.fiber);
-    });
     const saveFailed = new HostedBlenderError({ reason: "saveFailed" });
     if (!save) {
       // Quit without saving: Blender may be stopped however it takes.
-      if (control === null) return yield* forceQuit;
+      if (control === null) return yield* forceQuit(instance);
       instance.quitting = true;
       yield* control
         .write(`${encodeControlCommand({ type: "quit", save })}\n`)
         .pipe(Effect.raceFirst(Deferred.await(control.closed)));
       const ended = yield* Deferred.await(instance.ended).pipe(Effect.timeoutOption(QUIT_TIMEOUT));
-      if (Option.isNone(ended)) yield* forceQuit;
+      if (Option.isNone(ended)) yield* forceQuit(instance);
       return;
     }
     // Save and quit never stops Blender before the add-on says the file is saved. A save
@@ -652,7 +955,7 @@ const make = Effect.gen(function* () {
     if (!(yield* Deferred.await(pending))) return yield* saveFailed;
     instance.quitting = true;
     const ended = yield* Deferred.await(instance.ended).pipe(Effect.timeoutOption(QUIT_TIMEOUT));
-    if (Option.isNone(ended)) yield* forceQuit;
+    if (Option.isNone(ended)) yield* forceQuit(instance);
   });
 
   const saveThenQuit = Effect.fn("HostedBlender.saveThenQuit")(
@@ -746,7 +1049,19 @@ const make = Effect.gen(function* () {
     };
   });
 
-  return HostedBlender.of({ open, quit, threadState, attachViewer });
+  const runningBlenders: HostedBlender["Service"]["runningBlenders"] = SubscriptionRef.changes(
+    running,
+  ).pipe(Stream.changesWith((a, b) => JSON.stringify(a) === JSON.stringify(b)));
+
+  return HostedBlender.of({
+    open,
+    quit,
+    reopen,
+    closeOnSettle,
+    threadState,
+    attachViewer,
+    runningBlenders,
+  });
 });
 
 export const layer = Layer.effect(HostedBlender, make);

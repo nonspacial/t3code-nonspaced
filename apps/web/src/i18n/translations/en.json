@@ -3291,10 +3291,12 @@
   "984c25ffcae69300": "Add backend",
   "08570ee0982df89d": "Pairing...",
   "3bbae7c96b6cbfc3": "Open app",
+  "cd078f4497dfcd36": "Couldn't restart Blender",
+  "ad3ce6044792509a": "Couldn't reopen Blender",
+  "90e3c64eab32945e": "Discard the autosave of {name}?",
+  "01201ecb830d7c68": "Discard the unsaved changes to {name}?",
   "a1628cec6e798a98": "T3 Code's hidden display helper",
-  "119259d2fa66fadf": "Couldn't quit Blender",
   "32cf9ac006229af1": "Blender menu",
-  "e2d3b41b3731a6c1": "Save changes to {name} before quitting?",
   "2151790bc5e65b31": "Not available on this host",
   "22e7ff1b5896ba7b": "Hosted Blender needs a Linux server. You can still open 3D files in the file preview.",
   "3051b6753c63a53e": "Hosted Blender isn't set up",
@@ -3302,6 +3304,48 @@
   "fb2c65328a8a2e17": "Open a .blend file in the file preview and choose Open in hosted Blender.",
   "cb4451ab067ff47d": "Blender didn't start",
   "3f25b97ec987231e": "Blender couldn't open the file on the hidden display. Check that Blender opens it and that GStreamer has an H.264 encoder, then open it in hosted Blender again.",
+  "c9d23ccb15073177": "Blender crashed",
+  "9f406050b6efb934": "Blender was closed",
+  "ff3775198cef1512": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " stopped unexpectedly. Restart opens the file as last saved, or restore its newest autosave."
+  ],
+  "945cdcba38a31b0c": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " stopped unexpectedly. Restart opens the file as last saved."
+  ],
+  "a1705e3412c3634e": [
+    "T3 Code closed ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " when this thread settled or T3 Code stopped, and kept its unsaved changes. Reopen restores them."
+  ],
+  "891e3d7d231af485": [
+    "T3 Code closed ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " when this thread settled or T3 Code stopped."
+  ],
+  "bd90fd96c98e9c6f": "Restart",
+  "220f0a0fa43d9f59": "Restore autosave",
+  "182049c015041be2": "Reopen",
+  "eb23e8b7b8458cfa": "Open as last saved",
+  "97585565390197f6": "Discard",
+  "d6c851db16c7dfd8": "The file as last saved is kept. This can't be undone.",
   "91e40fb96987dd85": [
     "This server is missing: ",
     {
@@ -3322,15 +3366,17 @@
     " on the hidden display."
   ],
   "8b290ab856b8f02b": "Quit Blender",
-  "32504fe5e26d8233": "Changes Blender hasn't saved are lost if you quit without saving.",
-  "9ceb68fb844584c9": "Quit without saving",
-  "e21dfc1887d124ec": "Save and quit",
   "6b30f7f4ebd659d7": "Too many people are watching this Blender. Try again later.",
   "1681e6f089782b9d": "This browser can't play the Blender stream.",
   "81f3ce1d88ecf7bb": "Watching",
   "3906097eebf88153": "Showing the whole display",
   "907a0f7ed16a709d": "Couldn't open in hosted Blender",
   "7b0cb06d256e6b28": "Open in hosted Blender",
+  "119259d2fa66fadf": "Couldn't quit Blender",
+  "e2d3b41b3731a6c1": "Save changes to {name} before quitting?",
+  "32504fe5e26d8233": "Changes Blender hasn't saved are lost if you quit without saving.",
+  "9ceb68fb844584c9": "Quit without saving",
+  "e21dfc1887d124ec": "Save and quit",
   "49cc06e79f21f85a": "{seconds}s",
   "8603d41c52392f1d": "{minutes}m {seconds}s",
   "f2a955905704b91d": "{hours}h {minutes}m",
@@ -6737,8 +6783,6 @@
   "1b381201aba745c2": "No checks reported",
   "a6d75a4380173c60": "Open checks: {summary}",
   "be3d1766bad18693": "Checks: {summary}",
-  "425e4a3d6c5c2867": "{count, plural, one {{count} failed} other {{count} failed}}",
-  "fd63b391898889f9": "{count, plural, one {{count} awaiting action} other {{count} awaiting action}}",
   "cb116c139cdace98": "No checks reported",
   "60b56e201607c7ec": "Check details are out of date. Refresh the pull request to update them.",
   "e74cd4e960cbb5e5": "Unchanged lines are unavailable in a file with cut lines.",
@@ -7415,6 +7459,9 @@
   "9b0647af63a7d8c1": "Approved earlier changes",
   "abe99679224fea5e": "Changes requested earlier changes",
   "6b31ad910278ff72": "Review dismissed earlier changes",
+  "425e4a3d6c5c2867": "{count, plural, one {{count} failed} other {{count} failed}}",
+  "fd63b391898889f9": "{count, plural, one {{count} awaiting action} other {{count} awaiting action}}",
+  "948185631ef288e6": "{count, plural, one {{count} running} other {{count} running}}",
   "aaf22207b2f18c45": "{workflows, plural, one {{workflows} workflow} other {{workflows} workflows}} and {checks, plural, one {{checks} check} other {{checks} checks}} awaiting action",
   "c51411813ebafcc1": "{count, plural, one {{count} workflow awaiting approval} other {{count} workflows awaiting approval}}",
   "4946778c8e18a1db": "{count, plural, one {{count} check awaiting action} other {{count} checks awaiting action}}",
@@ -7648,6 +7695,7 @@
   "d5dc7576fd468be7": "Comfortable",
   "3141408bf3874e64": "Wide",
   "831badd18b64547e": "Full",
+  "6287212fed0deec6": "Match chat",
   "a96255594ebf2ce3": "Word",
   "1ee44eb65708a8aa": "Bars",
   "7670f789e0d8672a": "Only built-in themes show artwork, so this theme shows the version pill.",
@@ -7665,12 +7713,11 @@
   "03338c6aec8edacd": "Set how wide messages and the composer can grow on large screens.",
   "92785adb251da88c": "Reset chat width to default",
   "4d457bcce0c0e272": "Chat width",
-  "7d7f65967cc821e3": "HTML preview width",
+  "81f3a196537bbee0": "Comfortable (default)",
   "70ce0af7f78d5957": "Let HTML previews in a chat grow wider than its messages, which stay centered.",
   "f2b119bf02ae2558": "Reset HTML preview width to default",
-  "6287212fed0deec6": "Match chat",
+  "7d7f65967cc821e3": "HTML preview width",
   "dc8e85ea0364649c": "Match chat (default)",
-  "81f3a196537bbee0": "Comfortable (default)",
   "e79e5388f669495f": "Show reasoning effort in the composer as its name, such as High, or as bars.",
   "7f0365c7e4e8bcbf": "Reset effort display to default",
   "14bf40f765172a50": "Effort display",
@@ -7813,6 +7860,11 @@
   "3943d8479dc44551": "Poll host power state when no foreground client is active.",
   "d13f97c11d2f322b": "Reset all",
   "cc310b2ec0179edf": "Configure background activity",
+  "a0f6aecb07b533ff": "Running Blenders ({count})",
+  "b04a15f0adaa16b9": "No hosted Blenders are running",
+  "201b5d40d08e74d0": "Each thread's hosted Blender shows here while it runs.",
+  "75daeb1e9b041511": "Unknown thread",
+  "0eda0be3d24af58c": "Quit",
   "e116ed85458b6613": "Static prefix",
   "575ae567e3b6ca3d": "Semantic prefix",
   "6675de66f9b3f71d": "Custom instructions",
@@ -11305,7 +11357,6 @@
       }
     }
   ],
-  "97585565390197f6": "Discard",
   "c0fce4a3555c5c17": "Connect",
   "0d1eba54ff075d77": "Use it",
   "035dc7d3b0f3e526": "Thread titles and other generated text",
@@ -12056,6 +12107,8 @@
   "f2b07faba1229ce7": "Health check interval",
   "5c9dc9970db79fe2": "refresh availability versions auth state models background probes seconds off",
   "056ba6a180d114b5": "allow disable enable open drive preview tools sessions project override",
+  "dd6b767f08eff9f7": "Running Blenders",
+  "ec2bc06507d0d9af": "hosted blender quit memory 3d thread",
   "345075be6cacc171": "device hosts ssh remote mac mini identity key connection eas expo cloud simlock pool gateway local simulators",
   "a6b742430b05d6cc": "Agents can use devices",
   "1d5d7418a83575c2": "allow simulator emulator ios android drive tools sessions",
@@ -12254,7 +12307,6 @@
   "c1a9fe8e24876f1d": "{count, plural, one {{count} running thread will be interrupted.} other {{count} running threads will be interrupted.}}",
   "ecdf5f108ecc71d0": "{count, plural, one {{count} can resume after the restart.} other {{count} can resume after the restart.}}",
   "0576c87870fb6389": "Update",
-  "948185631ef288e6": "{count, plural, one {{count} running} other {{count} running}}",
   "3d9a2f6b9c114039": "Providers",
   "f4baf8deafbb227d": "Skipped",
   "f938bb483eb3d189": "restarts last",

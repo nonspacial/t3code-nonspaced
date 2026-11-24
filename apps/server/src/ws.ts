@@ -3518,6 +3518,8 @@ export const layerWsRpc = (
         [WS_METHODS.hostedBlenderQuit]: (input) => hostedBlender.quit(input),
         [WS_METHODS.hostedBlenderSubscribeThread]: (input) =>
           hostedBlender.threadState(input.threadId),
+        [WS_METHODS.hostedBlenderReopen]: (input) => hostedBlender.reopen(input),
+        [WS_METHODS.hostedBlenderSubscribeRunning]: () => hostedBlender.runningBlenders,
         [WS_METHODS.previewStopLocalServer]: (input) => portDiscovery.stopServer(input),
         [WS_METHODS.subscribeDiscoveredLocalServers]: (input) =>
           Stream.callback<DiscoveredLocalServerList>((queue) =>

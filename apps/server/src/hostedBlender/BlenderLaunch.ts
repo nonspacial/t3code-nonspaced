@@ -10,6 +10,8 @@ export interface BlenderLaunch {
   readonly blendPath: string;
   readonly controlSocket: string;
   readonly mcpPort: number;
+  /** A recovery copy or autosave the control add-on restores over `blendPath`. */
+  readonly recover: string | null;
   readonly width: number;
   readonly height: number;
 }
@@ -45,6 +47,7 @@ export const helperArguments = (launch: BlenderLaunch): ReadonlyArray<string> =>
   launch.controlSocket,
   "--t3-mcp-port",
   String(launch.mcpPort),
+  ...(launch.recover === null ? [] : ["--t3-recover", launch.recover]),
 ];
 
 /**

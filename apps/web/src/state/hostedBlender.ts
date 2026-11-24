@@ -7,6 +7,7 @@ import { createHostedBlenderEnvironmentAtoms } from "@t3tools/client-runtime/sta
 import {
   type EnvironmentId,
   HOSTED_BLENDER_STREAM_PATH,
+  type HostedBlenderRunningList,
   type HostedBlenderThreadState,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -34,6 +35,19 @@ export function useHostedBlenderState(
           environmentId: threadRef.environmentId,
           input: { threadId: threadRef.threadId },
         }),
+    resolve,
+  ).data;
+}
+
+/** Every hosted Blender on the environment, or null until the server answers. */
+export function useRunningHostedBlenders(
+  environmentId: EnvironmentId | null,
+): HostedBlenderRunningList | null {
+  const resolve = useMessages();
+  return useEnvironmentQuery(
+    environmentId === null
+      ? null
+      : hostedBlenderEnvironment.runningBlenders({ environmentId, input: {} }),
     resolve,
   ).data;
 }

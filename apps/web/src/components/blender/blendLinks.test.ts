@@ -17,6 +17,14 @@ describe("hostedBlenderOpensLink", () => {
     ).toBe(true);
   });
 
+  it("opens the pane to reopen the file a closed or crashed Blender had open", () => {
+    for (const status of ["closed", "crashed"] as const) {
+      const ended = { status, relativePath: "models/hero.blend", recovery: true };
+      expect(hostedBlenderOpensLink("models/hero.blend", "/work", ended)).toBe(true);
+      expect(hostedBlenderOpensLink("models/other.blend", "/work", ended)).toBe(false);
+    }
+  });
+
   it("opens the 3D preview for any other file, or when no Blender has it open", () => {
     expect(hostedBlenderOpensLink("models/other.blend", "/work", running)).toBe(false);
     expect(hostedBlenderOpensLink("/elsewhere/models/hero.blend", "/work", running)).toBe(false);

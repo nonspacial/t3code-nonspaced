@@ -369,6 +369,8 @@ import {
   HostedBlenderError,
   HostedBlenderOpenInput,
   HostedBlenderQuitInput,
+  HostedBlenderReopenInput,
+  HostedBlenderRunningList,
   HostedBlenderSubscribeInput,
   HostedBlenderThreadState,
 } from "./hostedBlender.ts";
@@ -598,6 +600,8 @@ export const WS_METHODS = {
   hostedBlenderOpen: "hostedBlender.open",
   hostedBlenderQuit: "hostedBlender.quit",
   hostedBlenderSubscribeThread: "hostedBlender.subscribeThread",
+  hostedBlenderReopen: "hostedBlender.reopen",
+  hostedBlenderSubscribeRunning: "hostedBlender.subscribeRunning",
 
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
@@ -2146,6 +2150,18 @@ const WsHostedBlenderSubscribeThreadRpc = Rpc.make(WS_METHODS.hostedBlenderSubsc
   stream: true,
 });
 
+const WsHostedBlenderReopenRpc = Rpc.make(WS_METHODS.hostedBlenderReopen, {
+  payload: HostedBlenderReopenInput,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+const WsHostedBlenderSubscribeRunningRpc = Rpc.make(WS_METHODS.hostedBlenderSubscribeRunning, {
+  payload: Schema.Struct({}),
+  success: HostedBlenderRunningList,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
 const WsOrchestrationV2DispatchCommandRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, {
   payload: OrchestrationV2RpcSchemas.dispatchCommand.input,
   success: OrchestrationV2RpcSchemas.dispatchCommand.output,
@@ -2742,6 +2758,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsHostedBlenderOpenRpc,
   WsHostedBlenderQuitRpc,
   WsHostedBlenderSubscribeThreadRpc,
+  WsHostedBlenderReopenRpc,
+  WsHostedBlenderSubscribeRunningRpc,
   WsSubscribeServerConfigRpc,
   WsSubscribeServerLifecycleRpc,
   WsSubscribeAuthAccessRpc,

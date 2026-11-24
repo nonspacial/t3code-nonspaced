@@ -3291,10 +3291,12 @@
   "984c25ffcae69300": "Ajouter le backend",
   "08570ee0982df89d": "Appairage...",
   "3bbae7c96b6cbfc3": "Ouvrir l’app",
+  "cd078f4497dfcd36": "Impossible de redémarrer Blender",
+  "ad3ce6044792509a": "Impossible de rouvrir Blender",
+  "90e3c64eab32945e": "Supprimer l’enregistrement automatique de {name} ?",
+  "01201ecb830d7c68": "Abandonner les modifications non enregistrées de {name} ?",
   "a1628cec6e798a98": "T3 Code's hidden display helper",
-  "119259d2fa66fadf": "Couldn't quit Blender",
   "32cf9ac006229af1": "Blender menu",
-  "e2d3b41b3731a6c1": "Save changes to {name} before quitting?",
   "2151790bc5e65b31": "Not available on this host",
   "22e7ff1b5896ba7b": "Hosted Blender needs a Linux server. You can still open 3D files in the file preview.",
   "3051b6753c63a53e": "Hosted Blender isn't set up",
@@ -3302,6 +3304,48 @@
   "fb2c65328a8a2e17": "Open a .blend file in the file preview and choose Open in hosted Blender.",
   "cb4451ab067ff47d": "Blender didn't start",
   "3f25b97ec987231e": "Blender couldn't open the file on the hidden display. Check that Blender opens it and that GStreamer has an H.264 encoder, then open it in hosted Blender again.",
+  "c9d23ccb15073177": "Blender a planté",
+  "9f406050b6efb934": "Blender a été fermé",
+  "ff3775198cef1512": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " s’est arrêté de façon inattendue. Redémarrer ouvre le fichier tel qu’enregistré en dernier, ou restaurez son enregistrement automatique le plus récent."
+  ],
+  "945cdcba38a31b0c": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " s’est arrêté de façon inattendue. Redémarrer ouvre le fichier tel qu’enregistré en dernier."
+  ],
+  "a1705e3412c3634e": [
+    "T3 Code a fermé ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " lorsque ce fil a été réglé ou que T3 Code s’est arrêté, et a conservé ses modifications non enregistrées. Rouvrir les restaure."
+  ],
+  "891e3d7d231af485": [
+    "T3 Code a fermé ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " lorsque ce fil a été réglé ou que T3 Code s’est arrêté."
+  ],
+  "bd90fd96c98e9c6f": "Redémarrer",
+  "220f0a0fa43d9f59": "Restaurer l’enregistrement automatique",
+  "182049c015041be2": "Rouvrir",
+  "eb23e8b7b8458cfa": "Ouvrir la dernière version enregistrée",
+  "97585565390197f6": "Abandonner",
+  "d6c851db16c7dfd8": "Le fichier tel qu’enregistré en dernier est conservé. Cette action est irréversible.",
   "91e40fb96987dd85": [
     "This server is missing: ",
     {
@@ -3322,15 +3366,17 @@
     " on the hidden display."
   ],
   "8b290ab856b8f02b": "Quit Blender",
-  "32504fe5e26d8233": "Changes Blender hasn't saved are lost if you quit without saving.",
-  "9ceb68fb844584c9": "Quit without saving",
-  "e21dfc1887d124ec": "Save and quit",
   "6b30f7f4ebd659d7": "Too many people are watching this Blender. Try again later.",
   "1681e6f089782b9d": "This browser can't play the Blender stream.",
   "81f3ce1d88ecf7bb": "Watching",
   "3906097eebf88153": "Showing the whole display",
   "907a0f7ed16a709d": "Couldn't open in hosted Blender",
   "7b0cb06d256e6b28": "Open in hosted Blender",
+  "119259d2fa66fadf": "Couldn't quit Blender",
+  "e2d3b41b3731a6c1": "Save changes to {name} before quitting?",
+  "32504fe5e26d8233": "Changes Blender hasn't saved are lost if you quit without saving.",
+  "9ceb68fb844584c9": "Quit without saving",
+  "e21dfc1887d124ec": "Save and quit",
   "49cc06e79f21f85a": "{seconds} s",
   "8603d41c52392f1d": "{minutes} min {seconds} s",
   "f2a955905704b91d": "{hours} h {minutes} min",
@@ -6731,8 +6777,6 @@
   "1b381201aba745c2": "Aucun check signalé",
   "a6d75a4380173c60": "Ouvrir les checks : {summary}",
   "be3d1766bad18693": "Checks : {summary}",
-  "425e4a3d6c5c2867": "{count, plural, one {{count} en échec} other {{count} en échec}}",
-  "fd63b391898889f9": "{count, plural, one {{count} en attente d’action} other {{count} en attente d’action}}",
   "cb116c139cdace98": "Aucun check signalé",
   "60b56e201607c7ec": "Les détails des checks ne sont plus à jour. Actualisez la pull request pour les mettre à jour.",
   "e74cd4e960cbb5e5": "Les lignes inchangées ne sont pas disponibles dans un fichier aux lignes tronquées.",
@@ -7409,6 +7453,9 @@
   "9b0647af63a7d8c1": "Approbation de modifications antérieures",
   "abe99679224fea5e": "Modifications demandées sur des changements antérieurs",
   "6b31ad910278ff72": "Revue rejetée sur des changements antérieurs",
+  "425e4a3d6c5c2867": "{count, plural, one {{count} en échec} other {{count} en échec}}",
+  "fd63b391898889f9": "{count, plural, one {{count} en attente d’action} other {{count} en attente d’action}}",
+  "948185631ef288e6": "{count, plural, one {{count} en cours} other {{count} en cours}}",
   "aaf22207b2f18c45": "{workflows, plural, one {{workflows} workflow} other {{workflows} workflows}} et {checks, plural, one {{checks} check} other {{checks} checks}} en attente d’action",
   "c51411813ebafcc1": "{count, plural, one {{count} workflow en attente d’approbation} other {{count} workflows en attente d’approbation}}",
   "4946778c8e18a1db": "{count, plural, one {{count} check en attente d’action} other {{count} checks en attente d’action}}",
@@ -7642,6 +7689,7 @@
   "d5dc7576fd468be7": "Confortable",
   "3141408bf3874e64": "Large",
   "831badd18b64547e": "Pleine largeur",
+  "6287212fed0deec6": "Comme la discussion",
   "a96255594ebf2ce3": "Mot",
   "1ee44eb65708a8aa": "Barres",
   "7670f789e0d8672a": "Seuls les thèmes intégrés affichent une illustration ; ce thème affiche donc la pastille de version.",
@@ -7659,12 +7707,11 @@
   "03338c6aec8edacd": "Définissez la largeur maximale des messages et de la zone de saisie sur les grands écrans.",
   "92785adb251da88c": "Réinitialiser la largeur de la discussion à la valeur par défaut",
   "4d457bcce0c0e272": "Largeur de la discussion",
-  "7d7f65967cc821e3": "Largeur des aperçus HTML",
+  "81f3a196537bbee0": "Confortable (par défaut)",
   "70ce0af7f78d5957": "Permet aux aperçus HTML d’une discussion d’être plus larges que ses messages, qui restent centrés.",
   "f2b119bf02ae2558": "Réinitialiser la largeur des aperçus HTML à la valeur par défaut",
-  "6287212fed0deec6": "Comme la discussion",
+  "7d7f65967cc821e3": "Largeur des aperçus HTML",
   "dc8e85ea0364649c": "Comme la discussion (par défaut)",
-  "81f3a196537bbee0": "Confortable (par défaut)",
   "e79e5388f669495f": "Afficher l’effort de raisonnement dans la zone de saisie par son nom, comme Élevé, ou sous forme de barres.",
   "7f0365c7e4e8bcbf": "Réinitialiser l’affichage de l’effort à la valeur par défaut",
   "14bf40f765172a50": "Affichage de l’effort",
@@ -7807,6 +7854,11 @@
   "3943d8479dc44551": "Interroger l’état d’alimentation de l’hôte quand aucun client n’est au premier plan.",
   "d13f97c11d2f322b": "Tout réinitialiser",
   "cc310b2ec0179edf": "Configurer l’activité en arrière-plan",
+  "a0f6aecb07b533ff": "Blender en cours d’exécution ({count})",
+  "b04a15f0adaa16b9": "Aucun Blender hébergé n’est en cours d’exécution",
+  "201b5d40d08e74d0": "Le Blender hébergé de chaque fil apparaît ici tant qu’il s’exécute.",
+  "75daeb1e9b041511": "Fil inconnu",
+  "0eda0be3d24af58c": "Quitter",
   "e116ed85458b6613": "Préfixe fixe",
   "575ae567e3b6ca3d": "Préfixe sémantique",
   "6675de66f9b3f71d": "Instructions personnalisées",
@@ -11295,7 +11347,6 @@
       }
     }
   ],
-  "97585565390197f6": "Abandonner",
   "c0fce4a3555c5c17": "Connexion",
   "0d1eba54ff075d77": "L’utiliser",
   "035dc7d3b0f3e526": "Titres des fils et autres textes générés",
@@ -12046,6 +12097,8 @@
   "f2b07faba1229ce7": "Intervalle de vérification de l’état",
   "5c9dc9970db79fe2": "actualiser disponibilité versions état d’authentification modèles sondes en arrière-plan secondes désactivé",
   "056ba6a180d114b5": "autoriser désactiver activer ouvrir piloter aperçu outils sessions remplacement par projet",
+  "dd6b767f08eff9f7": "Blender en cours d’exécution",
+  "ec2bc06507d0d9af": "hébergé blender quitter mémoire 3d fil",
   "345075be6cacc171": "appareil hôtes ssh distant mac mini identité clé connexion eas expo cloud simlock pool passerelle simulateurs locaux",
   "a6b742430b05d6cc": "Les agents peuvent utiliser les appareils",
   "1d5d7418a83575c2": "autoriser simulateur émulateur ios android piloter outils sessions",
@@ -12244,7 +12297,6 @@
   "c1a9fe8e24876f1d": "{count, plural, one {{count} fil en cours sera interrompu.} other {{count} fils en cours seront interrompus.}}",
   "ecdf5f108ecc71d0": "{count, plural, one {{count} peut reprendre après le redémarrage.} other {{count} peuvent reprendre après le redémarrage.}}",
   "0576c87870fb6389": "Mettre à jour",
-  "948185631ef288e6": "{count, plural, one {{count} en cours} other {{count} en cours}}",
   "3d9a2f6b9c114039": "Fournisseurs",
   "f4baf8deafbb227d": "Ignorés",
   "f938bb483eb3d189": "redémarre en dernier",

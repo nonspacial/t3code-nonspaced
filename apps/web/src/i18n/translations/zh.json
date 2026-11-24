@@ -3295,10 +3295,12 @@
   "984c25ffcae69300": "添加后端",
   "08570ee0982df89d": "正在配对…",
   "3bbae7c96b6cbfc3": "打开应用",
+  "cd078f4497dfcd36": "无法重启 Blender",
+  "ad3ce6044792509a": "无法重新打开 Blender",
+  "90e3c64eab32945e": "要丢弃 {name} 的自动保存吗？",
+  "01201ecb830d7c68": "要丢弃 {name} 中未保存的更改吗？",
   "a1628cec6e798a98": "T3 Code's hidden display helper",
-  "119259d2fa66fadf": "Couldn't quit Blender",
   "32cf9ac006229af1": "Blender menu",
-  "e2d3b41b3731a6c1": "Save changes to {name} before quitting?",
   "2151790bc5e65b31": "Not available on this host",
   "22e7ff1b5896ba7b": "Hosted Blender needs a Linux server. You can still open 3D files in the file preview.",
   "3051b6753c63a53e": "Hosted Blender isn't set up",
@@ -3306,6 +3308,48 @@
   "fb2c65328a8a2e17": "Open a .blend file in the file preview and choose Open in hosted Blender.",
   "cb4451ab067ff47d": "Blender didn't start",
   "3f25b97ec987231e": "Blender couldn't open the file on the hidden display. Check that Blender opens it and that GStreamer has an H.264 encoder, then open it in hosted Blender again.",
+  "c9d23ccb15073177": "Blender 已崩溃",
+  "9f406050b6efb934": "Blender 已关闭",
+  "ff3775198cef1512": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " 意外停止。重启会打开上次保存的文件，也可以恢复最新的自动保存。"
+  ],
+  "945cdcba38a31b0c": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " 意外停止。重启会打开上次保存的文件。"
+  ],
+  "a1705e3412c3634e": [
+    "当此线程结束或 T3 Code 停止时，T3 Code 关闭了 ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "，并保留了未保存的更改。重新打开即可恢复。"
+  ],
+  "891e3d7d231af485": [
+    "当此线程结束或 T3 Code 停止时，T3 Code 关闭了 ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "。"
+  ],
+  "bd90fd96c98e9c6f": "重启",
+  "220f0a0fa43d9f59": "恢复自动保存",
+  "182049c015041be2": "重新打开",
+  "eb23e8b7b8458cfa": "打开上次保存的版本",
+  "97585565390197f6": "放弃",
+  "d6c851db16c7dfd8": "上次保存的文件会保留。此操作无法撤消。",
   "91e40fb96987dd85": [
     "This server is missing: ",
     {
@@ -3326,15 +3370,17 @@
     " on the hidden display."
   ],
   "8b290ab856b8f02b": "Quit Blender",
-  "32504fe5e26d8233": "Changes Blender hasn't saved are lost if you quit without saving.",
-  "9ceb68fb844584c9": "Quit without saving",
-  "e21dfc1887d124ec": "Save and quit",
   "6b30f7f4ebd659d7": "Too many people are watching this Blender. Try again later.",
   "1681e6f089782b9d": "This browser can't play the Blender stream.",
   "81f3ce1d88ecf7bb": "Watching",
   "3906097eebf88153": "Showing the whole display",
   "907a0f7ed16a709d": "Couldn't open in hosted Blender",
   "7b0cb06d256e6b28": "Open in hosted Blender",
+  "119259d2fa66fadf": "Couldn't quit Blender",
+  "e2d3b41b3731a6c1": "Save changes to {name} before quitting?",
+  "32504fe5e26d8233": "Changes Blender hasn't saved are lost if you quit without saving.",
+  "9ceb68fb844584c9": "Quit without saving",
+  "e21dfc1887d124ec": "Save and quit",
   "49cc06e79f21f85a": "{seconds} 秒",
   "8603d41c52392f1d": "{minutes} 分 {seconds} 秒",
   "f2a955905704b91d": "{hours} 小时 {minutes} 分钟",
@@ -6742,8 +6788,6 @@
   "1b381201aba745c2": "未报告任何检查",
   "a6d75a4380173c60": "打开检查：{summary}",
   "be3d1766bad18693": "检查：{summary}",
-  "425e4a3d6c5c2867": "{count, plural, other {{count} 个失败}}",
-  "fd63b391898889f9": "{count, plural, other {{count} 个等待操作}}",
   "cb116c139cdace98": "未报告任何检查",
   "60b56e201607c7ec": "检查详情已过期。刷新 pull request 以更新。",
   "e74cd4e960cbb5e5": "包含截断行的文件中无法查看未更改的行。",
@@ -7423,6 +7467,9 @@
   "9b0647af63a7d8c1": "已批准较早的更改",
   "abe99679224fea5e": "已对较早的更改请求修改",
   "6b31ad910278ff72": "对较早更改的审查已忽略",
+  "425e4a3d6c5c2867": "{count, plural, other {{count} 个失败}}",
+  "fd63b391898889f9": "{count, plural, other {{count} 个等待操作}}",
+  "948185631ef288e6": "{count, plural, other {{count} 个运行中}}",
   "aaf22207b2f18c45": "{workflows, plural, other {{workflows} 个工作流}}和 {checks, plural, other {{checks} 项检查}}等待操作",
   "c51411813ebafcc1": "{count, plural, other {{count} 个工作流等待批准}}",
   "4946778c8e18a1db": "{count, plural, other {{count} 项检查等待操作}}",
@@ -7656,6 +7703,7 @@
   "d5dc7576fd468be7": "适中",
   "3141408bf3874e64": "宽",
   "831badd18b64547e": "全宽",
+  "6287212fed0deec6": "与聊天一致",
   "a96255594ebf2ce3": "文字",
   "1ee44eb65708a8aa": "条形",
   "7670f789e0d8672a": "仅内置主题支持背景图，因此当前主题显示版本标签。",
@@ -7673,12 +7721,11 @@
   "03338c6aec8edacd": "设置大屏幕上消息和输入框的最大宽度。",
   "92785adb251da88c": "重置聊天宽度为默认值",
   "4d457bcce0c0e272": "聊天宽度",
-  "7d7f65967cc821e3": "HTML 预览宽度",
+  "81f3a196537bbee0": "适中（默认）",
   "70ce0af7f78d5957": "让聊天中的 HTML 预览比消息更宽，消息仍保持居中。",
   "f2b119bf02ae2558": "重置 HTML 预览宽度为默认值",
-  "6287212fed0deec6": "与聊天一致",
+  "7d7f65967cc821e3": "HTML 预览宽度",
   "dc8e85ea0364649c": "与聊天一致（默认）",
-  "81f3a196537bbee0": "适中（默认）",
   "e79e5388f669495f": "在输入框中用名称（如 High）或条形显示推理强度。",
   "7f0365c7e4e8bcbf": "重置推理强度显示为默认值",
   "14bf40f765172a50": "推理强度显示",
@@ -7821,6 +7868,11 @@
   "3943d8479dc44551": "没有活跃的前台客户端时，定期检查主机电源状态。",
   "d13f97c11d2f322b": "全部重置",
   "cc310b2ec0179edf": "配置后台活动",
+  "a0f6aecb07b533ff": "正在运行的 Blender（{count}）",
+  "b04a15f0adaa16b9": "没有正在运行的托管 Blender",
+  "201b5d40d08e74d0": "每个线程的托管 Blender 运行时会显示在这里。",
+  "75daeb1e9b041511": "未知线程",
+  "0eda0be3d24af58c": "退出",
   "e116ed85458b6613": "固定前缀",
   "575ae567e3b6ca3d": "语义前缀",
   "6675de66f9b3f71d": "自定义指令",
@@ -11317,7 +11369,6 @@
       }
     }
   ],
-  "97585565390197f6": "放弃",
   "c0fce4a3555c5c17": "连接",
   "0d1eba54ff075d77": "使用",
   "035dc7d3b0f3e526": "会话标题和其他生成的文本",
@@ -12071,6 +12122,8 @@
   "f2b07faba1229ce7": "健康检查间隔",
   "5c9dc9970db79fe2": "刷新 可用性 版本 认证状态 模型 后台 探测 秒 关闭",
   "056ba6a180d114b5": "允许 禁用 启用 打开 操控 预览 工具 智能体会话 项目 覆盖",
+  "dd6b767f08eff9f7": "正在运行的 Blender",
+  "ec2bc06507d0d9af": "托管 blender 退出 内存 3d 线程",
   "345075be6cacc171": "设备 主机 ssh 远程 mac mini 身份 密钥 连接 eas expo 云 simlock 池 网关 本地 模拟器",
   "a6b742430b05d6cc": "允许智能体使用设备",
   "1d5d7418a83575c2": "允许 模拟器 ios android 操控 工具 智能体会话",
@@ -12270,7 +12323,6 @@
   "c1a9fe8e24876f1d": "{count, plural, other {{count} 个正在运行的会话将被中断。}}",
   "ecdf5f108ecc71d0": "{count, plural, other {{count} 个可在重启后恢复。}}",
   "0576c87870fb6389": "更新",
-  "948185631ef288e6": "{count, plural, other {{count} 个运行中}}",
   "3d9a2f6b9c114039": "智能体提供方",
   "f4baf8deafbb227d": "已跳过",
   "f938bb483eb3d189": "最后重启",

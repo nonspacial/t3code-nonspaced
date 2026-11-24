@@ -31,7 +31,10 @@ const serve = (
     const blender = HostedBlender.HostedBlender.of({
       open: () => Effect.void,
       quit: () => Effect.void,
+      reopen: () => Effect.void,
+      closeOnSettle: () => Effect.void,
       threadState: () => Stream.empty,
+      runningBlenders: Stream.empty,
       attachViewer,
     });
     const auth = Layer.merge(

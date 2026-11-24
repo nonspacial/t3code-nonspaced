@@ -34,6 +34,21 @@ export const HostedBlenderThreadState = Schema.Union([
   Schema.Struct({ status: Schema.Literal("stopped") }),
   /** The last start never showed Blender's viewport window. Opening a file again retries. */
   Schema.Struct({ status: Schema.Literal("failed") }),
+  /**
+   * Quit by T3 when its thread settled or was archived, or T3 shut down. `recovery` is a copy of
+   * the session, unsaved changes included, that Reopen can restore.
+   */
+  Schema.Struct({
+    status: Schema.Literal("closed"),
+    relativePath: TrimmedNonEmptyString,
+    recovery: Schema.Boolean,
+  }),
+  /** Blender stopped on its own. `recovery` is its newest autosave, which Restart can restore. */
+  Schema.Struct({
+    status: Schema.Literal("crashed"),
+    relativePath: TrimmedNonEmptyString,
+    recovery: Schema.Boolean,
+  }),
   HostedBlenderRunningState,
 ]);
 export type HostedBlenderThreadState = typeof HostedBlenderThreadState.Type;
@@ -55,6 +70,26 @@ export const HostedBlenderQuitInput = Schema.Struct({
 });
 export type HostedBlenderQuitInput = typeof HostedBlenderQuitInput.Type;
 
+export const HostedBlenderReopenInput = Schema.Struct({
+  threadId: ThreadId,
+  /** Restore the recovery copy or autosave instead of the file as saved. */
+  restore: Schema.Boolean,
+});
+export type HostedBlenderReopenInput = typeof HostedBlenderReopenInput.Type;
+
+/** One hosted Blender on this server, for the Running Blenders list. */
+export const HostedBlenderRunningBlender = Schema.Struct({
+  threadId: ThreadId,
+  status: Schema.Literals(["starting", "running"]),
+  relativePath: TrimmedNonEmptyString,
+  dirty: Schema.Boolean,
+  memoryBytes: Schema.NullOr(Schema.Number),
+});
+export type HostedBlenderRunningBlender = typeof HostedBlenderRunningBlender.Type;
+
+export const HostedBlenderRunningList = Schema.Array(HostedBlenderRunningBlender);
+export type HostedBlenderRunningList = typeof HostedBlenderRunningList.Type;
+
 export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()(
   "HostedBlenderError",
   {
@@ -68,6 +103,7 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "otherFileOpen",
       "openInAnotherThread",
       "saveFailed",
+      "nothingToReopen",
     ]),
   },
 ) {
@@ -91,6 +127,8 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "This file is already open in another thread's hosted Blender.";
       case "saveFailed":
         return "Blender could not save the file.";
+      case "nothingToReopen":
+        return "This thread has no closed hosted Blender to reopen.";
     }
   }
 }

@@ -250,6 +250,8 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.hostedBlenderOpen]: AuthOrchestrationOperateScope,
   [WS_METHODS.hostedBlenderQuit]: AuthOrchestrationOperateScope,
   [WS_METHODS.hostedBlenderSubscribeThread]: AuthOrchestrationReadScope,
+  [WS_METHODS.hostedBlenderReopen]: AuthOrchestrationOperateScope,
+  [WS_METHODS.hostedBlenderSubscribeRunning]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeServerConfig]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeServerLifecycle]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeAuthAccess]: AuthAccessReadScope,

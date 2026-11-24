@@ -1,0 +1,90 @@
+import { useAtomValue } from "@effect/atom-react";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import type { EnvironmentId, HostedBlenderRunningBlender } from "@t3tools/contracts";
+import { T, useGT } from "gt-react";
+
+import { useQuitHostedBlender } from "~/components/blender/useQuitHostedBlender";
+import { Button } from "~/components/ui/button";
+import { formatBytes } from "~/lib/formatBytes";
+import { useThreadShell } from "~/state/entities";
+import { hostedBlenderEnvironment, useRunningHostedBlenders } from "~/state/hostedBlender";
+import { FoldedSettingsSection } from "./FoldedSettingsSection";
+import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
+import { useSettingsScope } from "./SettingsScopeContext";
+
+export function BlenderSettingsPanel() {
+  const gt = useGT();
+  const { environment } = useSettingsScope();
+  const environmentId =
+    environment?.connection.phase === "connected" ? environment.environmentId : null;
+  return (
+    <SettingsPageContainer>
+      <SettingsSection id="blender" title={gt("Blender")}>
+        <RunningBlenders environmentId={environmentId} />
+      </SettingsSection>
+    </SettingsPageContainer>
+  );
+}
+
+/** Every hosted Blender on the environment, folded away until asked for. */
+function RunningBlenders(props: { readonly environmentId: EnvironmentId | null }) {
+  const gt = useGT();
+  const blenders = useRunningHostedBlenders(props.environmentId) ?? [];
+  return (
+    <FoldedSettingsSection
+      id="running-blenders"
+      title={gt("Running Blenders ({count})", { count: blenders.length })}
+    >
+      {props.environmentId === null || blenders.length === 0 ? (
+        <SettingsRow
+          title={<T>No hosted Blenders are running</T>}
+          description={<T>Each thread's hosted Blender shows here while it runs.</T>}
+        />
+      ) : (
+        blenders.map((blender) => (
+          <RunningBlenderRow
+            key={blender.threadId}
+            environmentId={props.environmentId!}
+            blender={blender}
+          />
+        ))
+      )}
+    </FoldedSettingsSection>
+  );
+}
+
+function RunningBlenderRow(props: {
+  readonly environmentId: EnvironmentId;
+  readonly blender: HostedBlenderRunningBlender;
+}) {
+  const threadRef = scopeThreadRef(props.environmentId, props.blender.threadId);
+  const thread = useThreadShell(threadRef);
+  const canQuit = useAtomValue(hostedBlenderEnvironment.quit.permissionAtom(props.environmentId));
+  const name = props.blender.relativePath.slice(props.blender.relativePath.lastIndexOf("/") + 1);
+  const quit = useQuitHostedBlender(threadRef, name);
+  const details = [
+    props.blender.relativePath,
+    props.blender.memoryBytes === null ? null : formatBytes(props.blender.memoryBytes),
+  ].filter((part) => part !== null);
+  return (
+    <SettingsRow
+      title={thread?.title ?? <T>Unknown thread</T>}
+      description={<span className="font-mono">{details.join(" · ")}</span>}
+      control={
+        canQuit ? (
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={quit.quitting}
+              onClick={() => quit.request(props.blender.dirty)}
+            >
+              <T>Quit</T>
+            </Button>
+            {quit.dialog}
+          </>
+        ) : null
+      }
+    />
+  );
+}

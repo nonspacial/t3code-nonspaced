@@ -3291,10 +3291,12 @@
   "984c25ffcae69300": "Añadir backend",
   "08570ee0982df89d": "Emparejando...",
   "3bbae7c96b6cbfc3": "Abrir app",
+  "cd078f4497dfcd36": "No se pudo reiniciar Blender",
+  "ad3ce6044792509a": "No se pudo volver a abrir Blender",
+  "90e3c64eab32945e": "¿Descartar el guardado automático de {name}?",
+  "01201ecb830d7c68": "¿Descartar los cambios sin guardar de {name}?",
   "a1628cec6e798a98": "T3 Code's hidden display helper",
-  "119259d2fa66fadf": "Couldn't quit Blender",
   "32cf9ac006229af1": "Blender menu",
-  "e2d3b41b3731a6c1": "Save changes to {name} before quitting?",
   "2151790bc5e65b31": "Not available on this host",
   "22e7ff1b5896ba7b": "Hosted Blender needs a Linux server. You can still open 3D files in the file preview.",
   "3051b6753c63a53e": "Hosted Blender isn't set up",
@@ -3302,6 +3304,48 @@
   "fb2c65328a8a2e17": "Open a .blend file in the file preview and choose Open in hosted Blender.",
   "cb4451ab067ff47d": "Blender didn't start",
   "3f25b97ec987231e": "Blender couldn't open the file on the hidden display. Check that Blender opens it and that GStreamer has an H.264 encoder, then open it in hosted Blender again.",
+  "c9d23ccb15073177": "Blender se cerró inesperadamente",
+  "9f406050b6efb934": "Blender se cerró",
+  "ff3775198cef1512": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " se detuvo inesperadamente. Reiniciar abre el archivo tal como se guardó por última vez, o restaura su guardado automático más reciente."
+  ],
+  "945cdcba38a31b0c": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " se detuvo inesperadamente. Reiniciar abre el archivo tal como se guardó por última vez."
+  ],
+  "a1705e3412c3634e": [
+    "T3 Code cerró ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " cuando este hilo se resolvió o T3 Code se detuvo, y conservó sus cambios sin guardar. Volver a abrir los restaura."
+  ],
+  "891e3d7d231af485": [
+    "T3 Code cerró ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " cuando este hilo se resolvió o T3 Code se detuvo."
+  ],
+  "bd90fd96c98e9c6f": "Reiniciar",
+  "220f0a0fa43d9f59": "Restaurar guardado automático",
+  "182049c015041be2": "Volver a abrir",
+  "eb23e8b7b8458cfa": "Abrir lo último guardado",
+  "97585565390197f6": "Descartar",
+  "d6c851db16c7dfd8": "Se conserva el archivo tal como se guardó por última vez. Esto no se puede deshacer.",
   "91e40fb96987dd85": [
     "This server is missing: ",
     {
@@ -3322,15 +3366,17 @@
     " on the hidden display."
   ],
   "8b290ab856b8f02b": "Quit Blender",
-  "32504fe5e26d8233": "Changes Blender hasn't saved are lost if you quit without saving.",
-  "9ceb68fb844584c9": "Quit without saving",
-  "e21dfc1887d124ec": "Save and quit",
   "6b30f7f4ebd659d7": "Too many people are watching this Blender. Try again later.",
   "1681e6f089782b9d": "This browser can't play the Blender stream.",
   "81f3ce1d88ecf7bb": "Watching",
   "3906097eebf88153": "Showing the whole display",
   "907a0f7ed16a709d": "Couldn't open in hosted Blender",
   "7b0cb06d256e6b28": "Open in hosted Blender",
+  "119259d2fa66fadf": "Couldn't quit Blender",
+  "e2d3b41b3731a6c1": "Save changes to {name} before quitting?",
+  "32504fe5e26d8233": "Changes Blender hasn't saved are lost if you quit without saving.",
+  "9ceb68fb844584c9": "Quit without saving",
+  "e21dfc1887d124ec": "Save and quit",
   "49cc06e79f21f85a": "{seconds} s",
   "8603d41c52392f1d": "{minutes} min {seconds} s",
   "f2a955905704b91d": "{hours} h {minutes} min",
@@ -6730,8 +6776,6 @@
   "1b381201aba745c2": "No se informó de ninguna comprobación",
   "a6d75a4380173c60": "Abrir comprobaciones: {summary}",
   "be3d1766bad18693": "Comprobaciones: {summary}",
-  "425e4a3d6c5c2867": "{count, plural, one {{count} con errores} other {{count} con errores}}",
-  "fd63b391898889f9": "{count, plural, one {{count} pendiente de acción} other {{count} pendientes de acción}}",
   "cb116c139cdace98": "No se informó de ninguna comprobación",
   "60b56e201607c7ec": "Los detalles de las comprobaciones están desactualizados. Actualiza la pull request para ponerlos al día.",
   "e74cd4e960cbb5e5": "Las líneas sin cambios no están disponibles en un archivo con líneas cortadas.",
@@ -7408,6 +7452,9 @@
   "9b0647af63a7d8c1": "Aprobó cambios anteriores",
   "abe99679224fea5e": "Solicitó cambios en una versión anterior",
   "6b31ad910278ff72": "Revisión de cambios anteriores descartada",
+  "425e4a3d6c5c2867": "{count, plural, one {{count} con errores} other {{count} con errores}}",
+  "fd63b391898889f9": "{count, plural, one {{count} pendiente de acción} other {{count} pendientes de acción}}",
+  "948185631ef288e6": "{count, plural, one {{count} en ejecución} other {{count} en ejecución}}",
   "aaf22207b2f18c45": "{workflows, plural, one {{workflows} flujo de trabajo} other {{workflows} flujos de trabajo}} y {checks, plural, one {{checks} comprobación} other {{checks} comprobaciones}} esperando una acción",
   "c51411813ebafcc1": "{count, plural, one {{count} flujo de trabajo esperando aprobación} other {{count} flujos de trabajo esperando aprobación}}",
   "4946778c8e18a1db": "{count, plural, one {{count} comprobación esperando una acción} other {{count} comprobaciones esperando una acción}}",
@@ -7641,6 +7688,7 @@
   "d5dc7576fd468be7": "Cómodo",
   "3141408bf3874e64": "Ancho",
   "831badd18b64547e": "Completo",
+  "6287212fed0deec6": "Igual que el chat",
   "a96255594ebf2ce3": "Palabra",
   "1ee44eb65708a8aa": "Barras",
   "7670f789e0d8672a": "Solo los temas integrados muestran ilustración, así que este tema muestra la etiqueta de versión.",
@@ -7658,12 +7706,11 @@
   "03338c6aec8edacd": "Define cuánto pueden crecer los mensajes y el cuadro de mensaje en pantallas grandes.",
   "92785adb251da88c": "Restablecer el ancho del chat al valor predeterminado",
   "4d457bcce0c0e272": "Ancho del chat",
-  "7d7f65967cc821e3": "Ancho de la vista previa HTML",
+  "81f3a196537bbee0": "Cómodo (predeterminado)",
   "70ce0af7f78d5957": "Permite que las vistas previas HTML de un chat sean más anchas que sus mensajes, que siguen centrados.",
   "f2b119bf02ae2558": "Restablecer el ancho de la vista previa HTML al valor predeterminado",
-  "6287212fed0deec6": "Igual que el chat",
+  "7d7f65967cc821e3": "Ancho de la vista previa HTML",
   "dc8e85ea0364649c": "Igual que el chat (predeterminado)",
-  "81f3a196537bbee0": "Cómodo (predeterminado)",
   "e79e5388f669495f": "Muestra el esfuerzo de razonamiento en el cuadro de mensaje por su nombre, como Alto, o con barras.",
   "7f0365c7e4e8bcbf": "Restablecer la visualización del esfuerzo al valor predeterminado",
   "14bf40f765172a50": "Visualización del esfuerzo",
@@ -7806,6 +7853,11 @@
   "3943d8479dc44551": "Consulta el estado de energía del host cuando no hay ningún cliente activo en primer plano.",
   "d13f97c11d2f322b": "Restablecer todo",
   "cc310b2ec0179edf": "Configurar la actividad en segundo plano",
+  "a0f6aecb07b533ff": "Blenders en ejecución ({count})",
+  "b04a15f0adaa16b9": "No hay ningún Blender alojado en ejecución",
+  "201b5d40d08e74d0": "El Blender alojado de cada hilo aparece aquí mientras se ejecuta.",
+  "75daeb1e9b041511": "Hilo desconocido",
+  "0eda0be3d24af58c": "Salir",
   "e116ed85458b6613": "Prefijo fijo",
   "575ae567e3b6ca3d": "Prefijo semántico",
   "6675de66f9b3f71d": "Instrucciones personalizadas",
@@ -11290,7 +11342,6 @@
       }
     }
   ],
-  "97585565390197f6": "Descartar",
   "c0fce4a3555c5c17": "Conectar",
   "0d1eba54ff075d77": "Usarlo",
   "035dc7d3b0f3e526": "Títulos de hilos y otros textos generados",
@@ -12041,6 +12092,8 @@
   "f2b07faba1229ce7": "Intervalo de comprobación de estado",
   "5c9dc9970db79fe2": "actualizar disponibilidad versiones estado de autenticación modelos sondeos en segundo plano segundos desactivado",
   "056ba6a180d114b5": "permitir desactivar activar abrir controlar herramientas de vista previa sesiones proyecto anulación",
+  "dd6b767f08eff9f7": "Blenders en ejecución",
+  "ec2bc06507d0d9af": "alojado blender salir memoria 3d hilo",
   "345075be6cacc171": "hosts de dispositivos ssh remoto mac mini identidad clave conexión eas expo nube simlock grupo gateway simuladores locales",
   "a6b742430b05d6cc": "Los agentes pueden usar dispositivos",
   "1d5d7418a83575c2": "permitir simulador emulador ios android controlar herramientas sesiones",
@@ -12239,7 +12292,6 @@
   "c1a9fe8e24876f1d": "{count, plural, one {Se interrumpirá {count} hilo en ejecución.} other {Se interrumpirán {count} hilos en ejecución.}}",
   "ecdf5f108ecc71d0": "{count, plural, one {{count} puede reanudarse después del reinicio.} other {{count} pueden reanudarse después del reinicio.}}",
   "0576c87870fb6389": "Actualizar",
-  "948185631ef288e6": "{count, plural, one {{count} en ejecución} other {{count} en ejecución}}",
   "3d9a2f6b9c114039": "Proveedores",
   "f4baf8deafbb227d": "Omitido",
   "f938bb483eb3d189": "se reinicia el último",

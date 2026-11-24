@@ -3292,10 +3292,12 @@
   "984c25ffcae69300": "Backend hinzufügen",
   "08570ee0982df89d": "Wird gekoppelt...",
   "3bbae7c96b6cbfc3": "App öffnen",
+  "cd078f4497dfcd36": "Blender konnte nicht neu gestartet werden",
+  "ad3ce6044792509a": "Blender konnte nicht erneut geöffnet werden",
+  "90e3c64eab32945e": "Die automatische Sicherung von {name} verwerfen?",
+  "01201ecb830d7c68": "Die nicht gespeicherten Änderungen an {name} verwerfen?",
   "a1628cec6e798a98": "T3 Code's hidden display helper",
-  "119259d2fa66fadf": "Couldn't quit Blender",
   "32cf9ac006229af1": "Blender menu",
-  "e2d3b41b3731a6c1": "Save changes to {name} before quitting?",
   "2151790bc5e65b31": "Not available on this host",
   "22e7ff1b5896ba7b": "Hosted Blender needs a Linux server. You can still open 3D files in the file preview.",
   "3051b6753c63a53e": "Hosted Blender isn't set up",
@@ -3303,6 +3305,48 @@
   "fb2c65328a8a2e17": "Open a .blend file in the file preview and choose Open in hosted Blender.",
   "cb4451ab067ff47d": "Blender didn't start",
   "3f25b97ec987231e": "Blender couldn't open the file on the hidden display. Check that Blender opens it and that GStreamer has an H.264 encoder, then open it in hosted Blender again.",
+  "c9d23ccb15073177": "Blender ist abgestürzt",
+  "9f406050b6efb934": "Blender wurde geschlossen",
+  "ff3775198cef1512": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " wurde unerwartet beendet. „Neu starten“ öffnet die zuletzt gespeicherte Datei, oder stelle die neueste automatische Sicherung wieder her."
+  ],
+  "945cdcba38a31b0c": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " wurde unerwartet beendet. „Neu starten“ öffnet die zuletzt gespeicherte Datei."
+  ],
+  "a1705e3412c3634e": [
+    "T3 Code hat ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " geschlossen, als dieser Thread abgeschlossen wurde oder T3 Code beendet wurde, und die nicht gespeicherten Änderungen behalten. „Erneut öffnen“ stellt sie wieder her."
+  ],
+  "891e3d7d231af485": [
+    "T3 Code hat ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " geschlossen, als dieser Thread abgeschlossen wurde oder T3 Code beendet wurde."
+  ],
+  "bd90fd96c98e9c6f": "Neu starten",
+  "220f0a0fa43d9f59": "Automatische Sicherung wiederherstellen",
+  "182049c015041be2": "Erneut öffnen",
+  "eb23e8b7b8458cfa": "Zuletzt gespeicherte Version öffnen",
+  "97585565390197f6": "Verwerfen",
+  "d6c851db16c7dfd8": "Die zuletzt gespeicherte Datei bleibt erhalten. Das kann nicht rückgängig gemacht werden.",
   "91e40fb96987dd85": [
     "This server is missing: ",
     {
@@ -3323,15 +3367,17 @@
     " on the hidden display."
   ],
   "8b290ab856b8f02b": "Quit Blender",
-  "32504fe5e26d8233": "Changes Blender hasn't saved are lost if you quit without saving.",
-  "9ceb68fb844584c9": "Quit without saving",
-  "e21dfc1887d124ec": "Save and quit",
   "6b30f7f4ebd659d7": "Too many people are watching this Blender. Try again later.",
   "1681e6f089782b9d": "This browser can't play the Blender stream.",
   "81f3ce1d88ecf7bb": "Watching",
   "3906097eebf88153": "Showing the whole display",
   "907a0f7ed16a709d": "Couldn't open in hosted Blender",
   "7b0cb06d256e6b28": "Open in hosted Blender",
+  "119259d2fa66fadf": "Couldn't quit Blender",
+  "e2d3b41b3731a6c1": "Save changes to {name} before quitting?",
+  "32504fe5e26d8233": "Changes Blender hasn't saved are lost if you quit without saving.",
+  "9ceb68fb844584c9": "Quit without saving",
+  "e21dfc1887d124ec": "Save and quit",
   "49cc06e79f21f85a": "{seconds} s",
   "8603d41c52392f1d": "{minutes} Min. {seconds} s",
   "f2a955905704b91d": "{hours} Std. {minutes} Min.",
@@ -6730,8 +6776,6 @@
   "1b381201aba745c2": "Keine Checks gemeldet",
   "a6d75a4380173c60": "Checks öffnen: {summary}",
   "be3d1766bad18693": "Checks: {summary}",
-  "425e4a3d6c5c2867": "{count, plural, one {{count} fehlgeschlagen} other {{count} fehlgeschlagen}}",
-  "fd63b391898889f9": "{count, plural, one {{count} wartet auf Aktion} other {{count} warten auf Aktion}}",
   "cb116c139cdace98": "Keine Checks gemeldet",
   "60b56e201607c7ec": "Die Check-Details sind veraltet. Aktualisiere den Pull Request, um sie zu aktualisieren.",
   "e74cd4e960cbb5e5": "Unveränderte Zeilen sind in einer Datei mit gekürzten Zeilen nicht verfügbar.",
@@ -7407,6 +7451,9 @@
   "9b0647af63a7d8c1": "Frühere Änderungen genehmigt",
   "abe99679224fea5e": "Änderungen an früherem Stand angefordert",
   "6b31ad910278ff72": "Review früherer Änderungen verworfen",
+  "425e4a3d6c5c2867": "{count, plural, one {{count} fehlgeschlagen} other {{count} fehlgeschlagen}}",
+  "fd63b391898889f9": "{count, plural, one {{count} wartet auf Aktion} other {{count} warten auf Aktion}}",
+  "948185631ef288e6": "{count, plural, one {{count} läuft} other {{count} laufen}}",
   "aaf22207b2f18c45": "{workflows, plural, one {{workflows} Workflow} other {{workflows} Workflows}} und {checks, plural, one {{checks} Check} other {{checks} Checks}} warten auf Aktion",
   "c51411813ebafcc1": "{count, plural, one {{count} Workflow wartet auf Genehmigung} other {{count} Workflows warten auf Genehmigung}}",
   "4946778c8e18a1db": "{count, plural, one {{count} Check wartet auf Aktion} other {{count} Checks warten auf Aktion}}",
@@ -7640,6 +7687,7 @@
   "d5dc7576fd468be7": "Komfortabel",
   "3141408bf3874e64": "Breit",
   "831badd18b64547e": "Voll",
+  "6287212fed0deec6": "Wie Chat",
   "a96255594ebf2ce3": "Wort",
   "1ee44eb65708a8aa": "Balken",
   "7670f789e0d8672a": "Nur integrierte Designs zeigen Artwork, daher zeigt dieses Design das Versions-Badge.",
@@ -7657,12 +7705,11 @@
   "03338c6aec8edacd": "Lege fest, wie breit Nachrichten und das Eingabefeld auf großen Bildschirmen werden können.",
   "92785adb251da88c": "Chatbreite auf Standard zurücksetzen",
   "4d457bcce0c0e272": "Chatbreite",
-  "7d7f65967cc821e3": "Breite der HTML-Vorschau",
+  "81f3a196537bbee0": "Komfortabel (Standard)",
   "70ce0af7f78d5957": "Lässt HTML-Vorschauen in einem Chat breiter werden als die Nachrichten, die zentriert bleiben.",
   "f2b119bf02ae2558": "Breite der HTML-Vorschau auf Standard zurücksetzen",
-  "6287212fed0deec6": "Wie Chat",
+  "7d7f65967cc821e3": "Breite der HTML-Vorschau",
   "dc8e85ea0364649c": "Wie Chat (Standard)",
-  "81f3a196537bbee0": "Komfortabel (Standard)",
   "e79e5388f669495f": "Den Denkaufwand im Eingabefeld als Namen, etwa Hoch, oder als Balken anzeigen.",
   "7f0365c7e4e8bcbf": "Anzeige des Aufwands auf Standard zurücksetzen",
   "14bf40f765172a50": "Aufwandsanzeige",
@@ -7805,6 +7852,11 @@
   "3943d8479dc44551": "Energiestatus des Hosts abfragen, wenn kein Client im Vordergrund aktiv ist.",
   "d13f97c11d2f322b": "Alle zurücksetzen",
   "cc310b2ec0179edf": "Hintergrundaktivität konfigurieren",
+  "a0f6aecb07b533ff": "Laufende Blender ({count})",
+  "b04a15f0adaa16b9": "Es läuft kein gehostetes Blender",
+  "201b5d40d08e74d0": "Das gehostete Blender jedes Threads erscheint hier, solange es läuft.",
+  "75daeb1e9b041511": "Unbekannter Thread",
+  "0eda0be3d24af58c": "Beenden",
   "e116ed85458b6613": "Statisches Präfix",
   "575ae567e3b6ca3d": "Semantisches Präfix",
   "6675de66f9b3f71d": "Eigene Anweisungen",
@@ -11296,7 +11348,6 @@
       }
     }
   ],
-  "97585565390197f6": "Verwerfen",
   "c0fce4a3555c5c17": "Verbinden",
   "0d1eba54ff075d77": "Verwenden",
   "035dc7d3b0f3e526": "Thread-Titel und andere generierte Texte",
@@ -12048,6 +12099,8 @@
   "f2b07faba1229ce7": "Intervall der Zustandsprüfung",
   "5c9dc9970db79fe2": "aktualisieren verfügbarkeit versionen anmeldestatus modelle hintergrund prüfungen sekunden aus",
   "056ba6a180d114b5": "erlauben deaktivieren aktivieren öffnen steuern vorschau tools sitzungen projekt überschreiben",
+  "dd6b767f08eff9f7": "Laufende Blender",
+  "ec2bc06507d0d9af": "gehostet blender beenden speicher 3d thread",
   "345075be6cacc171": "gerät hosts ssh remote mac mini identität schlüssel verbindung eas expo cloud simlock pool gateway lokale simulatoren",
   "a6b742430b05d6cc": "Agenten können Geräte nutzen",
   "1d5d7418a83575c2": "erlauben simulator emulator ios android steuern tools sitzungen",
@@ -12246,7 +12299,6 @@
   "c1a9fe8e24876f1d": "{count, plural, one {{count} laufender Thread wird unterbrochen.} other {{count} laufende Threads werden unterbrochen.}}",
   "ecdf5f108ecc71d0": "{count, plural, one {{count} kann nach dem Neustart fortgesetzt werden.} other {{count} können nach dem Neustart fortgesetzt werden.}}",
   "0576c87870fb6389": "Aktualisieren",
-  "948185631ef288e6": "{count, plural, one {{count} läuft} other {{count} laufen}}",
   "3d9a2f6b9c114039": "Anbieter",
   "f4baf8deafbb227d": "Übersprungen",
   "f938bb483eb3d189": "startet zuletzt neu",

@@ -3291,10 +3291,12 @@
   "984c25ffcae69300": "Lägg till backend",
   "08570ee0982df89d": "Parkopplar...",
   "3bbae7c96b6cbfc3": "Öppna app",
+  "cd078f4497dfcd36": "Det gick inte att starta om Blender",
+  "ad3ce6044792509a": "Det gick inte att öppna Blender igen",
+  "90e3c64eab32945e": "Ta bort den automatiska sparningen av {name}?",
+  "01201ecb830d7c68": "Ta bort de osparade ändringarna i {name}?",
   "a1628cec6e798a98": "T3 Code's hidden display helper",
-  "119259d2fa66fadf": "Couldn't quit Blender",
   "32cf9ac006229af1": "Blender menu",
-  "e2d3b41b3731a6c1": "Save changes to {name} before quitting?",
   "2151790bc5e65b31": "Not available on this host",
   "22e7ff1b5896ba7b": "Hosted Blender needs a Linux server. You can still open 3D files in the file preview.",
   "3051b6753c63a53e": "Hosted Blender isn't set up",
@@ -3302,6 +3304,48 @@
   "fb2c65328a8a2e17": "Open a .blend file in the file preview and choose Open in hosted Blender.",
   "cb4451ab067ff47d": "Blender didn't start",
   "3f25b97ec987231e": "Blender couldn't open the file on the hidden display. Check that Blender opens it and that GStreamer has an H.264 encoder, then open it in hosted Blender again.",
+  "c9d23ccb15073177": "Blender kraschade",
+  "9f406050b6efb934": "Blender stängdes",
+  "ff3775198cef1512": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " stannade oväntat. Starta om öppnar filen som den senast sparades, eller återställ den senaste automatiska sparningen."
+  ],
+  "945cdcba38a31b0c": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " stannade oväntat. Starta om öppnar filen som den senast sparades."
+  ],
+  "a1705e3412c3634e": [
+    "T3 Code stängde ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " när den här tråden avslutades eller T3 Code stoppades, och behöll de osparade ändringarna. Öppna igen återställer dem."
+  ],
+  "891e3d7d231af485": [
+    "T3 Code stängde ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " när den här tråden avslutades eller T3 Code stoppades."
+  ],
+  "bd90fd96c98e9c6f": "Starta om",
+  "220f0a0fa43d9f59": "Återställ automatisk sparning",
+  "182049c015041be2": "Öppna igen",
+  "eb23e8b7b8458cfa": "Öppna senast sparade",
+  "97585565390197f6": "Kasta",
+  "d6c851db16c7dfd8": "Filen som den senast sparades behålls. Det går inte att ångra.",
   "91e40fb96987dd85": [
     "This server is missing: ",
     {
@@ -3322,15 +3366,17 @@
     " on the hidden display."
   ],
   "8b290ab856b8f02b": "Quit Blender",
-  "32504fe5e26d8233": "Changes Blender hasn't saved are lost if you quit without saving.",
-  "9ceb68fb844584c9": "Quit without saving",
-  "e21dfc1887d124ec": "Save and quit",
   "6b30f7f4ebd659d7": "Too many people are watching this Blender. Try again later.",
   "1681e6f089782b9d": "This browser can't play the Blender stream.",
   "81f3ce1d88ecf7bb": "Watching",
   "3906097eebf88153": "Showing the whole display",
   "907a0f7ed16a709d": "Couldn't open in hosted Blender",
   "7b0cb06d256e6b28": "Open in hosted Blender",
+  "119259d2fa66fadf": "Couldn't quit Blender",
+  "e2d3b41b3731a6c1": "Save changes to {name} before quitting?",
+  "32504fe5e26d8233": "Changes Blender hasn't saved are lost if you quit without saving.",
+  "9ceb68fb844584c9": "Quit without saving",
+  "e21dfc1887d124ec": "Save and quit",
   "49cc06e79f21f85a": "{seconds} s",
   "8603d41c52392f1d": "{minutes} min {seconds} s",
   "f2a955905704b91d": "{hours} h {minutes} min",
@@ -6736,8 +6782,6 @@
   "1b381201aba745c2": "Inga kontroller rapporterade",
   "a6d75a4380173c60": "Öppna kontroller: {summary}",
   "be3d1766bad18693": "Kontroller: {summary}",
-  "425e4a3d6c5c2867": "{count, plural, one {{count} misslyckades} other {{count} misslyckades}}",
-  "fd63b391898889f9": "{count, plural, one {{count} väntar på åtgärd} other {{count} väntar på åtgärd}}",
   "cb116c139cdace98": "Inga kontroller rapporterade",
   "60b56e201607c7ec": "Kontrolldetaljerna är inaktuella. Uppdatera pull requesten för att uppdatera dem.",
   "e74cd4e960cbb5e5": "Oförändrade rader är inte tillgängliga i en fil med bortklippta rader.",
@@ -7414,6 +7458,9 @@
   "9b0647af63a7d8c1": "Godkände tidigare ändringar",
   "abe99679224fea5e": "Begärde ändringar i tidigare ändringar",
   "6b31ad910278ff72": "Granskning av tidigare ändringar avfärdad",
+  "425e4a3d6c5c2867": "{count, plural, one {{count} misslyckades} other {{count} misslyckades}}",
+  "fd63b391898889f9": "{count, plural, one {{count} väntar på åtgärd} other {{count} väntar på åtgärd}}",
+  "948185631ef288e6": "{count, plural, one {{count} körs} other {{count} körs}}",
   "aaf22207b2f18c45": "{workflows, plural, one {{workflows} arbetsflöde} other {{workflows} arbetsflöden}} och {checks, plural, one {{checks} kontroll} other {{checks} kontroller}} väntar på åtgärd",
   "c51411813ebafcc1": "{count, plural, one {{count} arbetsflöde väntar på godkännande} other {{count} arbetsflöden väntar på godkännande}}",
   "4946778c8e18a1db": "{count, plural, one {{count} kontroll väntar på åtgärd} other {{count} kontroller väntar på åtgärd}}",
@@ -7647,6 +7694,7 @@
   "d5dc7576fd468be7": "Bekväm",
   "3141408bf3874e64": "Bred",
   "831badd18b64547e": "Full",
+  "6287212fed0deec6": "Samma som chatten",
   "a96255594ebf2ce3": "Ord",
   "1ee44eb65708a8aa": "Staplar",
   "7670f789e0d8672a": "Bara inbyggda teman visar grafik, så det här temat visar versionsetiketten.",
@@ -7664,12 +7712,11 @@
   "03338c6aec8edacd": "Ange hur breda meddelanden och inmatningsfältet kan bli på stora skärmar.",
   "92785adb251da88c": "Återställ chattbredd till standard",
   "4d457bcce0c0e272": "Chattbredd",
-  "7d7f65967cc821e3": "Bredd för HTML-förhandsvisning",
+  "81f3a196537bbee0": "Bekväm (standard)",
   "70ce0af7f78d5957": "Låter HTML-förhandsvisningar i en chatt bli bredare än meddelandena, som förblir centrerade.",
   "f2b119bf02ae2558": "Återställ bredd för HTML-förhandsvisning till standard",
-  "6287212fed0deec6": "Samma som chatten",
+  "7d7f65967cc821e3": "Bredd för HTML-förhandsvisning",
   "dc8e85ea0364649c": "Samma som chatten (standard)",
-  "81f3a196537bbee0": "Bekväm (standard)",
   "e79e5388f669495f": "Visa resonemangsnivån i inmatningsfältet som sitt namn, till exempel Hög, eller som staplar.",
   "7f0365c7e4e8bcbf": "Återställ visning av ansträngning till standard",
   "14bf40f765172a50": "Visning av ansträngning",
@@ -7812,6 +7859,11 @@
   "3943d8479dc44551": "Kontrollera värdens strömstatus när ingen klient i förgrunden är aktiv.",
   "d13f97c11d2f322b": "Återställ alla",
   "cc310b2ec0179edf": "Konfigurera bakgrundsaktivitet",
+  "a0f6aecb07b533ff": "Blender som körs ({count})",
+  "b04a15f0adaa16b9": "Inga värdbaserade Blender körs",
+  "201b5d40d08e74d0": "Varje tråds värdbaserade Blender visas här medan den körs.",
+  "75daeb1e9b041511": "Okänd tråd",
+  "0eda0be3d24af58c": "Avsluta",
   "e116ed85458b6613": "Statiskt prefix",
   "575ae567e3b6ca3d": "Semantiskt prefix",
   "6675de66f9b3f71d": "Anpassade instruktioner",
@@ -11303,7 +11355,6 @@
       }
     }
   ],
-  "97585565390197f6": "Kasta",
   "c0fce4a3555c5c17": "Anslut",
   "0d1eba54ff075d77": "Använd den",
   "035dc7d3b0f3e526": "Trådtitlar och annan genererad text",
@@ -12054,6 +12105,8 @@
   "f2b07faba1229ce7": "Intervall för hälsokontroll",
   "5c9dc9970db79fe2": "uppdatera tillgänglighet versioner autentiseringsstatus modeller bakgrundskontroller sekunder av",
   "056ba6a180d114b5": "tillåt inaktivera aktivera öppna styr förhandsvisning verktyg sessioner projekt åsidosätt",
+  "dd6b767f08eff9f7": "Blender som körs",
+  "ec2bc06507d0d9af": "värdbaserad blender avsluta minne 3d tråd",
   "345075be6cacc171": "enhetsvärdar ssh fjärr mac mini identitet nyckel anslutning eas expo moln simlock pool gateway lokala simulatorer",
   "a6b742430b05d6cc": "Agenter kan använda enheter",
   "1d5d7418a83575c2": "tillåt simulator emulator ios android styr verktyg sessioner",
@@ -12252,7 +12305,6 @@
   "c1a9fe8e24876f1d": "{count, plural, one {{count} pågående tråd avbryts.} other {{count} pågående trådar avbryts.}}",
   "ecdf5f108ecc71d0": "{count, plural, one {{count} kan återupptas efter omstarten.} other {{count} kan återupptas efter omstarten.}}",
   "0576c87870fb6389": "Uppdatera",
-  "948185631ef288e6": "{count, plural, one {{count} körs} other {{count} körs}}",
   "3d9a2f6b9c114039": "Leverantörer",
   "f4baf8deafbb227d": "Överhoppad",
   "f938bb483eb3d189": "startar om sist",

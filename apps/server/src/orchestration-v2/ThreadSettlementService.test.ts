@@ -46,6 +46,7 @@ import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerActivation from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
+import * as HostedBlender from "../hostedBlender/HostedBlender.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -623,6 +624,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
   const domainEvents = yield* PubSub.unbounded<OrchestrationV2DomainEvent>();
   const observedEvents = yield* Queue.unbounded<EventId>();
   const closedIdle = yield* Queue.unbounded<{ readonly threadId: string }>();
+  const closedBlenders = yield* Queue.unbounded<string>();
   const scriptRuns =
     yield* Queue.unbounded<ProjectSetupScriptRunner.ProjectSetupScriptRunnerInput>();
 
@@ -743,6 +745,9 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
         Queue.offer(closedIdle, input).pipe(Effect.andThen(options.onCloseIdle?.() ?? Effect.void)),
       hasActiveSubprocess: (input) => options.hasActiveSubprocess?.(input) ?? Effect.succeed(false),
     }),
+    Layer.mock(HostedBlender.HostedBlender)({
+      closeOnSettle: (input) => Queue.offer(closedBlenders, input.threadId).pipe(Effect.asVoid),
+    }),
     Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
       runForThread: (input) =>
         Queue.offer(scriptRuns, input).pipe(
@@ -794,6 +799,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     summaryRecovery,
     invalidatedCwds,
     closedIdle,
+    closedBlenders,
     scriptRuns,
     observedEvents,
     publishEvent: (event: OrchestrationV2DomainEvent) => PubSub.publish(domainEvents, event),
@@ -2428,6 +2434,46 @@ describe("ThreadSettlementServiceV2 terminals", () => {
         assert.deepStrictEqual(yield* Queue.take(fixture.closedIdle), { threadId: shared.id });
         assert.deepStrictEqual(yield* Queue.take(fixture.closedIdle), { threadId: own.id });
         assert.strictEqual((yield* Queue.take(fixture.scriptRuns)).threadId, own.id);
+      }).pipe(Effect.provide(fixture.layer));
+    }),
+  );
+
+  it.effect("closes the hosted Blender of a thread that settles, is archived or is deleted", () =>
+    Effect.gen(function* () {
+      const settled = appThread("blender-settled", "settled");
+      const archived = appThread("blender-archived", "settled");
+      const deleted = appThread("blender-deleted", "settled");
+      const fixture = yield* makeHarness({
+        snapshot: makeSnapshot([]),
+        currentThreads: [settled, archived, deleted],
+      });
+
+      yield* Effect.gen(function* () {
+        const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+        yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+        yield* fixture.publishEvent(settledEvent(settled));
+        yield* fixture.publishEvent({
+          type: "thread.archived",
+          id: EventId.make("event:archived"),
+          threadId: archived.id,
+          occurredAt: DateTime.makeUnsafe(NOW),
+          payload: archived,
+        });
+        yield* fixture.publishEvent({
+          type: "thread.deleted",
+          id: EventId.make("event:deleted"),
+          threadId: deleted.id,
+          occurredAt: DateTime.makeUnsafe(NOW),
+          payload: deleted,
+        });
+        assert.deepStrictEqual(
+          [
+            yield* Queue.take(fixture.closedBlenders),
+            yield* Queue.take(fixture.closedBlenders),
+            yield* Queue.take(fixture.closedBlenders),
+          ],
+          [settled.id, archived.id, deleted.id],
+        );
       }).pipe(Effect.provide(fixture.layer));
     }),
   );

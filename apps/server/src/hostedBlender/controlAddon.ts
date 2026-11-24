@@ -19,6 +19,7 @@ def _option(name):
 
 SOCKET_PATH = _option("--t3-control")
 MCP_PORT = _option("--t3-mcp-port")
+RECOVER_PATH = _option("--t3-recover")
 TICK = 0.1
 
 
@@ -27,6 +28,8 @@ class _State:
     client = None
     buffer = b""
     sent = None
+    # A restored session until it is marked unsaved or saved.
+    restored = False
 
 
 def _listen():
@@ -91,9 +94,23 @@ def _save():
         return False
 
 
+def _push_undo_step():
+    # Blender's quit copy (quit.blend, which T3 keeps to reopen) is its newest undo step, so
+    # changes made without one, such as by a script (which leaves the file looking clean), are
+    # recorded first.
+    window = _main_window()
+    try:
+        with bpy.context.temp_override(window=window):
+            bpy.ops.ed.undo_push(message="T3 recovery copy")
+    except Exception as error:  # noqa: BLE001 - quitting matters more than the extra step
+        print("T3 control add-on: undo step failed:", error, file=sys.stderr)
+
+
 def _handle(command):
     kind = command.get("type")
     if kind == "quit":
+        if not command.get("save"):
+            _push_undo_step()
         if command.get("save"):
             # Answered before the save, which blocks Blender for as long as a big file takes.
             _send({"type": "saving"})
@@ -120,6 +137,11 @@ def _tick():
             connection.close()
     except BlockingIOError:
         pass
+    if _State.restored and not bpy.data.is_dirty:
+        # Blender clears the unsaved mark it gives a recovered file once loading finishes;
+        # an undo step sets it again, so the user is still asked to save the restored work.
+        _State.restored = False
+        _push_undo_step()
     if _State.client is not None:
         try:
             while True:
@@ -165,10 +187,26 @@ def _disable_mcp_addon():
                 addon.preferences.port = int(MCP_PORT)
                 addon.preferences.host = "localhost"
         addon_utils.disable(name, default_set=False)
+
+
+def _use_private_temp():
+    # Copied settings may name a temporary folder shared with the desktop Blender; this session
+    # keeps its quit copy and autosaves in the private TMPDIR T3 gave it, where T3 finds them.
+    filepaths = bpy.context.preferences.filepaths
+    if filepaths.temporary_directory:
+        filepaths.temporary_directory = ""
+
+
+def _recover():
+    # Restores a recovery copy or autosave over the file Blender opened. Blender recovers its
+    # own session files with their original path, so saving still writes the user's file.
+    window = _main_window()
     try:
-        preferences.is_dirty = False
-    except AttributeError:
-        pass
+        with bpy.context.temp_override(window=window):
+            _State.restored = "FINISHED" in bpy.ops.wm.recover_auto_save(filepath=RECOVER_PATH)
+    except Exception as error:  # noqa: BLE001 - the file as saved stays open
+        print("T3 control add-on: recovery failed:", error, file=sys.stderr)
+    return None
 
 
 def _has_viewport_window():
@@ -197,16 +235,29 @@ def _open_viewport_window():
 
 
 @persistent
+def _on_save_post(*_args):
+    _State.restored = False
+
+
+@persistent
 def _on_load_post(*_args):
     bpy.app.timers.register(_open_viewport_window, first_interval=0.2)
 
 
 def register():
     _disable_mcp_addon()
+    _use_private_temp()
+    try:
+        bpy.context.preferences.is_dirty = False
+    except AttributeError:
+        pass
     if SOCKET_PATH is not None:
         _State.server = _listen()
         bpy.app.timers.register(_tick, first_interval=TICK, persistent=True)
     bpy.app.handlers.load_post.append(_on_load_post)
+    bpy.app.handlers.save_post.append(_on_save_post)
+    if RECOVER_PATH is not None:
+        bpy.app.timers.register(_recover, first_interval=0.1)
     bpy.app.timers.register(_open_viewport_window, first_interval=0.5)
 
 
