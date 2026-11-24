@@ -13,6 +13,7 @@ import {
 import type { ModelView } from "@t3tools/shared/modelView";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import { useMessages } from "gt-react";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
@@ -70,9 +71,21 @@ export function readHostedBlenderState(
     environmentId: threadRef.environmentId,
     input: { threadId: threadRef.threadId },
   });
+  return readLatest(appAtomRegistry, atom, "5 seconds");
+}
+
+/**
+ * An atom's latest value, or null when it fails or none comes in time. A subscription's
+ * values stay `waiting` for as long as its stream runs, so waiting values count.
+ */
+export function readLatest<A, E>(
+  registry: AtomRegistry.AtomRegistry,
+  atom: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
+  timeout: Duration.Input,
+): Promise<A | null> {
   return Effect.runPromise(
-    AtomRegistry.getResult(appAtomRegistry, atom, { suspendOnWaiting: true }).pipe(
-      Effect.timeout("5 seconds"),
+    AtomRegistry.getResult(registry, atom).pipe(
+      Effect.timeout(timeout),
       Effect.orElseSucceed(() => null),
     ),
   );

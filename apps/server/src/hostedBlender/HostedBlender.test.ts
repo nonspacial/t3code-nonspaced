@@ -410,6 +410,26 @@ describe("The viewport window", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("keeps a hit request's slot until Blender answers, though its caller gave up", () =>
+    Effect.gen(function* () {
+      const { service, openReady } = yield* standIn("abandoned-cast", "slow-hits");
+      yield* openReady;
+      const request = {
+        threadId,
+        projection: {
+          matrix: Array.from({ length: 16 }, () => 0),
+          region: { x: 0, y: 0, width: 1, height: 1 },
+        },
+        marks: [[{ x: 0.5, y: 0.5 }]],
+      };
+      // The stand-in answers after 0.3 s; this caller stops waiting long before that.
+      const abandoned = yield* service.findHits(request).pipe(Effect.timeoutOption("100 millis"));
+      expect(abandoned._tag).toBe("None");
+      const hits = yield* service.findHits(request);
+      expect(hits[0]?.object).toBe("in flight 1");
+    }).pipe(Effect.scoped),
+  );
+
   it.live("fails when Blender has no viewport window to read", () =>
     Effect.gen(function* () {
       const { service, openReady } = yield* standIn("no-viewport", "no-viewport");

@@ -485,6 +485,7 @@ const make = Effect.gen(function* () {
         return;
       case "reply": {
         const request = instance.requests.get(message.value.id);
+        instance.requests.delete(message.value.id);
         if (request) yield* Deferred.succeed(request, message.value.result);
         return;
       }
@@ -525,6 +526,8 @@ const make = Effect.gen(function* () {
       effect.pipe(
         Effect.ensuring(
           Effect.sync(() => {
+            // Nothing more will answer the requests still waiting.
+            instance.requests.clear();
             instance.control = null;
           }),
         ),
@@ -950,6 +953,8 @@ const make = Effect.gen(function* () {
     threadId: ThreadId,
     body: ControlRequestBody,
     result: Schema.Decoder<A>,
+    /** One slot of this is held until the add-on answers or its connection closes. */
+    slot?: Semaphore.Semaphore,
   ) {
     const instance = instances.get(threadId);
     if (instance === undefined || instance.status !== "running") {
@@ -957,9 +962,25 @@ const make = Effect.gen(function* () {
     }
     const control = instance.control;
     if (control === null) return yield* new HostedBlenderError({ reason: "noReply" });
+    const reply = yield* Deferred.make<unknown>();
+    // A caller that stops waiting doesn't free the slot: Blender may still be working on it.
+    if (slot) {
+      const held = yield* Effect.uninterruptibleMask((restore) =>
+        restore(slot.take(1).pipe(Effect.timeoutOption(CONTROL_REPLY_TIMEOUT))).pipe(
+          Effect.tap((taken) =>
+            Option.isNone(taken)
+              ? Effect.void
+              : Effect.raceFirst(Deferred.await(reply), Deferred.await(control.closed)).pipe(
+                  Effect.ensuring(slot.release(1)),
+                  Effect.forkIn(serviceScope),
+                ),
+          ),
+        ),
+      );
+      if (Option.isNone(held)) return yield* new HostedBlenderError({ reason: "noReply" });
+    }
     instance.lastRequestId += 1;
     const id = instance.lastRequestId;
-    const reply = yield* Deferred.make<unknown>();
     instance.requests.set(id, reply);
     const answer = yield* control
       .write(`${encodeControlRequest({ ...body, id })}\n`)
@@ -969,7 +990,6 @@ const make = Effect.gen(function* () {
         Effect.raceFirst(Deferred.await(control.closed).pipe(Effect.as(Option.none()))),
         Effect.timeoutOption(CONTROL_REPLY_TIMEOUT),
         Effect.map(Option.flatten),
-        Effect.ensuring(Effect.sync(() => instance.requests.delete(id))),
       );
     if (Option.isNone(answer)) return yield* new HostedBlenderError({ reason: "noReply" });
     // The add-on answers null when Blender has no viewport window to read or move.
@@ -991,8 +1011,11 @@ const make = Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan({ threadId, marks: marks.length });
       const instance = instances.get(threadId);
       if (instance === undefined) return yield* new HostedBlenderError({ reason: "notRunning" });
-      return yield* instance.hitsLock.withPermits(1)(
-        ask(threadId, { type: "hits", ...projection, marks }, HostedBlenderHits),
+      return yield* ask(
+        threadId,
+        { type: "hits", ...projection, marks },
+        HostedBlenderHits,
+        instance.hitsLock,
       );
     },
   );

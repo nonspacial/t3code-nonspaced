@@ -211,20 +211,28 @@ async function frozenColor(screen: Awaited<ReturnType<typeof render>>) {
   return Array.from(context.getImageData(160, 90, 1, 1).data.slice(0, 3));
 }
 
-it("freezes the first frame drawn after Blender reports its view, not the one already showing", async () => {
+it("keeps the screenshot but not the camera when the view was still changing", async () => {
   const blender = setup("thread-blender-catch-up", "window");
   const reply = Promise.withResolvers<HostedBlenderViewCapture>();
   commands.captureView.mockReset().mockReturnValue(reply.promise);
   await using screen = await render(blender.element, pane());
   await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
-  // Blender has jumped to a new view; the stream is still showing the old one when it answers.
   reply.resolve(capture);
-  // The new view's frames keep arriving until one is frozen.
+  // A frame Blender drew before it answered is still arriving: it can't be tied to the camera.
   await vi.waitFor(() => {
     stream.sink!.present(frameOf("#ff0000"), 320, 180);
     expect(screen.getByRole("img", { name: "Frozen 3D view to annotate" }).query()).not.toBeNull();
   });
   expect(await frozenColor(screen)).toEqual([255, 0, 0]);
+  const surface = screen.getByRole("img", { name: "Frozen 3D view to annotate" });
+  await userEvent.click(screen.getByRole("button", { name: "Mark a region" }));
+  drag(surface.element(), [0.4, 0.4], [0.6, 0.6]);
+  await userEvent.click(screen.getByRole("button", { name: "Add to chat" }));
+  await vi.waitFor(() => expect(blender.draft()?.previewAnnotations).toHaveLength(1));
+  const annotation = blender.draft()!.previewAnnotations[0]!;
+  expect(annotation).not.toHaveProperty("cameraView");
+  expect(annotation.regions[0]).not.toHaveProperty("hit");
+  expect(commands.findHits).not.toHaveBeenCalled();
 });
 
 it("freezes the frame on screen when Blender sends no newer one", async () => {
@@ -269,5 +277,42 @@ it("hands the keyboard to the annotation editor while in control, and control ba
   await expect.element(viewport).toHaveFocus();
   pressA();
   expect(stream.sent.filter((message) => message.type === "key")).toHaveLength(2);
+  expect(stream.sent).not.toContainEqual({ type: "releaseControl" });
+});
+
+it("gives control back when focus leaves the annotation editor for elsewhere in T3", async () => {
+  using _app = { [Symbol.dispose]: installKeyboardCapture() };
+  const blender = setup("thread-blender-editor-leave", "window");
+  await using screen = await render(
+    <div className="flex flex-col">
+      <button type="button">Composer</button>
+      <div className="flex h-96 w-[32rem] flex-col">{blender.element}</div>
+    </div>,
+  );
+  const control = (next: HostedBlenderControl) => act(() => stream.events?.onControl?.(next));
+  await control({ canOperate: true, controller: "unclaimed" });
+  await screen.getByLabelText("Blender viewport").click();
+  await control({ canOperate: true, controller: "you" });
+  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
+  await expect.element(screen.getByRole("textbox", { name: "Annotation comment" })).toHaveFocus();
+  expect(stream.sent).not.toContainEqual({ type: "releaseControl" });
+
+  await userEvent.click(screen.getByRole("button", { name: "Composer" }));
+  expect(stream.sent).toContainEqual({ type: "releaseControl" });
+});
+
+it("keeps a grant that lands while the annotation editor has focus", async () => {
+  using _app = { [Symbol.dispose]: installKeyboardCapture() };
+  const blender = setup("thread-blender-late-grant", "window");
+  await using screen = await render(blender.element, pane());
+  const control = (next: HostedBlenderControl) => act(() => stream.events?.onControl?.(next));
+  await control({ canOperate: true, controller: "unclaimed" });
+  await screen.getByLabelText("Blender viewport").click();
+  expect(stream.sent).toEqual([{ type: "takeControl", takeOver: false }]);
+  // The take is still on its way when the person opens the editor.
+  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
+  await expect.element(screen.getByRole("textbox", { name: "Annotation comment" })).toHaveFocus();
+  await control({ canOperate: true, controller: "you" });
+  await expect.element(screen.getByText("You're in control")).toBeInTheDocument();
   expect(stream.sent).not.toContainEqual({ type: "releaseControl" });
 });
