@@ -169,39 +169,52 @@ function resourceMonitorBinaryName(platform: NodeJS.Platform): string {
   return platform === "win32" ? "t3-resource-monitor.exe" : "t3-resource-monitor";
 }
 
+/** A helper built from `native/<helper>` and shipped in `resources/<helper>`. */
+const resolveNativeHelperPath = Effect.fn("desktop.backendConfiguration.resolveNativeHelperPath")(
+  function* (helper: string, binaryName: string) {
+    const environment = yield* DesktopEnvironment.DesktopEnvironment;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const candidates = environment.isDevelopment
+      ? ["release", "debug"].map((profile) =>
+          environment.path.join(
+            environment.rootDir,
+            `native/${helper}/target`,
+            profile,
+            binaryName,
+          ),
+        )
+      : environment.isPackaged
+        ? [environment.path.join(environment.resourcesPath, helper, binaryName)]
+        : environment.resolveResourcePathCandidates(environment.path.join(helper, binaryName));
+
+    for (const candidate of candidates) {
+      if (yield* fileSystem.exists(candidate).pipe(Effect.orElseSucceed(() => false))) {
+        return Option.some(candidate);
+      }
+    }
+
+    return Option.none<string>();
+  },
+);
+
 const resolveResourceMonitorPath = Effect.fn(
   "desktop.backendConfiguration.resolveResourceMonitorPath",
 )(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
-  const fileSystem = yield* FileSystem.FileSystem;
-  const binaryName = resourceMonitorBinaryName(environment.platform);
-  const candidates = environment.isDevelopment
-    ? [
-        environment.path.join(
-          environment.rootDir,
-          "native/resource-monitor/target/release",
-          binaryName,
-        ),
-        environment.path.join(
-          environment.rootDir,
-          "native/resource-monitor/target/debug",
-          binaryName,
-        ),
-      ]
-    : environment.isPackaged
-      ? [environment.path.join(environment.resourcesPath, "resource-monitor", binaryName)]
-      : environment.resolveResourcePathCandidates(
-          environment.path.join("resource-monitor", binaryName),
-        );
-
-  for (const candidate of candidates) {
-    if (yield* fileSystem.exists(candidate).pipe(Effect.orElseSucceed(() => false))) {
-      return Option.some(candidate);
-    }
-  }
-
-  return Option.none<string>();
+  return yield* resolveNativeHelperPath(
+    "resource-monitor",
+    resourceMonitorBinaryName(environment.platform),
+  );
 });
+
+/** The hosted Blender's hidden display only exists on Linux. */
+const resolveHiddenDisplayPath = Effect.fn("desktop.backendConfiguration.resolveHiddenDisplayPath")(
+  function* () {
+    const environment = yield* DesktopEnvironment.DesktopEnvironment;
+    if (environment.platform !== "linux") return Option.none<string>();
+    return yield* resolveNativeHelperPath("hidden-display", "t3-hidden-display");
+  },
+);
 
 const readPersistedBackendObservabilitySettings = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -522,6 +535,7 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
   function* (
     input: SharedBootstrapInput & {
       readonly resourceMonitorPath: Option.Option<string>;
+      readonly hiddenDisplayPath: Option.Option<string>;
       readonly cliPath: Option.Option<string>;
       readonly shellEnvironmentPrepared: boolean;
       readonly desktopAppUpdate: boolean;
@@ -554,6 +568,10 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
       ...Option.match(input.resourceMonitorPath, {
         onNone: () => ({}),
         onSome: (resourceMonitorPath) => ({ resourceMonitorPath }),
+      }),
+      ...Option.match(input.hiddenDisplayPath, {
+        onNone: () => ({}),
+        onSome: (hiddenDisplayPath) => ({ hiddenDisplayPath }),
       }),
       ...buildObservabilityFragment(input.observabilitySettings),
     };
@@ -837,6 +855,10 @@ export const make = Effect.gen(function* () {
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
     );
+    const hiddenDisplayPath = yield* resolveHiddenDisplayPath().pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
+    );
     const cliPath = yield* DesktopCliShim.install.pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
@@ -845,6 +867,7 @@ export const make = Effect.gen(function* () {
     return yield* resolvePrimaryStartConfig({
       ...shared,
       resourceMonitorPath,
+      hiddenDisplayPath,
       cliPath,
       shellEnvironmentPrepared,
       desktopAppUpdate: yield* Ref.get(desktopState.canInstallUpdates),
