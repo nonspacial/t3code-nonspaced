@@ -79,6 +79,14 @@
       "types": "./src/device/hubAccess.ts",
       "default": "./src/device/hubAccess.ts"
     },
+    "./hosted-blender/stream": {
+      "types": "./src/hostedBlender/stream.ts",
+      "default": "./src/hostedBlender/stream.ts"
+    },
+    "./state/hosted-blender": {
+      "types": "./src/state/hostedBlender.ts",
+      "default": "./src/state/hostedBlender.ts"
+    },
     "./preview/server-browser-stream": {
       "types": "./src/preview/serverBrowserStream.ts",
       "default": "./src/preview/serverBrowserStream.ts"

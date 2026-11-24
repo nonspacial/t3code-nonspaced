@@ -26,6 +26,7 @@ const RIGHT_PANEL_KINDS = [
   "file",
   "preview",
   "device",
+  "blender",
   "terminal",
   "pull-request",
   "pull-requests",
@@ -48,6 +49,8 @@ export type RightPanelSurface =
   | { id: `browser:${string}`; kind: "preview"; resourceId: string }
   | { id: "browser:new"; kind: "preview"; resourceId: null }
   | { id: "device" | `device:${string}`; kind: "device"; target?: DeviceTabTarget; title?: string }
+  /** The thread's hosted Blender. One per thread, so one tab. */
+  | { id: "blender"; kind: "blender" }
   | {
       id: `terminal:${string}`;
       kind: "terminal";
@@ -299,6 +302,8 @@ const singletonSurface = (
       return { id: "pull-requests", kind };
     case "device":
       return { id: "device", kind };
+    case "blender":
+      return { id: "blender", kind };
   }
 };
 

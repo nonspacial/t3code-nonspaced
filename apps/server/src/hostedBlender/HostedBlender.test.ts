@@ -171,7 +171,7 @@ const canHostBlender =
   onPath("labwc");
 
 describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
-  it.effect("starts with its own environment, streams its viewport window, and quits", () =>
+  it.live("starts with its own environment, streams its viewport window, and quits", () =>
     Effect.gen(function* () {
       const dir = yield* tempDir("real");
       const workspace = NodePath.join(dir, "work");
@@ -207,10 +207,7 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
         Effect.forkScoped,
       );
       const awaitStatus = (status: HostedBlenderThreadState["status"]) =>
-        Queue.take(states).pipe(
-          Effect.repeat({ until: (state) => state.status === status }),
-          Effect.timeout("60 seconds"),
-        );
+        Queue.take(states).pipe(Effect.repeat({ until: (state) => state.status === status }));
 
       yield* awaitStatus("stopped");
       yield* service.open({ threadId, relativePath: "models/cube.blend" });
@@ -233,7 +230,6 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
       const viewer = attached.viewer;
       const firstFrame = yield* Queue.take(viewer.output).pipe(
         Effect.repeat({ until: (output) => output._tag === "frame" }),
-        Effect.timeout("30 seconds"),
       );
       assert.strictEqual(firstFrame._tag, "frame");
       if (firstFrame._tag !== "frame") return;

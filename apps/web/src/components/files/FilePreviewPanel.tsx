@@ -65,6 +65,7 @@ import {
 import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
 import { useAssetUrlRefresh, useAssetUrlState } from "~/assets/assetUrls";
 import { OpenInPicker } from "~/components/chat/OpenInPicker";
+import { isBlendFile, OpenInHostedBlender } from "~/components/blender/OpenInHostedBlender";
 import { MediaVideoPlayer } from "~/components/media/MediaVideoPlayer";
 import { MediaActions, type MediaActionSource } from "~/components/media/MediaActions";
 import { useRemoteOpenState } from "~/remoteOpen";
@@ -1624,6 +1625,9 @@ export default function FilePreviewPanel({
               compact
               revealFileManager={revealsInFileManager}
             />
+          ) : null}
+          {threadRef && !isHostFile && relativePath !== null && isBlendFile(relativePath) ? (
+            <OpenInHostedBlender threadRef={threadRef} relativePath={relativePath} />
           ) : null}
           {canToggleRendered && renderedMode ? (
             <FileSurfaceAction

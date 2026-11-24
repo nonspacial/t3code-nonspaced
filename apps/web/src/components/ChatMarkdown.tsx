@@ -149,6 +149,8 @@ import { hostEnvironmentIdAtom } from "../state/primaryEnvironment";
 import { cn } from "../lib/utils";
 import { resolveRemoteOpenState, useRemoteOpenResolution } from "../remoteOpen";
 import { rightPanelHostRef, useRightPanelStore } from "../rightPanelStore";
+import { openBlendLink } from "./blender/blendLinks";
+import { isBlendFile } from "./blender/OpenInHostedBlender";
 import { useOpenIssueLink } from "../lib/openIssueLink";
 import { issueTrackerEnvironment } from "../state/issueTrackers";
 import { useEnvironmentQuery } from "../state/query";
@@ -950,16 +952,16 @@ function useChatMarkdownState(
       projects.find(
         (project) => project.environmentId === environmentId && project.id === shell?.projectId,
       )?.workspaceRoot;
-    const openAt = (path: string) =>
-      useRightPanelStore
-        .getState()
-        .openFile(
-          threadRef,
-          cwd && panelRoot !== undefined && cwd !== panelRoot
-            ? resolveWorkspaceFilePath(path, cwd)
-            : path,
-          fileLinkMeta.line,
-        );
+    const openAt = (path: string) => {
+      const target =
+        cwd && panelRoot !== undefined && cwd !== panelRoot
+          ? resolveWorkspaceFilePath(path, cwd)
+          : path;
+      const openFile = () =>
+        useRightPanelStore.getState().openFile(threadRef, target, fileLinkMeta.line);
+      if (isBlendFile(target)) void openBlendLink(threadRef, target, panelRoot, openFile);
+      else openFile();
+    };
     if (
       fileLinkMeta.workspaceLookupPath === null ||
       !cwd ||
