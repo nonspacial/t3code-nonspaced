@@ -125,6 +125,29 @@ it("renders a model in the browser and lists what it measured", async () => {
   expect(canvases[0]?.getContext("webgl2")?.isContextLost()).toBe(false);
 });
 
+it("starts a new 3D view on Reload after the first one could not start", async () => {
+  setup();
+  const preview = (src: string, onRefresh: () => void) => (
+    <ModelFilePreview
+      src={src}
+      name="bracket.stl"
+      format="stl"
+      sizeBytes={0}
+      companions={null}
+      onRefresh={onRefresh}
+    />
+  );
+  const refuse = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+  const reload = () => void screen.rerender(preview(modelUrl(stl()), reload));
+  await using screen = await render(preview(modelUrl(stl()), reload), pane());
+  await expect.element(screen.getByText(/3D previews need WebGL/)).toBeVisible();
+
+  refuse.mockRestore();
+  await userEvent.click(screen.getByRole("button", { name: "Reload model" }));
+  await expect.element(screen.getByRole("img", { name: "3D view of bracket.stl" })).toBeVisible();
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+});
+
 it("keeps the shown model while a new version downloads, and after one that fails", async () => {
   setup();
   const preview = (src: string, pending = false) => (

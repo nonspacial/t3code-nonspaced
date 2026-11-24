@@ -188,7 +188,7 @@ export function ModelFilePreview(props: {
   const [declined, setDeclined] = useState<string | null>(null);
   // A viewer outlives a change of source, so a new version replaces the model only once it loads.
   const [viewer, setViewer] = useState<ModelViewer | null>(null);
-  // A lost WebGL context needs a new viewer, which Reload makes.
+  // A viewer that lost its WebGL context or never started needs a new one, which Reload makes.
   const [generation, setGeneration] = useState(0);
   // The viewer itself failing, which no load of a source can fix.
   const [viewerFailure, setViewerFailure] = useState<{
@@ -338,9 +338,7 @@ export function ModelFilePreview(props: {
         ? { phase: "confirm", bytes: confirm.bytes }
         : (current ?? { phase: "loading" });
   const refresh = () => {
-    if (current?.phase === "failed" && current.code === "context-lost") {
-      setGeneration((value) => value + 1);
-    }
+    if (viewerFailure?.generation === generation) setGeneration((value) => value + 1);
     props.onRefresh();
   };
   const ready = shown.phase === "ready";
