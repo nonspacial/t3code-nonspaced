@@ -176,6 +176,9 @@ describe("BlendConversion", () => {
           BLENDER_USER_CONFIG: expect.stringContaining(cacheDir),
         });
         expect(first?.env?.T3CODE_HOME).toBeUndefined();
+        // The child gets only this environment, and works in its private folder, never the file's.
+        expect(first?.replaceEnv).toBe(true);
+        expect(first?.cwd).toContain(cacheDir);
 
         const conversion = yield* BlendConversion.BlendConversion;
         const hits: Array<BlendConversionStatus> = [];
@@ -248,6 +251,31 @@ describe("BlendConversion", () => {
       }).pipe(Effect.provide(layerFor({ run })));
     },
   );
+
+  it.effect("checks a waiting file again when its turn comes, and never converts a swap", () => {
+    const release = Deferred.makeUnsafe<void>();
+    const runs: Array<RunInput> = [];
+    const run: Run = (input) =>
+      Effect.sync(() => runs.push(input)).pipe(
+        Effect.andThen(Deferred.await(release)),
+        Effect.andThen(writeGlb(input)),
+      );
+    return Effect.gen(function* () {
+      const { root, outside, path, fileSystem } = yield* workspace;
+      const a = yield* startConversion({ cwd: root, relativePath: "assembly.blend" });
+      expect((yield* Queue.take(a.progress)).status).toBe("converting");
+      const b = yield* startConversion({ cwd: root, relativePath: "bracket.blend" });
+      expect(yield* Queue.take(b.progress)).toEqual({ status: "waiting", ahead: 1 });
+      // While it waits, the file becomes a link to one outside the workspace.
+      yield* fileSystem.remove(path.join(root, "bracket.blend"));
+      yield* fileSystem.symlink(path.join(outside, "b.blend"), path.join(root, "bracket.blend"));
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(a.fiber);
+      const refused = yield* Fiber.join(b.fiber).pipe(Effect.flip);
+      expect(refused._tag).toBe("WorkspaceFilePathEscapeError");
+      expect(runs).toHaveLength(1);
+    }).pipe(Effect.provide(layerFor({ run })));
+  });
 
   it.effect("reports a slow, failed or impossible conversion", () =>
     Effect.gen(function* () {

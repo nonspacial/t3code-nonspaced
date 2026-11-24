@@ -69,6 +69,19 @@ const conversionArguments = (input: {
   input.outputPath,
 ];
 
+type Unavailable = Extract<BlendConversionStatus, { readonly status: "unavailable" }>;
+const unavailable = (status: Omit<Unavailable, "status">): Unavailable => ({
+  status: "unavailable",
+  ...status,
+});
+
+/** A workspace `.blend` that passed its checks, by its real path. */
+interface Source {
+  readonly blendPath: string;
+  readonly libraries: ReadonlyArray<string>;
+  readonly blender: BlenderDetection.DetectedBlender;
+}
+
 const encodeCacheKey = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const versionParts = (version: string) => {
@@ -132,11 +145,7 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
       ? path.resolve(path.dirname(blendPath), saved.slice(2).replaceAll("\\", "/"))
       : saved;
 
-  const cacheKey = Effect.fnUntraced(function* (input: {
-    readonly blendPath: string;
-    readonly libraries: ReadonlyArray<string>;
-    readonly blender: BlenderDetection.DetectedBlender;
-  }) {
+  const cacheKey = Effect.fnUntraced(function* (input: Source) {
     const file = yield* modifiedAt(input.blendPath);
     const libraries = yield* Effect.forEach(input.libraries, (saved) => {
       const resolved = libraryPath(input.blendPath, saved);
@@ -234,6 +243,10 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
         fileSystem.makeDirectory(path.join(userDir, "config"), { recursive: true }),
         fileSystem.makeDirectory(path.join(userDir, "scripts"), { recursive: true }),
       ]);
+      // The checked path must still be the file itself, not a link swapped in since.
+      if ((yield* fileSystem.realPath(input.blendPath)) !== input.blendPath) {
+        return yield* input.emit({ status: "unavailable", reason: "outsideWorkspace" });
+      }
       yield* input.emit({
         status: "converting",
         blenderVersion: input.blender.version,
@@ -243,7 +256,8 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
         .run({
           command: input.blender.path,
           args: conversionArguments({ blendPath: input.blendPath, scriptPath, outputPath }),
-          cwd: path.dirname(input.blendPath),
+          // Never the file's folder: workspace content must not decide what Blender finds there.
+          cwd: workDir,
           env: BlenderDetection.blenderEnvironment(environment, {
             TMPDIR: tempDir,
             TEMP: tempDir,
@@ -253,6 +267,7 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
             BLENDER_USER_CONFIG: path.join(userDir, "config"),
             BLENDER_USER_SCRIPTS: path.join(userDir, "scripts"),
           }),
+          replaceEnv: true,
           timeout: input.keepTrying ? Duration.infinity : CONVERSION_TIME_LIMIT,
           timeoutBehavior: "timedOutResult",
           maxOutputBytes: 256 * 1024,
@@ -295,53 +310,64 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
 
   const convert: BlendConversion["Service"]["convert"] = Effect.fn("BlendConversion.convert")(
     function* (input, emit) {
-      const target = yield* workspaceFileSystem.resolveReadPath(input);
-      const insideWorkspace = yield* knownWorkspaces.assertContains(input.cwd).pipe(
-        Effect.andThen(fileSystem.realPath(input.cwd)),
-        Effect.map((root) => KnownWorkspaces.isWithinRoot(path, target.realPath, root)),
-        Effect.orElseSucceed(() => false),
-      );
-      if (!insideWorkspace)
-        return yield* emit({ status: "unavailable", reason: "outsideWorkspace" });
-      const facts = yield* Effect.tryPromise({
-        try: () => readBlendFile(target.realPath),
-        catch: (cause) =>
-          isBlendFileFormatError(cause)
-            ? cause
-            : new WorkspaceFileSystem.WorkspaceFileSystemOperationError({
-                workspaceRoot: input.cwd,
-                relativePath: input.relativePath,
-                resolvedPath: target.realPath,
-                operationPath: target.realPath,
-                operation: "read",
-                cause,
-              }),
-      });
-      const blender = yield* detection.find;
-      if (blender === null) return yield* emit({ status: "unavailable", reason: "noBlender" });
-      if (savedByNewerBlender(facts.blenderVersion, blender.version)) {
-        return yield* emit({
-          status: "unavailable",
-          reason: "newerBlender",
-          blenderVersion: blender.version,
+      // Checked again once the conversion gets its turn: the file can be replaced while it waits.
+      const check = Effect.fnUntraced(function* () {
+        const target = yield* workspaceFileSystem.resolveReadPath(input);
+        const insideWorkspace = yield* knownWorkspaces.assertContains(input.cwd).pipe(
+          Effect.andThen(fileSystem.realPath(input.cwd)),
+          Effect.map((root) => KnownWorkspaces.isWithinRoot(path, target.realPath, root)),
+          Effect.orElseSucceed(() => false),
+        );
+        if (!insideWorkspace) {
+          return unavailable({ reason: "outsideWorkspace" });
+        }
+        const info = yield* fileSystem.stat(target.realPath).pipe(Effect.option);
+        if (info._tag === "None" || info.value.type !== "File") {
+          return yield* new WorkspaceFileSystem.WorkspacePathNotFileError({
+            workspaceRoot: input.cwd,
+            relativePath: input.relativePath,
+            resolvedPath: target.realPath,
+          });
+        }
+        const facts = yield* Effect.tryPromise({
+          try: () => readBlendFile(target.realPath),
+          catch: (cause) =>
+            isBlendFileFormatError(cause)
+              ? cause
+              : new WorkspaceFileSystem.WorkspaceFileSystemOperationError({
+                  workspaceRoot: input.cwd,
+                  relativePath: input.relativePath,
+                  resolvedPath: target.realPath,
+                  operationPath: target.realPath,
+                  operation: "read",
+                  cause,
+                }),
         });
-      }
-      const key = { blendPath: target.realPath, libraries: facts.libraries, blender };
-      const fromCache = Effect.fnUntraced(function* () {
+        const blender = yield* detection.find;
+        if (blender === null) return unavailable({ reason: "noBlender" });
+        if (savedByNewerBlender(facts.blenderVersion, blender.version)) {
+          return unavailable({ reason: "newerBlender", blenderVersion: blender.version });
+        }
+        return { blendPath: target.realPath, libraries: facts.libraries, blender };
+      });
+      const fromCache = Effect.fnUntraced(function* (key: Source) {
         const cacheFileName = `${yield* cacheKey(key)}.glb`;
         const hit = yield* cached(cacheFileName);
         if (hit === null) return { cacheFileName, hit: false } as const;
         yield* emit(
           yield* ready(cacheFileName, {
             byteLength: hit.size,
-            blenderVersion: blender.version,
+            blenderVersion: key.blender.version,
             convertedAt: hit.mtime ?? (yield* Clock.currentTimeMillis),
             cached: true,
           }),
         );
         return { cacheFileName, hit: true } as const;
       });
-      if (!input.refresh && (yield* fromCache()).hit) return;
+
+      const first = yield* check();
+      if ("status" in first) return yield* emit(first);
+      if (!input.refresh && (yield* fromCache(first)).hit) return;
 
       const job = { emit };
       const leave = Effect.suspend(() => {
@@ -356,14 +382,16 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
           Effect.gen(function* () {
             running = true;
             yield* leave;
+            const source = yield* check();
+            if ("status" in source) return yield* emit(source);
             // A conversion that waited may find the file converted by the one before it.
             const lookup = input.refresh
-              ? { cacheFileName: `${yield* cacheKey(key)}.glb`, hit: false }
-              : yield* fromCache();
+              ? { cacheFileName: `${yield* cacheKey(source)}.glb`, hit: false }
+              : yield* fromCache(source);
             if (lookup.hit) return;
             yield* run({
-              blendPath: target.realPath,
-              blender,
+              blendPath: source.blendPath,
+              blender: source.blender,
               cacheFileName: lookup.cacheFileName,
               keepTrying: input.keepTrying === true,
               emit,

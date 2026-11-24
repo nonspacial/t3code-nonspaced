@@ -110,6 +110,7 @@ const make = Effect.gen(function* () {
         command: candidate,
         args: ["--version"],
         env: blenderEnvironment(environment),
+        replaceEnv: true,
         timeout: "30 seconds",
         timeoutBehavior: "timedOutResult",
         maxOutputBytes: 64 * 1024,
@@ -128,11 +129,19 @@ const make = Effect.gen(function* () {
       Effect.map((current) => current.blenderPath),
       Effect.orElseSucceed(() => ""),
     );
+    // Probed and later run by absolute path, so no working directory can change which program runs.
+    const absolute = (command: string) =>
+      /[\\/]/.test(command)
+        ? Effect.succeed(path.resolve(command))
+        : resolveCommandPath(command).pipe(
+            Effect.provideContext(lookupContext),
+            Effect.map((found) => (found === null ? null : path.resolve(found))),
+          );
     const candidates =
       configured !== ""
-        ? [configured]
+        ? [yield* absolute(configured)]
         : [
-            yield* resolveCommandPath("blender").pipe(Effect.provideContext(lookupContext)),
+            yield* absolute("blender"),
             ...blenderInstallCandidates({
               platform,
               homeDirectory,

@@ -30,6 +30,7 @@ const find = (input: {
   readonly home: string;
   readonly blenderPath?: string;
   readonly platform?: NodeJS.Platform;
+  readonly env?: Record<string, string>;
 }) =>
   Effect.gen(function* () {
     const detection = yield* BlenderDetection.BlenderDetection;
@@ -45,7 +46,7 @@ const find = (input: {
             }),
             // Not Linux, so Blender installed on the machine running the tests stays out of it.
             Layer.succeed(HostProcess.Platform, input.platform ?? "darwin"),
-            Layer.succeed(HostProcess.Environment, { PATH: input.path }),
+            Layer.succeed(HostProcess.Environment, { ...input.env, PATH: input.path }),
             Layer.succeed(HostProcess.HomeDirectory, input.home),
           ),
         ),
@@ -131,6 +132,27 @@ describe("BlenderDetection", () => {
       expect(
         yield* find({ path: onPath, home: dir, blenderPath: NodePath.join(dir, "missing") }),
       ).toBeNull();
+    }),
+  );
+
+  it.live("probes Blender by absolute path, with the server's environment minus T3's", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir;
+      const bin = NodePath.join(dir, "bin");
+      // Records the environment the probe really received.
+      const blender = standIn(bin, "blender", '/usr/bin/env > "$0.env"\necho "Blender 4.5.3"');
+      const found = yield* find({
+        path: bin,
+        home: dir,
+        blenderPath: "blender",
+        env: { T3CODE_HOME: "/t3", BLENDER_USER_CONFIG: "/desktop-blender", KEPT: "yes" },
+      });
+      expect(found).toEqual({ path: blender, version: "4.5.3" });
+      const received = NodeFS.readFileSync(`${blender}.env`, "utf8");
+      expect(received).toContain(`PATH=${bin}`);
+      expect(received).toContain("KEPT=yes");
+      // HOME is in the test runner's own environment, not the server's as given here.
+      expect(received).not.toMatch(/^(HOME|T3CODE_\w+|BLENDER_USER_\w+)=/m);
     }),
   );
 

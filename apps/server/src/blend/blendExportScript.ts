@@ -1,6 +1,6 @@
 /**
- * Run by `blender -b <file> --python <this> -- <out.glb>`. It exports the active scene at its
- * current frame: visible objects only, modifiers and geometry nodes applied, materials as glTF
+ * Run by `blender -b <file> --python <this> -- <out.glb>`. It exports the active scene at the
+ * frame it was saved at: visible objects only, modifiers and geometry nodes applied, materials as glTF
  * PBR, textures embedded, and no cameras, lights or animation. Options an older exporter lacks
  * are left out rather than failing the export.
  */
@@ -17,6 +17,10 @@ options = {
     "use_active_scene": True,
     "use_visible": True,
     "export_apply": True,
+    # Without this the exporter moves to frame 0, even with animation export off.
+    "export_current_frame": True,
+    # Geometry Nodes instances, such as Instance on Points, are dropped without this.
+    "export_gn_mesh": True,
     "export_cameras": False,
     "export_lights": False,
     "export_animations": False,
