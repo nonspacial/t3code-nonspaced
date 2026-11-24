@@ -186,3 +186,17 @@ it("sends the motion queued for the next frame before a button changes", () => {
     { type: "button", button: 272, pressed: false },
   ]);
 });
+
+it("never presses for the click that took control, still held when control arrives", () => {
+  using stream = setup();
+  const { canvas, sent } = stream;
+  const at = { clientX: 60, clientY: 45 };
+  pointer(canvas, "pointermove", { ...at, button: -1, buttons: 1 });
+  pointer(canvas, "pointerup", { ...at, button: 0, buttons: 0 });
+  expect(sent.filter((message) => message.type === "button")).toEqual([]);
+  // The next click is the user's, in Blender.
+  pointer(canvas, "pointerdown", { ...at, button: 0, buttons: 1 });
+  expect(sent.filter((message) => message.type === "button")).toEqual([
+    { type: "button", button: 272, pressed: true },
+  ]);
+});

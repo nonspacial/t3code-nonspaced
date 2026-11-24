@@ -35,6 +35,8 @@ export interface BlenderInput {
 }
 
 const MIDDLE_BUTTON = 1;
+// MouseEvent.button → its PointerEvent.buttons bit: primary, middle, secondary, back, forward.
+const BUTTON_FOR_INDEX = [1, 4, 2, 8, 16];
 // PointerEvent.buttons bits: primary, secondary, auxiliary (middle), back, forward.
 const BUTTON_BITS: ReadonlyArray<readonly [number, HostedBlenderPointerButton]> = [
   [1, 272],
@@ -103,11 +105,15 @@ export function attachBlenderInput(options: BlenderInputOptions): BlenderInput {
     sendKey(code, event.type === "keydown");
   };
 
-  // Each change of the buttons held, in order. Chorded presses and releases arrive as
-  // pointermove, so the `buttons` bitmask is the truth, not pointerdown and pointerup.
-  const syncButtons = (buttons: number) => {
-    const changes = BUTTON_BITS.filter(
-      ([bit, button]) => ((buttons & bit) !== 0) !== heldButtons.has(button),
+  // Chorded presses and releases arrive as pointermove, so the `buttons` bitmask decides.
+  // A press must be seen starting: a button already down when control arrived (the click
+  // that took it) is never pressed in Blender. `null` until the first event sets a baseline.
+  let lastButtons: number | null = null;
+  const syncButtons = (buttons: number, started = 0) => {
+    const before = (lastButtons ?? buttons) & ~started;
+    lastButtons = buttons;
+    const changes = BUTTON_BITS.filter(([bit, button]) =>
+      heldButtons.has(button) ? (buttons & bit) === 0 : (buttons & bit & ~before) !== 0,
     );
     if (changes.length === 0) return;
     // Motion waiting for the next frame happened first; a release must not overtake it.
@@ -131,7 +137,10 @@ export function attachBlenderInput(options: BlenderInputOptions): BlenderInput {
       };
     }
     schedule();
-    syncButtons(event.buttons);
+    syncButtons(
+      event.buttons,
+      event.type === "pointerdown" ? (BUTTON_FOR_INDEX[event.button] ?? 0) : 0,
+    );
   };
 
   const onPointerDown = (event: PointerEvent) => {

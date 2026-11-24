@@ -461,8 +461,15 @@ function BlenderStream(props: {
         stackedThreadToast({ type: "info", title: gt("Another device took control of Blender") }),
       );
     }
+    const granted = controllerRef.current !== "you" && next.controller === "you";
     controllerRef.current = next.controller;
     takingRef.current = false;
+    // A grant that lands after the user moved on in T3 would leave an unfocused pane holding
+    // the keyboard; give it straight back. Leaving the window altogether keeps it.
+    const container = containerRef.current;
+    if (granted && document.hasFocus() && !container?.contains(document.activeElement)) {
+      clientRef.current?.send({ type: "releaseControl" });
+    }
     setControl(next);
     onControl(next);
   });

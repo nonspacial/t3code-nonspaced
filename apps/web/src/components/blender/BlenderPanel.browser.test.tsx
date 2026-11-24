@@ -183,3 +183,25 @@ it("keeps the status strip on one line in a narrow pane, shortening the stats fi
   expect(lines(label)).toBe(1);
   expect(lines(stats)).toBe(1);
 });
+
+it("gives control straight back when it's granted after focus has moved elsewhere in T3", async () => {
+  using _app = startup();
+  await using screen = await render(
+    <div>
+      <button type="button">Outside</button>
+      <div style={{ height: 400, width: 600 }}>
+        <BlenderPanel threadRef={threadRef} visible />
+      </div>
+    </div>,
+  );
+  await control({ canOperate: true, controller: "another-viewer" });
+  await screen.getByText("Take over").click();
+  // The previous controller lets go while the take over is on its way.
+  await control({ canOperate: true, controller: "unclaimed" });
+  await screen.getByText("Outside").click();
+  await control({ canOperate: true, controller: "you" });
+  expect(stream.sent).toEqual([
+    { type: "takeControl", takeOver: true },
+    { type: "releaseControl" },
+  ]);
+});
