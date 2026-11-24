@@ -9,7 +9,11 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-import { awaitCliNotarization, signMacArchiveContents } from "./build-cli-archive.ts";
+import {
+  awaitCliNotarization,
+  cliNativeHelpers,
+  signMacArchiveContents,
+} from "./build-cli-archive.ts";
 
 const signedEnv = {
   T3CODE_CLI_MAC_SIGN_IDENTITY: "Developer ID Application: Test (TEAM)",
@@ -213,4 +217,42 @@ it.layer(NodeServices.layer)("build-cli-archive notarization", (it) => {
       assert.isTrue(notarySubcommands(stub.calls)[0]?.includes("--wait"));
     }).pipe(Effect.scoped),
   );
+});
+
+it("stages the hidden display helper beside the Linux executable only", () => {
+  const helpers = (
+    platform: "linux" | "mac" | "win",
+    hiddenDisplayDir: Option.Option<string> = Option.none(),
+  ) =>
+    cliNativeHelpers({
+      platform,
+      arch: "x64",
+      repoRoot: "/repo",
+      serverDistDir: "/repo/apps/server/dist",
+      hostBuildFits: true,
+      resourceMonitorDir: Option.none(),
+      hiddenDisplayDir,
+    });
+  assert.deepEqual(
+    helpers("mac").map((helper) => helper.name),
+    ["resource-monitor"],
+  );
+  assert.deepEqual(
+    helpers("win").map((helper) => helper.name),
+    ["resource-monitor"],
+  );
+
+  // By default the archive takes what `vp run build:hidden-display` (or a --target build) made.
+  const [, cargoBuilt] = helpers("linux");
+  assert.deepInclude(cargoBuilt, {
+    name: "hidden-display",
+    kind: "binary",
+    candidates: [
+      "/repo/native/hidden-display/target/x86_64-unknown-linux-gnu/release/t3-hidden-display",
+      "/repo/native/hidden-display/target/release/t3-hidden-display",
+    ],
+  });
+
+  const [, preStaged] = helpers("linux", Option.some("/ci/cli-hidden-display"));
+  assert.deepInclude(preStaged, { kind: "dir", candidates: ["/ci/cli-hidden-display"] });
 });
