@@ -20,4 +20,12 @@ STL and 3MF files are turned upright, because those formats point Z up. Their si
 
 Models over 100 MB ask before loading, because a big model can slow the window down while it is read. Models over 1 GB don't open; save the file and open it in a 3D app instead. Compressed glTF (Draco and KTX2) and USDZ files aren't supported yet. The 3D view needs WebGL, and says so when your browser has it turned off.
 
-The mobile app doesn't show 3D views yet; use web or desktop for them.
+## Blender files
+
+A `.blend` file, or a `.blend1` backup, opens to the thumbnail Blender saved with it and its scene facts: the scene and frame range, object, mesh and material counts, and the files it links in. T3 Code reads these straight from the file without Blender, so it works on any machine and never runs the file's scripts, including for `.blend` files outside the project and ones attached to a chat.
+
+The thumbnail is the one Blender saved, so it can be out of date: a save from a script can leave an old picture or none, and so can turning thumbnails off. A 3D view of `.blend` files isn't available yet.
+
+## On mobile
+
+The mobile app shows a `.blend` file's thumbnail and scene details. Other 3D files show their name and size; open them on web or desktop to see them in 3D.

@@ -1,4 +1,9 @@
-import type { AssetResource, ProjectReadFileError, ScopedThreadRef } from "@t3tools/contracts";
+import type {
+  AssetResource,
+  BlendPreviewError,
+  ProjectReadFileError,
+  ScopedThreadRef,
+} from "@t3tools/contracts";
 import { mediaFileReference } from "@t3tools/client-runtime/media-reference";
 import { hostPreviewMimeTypeFromExtension } from "@t3tools/shared/filePreview";
 import { isHostPath, workspaceRelativeFilePath } from "@t3tools/shared/path";
@@ -15,7 +20,7 @@ export const isMarkdownPreviewFile = (path: string): boolean =>
   /\.(?:md|mdx|markdown|mdown|mkd)$/i.test(path);
 
 export function filePreviewReadErrorMessage(
-  error: ProjectReadFileError,
+  error: ProjectReadFileError | BlendPreviewError,
   resolve: MessageResolver = m,
 ): string {
   switch (error.failure) {
@@ -27,6 +32,12 @@ export function filePreviewReadErrorMessage(
       return resolve(msg("The requested path is outside the workspace."));
     case "resolved_path_outside_root":
       return resolve(msg("The path resolves to a location outside the workspace."));
+    case "unreadable_blend_file":
+      return resolve(msg("This file is not a Blender file, or it is damaged."));
+    case "blend_file_too_large":
+      return resolve(msg("This Blender file is too large to read its details."));
+    case "attachment_not_found":
+      return resolve(msg("This attachment is no longer available."));
     case "operation_failed":
       return error.operation === "realpath-workspace-root"
         ? resolve(msg("The workspace folder could not be accessed."))

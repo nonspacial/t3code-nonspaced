@@ -38,6 +38,7 @@ import { useClientSettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 
 import { BinaryFilePreview } from "./BinaryFilePreview";
+import { BlendFilePreview } from "./BlendFilePreview";
 import type { ModelAnnotationTarget, ModelViewRequest } from "./ModelFilePreview";
 import { PreviewImage } from "./PreviewImage";
 import { AudioPreview } from "./AudioPreview";
@@ -142,6 +143,8 @@ export function AttachmentFilePreview(props: {
             : null;
   const attachmentId =
     props.asset && "attachmentId" in props.asset ? props.asset.attachmentId : undefined;
+  // Facts are read on the server, so only an uploaded attachment has them.
+  const blendAttachmentId = attachmentId !== undefined && kind === "blend" ? attachmentId : null;
   const gt = useGT();
   const messages = useMessages();
   const { copyToClipboard, isCopied } = useCopyToClipboard({
@@ -350,6 +353,12 @@ export function AttachmentFilePreview(props: {
     <Suspense fallback={<FileSurfaceLoading />}>
       <FontFilePreview src={url} name={props.name} />
     </Suspense>
+  ) : blendAttachmentId !== null && props.asset ? (
+    <BlendFilePreview
+      environmentId={props.asset.environmentId}
+      name={props.name}
+      source={{ kind: "attachment", attachmentId: blendAttachmentId }}
+    />
   ) : modelFormat ? (
     <Suspense fallback={<FileSurfaceLoading />}>
       <ModelFilePreview

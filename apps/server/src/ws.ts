@@ -80,6 +80,7 @@ import {
   type ProjectMutation,
   ProjectListEntriesError,
   ProjectReadFileError,
+  BlendPreviewError,
   ProjectSearchContentsError,
   ProjectSearchEntriesError,
   ProjectWriteFileError,
@@ -224,6 +225,7 @@ import * as WorkspaceFolders from "./workspace/WorkspaceFolders.ts";
 import * as TaskFolders from "./workspace/TaskFolders.ts";
 import * as KnownWorkspaces from "./workspace/KnownWorkspaces.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
+import * as BlendPreview from "./blend/BlendPreview.ts";
 import { readWorkflowScript } from "./orchestration-v2/workflowScriptQuery.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
@@ -1587,6 +1589,7 @@ export const layerWsRpc = (
       const workspaceFolders = yield* WorkspaceFolders.WorkspaceFolders;
       const taskFolders = yield* TaskFolders.TaskFolders;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+      const blendPreview = yield* BlendPreview.BlendPreview;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
@@ -3091,6 +3094,44 @@ export const layerWsRpc = (
                 new ProjectReadFileError({
                   ...input,
                   ...projectFileFailureContext(cause),
+                  cause,
+                }),
+            ),
+          ),
+        [WS_METHODS.projectsReadBlendPreview]: (input) =>
+          blendPreview.read(input).pipe(
+            Effect.mapError((cause) => {
+              if (cause._tag === "BlendFileFormatError")
+                return new BlendPreviewError({
+                  relativePath: input.relativePath,
+                  failure:
+                    cause.problem === "too_large"
+                      ? "blend_file_too_large"
+                      : "unreadable_blend_file",
+                  cause,
+                });
+              const { failure, resolvedPath, operation } = projectFileFailureContext(cause);
+              return new BlendPreviewError({
+                relativePath: input.relativePath,
+                failure,
+                ...(resolvedPath === undefined ? {} : { resolvedPath }),
+                ...(operation === undefined ? {} : { operation }),
+                cause,
+              });
+            }),
+          ),
+        [WS_METHODS.assetsReadBlendPreview]: (input) =>
+          blendPreview.readAttachment(input).pipe(
+            Effect.mapError(
+              (cause) =>
+                new BlendPreviewError({
+                  relativePath: input.attachmentId,
+                  failure:
+                    cause._tag === "BlendAttachmentNotFoundError"
+                      ? "attachment_not_found"
+                      : cause.problem === "too_large"
+                        ? "blend_file_too_large"
+                        : "unreadable_blend_file",
                   cause,
                 }),
             ),

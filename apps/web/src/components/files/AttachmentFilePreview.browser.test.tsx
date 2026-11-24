@@ -32,6 +32,12 @@ vi.mock(import("~/assets/assetUrls"), async (original) => ({
   },
   useAssetUrlState: assetUrlState,
 }));
+// The .blend view reads facts over RPC; this file only checks which attachments route to it.
+vi.mock(import("./BlendFilePreview"), () => ({
+  BlendFilePreview: (props: { source: { kind: string; attachmentId?: string } }) => (
+    <p>{`blend facts: ${props.source.kind} ${props.source.attachmentId ?? ""}`}</p>
+  ),
+}));
 // Hands each document pdf.js opens to the PDF test, which awaits its load instead of a poll window.
 vi.mock(import("./pdfDocument"), async (original) => {
   const actual = await original();
@@ -1414,6 +1420,20 @@ it("keeps an attachment URL when the parent passes a fresh asset object for the 
   } finally {
     URL.revokeObjectURL(url);
   }
+});
+
+// A README-like name would otherwise be read as text.
+it("shows an uploaded .blend attachment's scene facts instead of no preview", async () => {
+  refresh.mockResolvedValue("https://example.test/rig.blend");
+  await using screen = await render(
+    <AttachmentFilePreview
+      name="README.blend"
+      mimeType="application/octet-stream"
+      sizeBytes={1024}
+      asset={{ environmentId: EnvironmentId.make("test"), attachmentId: "rig" }}
+    />,
+  );
+  await expect.element(screen.getByText("blend facts: attachment rig")).toBeInTheDocument();
 });
 
 it("opens a known empty attachment even when its range response is inaccessible", async () => {
