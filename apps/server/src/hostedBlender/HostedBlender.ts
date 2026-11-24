@@ -86,13 +86,19 @@ const SHUTDOWN_STOP_TIMEOUT = Duration.millis(400);
 // A helper asked to stop gives Blender 5 seconds before killing it.
 const LEFTOVER_STOP_TIMEOUT = Duration.seconds(7);
 
-const signalProcess = (pid: number, signal: NodeJS.Signals) => {
-  try {
-    process.kill(pid, signal);
-  } catch {
-    // Already gone.
-  }
-};
+/** How startup signals a leftover launch's processes; tests stand in for what the kernel does. */
+export const LeftoverSignal = Context.Reference<(pid: number, signal: NodeJS.Signals) => void>(
+  "t3/hostedBlender/LeftoverSignal",
+  {
+    defaultValue: () => (pid, signal) => {
+      try {
+        process.kill(pid, signal);
+      } catch {
+        // Already gone.
+      }
+    },
+  },
+);
 // A start that shows no viewport window by then has failed (a broken file, no encoder).
 const START_TIMEOUT = Duration.seconds(90);
 const CONTROL_CONNECT_INTERVAL = Duration.millis(200);
@@ -310,6 +316,7 @@ const make = Effect.gen(function* () {
     | ProjectService.ProjectService
   >();
   const serviceScope = yield* Effect.scope;
+  const signalProcess = yield* LeftoverSignal;
   // Runs live here, so on shutdown they are ended with recovery copies before it closes.
   const runScope = yield* Scope.fork(serviceScope);
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
@@ -536,10 +543,11 @@ const make = Effect.gen(function* () {
   });
 
   // A helper from a server that died stops Blender itself once asked. Whatever of its launch
-  // outlasts the grace is killed, and only then are its files collected.
+  // outlasts the grace is killed. True once nothing of it is running, so its files can be
+  // collected; a launch still running after that (Blender stuck in the kernel) is left alone.
   const stopLeftover = Effect.fnUntraced(function* (helperPid: number, launchDir: string) {
     const running = yield* leftoverProcesses(helperPid, launchDir);
-    if (running.length === 0) return;
+    if (running.length === 0) return true;
     const asked = running.includes(helperPid) ? [helperPid] : running;
     yield* Effect.sync(() => asked.forEach((pid) => signalProcess(pid, "SIGTERM")));
     const gone = (timeout: Duration.Input) =>
@@ -550,10 +558,10 @@ const make = Effect.gen(function* () {
         }),
         Effect.timeoutOption(timeout),
       );
-    if (Option.isSome(yield* gone(LEFTOVER_STOP_TIMEOUT))) return;
+    if (Option.isSome(yield* gone(LEFTOVER_STOP_TIMEOUT))) return true;
     const left = yield* leftoverProcesses(helperPid, launchDir);
     yield* Effect.sync(() => left.forEach((pid) => signalProcess(pid, "SIGKILL")));
-    yield* gone(Duration.seconds(1));
+    return Option.isSome(yield* gone(Duration.seconds(1)));
   });
 
   /** Keeps what a launch a stopped server left behind holds, then removes it. */
@@ -610,19 +618,28 @@ const make = Effect.gen(function* () {
       .readDirectory(launchesDir)
       .pipe(Effect.orElseSucceed(() => []))).map((entry) => path.join(launchesDir, entry));
     // Every leftover's Blender is stopped at once, so several cost one grace period.
-    yield* Effect.forEach(
+    const quiet = yield* Effect.forEach(
       leftovers,
       (launchDir) =>
         fileSystem.readFileString(path.join(launchDir, "launch.json")).pipe(
           Effect.map((text) => Option.getOrUndefined(decodeLaunchRecord(text))?.helperPid),
           Effect.orElseSucceed(() => undefined),
           Effect.flatMap((helperPid) =>
-            helperPid === undefined ? Effect.void : stopLeftover(helperPid, launchDir),
+            helperPid === undefined ? Effect.succeed(true) : stopLeftover(helperPid, launchDir),
           ),
         ),
-      { concurrency: "unbounded", discard: true },
+      { concurrency: "unbounded" },
     );
-    for (const launchDir of leftovers) yield* salvage(launchDir);
+    for (const [index, launchDir] of leftovers.entries()) {
+      if (quiet[index]) {
+        yield* salvage(launchDir);
+      } else {
+        // Its copy may still be being written; the next start tries again.
+        yield* Effect.logWarning("a hosted Blender from before outlived being stopped", {
+          launchDir,
+        });
+      }
+    }
   });
   yield* restoreRecords;
   yield* publishNow();

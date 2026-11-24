@@ -552,6 +552,49 @@ describe("Salvaging what a stopped server left", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("leaves a launch it couldn't stop for the next start, collecting nothing", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage-unkillable");
+      const { hostedDir, launchDir } = leftover(dir, {});
+      const readyFile = NodePath.join(dir, "ready");
+      const helper = NodeChildProcess.spawn(
+        python,
+        [
+          "-c",
+          "import signal, sys, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); open(sys.argv[1], 'w').close(); time.sleep(600)",
+          readyFile,
+          "--state-dir",
+          launchDir,
+        ],
+        { cwd: launchDir, stdio: "ignore", detached: true },
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(() => helper.kill("SIGKILL")));
+      yield* Effect.promise(
+        () =>
+          new Promise<void>((resolve) => {
+            const watcher = NodeFS.watch(dir, () => {
+              if (!NodeFS.existsSync(readyFile)) return;
+              watcher.close();
+              resolve();
+            });
+          }),
+      );
+      leftover(dir, { helperPid: helper.pid! });
+      // Stands in for a Blender stuck in the kernel: SIGKILL doesn't take, SIGTERM is ignored.
+      const service = yield* idleService(dir).pipe(
+        Effect.provideService(HostedBlender.LeftoverSignal, (pid, signal) => {
+          if (signal !== "SIGKILL") process.kill(pid, signal);
+        }),
+      );
+      // Startup still completes, and takes nothing from a launch that may still be writing.
+      expect((yield* firstState(service)).status).toBe("stopped");
+      expect(recoveryOf(hostedDir)).toBeNull();
+      expect(NodeFS.readFileSync(NodePath.join(launchDir, "tmp", "quit.blend"), "utf8")).toBe(
+        "left behind",
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.live("stops several stubborn leftovers in one grace period", () =>
     Effect.gen(function* () {
       const dir = yield* tempDir("salvage-many");
