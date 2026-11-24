@@ -21,6 +21,7 @@ export type FilePreviewKind =
   | "markdown"
   | "mermaid"
   | "font"
+  | "model"
   | "archive"
   | "sqlite"
   | "docx"
@@ -61,6 +62,7 @@ export function filePreviewKind(
     mime === "application/vnd.oasis.opendocument.formula-template"
   )
     return "font";
+  if (richDocuments && modelPreviewFormat(file) !== null) return "model";
   if (mime.startsWith("image/")) return "image";
   if (mime.startsWith("video/") && !generic) return "video";
   if (mime.startsWith("audio/")) return "audio";
@@ -200,6 +202,62 @@ const FONT_MIME_TYPE_BY_EXTENSION = new Map([
 
 export function isWorkspaceFontPreviewPath(path: string): boolean {
   return /\.(ttf|otf|woff2?)$/i.test(path);
+}
+
+export type ModelPreviewFormat = "glb" | "gltf" | "stl" | "ply" | "obj" | "3mf" | "fbx";
+
+const MODEL_FORMAT_BY_EXTENSION = new Map<string, ModelPreviewFormat>([
+  [".glb", "glb"],
+  [".gltf", "gltf"],
+  [".stl", "stl"],
+  [".ply", "ply"],
+  [".obj", "obj"],
+  [".3mf", "3mf"],
+  [".fbx", "fbx"],
+]);
+
+const MODEL_FORMAT_BY_MIME = new Map<string, ModelPreviewFormat>([
+  ["model/gltf-binary", "glb"],
+  ["model/gltf+json", "gltf"],
+  ["model/stl", "stl"],
+  ["model/x.stl-binary", "stl"],
+  ["model/x.stl-ascii", "stl"],
+  ["application/sla", "stl"],
+  ["application/vnd.ply", "ply"],
+  ["model/obj", "obj"],
+  ["model/3mf", "3mf"],
+  ["application/vnd.ms-package.3dmanufacturing-3dmodel+xml", "3mf"],
+  ["application/vnd.fbx", "fbx"],
+]);
+
+// Linux's MIME database also maps .obj to COFF objects and TGIF drawings, and Windows maps .stl
+// to certificate trust lists, so these count only with a model extension.
+const MODEL_MIME_ALIASES = new Set([
+  "application/x-coff",
+  "application/x-tgif",
+  "application/vnd.ms-pki.stl",
+]);
+
+/** The 3D format a file is rendered as in the browser, by extension and then by MIME type. */
+export function modelPreviewFormat(file: {
+  readonly name: string;
+  readonly mimeType?: string;
+}): ModelPreviewFormat | null {
+  const mime = file.mimeType?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  const name = file.name.toLowerCase();
+  const byExtension = MODEL_FORMAT_BY_EXTENSION.get(name.slice(name.lastIndexOf(".")));
+  const byMime = MODEL_FORMAT_BY_MIME.get(mime);
+  if (
+    byExtension &&
+    (!mime ||
+      GENERIC_MIME_TYPES.has(mime) ||
+      mime === "text/plain" ||
+      byMime !== undefined ||
+      MODEL_MIME_ALIASES.has(mime) ||
+      (byExtension === "gltf" && mime === "application/json"))
+  )
+    return byExtension;
+  return byMime ?? null;
 }
 
 export function hostPreviewMimeTypeFromExtension(extension: string): string | null {

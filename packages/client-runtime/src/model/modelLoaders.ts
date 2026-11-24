@@ -1,0 +1,293 @@
+// @effect-diagnostics globalFetch:off - This browser-only loader fetches signed companion files without an Effect runtime, like the device model.
+import {
+  Box3,
+  DoubleSide,
+  Group,
+  ImageLoader,
+  Loader,
+  LoadingManager,
+  Mesh,
+  MeshStandardMaterial,
+  Points,
+  PointsMaterial,
+  Texture,
+  Vector3,
+  type BufferGeometry,
+  type Material,
+  type Object3D,
+} from "three";
+import { ThreeMFLoader } from "three/addons/loaders/3MFLoader.js";
+import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
+import { GLTFLoader, type GLTFParser } from "three/addons/loaders/GLTFLoader.js";
+import { MTLLoader } from "three/addons/loaders/MTLLoader.js";
+import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
+import { PLYLoader } from "three/addons/loaders/PLYLoader.js";
+import { STLLoader } from "three/addons/loaders/STLLoader.js";
+import type { ModelPreviewFormat } from "@t3tools/shared/filePreview";
+
+import { resolveModelCompanionPath } from "./companionPath.ts";
+import { disposeModel, ensureVertexNormals, modelFacts, orientToYUp } from "./modelGeometry.ts";
+import { ModelPreviewError } from "./modelPreviewError.ts";
+
+export interface ModelCompanions {
+  /** Absolute host path of the model; the files it references resolve against its folder. */
+  readonly modelPath: string;
+  readonly workspaceRoot: string | null;
+  /** Signs a URL for one referenced file, or resolves null when it cannot be read. */
+  readonly mint: (path: string, signal: AbortSignal) => Promise<string | null>;
+}
+
+// Loaders' own requests for anything but embedded data end here and never leave the page:
+// every referenced file is read through `companionFiles`, which applies the folder policy.
+const BLOCKED_URL = "about:blank#blocked";
+
+function companionFiles(companions: ModelCompanions | null, signal: AbortSignal) {
+  const missing = new Set<string>();
+  /** Missing files the model cannot render without, such as a glTF buffer. */
+  const required = new Set<string>();
+  const urls = new Map<string, Promise<string | null>>();
+  const images = new ImageLoader(new LoadingManager()).setCrossOrigin("anonymous");
+  const locate = async (reference: string) => {
+    const target = resolveModelCompanionPath({
+      reference,
+      modelPath: companions?.modelPath ?? "",
+      workspaceRoot: companions?.workspaceRoot ?? null,
+    });
+    if (target._tag === "embedded") return { url: reference, name: null };
+    if (target._tag === "rejected" || companions === null) return { url: null, name: target.name };
+    let url = urls.get(target.path);
+    if (url === undefined) {
+      url = companions.mint(target.path, signal).catch(() => null);
+      urls.set(target.path, url);
+    }
+    return { url: await url, name: target.name };
+  };
+  const read = async <T>(reference: string, load: (url: string) => Promise<T>, needed = false) => {
+    const { url, name } = await locate(reference);
+    const value = url === null ? null : await load(url).catch(() => null);
+    if (value === null && name !== null) {
+      missing.add(name);
+      if (needed) required.add(name);
+    }
+    return value;
+  };
+  const fetchOk = async (url: string) => {
+    const response = await fetch(url, { signal });
+    if (!response.ok) throw new Error(`Companion request failed: ${response.status}`);
+    return response;
+  };
+  return {
+    missing,
+    required,
+    bytes: (reference: string, needed?: boolean) =>
+      read(reference, async (url) => (await fetchOk(url)).arrayBuffer(), needed),
+    text: (reference: string) => read(reference, async (url) => (await fetchOk(url)).text()),
+    image: (reference: string) => read(reference, (url) => images.loadAsync(url)),
+  };
+}
+
+type CompanionFiles = ReturnType<typeof companionFiles>;
+
+/**
+ * Stands in for `TextureLoader` for every texture a glTF, MTL or FBX file names. Like
+ * `TextureLoader` it returns the texture at once and fills its image later, but it reads the
+ * image through the companion policy instead of the loader's synchronous URL.
+ */
+class CompanionTextureLoader extends Loader<Texture> {
+  readonly pending: Promise<void>[] = [];
+  readonly #files: CompanionFiles;
+
+  constructor(manager: LoadingManager, files: CompanionFiles) {
+    super(manager);
+    this.#files = files;
+  }
+
+  override load(
+    url: string,
+    onLoad?: (texture: Texture) => void,
+    _onProgress?: unknown,
+    onError?: (error: unknown) => void,
+  ): Texture {
+    const texture = new Texture();
+    // FBX clears the path for embedded images.
+    const reference = this.path ? `${this.path}${url}` : url;
+    this.pending.push(
+      this.#files.image(reference).then((image) => {
+        // FBX makes object URLs for embedded images and never revokes them.
+        if (reference.startsWith("blob:")) URL.revokeObjectURL(reference);
+        if (image === null) {
+          onError?.(new Error(`Texture unavailable: ${reference}`));
+          return;
+        }
+        texture.image = image;
+        texture.needsUpdate = true;
+        onLoad?.(texture);
+      }),
+    );
+    return texture;
+  }
+}
+
+function companionBuffers(parser: GLTFParser, files: CompanionFiles) {
+  const json: {
+    readonly bufferViews?: ReadonlyArray<{
+      readonly buffer: number;
+      readonly byteOffset?: number;
+      readonly byteLength: number;
+    }>;
+    readonly buffers?: ReadonlyArray<{ readonly uri?: string }>;
+  } = parser.json;
+  const buffers = new Map<number, Promise<ArrayBuffer>>();
+  return {
+    name: "T3_companion_buffers",
+    loadBufferView(index: number) {
+      const view = json.bufferViews?.[index];
+      const uri = view === undefined ? undefined : json.buffers?.[view.buffer]?.uri;
+      if (view === undefined || uri === undefined || /^data:/i.test(uri)) return null;
+      let buffer = buffers.get(view.buffer);
+      if (buffer === undefined) {
+        buffer = files.bytes(uri, true).then((bytes) => {
+          if (bytes === null) throw new Error(`glTF buffer unavailable: ${uri}`);
+          return bytes;
+        });
+        buffers.set(view.buffer, buffer);
+      }
+      const start = view.byteOffset ?? 0;
+      return buffer.then((bytes) => bytes.slice(start, start + view.byteLength));
+    },
+  };
+}
+
+function defaultMaterial(geometry: BufferGeometry) {
+  return new MeshStandardMaterial({
+    color: geometry.getAttribute("color") ? 0xffffff : 0xb3bac4,
+    vertexColors: geometry.getAttribute("color") !== undefined,
+    roughness: 0.6,
+    metalness: 0.05,
+    side: DoubleSide,
+  });
+}
+
+async function parseModel(
+  format: ModelPreviewFormat,
+  data: ArrayBuffer,
+  manager: LoadingManager,
+  files: CompanionFiles,
+): Promise<Object3D> {
+  switch (format) {
+    case "glb":
+    case "gltf": {
+      const loader = new GLTFLoader(manager).register((parser) => companionBuffers(parser, files));
+      return (await loader.parseAsync(data, "")).scene;
+    }
+    case "stl":
+      return new Mesh(...withDefaultMaterial(new STLLoader(manager).parse(data)));
+    case "ply": {
+      const geometry = new PLYLoader(manager).parse(data);
+      // A PLY without faces is a point cloud, common for scans.
+      if (geometry.index !== null) return new Mesh(...withDefaultMaterial(geometry));
+      geometry.computeBoundingSphere();
+      return new Points(
+        geometry,
+        new PointsMaterial({
+          size: (geometry.boundingSphere?.radius ?? 1) / 250,
+          vertexColors: geometry.getAttribute("color") !== undefined,
+        }),
+      );
+    }
+    case "3mf":
+      return new ThreeMFLoader(manager).parse(data);
+    case "fbx":
+      return new FBXLoader(manager).parse(data, "");
+    case "obj": {
+      const text = new TextDecoder().decode(data);
+      const loader = new OBJLoader(manager);
+      const libraries = [...text.matchAll(/^[ \t]*mtllib[ \t]+(.+?)[ \t\r]*$/gm)].flatMap(
+        (match) => (match[1] ? [match[1]] : []),
+      );
+      const materials = (await Promise.all(libraries.map(files.text))).filter(
+        (library) => library !== null,
+      );
+      if (materials.length > 0)
+        loader.setMaterials(new MTLLoader(manager).parse(materials.join("\n"), ""));
+      return loader.parse(text);
+    }
+  }
+}
+
+function withDefaultMaterial(geometry: BufferGeometry) {
+  return [geometry, defaultMaterial(geometry)] as const;
+}
+
+/** Drops maps whose image never arrived; a texture with no image samples as black. */
+function stripUnloadedTextures(root: Object3D) {
+  root.traverse((object) => {
+    if (!(object instanceof Mesh || object instanceof Points)) return;
+    const materials: Material | Material[] = object.material;
+    for (const material of Array.isArray(materials) ? materials : [materials]) {
+      for (const [key, value] of Object.entries(material)) {
+        if (!(value instanceof Texture) || value.image) continue;
+        value.dispose();
+        Reflect.set(material, key, null);
+        material.needsUpdate = true;
+      }
+    }
+  });
+}
+
+export interface LoadedModel {
+  /** Y-up and centred on the origin. */
+  readonly root: Object3D;
+  readonly facts: ReturnType<typeof modelFacts>;
+  /** Referenced files that could not be read; the model renders without them. */
+  readonly missing: ReadonlyArray<string>;
+}
+
+/** Parses meshes and materials only; nothing a file embeds is executed. */
+export async function loadModel(input: {
+  readonly format: ModelPreviewFormat;
+  readonly data: ArrayBuffer;
+  readonly companions: ModelCompanions | null;
+  readonly signal: AbortSignal;
+}): Promise<LoadedModel> {
+  const files = companionFiles(input.companions, input.signal);
+  const manager = new LoadingManager();
+  manager.setURLModifier((url) => (/^(?:data|blob):/i.test(url) ? url : BLOCKED_URL));
+  const textures = new CompanionTextureLoader(manager, files);
+  manager.addHandler(/^(?!data:|blob:)/i, textures);
+  let model: Object3D;
+  try {
+    model = await parseModel(input.format, input.data, manager, files);
+    await Promise.all(textures.pending);
+  } catch (cause) {
+    await Promise.allSettled(textures.pending);
+    throw new ModelPreviewError({
+      code: files.required.size > 0 ? "companion-missing" : "model-unreadable",
+      missing: [...(files.required.size > 0 ? files.required : files.missing)],
+      cause,
+    });
+  }
+  const root = new Group();
+  root.add(model);
+  if (input.signal.aborted) {
+    disposeModel(root);
+    input.signal.throwIfAborted();
+  }
+  stripUnloadedTextures(root);
+  if (input.format !== "glb" && input.format !== "gltf") {
+    // glTF leaves out normals on purpose: viewers must shade those meshes flat.
+    root.traverse((object) => {
+      if (object instanceof Mesh) ensureVertexNormals(object.geometry);
+    });
+  }
+  orientToYUp(root, input.format);
+  const facts = modelFacts(root);
+  if (facts.triangles === 0 && facts.points === 0) {
+    disposeModel(root);
+    throw new ModelPreviewError({ code: "model-empty", missing: [...files.missing] });
+  }
+  const center = new Box3().setFromObject(root).getCenter(new Vector3());
+  root.position.sub(center);
+  root.updateMatrixWorld(true);
+  return { root, facts, missing: [...files.missing] };
+}

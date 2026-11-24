@@ -58,15 +58,26 @@ export function useAssetUrlRefresh(
   environmentId: EnvironmentId | null,
   resource: AssetResource | null,
 ): () => Promise<string | null> {
+  const mint = useAssetUrlMinter(environmentId);
+  return async () => (resource === null ? null : mint(resource));
+}
+
+/** Mints a fresh URL for whichever resource it is given, such as each file a 3D model references. */
+export function useAssetUrlMinter(
+  environmentId: EnvironmentId | null,
+): (resource: AssetResource, signal?: AbortSignal) => Promise<string | null> {
   const connection = usePreparedConnection(environmentId);
   const httpBaseUrl = connection._tag === "Some" ? connection.value.httpBaseUrl : null;
   const refresh = useAtomQueryRunner(assetEnvironment.createUrl, {
     reportFailure: false,
     refresh: true,
   });
-  return async () => {
-    if (environmentId === null || resource === null || httpBaseUrl === null) return null;
-    const result = await refresh({ environmentId, input: { resource } });
+  return async (resource, signal) => {
+    if (environmentId === null || httpBaseUrl === null) return null;
+    const result = await refresh(
+      { environmentId, input: { resource } },
+      signal === undefined ? undefined : { signal },
+    );
     if (result._tag === "Failure") throw squashAtomCommandFailure(result);
     return resolveAssetUrl(httpBaseUrl, result.value.relativeUrl);
   };
