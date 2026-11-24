@@ -1,7 +1,7 @@
 import { HOSTED_BLENDER_STREAM_STOPPED_CLOSE_CODE } from "@t3tools/contracts";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 
-import { createHostedBlenderStreamClient } from "./stream.ts";
+import { avcFrameSize, createHostedBlenderStreamClient } from "./stream.ts";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -266,5 +266,83 @@ it("sends its size again when it is granted control, so the display follows it",
   // Still in control: nothing new to say.
   socket.receive(JSON.stringify({ type: "control", canOperate: true, controller: "you" }));
   expect(socket.sent).toEqual([resize, resize]);
+  client.stop();
+});
+
+// SPS NAL units (header byte first) from GStreamer's nvh264enc and x264enc at the sizes a hosted
+// Blender's display takes; x264's carry emulation-prevention bytes.
+const SPS = {
+  "nvh264enc baseline 1280x720": [
+    0x67, 0x42, 0xc0, 0x1f, 0x95, 0x90, 0x05, 0x00, 0x5b, 0xb0, 0x16, 0xa0, 0x20, 0x20, 0x28, 0x00,
+    0x00, 0x1f, 0x40, 0x00, 0x07, 0x53, 0x04, 0x20,
+  ],
+  "nvh264enc baseline 1046x1336": [
+    0x67, 0x42, 0xc0, 0x28, 0x95, 0x90, 0x04, 0x20, 0x2a, 0x79, 0xa5, 0xc0, 0x5a, 0x80, 0x80, 0x80,
+    0xa0, 0x00, 0x00, 0x7d, 0x00, 0x00, 0x1d, 0x4c, 0x10, 0x80,
+  ],
+  "nvh264enc baseline 1044x2002": [
+    0x67, 0x42, 0xc0, 0x2a, 0x95, 0x90, 0x04, 0x20, 0x3f, 0x79, 0xe2, 0x30, 0x16, 0xa0, 0x20, 0x20,
+    0x28, 0x00, 0x00, 0x1f, 0x40, 0x00, 0x07, 0x53, 0x04, 0x20,
+  ],
+  "nvh264enc high 1044x2002": [
+    0x67, 0x64, 0x00, 0x2a, 0xac, 0x2b, 0x20, 0x08, 0x40, 0x7e, 0xf3, 0xc4, 0x60, 0x2d, 0x40, 0x40,
+    0x40, 0x50, 0x00, 0x00, 0x3e, 0x80, 0x00, 0x0e, 0xa6, 0x08, 0x40,
+  ],
+  "x264enc 1280x720": [
+    0x67, 0x42, 0xc0, 0x1f, 0xda, 0x01, 0x40, 0x16, 0xec, 0x05, 0xa8, 0x08, 0x08, 0x0a, 0x00, 0x00,
+    0x03, 0x00, 0x02, 0x00, 0x00, 0x03, 0x00, 0x79, 0x1e, 0x30, 0x65, 0x40,
+  ],
+  "x264enc 1046x1336": [
+    0x67, 0x42, 0xc0, 0x28, 0xda, 0x01, 0x08, 0x0a, 0x9e, 0x69, 0x70, 0x16, 0xa0, 0x20, 0x20, 0x28,
+    0x00, 0x00, 0x03, 0x00, 0x08, 0x00, 0x00, 0x03, 0x01, 0xe4, 0x78, 0xc1, 0x95,
+  ],
+  "x264enc 1044x2002": [
+    0x67, 0x42, 0xc0, 0x2a, 0xda, 0x01, 0x08, 0x0f, 0xde, 0x78, 0x8c, 0x05, 0xa8, 0x08, 0x08, 0x0a,
+    0x00, 0x00, 0x03, 0x00, 0x02, 0x00, 0x00, 0x03, 0x00, 0x79, 0x1e, 0x30, 0x65, 0x40,
+  ],
+};
+
+it.each(Object.entries(SPS))("reads the cropped frame size from the SPS (%s)", (name, bytes) => {
+  const [width, height] = name.split(" ").at(-1)!.split("x").map(Number);
+  expect(avcFrameSize(new Uint8Array(bytes))).toEqual({ width, height });
+});
+
+it("tells the decoder the frame size, which Android's WebView needs to show it uncropped", async () => {
+  FakeSocket.instances = [];
+  const configured = Promise.withResolvers<VideoDecoderConfig>();
+  vi.stubGlobal("WebSocket", FakeSocket);
+  vi.stubGlobal("EncodedVideoChunk", vi.fn());
+  vi.stubGlobal(
+    "VideoDecoder",
+    class extends EventTarget {
+      static isConfigSupported = async () => ({ supported: true });
+      state = "unconfigured";
+      decodeQueueSize = 0;
+      configure(config: VideoDecoderConfig) {
+        this.state = "configured";
+        configured.resolve(config);
+      }
+      decode() {}
+      close() {}
+    },
+  );
+  const client = createHostedBlenderStreamClient(
+    {
+      access: { httpBase: "https://t3", wsBase: "wss://t3/blender", credentials: false, query: {} },
+      threadId: "thread-1",
+    },
+    { present: vi.fn(() => true) },
+    { onStatus: vi.fn(), onStats: vi.fn(), onFrameRate: vi.fn(), onUnauthorized: vi.fn() },
+  );
+  const socket = FakeSocket.instances[0]!;
+  socket.open();
+  socket.receive(
+    semu(true, [0, 0, 0, 1, ...SPS["nvh264enc high 1044x2002"], 0, 0, 0, 1, 0x65, 0x88]),
+  );
+  expect(await configured.promise).toMatchObject({
+    codec: "avc1.64002a",
+    codedWidth: 1044,
+    codedHeight: 2002,
+  });
   client.stop();
 });

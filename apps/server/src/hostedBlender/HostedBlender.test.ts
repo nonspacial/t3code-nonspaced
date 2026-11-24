@@ -427,6 +427,25 @@ describe("Taking control", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("sizes the display to a pane that connected while Blender was starting", () =>
+    Effect.gen(function* () {
+      const { service, awaitDirty, helperInput } = yield* standIn("size-at-start", "");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      // Before the helper runs there is nobody to resize; the size must not count as applied.
+      const viewer = yield* attach(service, true);
+      yield* viewer.resize(1046, 1336);
+      yield* awaitDirty(true);
+      yield* viewer.input({ type: "takeControl", takeOver: false });
+      expect(yield* controller(viewer).pipe(Effect.repeat({ until: (c) => c === "you" }))).toBe(
+        "you",
+      );
+      yield* syncPoint(viewer);
+      expect(
+        helperInput().filter((command) => (command as { type: string }).type === "resize"),
+      ).toEqual([{ type: "resize", width: 1046, height: 1336 }]);
+    }).pipe(Effect.scoped),
+  );
+
   it.live("tells viewers when Blender captures the mouse, and frees control on leaving", () =>
     Effect.gen(function* () {
       const { service, openReady, helperInput } = yield* standIn("cursor", "");
