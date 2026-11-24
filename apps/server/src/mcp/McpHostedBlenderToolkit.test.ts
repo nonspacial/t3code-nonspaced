@@ -1,3 +1,8 @@
+// @effect-diagnostics nodeBuiltinImport:off - fixtures make a symlinked workspace root.
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -70,7 +75,8 @@ const layerFor = (input: {
   readonly shellReads?: { count: number };
   readonly listener?: HostedBlender.AgentListenerState;
   readonly ended?: HostedBlender.AgentAccessEnded;
-  readonly openFile?: string;
+  readonly openFile?: string | null;
+  readonly workspace?: string;
 }) =>
   McpHttpServer.layerHostedBlenderToolkit.pipe(
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
@@ -82,7 +88,7 @@ const layerFor = (input: {
             Effect.succeed({
               state: input.listener ?? "ready",
               ended: input.ended ?? null,
-              openFile: input.openFile ?? null,
+              openFile: input.openFile,
             }),
           quit: (quit) =>
             Effect.sync(() => {
@@ -102,7 +108,7 @@ const layerFor = (input: {
                     id,
                     input.plan === true ? { interactionMode: "plan" } : {},
                   ),
-                  worktreePath: workspace,
+                  worktreePath: input.workspace ?? workspace,
                 }),
         }),
         Layer.mock(ProjectService.ProjectService)({}),
@@ -280,5 +286,43 @@ describe("hosted Blender MCP tools", () => {
         }),
       ),
     ),
+  );
+
+  it.effect("leaves the file out for an untitled scene", () =>
+    Effect.gen(function* () {
+      const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
+      const [blender] = (status.structuredContent as { blenders: ReadonlyArray<object> }).blenders;
+      expect(blender).not.toHaveProperty("file");
+    }).pipe(Effect.provide(layerFor({ state: running, listener: "off", openFile: null }))),
+  );
+
+  it.effect(
+    "reports Blender's file under the workspace as configured, through a symlinked root",
+    () =>
+      Effect.gen(function* () {
+        const real = NodeFS.realpathSync(
+          NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-status-")),
+        );
+        const linked = `${real}-link`;
+        NodeFS.symlinkSync(real, linked);
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            NodeFS.rmSync(linked);
+            NodeFS.rmSync(real, { recursive: true, force: true });
+          }),
+        );
+        const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"])).pipe(
+          Effect.provide(
+            layerFor({
+              state: running,
+              openFile: NodePath.join(real, "models", "hero.wip-41cbc0de.blend"),
+              workspace: linked,
+            }),
+          ),
+        );
+        expect(status.structuredContent).toMatchObject({
+          blenders: [{ file: NodePath.join(linked, "models", "hero.wip-41cbc0de.blend") }],
+        });
+      }).pipe(Effect.scoped),
   );
 });

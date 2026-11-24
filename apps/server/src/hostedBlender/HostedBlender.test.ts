@@ -1694,7 +1694,11 @@ describe("Agent access at launch", () => {
 
   it.live("never takes a listener state from a Blender that has another file open", () =>
     Effect.gen(function* () {
-      const { service } = yield* launch({ agentPort: 41234 }, undefined, "otherFileFirst");
+      const { service, controlLog } = yield* launch(
+        { agentPort: 41234 },
+        undefined,
+        "otherFileFirst",
+      );
       const report = yield* service.agentListener(threadId);
       expect(report).toEqual({
         state: "off",
@@ -1705,6 +1709,8 @@ describe("Agent access at launch", () => {
         Stream.filter((state) => state.status === "stopped"),
         Stream.runHead,
       );
+      // The grant waits for a snapshot of the launch file, which never came.
+      expect(controlLog()).not.toContain("grantAgentListener");
     }).pipe(Effect.scoped),
   );
 });

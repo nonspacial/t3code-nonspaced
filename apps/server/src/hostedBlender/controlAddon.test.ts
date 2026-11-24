@@ -95,6 +95,8 @@ import socket, types
 _state = types.SimpleNamespace(sock=None)
 def is_running(): return _state.sock is not None
 def start(host, port):
+    import addon_utils
+    addon_utils.log("start", port)
     if is_running(): raise RuntimeError("Server is already running")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1" if host == "localhost" else host, port))
@@ -177,6 +179,8 @@ if _scenario.get("connect", True):
     if _scenario.get("pressStartBeforeGrant"):
         _press_start()
         _steps.append(_report())
+    if _scenario.get("fileBeforeGrant"):
+        bpy.data.filepath = "/work/other.blend"
     _t3.sendall("".join(json.dumps({"type": kind}) + "\n" for kind in _scenario.get("send", ["grantAgentListener"])).encode())
     _tick()
     _steps.append(_report())
@@ -233,6 +237,8 @@ const runAddon = (input: {
   /** What T3 sends once connected; a grant by default. */
   readonly send?: ReadonlyArray<"grantAgentListener" | "stopAgentListener">;
   readonly pressStartBeforeGrant?: boolean;
+  /** Another file is open by the time T3's grant arrives. */
+  readonly fileBeforeGrant?: boolean;
   readonly then?: "revoke" | "drop" | "otherFile" | "saveAs" | "revert";
 }) => {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-control-addon-"));
@@ -323,7 +329,9 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
 
   it("enables an installed but disabled extension with its preferences, then starts it", () => {
     const result = runAddon({ installed: [MCP], enabled: [], listen: true });
-    expect(result.calls).toEqual([["enable", MCP, true]]);
+    expect(result.calls.filter((call: ReadonlyArray<unknown>) => call[0] !== "start")).toEqual([
+      ["enable", MCP, true],
+    ]);
     expect(after(result)).toEqual({ listener: "ready", listening: result.port, enabled: true });
   });
 
@@ -364,5 +372,30 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       listen: false,
     });
     expect(result.calls).toEqual([]);
+  });
+
+  const bound = (result: { readonly calls: ReadonlyArray<ReadonlyArray<unknown>> }) =>
+    result.calls.some((call) => call[0] === "start");
+
+  it("never binds the port when a stop is queued behind the grant", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      send: ["grantAgentListener", "stopAgentListener"],
+    });
+    expect(result.steps).toEqual([pending, pending, off]);
+    expect(bound(result)).toBe(false);
+  });
+
+  it("never binds the port when another file is open by the time the grant arrives", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      fileBeforeGrant: true,
+    });
+    expect(after(result)).toEqual(off);
+    expect(bound(result)).toBe(false);
   });
 });

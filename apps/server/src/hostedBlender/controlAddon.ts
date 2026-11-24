@@ -342,6 +342,14 @@ def _tick():
             pass
         except OSError:
             _drop_client()
+        # A stop already waiting wins over a grant queued before it.
+        for queued in _State.buffer.split(b"\n")[:-1]:
+            try:
+                if json.loads(queued).get("type") == "stopAgentListener":
+                    _end_grant()
+                    break
+            except ValueError:
+                pass
         while b"\n" in _State.buffer:
             line, _State.buffer = _State.buffer.split(b"\n", 1)
             try:
@@ -390,6 +398,10 @@ def _grant_agent_listener():
     if _State.grant != "pending":
         return
     _State.grant = "granted"
+    # Checked again now: the file may have changed since T3 saw it.
+    _check_authorized_file()
+    if _State.grant != "granted":
+        return
     if _State.mcp_name is not None:
         import addon_utils
 

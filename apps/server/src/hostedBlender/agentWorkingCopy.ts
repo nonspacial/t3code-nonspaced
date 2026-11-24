@@ -40,9 +40,13 @@ const assertSeparateCopy = Effect.fn("HostedBlender.assertSeparateCopy")(functio
       reason: `${workingCopy} exists but is not a separate copy of ${requested}. Ask the user to move it aside.`,
     });
   const existing = yield* fileSystem.lstat(workingCopy).pipe(Effect.mapError(notSeparate));
-  if (existing.type !== "File" || masters.length === 0) return yield* notSeparate();
+  if (existing.type !== "File") return yield* notSeparate();
+  let compared = 0;
   for (const master of masters) {
     const original = yield* fileSystem.stat(master).pipe(Effect.mapError(notSeparate));
+    // A folder or anything else by a master's name isn't one.
+    if (original.type !== "File") continue;
+    compared += 1;
     if (
       Option.isNone(existing.ino) ||
       Option.isNone(original.ino) ||
@@ -51,6 +55,7 @@ const assertSeparateCopy = Effect.fn("HostedBlender.assertSeparateCopy")(functio
       return yield* notSeparate();
     }
   }
+  if (compared === 0) return yield* notSeparate();
 });
 
 /**
@@ -134,6 +139,29 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
         reason: "Only .blend files can be opened in a hosted Blender.",
       });
     }
+    // Named directly, the working copy is opened as it is: classified and checked as named,
+    // before any link is followed, against its master whatever that one's extension casing.
+    const copySuffix = `.wip-${threadTag(input.threadId)}.blend`;
+    const isCopy = path.basename(requested).endsWith(copySuffix);
+    if (isCopy) {
+      if (Option.isNone(yield* fileSystem.lstat(requested).pipe(Effect.option))) {
+        return yield* new HostedBlenderToolError({ reason: `${input.path} was not found.` });
+      }
+      const stem = path.basename(requested).slice(0, -copySuffix.length);
+      const siblings = yield* fileSystem
+        .readDirectory(path.dirname(requested))
+        .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+      yield* assertSeparateCopy(
+        requested,
+        siblings
+          .filter(
+            (entry) =>
+              entry.startsWith(stem) && entry.slice(stem.length).toLowerCase() === ".blend",
+          )
+          .map((entry) => path.join(path.dirname(requested), entry)),
+        input.path,
+      );
+    }
     // A symlink inside the workspace must not reach a master outside it.
     const master = yield* fileSystem
       .realPath(requested)
@@ -158,27 +186,7 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
       return yield* new HostedBlenderToolError({ reason: `${input.path} was not found.` });
 
     const name = workingCopyName(path.basename(master), input.threadId);
-    // Named directly, the working copy is opened as it is: classified and checked as named,
-    // before any link is followed, against its master whatever that one's extension casing.
-    const copySuffix = `.wip-${threadTag(input.threadId)}.blend`;
-    const isCopy = path.basename(requested).endsWith(copySuffix);
     const workingCopy = isCopy ? master : path.join(path.dirname(master), name);
-    if (isCopy) {
-      const stem = path.basename(requested).slice(0, -copySuffix.length);
-      const siblings = yield* fileSystem
-        .readDirectory(path.dirname(requested))
-        .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
-      yield* assertSeparateCopy(
-        requested,
-        siblings
-          .filter(
-            (entry) =>
-              entry.startsWith(stem) && entry.slice(stem.length).toLowerCase() === ".blend",
-          )
-          .map((entry) => path.join(path.dirname(requested), entry)),
-        input.path,
-      );
-    }
     const created = isCopy ? false : yield* createWorkingCopy(master, workingCopy, input.path);
     // Paths under the workspace as configured, as the client matches file links against it.
     const relativePath = path.relative(realRoot, workingCopy);

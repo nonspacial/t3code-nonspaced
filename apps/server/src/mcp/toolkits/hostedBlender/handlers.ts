@@ -4,6 +4,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
@@ -13,6 +14,7 @@ import * as HostedBlender from "../../../hostedBlender/HostedBlender.ts";
 import * as HostedBlenderAgents from "../../../hostedBlender/HostedBlenderAgents.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import { threadWorkspaceRoot } from "../../../project/threadWorkspaceRoot.ts";
+import { isWithinRoot } from "../../../workspace/KnownWorkspaces.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { HostedBlenderToolkit } from "./tools.ts";
@@ -36,6 +38,14 @@ const requireHostedBlender = Effect.gen(function* () {
     });
   }
   return scope.thread.threadId;
+});
+
+const underConfiguredRoot = Effect.fnUntraced(function* (file: string, root: string | undefined) {
+  if (root === undefined) return file;
+  const path = yield* Path.Path;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const realRoot = yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root));
+  return isWithinRoot(path, file, realRoot) ? path.join(root, path.relative(realRoot, file)) : file;
 });
 
 // Plan mode is read-only: it may look at Blender, never start or quit it.
@@ -77,15 +87,23 @@ const handlers = {
       if (state?.status !== "starting" && state?.status !== "running") return { blenders: [] };
       const root = yield* threadWorkspaceRoot(threadId);
       const listener = yield* hostedBlender.agentListener(threadId, { wait: false });
+      const reported = listener?.openFile;
+      // The file Blender has open now, which may no longer be the one it started with, under
+      // the workspace as configured, as chat links are matched against it. None if untitled.
+      const file =
+        reported === null
+          ? undefined
+          : reported === undefined
+            ? root === undefined
+              ? state.relativePath
+              : path.join(root, state.relativePath)
+            : yield* underConfiguredRoot(reported, root);
       return {
         blenders: [
           {
             role: "working",
             status: state.status,
-            // The file Blender has open now, which may no longer be the one it started with.
-            file:
-              listener?.openFile ??
-              (root === undefined ? state.relativePath : path.join(root, state.relativePath)),
+            ...(file === undefined ? {} : { file }),
             unsavedChanges: state.dirty,
             // Only a listener that came up on the thread's port takes `blender-hosted` calls.
             agentAccess: listener?.state === "ready",

@@ -121,11 +121,21 @@ export type { AgentListenerState };
  */
 export type AgentAccessEnded = "revoked" | "connectionLost" | "otherFile";
 
+/** A lost connection decides what the agent is told: nothing can save through it. */
+export const agentAccessEndedFor = (
+  controlLost: boolean,
+  ended: AgentAccessEnded | null,
+): AgentAccessEnded | null => (controlLost ? "connectionLost" : ended);
+
 export interface AgentListenerReport {
   readonly state: AgentListenerState;
+  /** `connectionLost` whenever T3 lost Blender, whatever else ended access first. */
   readonly ended: AgentAccessEnded | null;
-  /** The file Blender has open, as its add-on last said. */
-  readonly openFile: string | null;
+  /**
+   * The file Blender has open, as its add-on last said: null for an untitled scene, undefined
+   * before it has said.
+   */
+  readonly openFile: string | null | undefined;
 }
 const encodeControlCommand = Schema.encodeSync(
   Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("quit"), save: Schema.Boolean })),
@@ -285,7 +295,11 @@ interface Instance {
   agentAccessEnded: AgentAccessEnded | null;
   /** The launch asked for the agent listener, which the add-on starts only once granted. */
   agentListenerGranted: boolean;
-  openFile: string | null;
+  /** The grant went out, once Blender had shown it has the launch file open. */
+  agentListenerGrantSent: boolean;
+  /** T3 lost its control connection: nothing can save through it any more. */
+  controlLost: boolean;
+  openFile: string | null | undefined;
   /**
    * Which viewer controls the mouse and keyboard. There is no agent side: the agent works
    * through its own MCP connection, so a viewer in control never pauses it.
@@ -626,8 +640,20 @@ const make = Effect.gen(function* () {
         const listener = message.value.agentListener;
         if (message.value.filepath !== instance.blendPath) {
           yield* revokeAgentListener(instance, "otherFile");
-        } else if (listener !== undefined && !instance.agentListenerRevoked) {
-          yield* setAgentListener(instance, listener);
+        } else {
+          if (listener !== undefined && !instance.agentListenerRevoked) {
+            yield* setAgentListener(instance, listener);
+          }
+          // Granted only once Blender has shown it has the launch file open.
+          if (
+            instance.agentListenerGranted &&
+            !instance.agentListenerGrantSent &&
+            !instance.agentListenerRevoked &&
+            instance.control
+          ) {
+            instance.agentListenerGrantSent = true;
+            yield* instance.control.write(GRANT_AGENT_LISTENER);
+          }
         }
         if (instance.dirty === message.value.dirty) return;
         instance.dirty = message.value.dirty;
@@ -661,9 +687,8 @@ const make = Effect.gen(function* () {
       const closed = yield* Deferred.make<void>();
       yield* Effect.addFinalizer(() => Deferred.succeed(closed, undefined));
       instance.control = { write: (line) => writer.write(line).pipe(Effect.ignore), closed };
-      // Revoked before the add-on could hear it, or else granted now.
+      // Revoked before the add-on could hear it; a grant waits for its first state.
       if (instance.agentListenerRevoked) yield* instance.control.write(STOP_AGENT_LISTENER);
-      else if (instance.agentListenerGranted) yield* instance.control.write(GRANT_AGENT_LISTENER);
       const decoder = new TextDecoder();
       let buffer = "";
       return yield* Effect.forever(
@@ -690,6 +715,7 @@ const make = Effect.gen(function* () {
             // Nothing more will answer the requests still waiting.
             instance.requests.clear();
             instance.control = null;
+            instance.controlLost = true;
             // The add-on closes its listener when this connection drops, and nothing reopens it.
             if (!instance.agentListenerRevoked && instance.agentListener !== "off") {
               instance.agentAccessEnded = "connectionLost";
@@ -981,7 +1007,9 @@ const make = Effect.gen(function* () {
       agentListenerRevoked: false,
       agentAccessEnded: null,
       agentListenerGranted: false,
-      openFile: null,
+      agentListenerGrantSent: false,
+      controlLost: false,
+      openFile: undefined,
       session: new SessionControl(null),
       held: new HeldInput(),
       cursorCaptured: false,
@@ -1334,7 +1362,11 @@ const make = Effect.gen(function* () {
             timeout: AGENT_LISTENER_TIMEOUT,
             revoke: revokeAgentListener(instance),
           });
-    return { state, ended: instance.agentAccessEnded, openFile: instance.openFile };
+    return {
+      state,
+      ended: agentAccessEndedFor(instance.controlLost, instance.agentAccessEnded),
+      openFile: instance.openFile,
+    };
   });
 
   if (Option.isSome(agents)) {

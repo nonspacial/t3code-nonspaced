@@ -336,4 +336,42 @@ describe("startAgentWorkingCopy", () => {
       if (ended === "connectionLost") expect(error.reason).toContain("save: false");
     }).pipe(Effect.scoped),
   );
+
+  it.effect("doesn't take a folder by the master's name as the master", () =>
+    Effect.gen(function* () {
+      const root = yield* tempWorkspace;
+      NodeFS.mkdirSync(NodePath.join(root, "hero.BLEND"));
+      writeMaster(root, "hero.wip-3c4d5e6f.blend");
+      const error = yield* Effect.flip(
+        startAgentWorkingCopy({ threadId, path: "hero.wip-3c4d5e6f.blend" }).pipe(
+          Effect.provide(layerFor({ root, opened: [] })),
+        ),
+      );
+      expect(error.reason).toContain("not a separate copy");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("tells a lost connection apart from a pane-opened copy when it says how to save", () =>
+    Effect.gen(function* () {
+      const root = yield* tempWorkspace;
+      writeMaster(root, "hero.blend");
+      // A copy the pane opened, whose connection then dropped.
+      const error = yield* Effect.flip(
+        startAgentWorkingCopy({ threadId, path: "hero.blend" }).pipe(
+          Effect.provide(
+            layerFor({
+              root,
+              opened: [],
+              listener: "off",
+              ended: HostedBlender.agentAccessEndedFor(true, null) ?? "revoked",
+            }),
+          ),
+        ),
+      );
+      expect(error.reason).toContain("Ask the user to save in the Blender pane");
+      expect(error.reason).not.toContain("save: true");
+      assert.equal(HostedBlender.agentAccessEndedFor(true, "otherFile"), "connectionLost");
+      assert.equal(HostedBlender.agentAccessEndedFor(false, "otherFile"), "otherFile");
+    }).pipe(Effect.scoped),
+  );
 });
