@@ -114,6 +114,9 @@ import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as PreviewAgentActivity from "./preview/PreviewAgentActivity.ts";
 import * as DesktopBrowserChannel from "./preview/DesktopBrowserChannel.ts";
 import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
+import * as HiddenDisplayBinary from "./hostedBlender/HiddenDisplayBinary.ts";
+import * as HostedBlender from "./hostedBlender/HostedBlender.ts";
+import * as HostedBlenderStream from "./hostedBlender/HostedBlenderStream.ts";
 import * as PreviewBrowser from "./preview/PreviewBrowser.ts";
 import * as ProcessRunner from "./processRunner.ts";
 import * as GitManager from "./git/GitManager.ts";
@@ -559,6 +562,12 @@ const layerDevice = DeviceService.layer.pipe(
   Layer.provide(NetService.layer),
 );
 
+const layerHostedBlender = HostedBlender.layer.pipe(
+  Layer.provide(HiddenDisplayBinary.layer),
+  Layer.provide(WorkspacePaths.layer),
+  Layer.provide(NetService.layer),
+);
+
 const layerWorkspaceEntries = WorkspaceEntries.layer.pipe(Layer.provide(WorkspacePaths.layer));
 
 const layerWorkspaceFileSystem = WorkspaceFileSystem.layer.pipe(
@@ -739,6 +748,8 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ),
   layerThreadPullRequestWorker,
   KeepAwake.layer,
+  // WebSocket handlers and the stream route share the one instance per server.
+  layerHostedBlender,
   DelegatedTaskAnalytics.layer,
   Layer.effectDiscard(
     Effect.gen(function* () {
@@ -911,6 +922,7 @@ const layerMakeRoutes = Layer.mergeAll(
     LinkThreadHttp.layer,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
+    HostedBlenderStream.routeLayer,
     PreviewTunnel.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
