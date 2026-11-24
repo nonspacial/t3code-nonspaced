@@ -8,9 +8,18 @@ export const HOSTED_BLENDER_STREAM_STOPPED_CLOSE_CODE = 4404;
 /** Too many viewers are already watching this hosted Blender. */
 export const HOSTED_BLENDER_STREAM_FULL_CLOSE_CODE = 4429;
 
-/** What the server lacks to host Blender. Settings → Blender (B4) will help install them. */
+/** What the server lacks to host Blender. */
 export const HostedBlenderRequirement = Schema.Literals(["helper", "blender", "labwc"]);
 export type HostedBlenderRequirement = typeof HostedBlenderRequirement.Type;
+
+export const HostedBlenderRunningState = Schema.Struct({
+  status: Schema.Literals(["starting", "running"]),
+  /** Relative to the thread's workspace. */
+  relativePath: TrimmedNonEmptyString,
+  /** The file has changes Blender hasn't saved. */
+  dirty: Schema.Boolean,
+});
+export type HostedBlenderRunningState = typeof HostedBlenderRunningState.Type;
 
 /**
  * A thread's hosted Blender. `unavailable` is a host that can never run one (not Linux);
@@ -23,13 +32,9 @@ export const HostedBlenderThreadState = Schema.Union([
     missing: Schema.Array(HostedBlenderRequirement),
   }),
   Schema.Struct({ status: Schema.Literal("stopped") }),
-  Schema.Struct({
-    status: Schema.Literals(["starting", "running"]),
-    /** Relative to the thread's workspace. */
-    relativePath: TrimmedNonEmptyString,
-    /** The file has changes Blender hasn't saved. */
-    dirty: Schema.Boolean,
-  }),
+  /** The last start never showed Blender's viewport window. Opening a file again retries. */
+  Schema.Struct({ status: Schema.Literal("failed") }),
+  HostedBlenderRunningState,
 ]);
 export type HostedBlenderThreadState = typeof HostedBlenderThreadState.Type;
 
@@ -61,7 +66,6 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "notBlendFile",
       "fileNotFound",
       "otherFileOpen",
-      "startFailed",
       "saveFailed",
     ]),
   },
@@ -82,8 +86,6 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "The file was not found.";
       case "otherFileOpen":
         return "This thread's hosted Blender already has another file open. Quit it first.";
-      case "startFailed":
-        return "The hosted Blender failed to start.";
       case "saveFailed":
         return "Blender could not save the file.";
     }

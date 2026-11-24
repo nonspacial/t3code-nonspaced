@@ -34,7 +34,7 @@ export const helperArguments = (launch: BlenderLaunch): ReadonlyArray<string> =>
   // The official MCP add-on only starts with online access.
   "--online-mode",
   "-noaudio",
-  // Scripts embedded in the file stay off: B5 decides when a thread may run them.
+  // Scripts embedded in the file stay off until threads can opt in by permission mode.
   "--disable-autoexec",
   // A file on the command line also keeps the splash screen away.
   launch.blendPath,

@@ -4,6 +4,7 @@ import {
   type HostedBlenderOpenInput,
   type HostedBlenderQuitInput,
   type HostedBlenderRequirement,
+  type HostedBlenderRunningState,
   type HostedBlenderStreamServerMessage,
   type HostedBlenderThreadState,
   type ThreadId,
@@ -59,6 +60,19 @@ const MEMORY_SAMPLE_INTERVAL = Duration.seconds(5);
 const KEYFRAME_REQUEST_INTERVAL_MS = 250;
 const QUIT_TIMEOUT = Duration.seconds(20);
 const CONTROL_CONNECT_ATTEMPTS = 150;
+// A start that shows no viewport window by then has failed (a broken file, no encoder).
+const START_TIMEOUT = Duration.seconds(90);
+
+// T3's control add-on speaks JSON lines on its private socket; see controlAddon.ts.
+const ControlMessage = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("hello"), pid: Schema.Int }),
+  Schema.Struct({ type: Schema.Literal("state"), filepath: Schema.String, dirty: Schema.Boolean }),
+  Schema.Struct({ type: Schema.Literal("quitFailed"), reason: Schema.Literal("saveFailed") }),
+]);
+const decodeControlMessage = Schema.decodeUnknownOption(Schema.fromJsonString(ControlMessage));
+const encodeControlCommand = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("quit"), save: Schema.Boolean })),
+);
 
 export type HostedBlenderViewerOutput =
   | { readonly _tag: "frame"; readonly data: Uint8Array }
@@ -93,16 +107,6 @@ export class HostedBlender extends Context.Service<
   }
 >()("t3/hostedBlender/HostedBlender") {}
 
-const ControlMessage = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("hello"), pid: Schema.Int }),
-  Schema.Struct({ type: Schema.Literal("state"), filepath: Schema.String, dirty: Schema.Boolean }),
-  Schema.Struct({ type: Schema.Literal("quitFailed"), reason: Schema.Literal("saveFailed") }),
-]);
-const decodeControlMessage = Schema.decodeUnknownOption(Schema.fromJsonString(ControlMessage));
-const encodeControlCommand = Schema.encodeSync(
-  Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("quit"), save: Schema.Boolean })),
-);
-
 interface ViewerEntry {
   readonly queue: Queue.Queue<HostedBlenderViewerOutput>;
   readonly flow: ViewerFlow;
@@ -111,6 +115,8 @@ interface ViewerEntry {
 interface Instance {
   readonly threadId: ThreadId;
   readonly relativePath: string;
+  /** The checked real path `open` resolved; `run` never resolves it again. */
+  readonly blendPath: string;
   readonly ended: Deferred.Deferred<void>;
   readonly viewers: ViewerEntry[];
   status: "starting" | "running";
@@ -124,13 +130,15 @@ interface Instance {
   control: ((line: string) => Effect.Effect<void>) | null;
   quitFailed: Deferred.Deferred<void> | null;
   fiber: Fiber.Fiber<void> | null;
+  /** Set by `quit`, so stopping a Blender that is still starting doesn't read as a failed start. */
+  quitting: boolean;
 }
 
 type Availability =
   | { readonly status: "ok"; readonly helper: string; readonly blender: string }
   | Extract<HostedBlenderThreadState, { status: "unavailable" | "notSetUp" }>;
 
-type RunningState = Extract<HostedBlenderThreadState, { status: "starting" | "running" }>;
+type PublishedState = HostedBlenderRunningState | { readonly status: "failed" };
 
 const sameState = (a: HostedBlenderThreadState, b: HostedBlenderThreadState) =>
   JSON.stringify(a) === JSON.stringify(b);
@@ -155,7 +163,9 @@ const make = Effect.gen(function* () {
   const serviceScope = yield* Effect.scope;
 
   const instances = new Map<string, Instance>();
-  const states = yield* SubscriptionRef.make<ReadonlyMap<string, RunningState>>(new Map());
+  const states = yield* SubscriptionRef.make<ReadonlyMap<string, PublishedState>>(new Map());
+  // Threads whose last start failed, until they open a file again.
+  const failedStarts = new Set<string>();
   const userResourcesLock = yield* Semaphore.make(1);
   const rootDir = path.join(config.stateDir, "hosted-blender");
 
@@ -163,12 +173,16 @@ const make = Effect.gen(function* () {
     Effect.suspend(() =>
       SubscriptionRef.set(
         states,
-        new Map(
-          Array.from(instances.values(), (instance): [string, RunningState] => [
+        new Map<string, PublishedState>([
+          ...Array.from(failedStarts, (threadId): [string, PublishedState] => [
+            threadId,
+            { status: "failed" },
+          ]),
+          ...Array.from(instances.values(), (instance): [string, PublishedState] => [
             instance.threadId,
             { status: instance.status, relativePath: instance.relativePath, dirty: instance.dirty },
           ]),
-        ),
+        ]),
       ),
     );
 
@@ -210,6 +224,8 @@ const make = Effect.gen(function* () {
       ? null
       : { type: "stats", ...instance.stats, memoryBytes: instance.memoryBytes };
 
+  // Keyframe requests, packets, control lines, memory samples and viewer detaches run many times
+  // per instance; they share its `HostedBlender.run` span instead of each opening one.
   const requestKeyframe = Effect.fnUntraced(function* (instance: Instance) {
     const now = yield* Clock.currentTimeMillis;
     if (now - instance.lastKeyframeRequest < KEYFRAME_REQUEST_INTERVAL_MS) return;
@@ -217,7 +233,6 @@ const make = Effect.gen(function* () {
     yield* instance.helper({ type: "keyframe" });
   });
 
-  // Per-packet work shares the instance's run span.
   const handlePacket = Effect.fnUntraced(function* (instance: Instance, packet: HelperPacket) {
     if (packet._tag === "video") {
       let wantsKeyframe = false;
@@ -291,6 +306,12 @@ const make = Effect.gen(function* () {
     );
     const writer = yield* socket.writer;
     instance.control = (line) => writer.write(line).pipe(Effect.ignore);
+    // Once Blender's end of the socket closes, `quit` falls back to stopping the helper.
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        instance.control = null;
+      }),
+    );
     const decoder = new TextDecoder();
     let buffer = "";
     return yield* Effect.forever(
@@ -362,10 +383,6 @@ const make = Effect.gen(function* () {
       yield* fileSystem.chmod(controlDir, 0o700);
       const controlSocket = path.join(controlDir, "control.sock");
       const mcpPort = yield* net.reserveLoopbackPort();
-      const blendPath = path.resolve(
-        (yield* threadRoot(instance.threadId)) ?? "",
-        instance.relativePath,
-      );
 
       const handle = yield* Effect.acquireRelease(
         spawner.spawn(
@@ -376,7 +393,7 @@ const make = Effect.gen(function* () {
               userResources,
               blender: tools.blender,
               addonPath,
-              blendPath,
+              blendPath: instance.blendPath,
               controlSocket,
               mcpPort,
               ...INITIAL_SIZE,
@@ -423,6 +440,14 @@ const make = Effect.gen(function* () {
         Effect.forkScoped,
       );
       yield* connectControl(instance, controlSocket).pipe(Effect.ignore, Effect.forkScoped);
+      yield* Effect.sleep(START_TIMEOUT).pipe(
+        Effect.andThen(
+          Effect.suspend(() =>
+            instance.status === "running" ? Effect.void : handle.kill().pipe(Effect.ignore),
+          ),
+        ),
+        Effect.forkScoped,
+      );
       yield* sampleMemory(instance).pipe(
         Effect.repeat(Schedule.spaced(MEMORY_SAMPLE_INTERVAL)),
         Effect.forkScoped,
@@ -439,6 +464,9 @@ const make = Effect.gen(function* () {
         Effect.ensuring(
           Effect.gen(function* () {
             instances.delete(instance.threadId);
+            if (instance.status === "starting" && !instance.quitting) {
+              failedStarts.add(instance.threadId);
+            }
             yield* Effect.forEach(
               instance.viewers,
               (viewer) => Queue.offer(viewer.queue, { _tag: "stopped" }),
@@ -454,39 +482,43 @@ const make = Effect.gen(function* () {
   const threadRoot = (threadId: ThreadId) =>
     threadWorkspaceRoot(threadId).pipe(Effect.provideContext(lookupContext));
 
-  const fail = (reason: HostedBlenderError["reason"]) => new HostedBlenderError({ reason });
-
   const open: HostedBlender["Service"]["open"] = Effect.fn("HostedBlender.open")(function* ({
     threadId,
     relativePath,
   }) {
     yield* Effect.annotateCurrentSpan({ threadId });
     const tools = yield* availability;
-    if (tools.status !== "ok") return yield* fail(tools.status);
-    if (!relativePath.toLowerCase().endsWith(".blend")) return yield* fail("notBlendFile");
+    if (tools.status !== "ok") return yield* new HostedBlenderError({ reason: tools.status });
+    if (!relativePath.toLowerCase().endsWith(".blend"))
+      return yield* new HostedBlenderError({ reason: "notBlendFile" });
     const root = yield* threadRoot(threadId);
-    if (root === undefined) return yield* fail("threadNotFound");
+    if (root === undefined) return yield* new HostedBlenderError({ reason: "threadNotFound" });
+    // No cause on these: the error reaches the browser, and the reason says what was wrong.
     const resolved = yield* workspacePaths
       .resolveRelativePathWithinRoot({ workspaceRoot: root, relativePath })
-      .pipe(Effect.mapError(() => fail("notInWorkspace")));
+      .pipe(Effect.mapError(() => new HostedBlenderError({ reason: "notInWorkspace" })));
     // A symlink inside the workspace must not reach a file outside it.
     const real = yield* Effect.all([
       fileSystem.realPath(root),
       fileSystem.realPath(resolved.absolutePath),
-    ]).pipe(Effect.mapError(() => fail("fileNotFound")));
+    ]).pipe(Effect.mapError(() => new HostedBlenderError({ reason: "fileNotFound" })));
     const inside = path.relative(real[0], real[1]);
-    if (inside.startsWith("..") || path.isAbsolute(inside)) return yield* fail("notInWorkspace");
-    const stat = yield* fileSystem.stat(real[1]).pipe(Effect.mapError(() => fail("fileNotFound")));
-    if (stat.type !== "File") return yield* fail("fileNotFound");
+    if (inside.startsWith("..") || path.isAbsolute(inside))
+      return yield* new HostedBlenderError({ reason: "notInWorkspace" });
+    const stat = yield* fileSystem
+      .stat(real[1])
+      .pipe(Effect.mapError(() => new HostedBlenderError({ reason: "fileNotFound" })));
+    if (stat.type !== "File") return yield* new HostedBlenderError({ reason: "fileNotFound" });
 
     const existing = instances.get(threadId);
     if (existing) {
       if (existing.relativePath === resolved.relativePath) return;
-      return yield* fail("otherFileOpen");
+      return yield* new HostedBlenderError({ reason: "otherFileOpen" });
     }
     const instance: Instance = {
       threadId,
       relativePath: resolved.relativePath,
+      blendPath: real[1],
       ended: yield* Deferred.make<void>(),
       viewers: [],
       status: "starting",
@@ -500,7 +532,9 @@ const make = Effect.gen(function* () {
       control: null,
       quitFailed: null,
       fiber: null,
+      quitting: false,
     };
+    failedStarts.delete(threadId);
     instances.set(threadId, instance);
     yield* publishNow();
     instance.fiber = yield* run(instance, tools).pipe(Effect.forkIn(serviceScope));
@@ -512,7 +546,11 @@ const make = Effect.gen(function* () {
   }) {
     yield* Effect.annotateCurrentSpan({ threadId, save });
     const instance = instances.get(threadId);
-    if (instance === undefined) return;
+    if (instance === undefined) {
+      if (!failedStarts.delete(threadId)) return;
+      return yield* publishNow();
+    }
+    instance.quitting = true;
     if (instance.control === null) {
       if (instance.fiber) yield* Fiber.interrupt(instance.fiber);
       return;
@@ -528,7 +566,8 @@ const make = Effect.gen(function* () {
       if (instance.fiber) yield* Fiber.interrupt(instance.fiber);
       return;
     }
-    if (outcome.value === "saveFailed") return yield* fail("saveFailed");
+    if (outcome.value === "saveFailed")
+      return yield* new HostedBlenderError({ reason: "saveFailed" });
   });
 
   const threadState: HostedBlender["Service"]["threadState"] = (threadId) =>
@@ -564,6 +603,7 @@ const make = Effect.gen(function* () {
     if (instance === undefined) return { _tag: "stopped" as const };
     if (instance.viewers.length >= MAX_VIEWERS) return { _tag: "full" as const };
     const entry: ViewerEntry = {
+      // ViewerFlow keeps at most one frame queued; the rest are small, infrequent messages.
       queue: yield* Queue.unbounded<HostedBlenderViewerOutput>(),
       flow: new ViewerFlow(),
     };

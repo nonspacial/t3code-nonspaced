@@ -9,7 +9,7 @@ import {
 import type {
   EnvironmentId,
   HostedBlenderRequirement,
-  HostedBlenderThreadState,
+  HostedBlenderRunningState,
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { MoreVertical } from "lucide-react";
@@ -84,6 +84,18 @@ export function BlenderPanel(props: {
           }
         />
       );
+    case "failed":
+      return (
+        <StateCard
+          title={<T>Blender didn't start</T>}
+          description={
+            <T>
+              Blender couldn't open the file on the hidden display. Check that Blender opens it and
+              that GStreamer has an H.264 encoder, then open it in hosted Blender again.
+            </T>
+          }
+        />
+      );
     case "starting":
     case "running":
       return <RunningBlender {...props} state={state} />;
@@ -120,7 +132,7 @@ function MissingRequirements(props: { readonly missing: ReadonlyArray<HostedBlen
 function RunningBlender(props: {
   readonly threadRef: ScopedThreadRef;
   readonly visible: boolean;
-  readonly state: Extract<HostedBlenderThreadState, { status: "starting" | "running" }>;
+  readonly state: HostedBlenderRunningState;
 }) {
   const [stats, setStats] = useState<StreamStats>({ frameSize: null, rate: null, server: null });
   return (
@@ -152,7 +164,7 @@ function RunningBlender(props: {
 
 function BlenderToolbar(props: {
   readonly threadRef: ScopedThreadRef;
-  readonly state: Extract<HostedBlenderThreadState, { status: "starting" | "running" }>;
+  readonly state: HostedBlenderRunningState;
 }) {
   const gt = useGT();
   const canQuit = useAtomValue(

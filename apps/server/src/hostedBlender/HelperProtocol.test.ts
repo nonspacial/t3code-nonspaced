@@ -69,7 +69,7 @@ describe("HelperPacketReader", () => {
           },
         },
         { _tag: "video", key: true, data: key.semu },
-        // cursorLeave is for take control (B3) and is skipped for now.
+        // cursorLeave matters only once viewers can take control, so it is skipped for now.
         { _tag: "video", key: false, data: delta.semu },
         { _tag: "event", event: { type: "exited", process: "blender", code: 0, signal: null } },
       ]);

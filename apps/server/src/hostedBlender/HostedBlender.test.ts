@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - the real-Blender fixture probes the host and reads Blender's /proc entries.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -155,6 +156,36 @@ describe("HostedBlender.open", () => {
       assert.deepStrictEqual(yield* firstState(service), { status: "stopped" });
     }).pipe(Effect.scoped),
   );
+
+  it.live("reports a start that never shows Blender, until quit or another open clears it", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("failed");
+      const bin = fakeTools(dir);
+      NodeFS.writeFileSync(NodePath.join(dir, "cube.blend"), "");
+      const service = yield* serviceFor(
+        layerFor({
+          env: { PATH: bin },
+          helper: NodePath.join(bin, "helper"),
+          workspaceRoot: dir,
+          baseDir: dir,
+        }),
+      );
+      const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+      yield* service.threadState(threadId).pipe(
+        Stream.runForEach((state) => Queue.offer(states, state)),
+        Effect.forkScoped,
+      );
+      const awaitStatus = (status: HostedBlenderThreadState["status"]) =>
+        Queue.take(states).pipe(Effect.repeat({ until: (state) => state.status === status }));
+      yield* awaitStatus("stopped");
+      // The stand-in helper exits at once, as one does when Blender can't open the file.
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitStatus("starting");
+      yield* awaitStatus("failed");
+      yield* service.quit({ threadId, save: false });
+      yield* awaitStatus("stopped");
+    }).pipe(Effect.scoped),
+  );
 });
 
 // A real hosted Blender: only on a Linux host with Blender, labwc and a built helper.
@@ -162,6 +193,7 @@ const helperBuild = NodePath.resolve(
   import.meta.dirname,
   "../../../../native/hidden-display/target/release/t3-hidden-display",
 );
+const hostEnvironment = HostProcess.Environment.defaultValue();
 const onPath = (command: string) =>
   NodeChildProcess.spawnSync("sh", ["-c", `command -v ${command}`]).status === 0;
 const canHostBlender =
@@ -191,8 +223,8 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
       const service = yield* serviceFor(
         layerFor({
           env: {
-            PATH: process.env.PATH,
-            XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
+            PATH: hostEnvironment.PATH,
+            XDG_RUNTIME_DIR: hostEnvironment.XDG_RUNTIME_DIR,
             XDG_CONFIG_HOME: configHome,
             T3CODE_THREAD_ID: "leaked-thread-id",
           },

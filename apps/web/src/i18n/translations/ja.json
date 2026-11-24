@@ -3288,6 +3288,8 @@
   "3051b6753c63a53e": "Hosted Blender isn't set up",
   "7050870331ac8b9a": "No hosted Blender running",
   "fb2c65328a8a2e17": "Open a .blend file in the file preview and choose Open in hosted Blender.",
+  "cb4451ab067ff47d": "Blender didn't start",
+  "3f25b97ec987231e": "Blender couldn't open the file on the hidden display. Check that Blender opens it and that GStreamer has an H.264 encoder, then open it in hosted Blender again.",
   "91e40fb96987dd85": [
     "This server is missing: ",
     {
