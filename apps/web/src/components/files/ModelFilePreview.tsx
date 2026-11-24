@@ -184,6 +184,8 @@ export function ModelFilePreview(props: {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<ModelViewer | null>(null);
   const [allowLarge, setAllowLarge] = useState(false);
+  /** A large new version the user chose not to load yet, by its source. */
+  const [declined, setDeclined] = useState<string | null>(null);
   // A viewer outlives a change of source, so a new version replaces the model only once it loads.
   const [viewer, setViewer] = useState<ModelViewer | null>(null);
   // A lost WebGL context needs a new viewer, which Reload makes.
@@ -217,11 +219,13 @@ export function ModelFilePreview(props: {
   const { src, format } = props;
   const blenderSource = props.blenderSource === true;
   const attempt = `${generation}:${allowLarge}:${format}:${blenderSource}:${src}`;
+  // A viewer starts with the first model the user lets load, then stays while larger ones ask.
+  const wantViewer = !awaitingConfirm || viewer !== null;
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- creates the WebGL viewer on its own canvas and disposes both on cleanup
   useEffect(() => {
     const host = hostRef.current;
-    if (awaitingConfirm || !host) return;
+    if (!wantViewer || !host) return;
     // Disposing forces the context lost, so every viewer needs a canvas of its own.
     const canvas = document.createElement("canvas");
     canvas.className = "absolute inset-0 size-full";
@@ -257,11 +261,11 @@ export function ModelFilePreview(props: {
       created.dispose();
       canvas.remove();
     };
-  }, [awaitingConfirm, generation]);
+  }, [wantViewer, generation]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- streams and parses the model into the WebGL viewer, which swaps it in only once it has loaded
   useEffect(() => {
-    if (viewer === null) return;
+    if (viewer === null || awaitingConfirm) return;
     const controller = new AbortController();
     const setView = (view: ModelView) => setResult({ attempt, view });
     void (async () => {
@@ -293,6 +297,7 @@ export function ModelFilePreview(props: {
     return () => controller.abort();
   }, [
     viewer,
+    awaitingConfirm,
     attempt,
     src,
     format,
@@ -310,18 +315,28 @@ export function ModelFilePreview(props: {
         ? result.view
         : null;
   const kept = inScene !== null && inScene.viewer === viewer ? inScene.view : null;
-  // A newer version still loading, or one that failed, leaves the last model up.
-  const replacing =
-    kept !== null && current?.phase !== "ready" && current?.phase !== "confirm"
-      ? current === null
-        ? ("loading" as const)
-        : ("failed" as const)
+  const confirm = awaitingConfirm
+    ? { bytes: props.sizeBytes }
+    : current?.phase === "confirm"
+      ? { bytes: current.bytes }
       : null;
-  const shown: ModelView = awaitingConfirm
-    ? { phase: "confirm", bytes: props.sizeBytes }
-    : replacing !== null && kept !== null
+  // A newer version still loading, waiting to be allowed, or failed leaves the last model up.
+  const replacing =
+    kept === null || current?.phase === "ready"
+      ? null
+      : confirm !== null
+        ? declined === src
+          ? ("declined" as const)
+          : ("confirm" as const)
+        : current === null
+          ? ("loading" as const)
+          : ("failed" as const);
+  const shown: ModelView =
+    replacing !== null && kept !== null
       ? kept
-      : (current ?? { phase: "loading" });
+      : confirm !== null
+        ? { phase: "confirm", bytes: confirm.bytes }
+        : (current ?? { phase: "loading" });
   const refresh = () => {
     if (current?.phase === "failed" && current.code === "context-lost") {
       setGeneration((value) => value + 1);
@@ -463,11 +478,11 @@ export function ModelFilePreview(props: {
           />
         </div>
       ) : null}
-      {shown.phase === "confirm" ? (
+      {confirm !== null && replacing !== "declined" ? (
         <div className="absolute inset-0 flex items-center justify-center p-6">
           <div className="flex max-w-sm flex-col items-center gap-3 rounded-lg border bg-popover px-5 py-4 text-center text-xs leading-relaxed text-popover-foreground shadow-lg">
             <p>
-              {shown.bytes === null
+              {confirm.bytes === null
                 ? gt(
                     "This model is over {size}. Loading it can slow this window down for a while.",
                     {
@@ -475,18 +490,35 @@ export function ModelFilePreview(props: {
                     },
                   )
                 : gt("This model is {size}. Loading it can slow this window down for a while.", {
-                    size: formatAttachmentSize(shown.bytes, messages),
+                    size: formatAttachmentSize(confirm.bytes, messages),
                   })}
             </p>
-            <Button size="sm" variant="outline" onClick={() => setAllowLarge(true)}>
-              <T>Load model</T>
-            </Button>
+            <div className="flex gap-2">
+              {replacing === "confirm" ? (
+                <Button size="sm" variant="ghost" onClick={() => setDeclined(src)}>
+                  <T>Keep this version</T>
+                </Button>
+              ) : null}
+              <Button size="sm" variant="outline" onClick={() => setAllowLarge(true)}>
+                <T>Load model</T>
+              </Button>
+            </div>
           </div>
         </div>
       ) : null}
       <div className="absolute start-2 top-2 flex max-w-[calc(100%-6rem)]">
         {props.pendingChip !== undefined ? (
           props.pendingChip
+        ) : replacing === "confirm" ? (
+          <PreviewStatusChip tone="warning">{gt("Large model")}</PreviewStatusChip>
+        ) : replacing === "declined" ? (
+          <button
+            type="button"
+            className="flex min-w-0 rounded-full"
+            onClick={() => setDeclined(null)}
+          >
+            <PreviewStatusChip tone="info">{gt("A newer version is available")}</PreviewStatusChip>
+          </button>
         ) : replacing === "failed" ? (
           <PreviewStatusChip tone="error">{gt("Couldn't load the new version")}</PreviewStatusChip>
         ) : replacing === "loading" ? (

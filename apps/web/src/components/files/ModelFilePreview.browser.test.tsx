@@ -238,6 +238,68 @@ it("asks before parsing a very large model", async () => {
   await expect.element(screen.getByText("STL · rendered in the browser")).toBeVisible();
 });
 
+it("asks over the shown model before loading a very large new version", async () => {
+  setup();
+  const preview = (src: string, sizeBytes: number) => (
+    <ModelFilePreview
+      src={src}
+      name="scan.stl"
+      format="stl"
+      sizeBytes={sizeBytes}
+      companions={null}
+      onRefresh={() => {}}
+    />
+  );
+  await using screen = await render(preview(modelUrl(stl()), 0), pane());
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+  const canvas = screen.container.querySelector("canvas");
+
+  // Known to be large before it downloads.
+  await screen.rerender(preview(modelUrl(stl(2)), MODEL_CONFIRM_BYTES + 1));
+  await expect.element(screen.getByRole("button", { name: "Load model" })).toBeVisible();
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Keep this version" }));
+  await expect.element(screen.getByText("A newer version is available")).toBeVisible();
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+  await userEvent.click(screen.getByText("A newer version is available"));
+  await userEvent.click(screen.getByRole("button", { name: "Load model" }));
+  await expect.element(screen.getByText("20 × 10 × 40 mm")).toBeVisible();
+  expect(screen.container.querySelector("canvas")).toBe(canvas);
+});
+
+it("asks over the shown model when a new version turns out large as it downloads", async () => {
+  setup();
+  const preview = (src: string) => (
+    <ModelFilePreview
+      src={src}
+      name="scan.stl"
+      format="stl"
+      sizeBytes={0}
+      companions={null}
+      onRefresh={() => {}}
+    />
+  );
+  await using screen = await render(preview(modelUrl(stl())), pane());
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+  const canvas = screen.container.querySelector("canvas");
+
+  const large = "https://example.test/large.stl";
+  const realFetch = globalThis.fetch;
+  using _fetch = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) =>
+    input === large
+      ? Promise.resolve(
+          new Response(stl(2), {
+            headers: { "content-length": String(MODEL_CONFIRM_BYTES + 1) },
+          }),
+        )
+      : realFetch(input, init),
+  );
+  await screen.rerender(preview(large));
+  await expect.element(screen.getByRole("button", { name: "Load model" })).toBeVisible();
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+  expect(screen.container.querySelector("canvas")).toBe(canvas);
+});
+
 const environmentId = EnvironmentId.make("environment-1");
 
 function annotated(threadId: string, view?: { position: number[]; target: number[] }) {
