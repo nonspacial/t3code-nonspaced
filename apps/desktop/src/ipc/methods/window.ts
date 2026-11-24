@@ -48,6 +48,7 @@ import { msg } from "gt-i18n";
 import * as MacPermissions from "../../permissions/MacPermissions.ts";
 import { safariPermissionCheck } from "../../preview/BrowserImport/SafariPermission.ts";
 import { m } from "../../i18n/messages.ts";
+import * as MenuShortcuts from "../../window/MenuShortcuts.ts";
 import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
 import {
@@ -523,6 +524,19 @@ const htmlFullscreenState = (window: Electron.BrowserWindow) => {
   htmlFullscreenStates.set(window, state);
   return state;
 };
+
+// While the renderer gives the keyboard to a hosted Blender, Ctrl+N and the like reach Blender.
+export const setMenuShortcutsIgnored = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.SET_MENU_SHORTCUTS_IGNORED_CHANNEL,
+  payload: Schema.Boolean,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.window.setMenuShortcutsIgnored")(function* (ignored, event) {
+    const main = yield* (yield* ElectronWindow.ElectronWindow).main;
+    if (event === undefined || Option.isNone(main) || main.value.webContents.id !== event.sender.id)
+      return;
+    MenuShortcuts.setIgnored(event.sender.id, ignored);
+  }),
+});
 
 // The main window keeps HTML fullscreen inside itself so preview guests stay in their webview,
 // so the app's own fullscreen elements, such as chat videos, take the screen here.

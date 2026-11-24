@@ -11,9 +11,12 @@ import { startAppServices } from "./appInit";
 import { AppRoot } from "./AppRoot";
 import { whenLocaleReady } from "./i18n/runtime";
 import { chunkLoadState } from "./lib/chunkReloadGuard";
+import { installKeyboardCapture } from "./lib/keyboardCapture";
 
 const stopTrackingKeyboardLayout = trackKeyboardLayout();
 import.meta.hot?.dispose(stopTrackingKeyboardLayout);
+// Before any shortcut listener, so the Blender pane in control gets every key first.
+import.meta.hot?.dispose(installKeyboardCapture());
 
 const router = startAppServices();
 

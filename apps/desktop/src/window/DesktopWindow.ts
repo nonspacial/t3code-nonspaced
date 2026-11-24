@@ -45,6 +45,7 @@ import { m } from "../i18n/messages.ts";
 import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
 import { makeQuitShortcutHandler } from "./QuitHold.ts";
 import { copyContextMenuImage } from "./ContextMenuImage.ts";
+import * as MenuShortcuts from "./MenuShortcuts.ts";
 import { installMainWindowRemoteRequestHeaderPolicy } from "./RemoteRequestHeaders.ts";
 
 const TITLEBAR_HEIGHT = 40;
@@ -830,10 +831,11 @@ export const make = Effect.gen(function* () {
       if (window.isDestroyed()) return;
       // Cmd/Ctrl+W reaches the renderer; DevTools uses the native menu shortcut.
       window.webContents.setIgnoreMenuShortcuts(
-        (environment.platform === "darwin" ? input.meta : input.control) &&
-          !input.alt &&
-          !input.shift &&
-          input.key.toLowerCase() === "w",
+        MenuShortcuts.isIgnored(window.webContents.id) ||
+          ((environment.platform === "darwin" ? input.meta : input.control) &&
+            !input.alt &&
+            !input.shift &&
+            input.key.toLowerCase() === "w"),
       );
       // A held Cmd/Ctrl+W closes one tab or terminal, not each one behind it.
       if (input.type !== "keyDown" || !input.isAutoRepeat) return;
@@ -841,6 +843,9 @@ export const make = Effect.gen(function* () {
       if (modifier && !input.alt && !input.shift && input.key.toLowerCase() === "w") {
         event.preventDefault();
       }
+    });
+    window.webContents.on("did-start-loading", () => {
+      if (!window.isDestroyed()) MenuShortcuts.setIgnored(window.webContents.id, false);
     });
     window.webContents.on("input-event", (_event, input) => {
       if (window.isDestroyed()) return;

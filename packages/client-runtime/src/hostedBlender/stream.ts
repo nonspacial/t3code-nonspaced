@@ -2,6 +2,7 @@
 import {
   HOSTED_BLENDER_STREAM_FULL_CLOSE_CODE,
   HOSTED_BLENDER_STREAM_STOPPED_CLOSE_CODE,
+  type HostedBlenderStreamClientMessage,
   HostedBlenderStreamServerMessage,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -18,6 +19,19 @@ export type HostedBlenderStreamStats = Extract<
   { readonly type: "stats" }
 >;
 
+export type HostedBlenderControl = Omit<
+  Extract<HostedBlenderStreamServerMessage, { readonly type: "control" }>,
+  "type"
+>;
+
+/** What the viewer sends besides acks and its size: taking control, and input. */
+export type HostedBlenderViewerMessage = Exclude<
+  HostedBlenderStreamClientMessage,
+  { readonly type: "ack" | "resize" }
+>;
+
+const VIEW_ONLY: HostedBlenderControl = { canOperate: false, controller: "unclaimed" };
+
 export interface HostedBlenderFrameRate {
   readonly framesPerSecond: number;
   readonly bitsPerSecond: number;
@@ -30,11 +44,17 @@ export interface HostedBlenderStreamEvents {
   readonly onFrameRate: (rate: HostedBlenderFrameRate) => void;
   /** The upgrade was refused; refresh access and start a new client. */
   readonly onUnauthorized: () => void;
+  /** Who controls Blender. Without a connection, this viewer is view-only. */
+  readonly onControl?: (control: HostedBlenderControl) => void;
+  /** Blender holds the mouse (a grab or an orbit), so motion should be relative. */
+  readonly onCursor?: (captured: boolean) => void;
 }
 
 export interface HostedBlenderStreamClient {
   /** The pane's size in device pixels; the display follows the newest viewer. */
   readonly resize: (width: number, height: number) => void;
+  /** Dropped while disconnected: control doesn't survive a reconnect. */
+  readonly send: (message: HostedBlenderViewerMessage) => void;
   readonly stop: () => void;
 }
 
@@ -199,12 +219,27 @@ export function createHostedBlenderStreamClient(
       }
       if (typeof event.data !== "string") return;
       const message = decodeServerMessage(event.data);
-      if (Option.isSome(message) && message.value.type === "stats") events.onStats(message.value);
+      if (Option.isNone(message)) return;
+      switch (message.value.type) {
+        case "stats":
+          return events.onStats(message.value);
+        case "control":
+          return events.onControl?.({
+            canOperate: message.value.canOperate,
+            controller: message.value.controller,
+          });
+        case "cursor":
+          return events.onCursor?.(message.value.captured);
+        case "viewport":
+          return;
+      }
     });
     ws.addEventListener("close", (event) => {
       if (socket !== ws) return;
       socket = null;
       closeDecoder();
+      events.onControl?.(VIEW_ONLY);
+      events.onCursor?.(false);
       if (stopped) return;
       if (event.code === HOSTED_BLENDER_STREAM_STOPPED_CLOSE_CODE) {
         stopped = true;
@@ -232,6 +267,8 @@ export function createHostedBlenderStreamClient(
     const ws = socket;
     socket = null;
     closeDecoder();
+    events.onControl?.(VIEW_ONLY);
+    events.onCursor?.(false);
     ws?.close();
     connect();
   };
@@ -245,6 +282,9 @@ export function createHostedBlenderStreamClient(
       if (size?.width === next.width && size.height === next.height) return;
       size = next;
       sendSize();
+    },
+    send: (message) => {
+      if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
     },
     stop: () => {
       stopped = true;

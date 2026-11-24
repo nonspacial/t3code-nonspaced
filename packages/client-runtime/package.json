@@ -79,6 +79,10 @@
       "types": "./src/device/hubAccess.ts",
       "default": "./src/device/hubAccess.ts"
     },
+    "./hosted-blender/input": {
+      "types": "./src/hostedBlender/input.ts",
+      "default": "./src/hostedBlender/input.ts"
+    },
     "./hosted-blender/stream": {
       "types": "./src/hostedBlender/stream.ts",
       "default": "./src/hostedBlender/stream.ts"

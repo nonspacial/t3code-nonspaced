@@ -1,8 +1,17 @@
 import { useAtomValue } from "@effect/atom-react";
 import { createCanvasFrameSink } from "@t3tools/client-runtime/device/frame";
 import {
+  detectKeymap,
+  HOSTED_BLENDER_KEYBOARD_LAYOUTS,
+  type HostedBlenderKeyboardLayout,
+  type HostedBlenderScrollPreference,
+  keymapForLayout,
+} from "@t3tools/client-runtime/hosted-blender/input";
+import {
   createHostedBlenderStreamClient,
+  type HostedBlenderControl,
   type HostedBlenderFrameRate,
+  type HostedBlenderStreamClient,
   type HostedBlenderStreamStats,
   type HostedBlenderStreamStatus,
 } from "@t3tools/client-runtime/hosted-blender/stream";
@@ -12,9 +21,10 @@ import type {
   HostedBlenderRunningState,
   ScopedThreadRef,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { MoreVertical } from "lucide-react";
 import { T, useGT, useMessages, Var } from "gt-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useEffect, useEffectEvent, useRef, useState } from "react";
 
 import {
   AlertDialog,
@@ -27,9 +37,24 @@ import {
 } from "~/components/ui/alert-dialog";
 import { Button } from "~/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "~/components/ui/empty";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "~/components/ui/menu";
+import {
+  Menu,
+  MenuItem,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuSeparator,
+  MenuSub,
+  MenuSubPopup,
+  MenuSubTrigger,
+  MenuTrigger,
+} from "~/components/ui/menu";
 import { Spinner } from "~/components/ui/spinner";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
+import { isElectron } from "~/env";
+import { getLocalStorageItem, useLocalStorage } from "~/hooks/useLocalStorage";
+import { resolveShortcutCommand } from "~/keybindings";
+import { getKeyboardLayoutMap } from "~/keyboardLayout";
 import { formatBytes } from "~/lib/formatBytes";
 import { observeResize } from "~/lib/observeResize";
 import {
@@ -39,7 +64,11 @@ import {
   useHostedBlenderStreamAccess,
 } from "~/state/hostedBlender";
 import { formatEnvironmentQueryError } from "~/state/query";
+import { primaryServerKeybindingsAtom } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { appAtomRegistry } from "~/rpc/atomRegistry";
+
+import { attachBlenderInput, type BlenderInput } from "./blenderInput";
 
 interface StreamStats {
   readonly frameSize: { readonly width: number; readonly height: number } | null;
@@ -48,6 +77,48 @@ interface StreamStats {
 }
 
 const fileName = (relativePath: string) => relativePath.slice(relativePath.lastIndexOf("/") + 1);
+
+const VIEW_ONLY: HostedBlenderControl = { canOperate: false, controller: "unclaimed" };
+
+// Per device: the keyboard and mouse belong to the device, not the account.
+const KEYBOARD_LAYOUT_KEY = "t3code:hosted-blender:keyboard-layout";
+const SCROLLING_KEY = "t3code:hosted-blender:scrolling";
+const KeyboardLayoutSetting = Schema.Literals(["auto", ...HOSTED_BLENDER_KEYBOARD_LAYOUTS]);
+type KeyboardLayoutSetting = typeof KeyboardLayoutSetting.Type;
+const ScrollingSetting = Schema.Literals(["auto", "wheel", "trackpad"]);
+
+const readSetting = <T,>(key: string, schema: Schema.Codec<T, T>, fallback: T): T => {
+  try {
+    return getLocalStorageItem(key, schema) ?? fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+/** The device's layout, or the one the browser reports, falling back to US. */
+const currentKeymap = () => {
+  const setting = readSetting(KEYBOARD_LAYOUT_KEY, KeyboardLayoutSetting, "auto");
+  if (setting !== "auto") return keymapForLayout(setting);
+  return detectKeymap(getKeyboardLayoutMap()) ?? keymapForLayout("us");
+};
+
+const isPlainShiftF6 = (event: KeyboardEvent) =>
+  event.code === "F6" && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey;
+
+/** T3's focus shortcuts leave Blender; Shift+F6 is Blender's own, so it goes there. */
+const leavesBlender = (event: KeyboardEvent) => {
+  if (event.type !== "keydown" || isPlainShiftF6(event)) return false;
+  const command = resolveShortcutCommand(event, appAtomRegistry.get(primaryServerKeybindingsAtom));
+  return command === "workspace.focusNext" || command === "workspace.focusPrevious";
+};
+
+interface BlenderStreamHandle {
+  readonly takeControl: (takeOver: boolean) => void;
+  readonly fullscreen: () => void;
+}
+
+const canUseFullscreen = () =>
+  !isElectron && typeof document !== "undefined" && document.fullscreenEnabled;
 
 /** The thread's hosted Blender, live and view-only. Closing the pane leaves Blender running. */
 export function BlenderPanel(props: {
@@ -135,9 +206,16 @@ function RunningBlender(props: {
   readonly state: HostedBlenderRunningState;
 }) {
   const [stats, setStats] = useState<StreamStats>({ frameSize: null, rate: null, server: null });
+  const [control, setControl] = useState<HostedBlenderControl>(VIEW_ONLY);
+  const streamRef = useRef<BlenderStreamHandle | null>(null);
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <BlenderToolbar threadRef={props.threadRef} state={props.state} />
+      <BlenderToolbar
+        threadRef={props.threadRef}
+        state={props.state}
+        control={control}
+        streamRef={streamRef}
+      />
       {props.state.status === "starting" ? (
         <StateCard
           title={<T>Starting Blender…</T>}
@@ -153,11 +231,13 @@ function RunningBlender(props: {
           environmentId={props.threadRef.environmentId}
           threadId={props.threadRef.threadId}
           onStats={setStats}
+          onControl={setControl}
+          handleRef={streamRef}
         />
       ) : (
         <div className="min-h-0 flex-1" />
       )}
-      <BlenderStatusStrip {...stats} />
+      <BlenderStatusStrip {...stats} control={control} />
     </div>
   );
 }
@@ -165,6 +245,8 @@ function RunningBlender(props: {
 function BlenderToolbar(props: {
   readonly threadRef: ScopedThreadRef;
   readonly state: HostedBlenderRunningState;
+  readonly control: HostedBlenderControl;
+  readonly streamRef: RefObject<BlenderStreamHandle | null>;
 }) {
   const gt = useGT();
   const canQuit = useAtomValue(
@@ -174,7 +256,18 @@ function BlenderToolbar(props: {
   const quit = useAtomCommand(hostedBlenderEnvironment.quit, { reportFailure: false });
   const [confirming, setConfirming] = useState(false);
   const [quitting, setQuitting] = useState(false);
+  const [keyboardLayout, setKeyboardLayout] = useLocalStorage<KeyboardLayoutSetting, string>(
+    KEYBOARD_LAYOUT_KEY,
+    "auto",
+    KeyboardLayoutSetting,
+  );
+  const [scrolling, setScrolling] = useLocalStorage<HostedBlenderScrollPreference, string>(
+    SCROLLING_KEY,
+    "auto",
+    ScrollingSetting,
+  );
   const name = fileName(props.state.relativePath);
+  const { canOperate, controller } = props.control;
   const quitBlender = async (save: boolean) => {
     setQuitting(true);
     const result = await quit({
@@ -196,7 +289,28 @@ function BlenderToolbar(props: {
   return (
     <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
       <span className="min-w-0 flex-1 truncate font-mono text-xs font-semibold">{name}</span>
-      {canQuit ? (
+      {!canOperate ? null : controller !== "you" ? (
+        <Button
+          variant="outline"
+          size="xs"
+          type="button"
+          onClick={() => props.streamRef.current?.takeControl(controller === "another-viewer")}
+        >
+          {controller === "another-viewer" ? <T>Take over</T> : <T>Take control</T>}
+        </Button>
+      ) : canUseFullscreen() ? (
+        <Button
+          variant="outline"
+          size="xs"
+          type="button"
+          // Pressing it must not move focus off the stream, which would give control back.
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => props.streamRef.current?.fullscreen()}
+        >
+          <T>Fullscreen</T>
+        </Button>
+      ) : null}
+      {canQuit || canOperate ? (
         <Menu>
           <MenuTrigger
             render={
@@ -211,12 +325,62 @@ function BlenderToolbar(props: {
             <MoreVertical />
           </MenuTrigger>
           <MenuPopup align="end" sideOffset={6}>
-            <MenuItem
-              disabled={quitting}
-              onClick={() => (props.state.dirty ? setConfirming(true) : void quitBlender(false))}
-            >
-              <T>Quit Blender</T>
-            </MenuItem>
+            {canOperate ? (
+              <>
+                <MenuSub>
+                  <MenuSubTrigger>
+                    <T>Keyboard layout</T>
+                  </MenuSubTrigger>
+                  <MenuSubPopup>
+                    <MenuRadioGroup
+                      value={keyboardLayout}
+                      onValueChange={(value) => setKeyboardLayout(value as KeyboardLayoutSetting)}
+                    >
+                      <MenuRadioItem value="auto" closeOnClick>
+                        <T context="keyboard layout setting">Automatic</T>
+                      </MenuRadioItem>
+                      {HOSTED_BLENDER_KEYBOARD_LAYOUTS.map((layout) => (
+                        <MenuRadioItem key={layout} value={layout} closeOnClick>
+                          <KeyboardLayoutName layout={layout} />
+                        </MenuRadioItem>
+                      ))}
+                    </MenuRadioGroup>
+                  </MenuSubPopup>
+                </MenuSub>
+                <MenuSub>
+                  <MenuSubTrigger>
+                    <T>Scrolling</T>
+                  </MenuSubTrigger>
+                  <MenuSubPopup>
+                    <MenuRadioGroup
+                      value={scrolling}
+                      onValueChange={(value) =>
+                        setScrolling(value as HostedBlenderScrollPreference)
+                      }
+                    >
+                      <MenuRadioItem value="auto" closeOnClick>
+                        <T context="scrolling setting">Automatic</T>
+                      </MenuRadioItem>
+                      <MenuRadioItem value="wheel" closeOnClick>
+                        <T>Mouse wheel</T>
+                      </MenuRadioItem>
+                      <MenuRadioItem value="trackpad" closeOnClick>
+                        <T>Trackpad</T>
+                      </MenuRadioItem>
+                    </MenuRadioGroup>
+                  </MenuSubPopup>
+                </MenuSub>
+              </>
+            ) : null}
+            {canQuit && canOperate ? <MenuSeparator /> : null}
+            {canQuit ? (
+              <MenuItem
+                disabled={quitting}
+                onClick={() => (props.state.dirty ? setConfirming(true) : void quitBlender(false))}
+              >
+                <T>Quit Blender</T>
+              </MenuItem>
+            ) : null}
           </MenuPopup>
         </Menu>
       ) : null}
@@ -252,16 +416,58 @@ function BlenderToolbar(props: {
   );
 }
 
+function KeyboardLayoutName(props: { readonly layout: HostedBlenderKeyboardLayout }) {
+  const gt = useGT();
+  const names: Record<HostedBlenderKeyboardLayout, string> = {
+    us: gt("English (US)"),
+    gb: gt("English (UK)"),
+    de: gt("German"),
+    fr: gt("French"),
+    es: gt("Spanish"),
+    it: gt("Italian"),
+    pt: gt("Portuguese"),
+    br: gt("Portuguese (Brazil)"),
+    se: gt("Swedish"),
+    no: gt("Norwegian"),
+    dk: gt("Danish"),
+    ch: gt("Swiss German"),
+    ru: gt("Russian"),
+    jp: gt("Japanese"),
+    "us-dvorak": gt("English (Dvorak)"),
+    "us-colemak": gt("English (Colemak)"),
+  };
+  return names[props.layout];
+}
+
 function BlenderStream(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: string;
   readonly onStats: (update: (current: StreamStats) => StreamStats) => void;
+  readonly onControl: (control: HostedBlenderControl) => void;
+  readonly handleRef: RefObject<BlenderStreamHandle | null>;
 }) {
+  const gt = useGT();
   const access = useHostedBlenderStreamAccess(props.environmentId);
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const clientRef = useRef<HostedBlenderStreamClient | null>(null);
+  const inputRef = useRef<BlenderInput | null>(null);
+  const capturedRef = useRef(false);
   const [status, setStatus] = useState<HostedBlenderStreamStatus>("connecting");
-  const { environmentId, threadId, onStats } = props;
+  const [control, setControl] = useState<HostedBlenderControl>(VIEW_ONLY);
+  const { environmentId, threadId, onStats, onControl, handleRef } = props;
+  const inControl = control.controller === "you";
+  const controllerRef = useRef<HostedBlenderControl["controller"]>("unclaimed");
+  const changeControl = useEffectEvent((next: HostedBlenderControl) => {
+    if (controllerRef.current === "you" && next.controller === "another-viewer") {
+      toastManager.add(
+        stackedThreadToast({ type: "info", title: gt("Another device took control of Blender") }),
+      );
+    }
+    controllerRef.current = next.controller;
+    setControl(next);
+    onControl(next);
+  });
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the stream is a WebSocket and a WebCodecs decoder, owned by this view
   useEffect(() => {
@@ -279,7 +485,26 @@ function BlenderStream(props: {
       onStats: (server) => onStats((current) => ({ ...current, server })),
       onFrameRate: (rate) => onStats((current) => ({ ...current, rate })),
       onUnauthorized: () => refreshHostedBlenderStreamAccess(environmentId),
+      onControl: changeControl,
+      onCursor: (captured) => {
+        capturedRef.current = captured;
+        inputRef.current?.setCaptured(captured);
+      },
     });
+    clientRef.current = client;
+    handleRef.current = {
+      takeControl: (takeOver) => {
+        client.send({ type: "takeControl", takeOver });
+        container.focus();
+      },
+      fullscreen: () => {
+        // Keyboard Lock works only in fullscreen; it lets Ctrl+W, Ctrl+T and Ctrl+N through.
+        void container
+          .requestFullscreen()
+          .then(() => (navigator as KeyboardLockNavigator).keyboard?.lock?.())
+          .catch(() => undefined);
+      },
+    };
     const resize = () => {
       const ratio = globalThis.devicePixelRatio || 1;
       client.resize(container.clientWidth * ratio, container.clientHeight * ratio);
@@ -289,13 +514,67 @@ function BlenderStream(props: {
     return () => {
       stopObserving();
       client.stop();
+      clientRef.current = null;
+      handleRef.current = null;
+      changeControl(VIEW_ONLY);
     };
-  }, [access, environmentId, threadId, onStats]);
+  }, [access, environmentId, threadId, onStats, handleRef]);
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- while in control, the pane owns the DOM's pointer lock, the keyboard and the desktop app's menu shortcuts
+  useEffect(() => {
+    const container = containerRef.current;
+    const canvas = canvasRef.current;
+    const client = clientRef.current;
+    if (!inControl || container === null || canvas === null || client === null) return;
+    const input = attachBlenderInput({
+      surface: container,
+      canvas,
+      send: client.send,
+      keymap: currentKeymap,
+      scrollPreference: () => readSetting(SCROLLING_KEY, ScrollingSetting, "auto"),
+      passThrough: leavesBlender,
+    });
+    input.setCaptured(capturedRef.current);
+    inputRef.current = input;
+    void window.desktopBridge?.setMenuShortcutsIgnored?.(true).catch(() => undefined);
+    const onFullscreenChange = () => {
+      if (document.fullscreenElement === null) {
+        (navigator as KeyboardLockNavigator).keyboard?.unlock?.();
+      }
+    };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
+      void window.desktopBridge?.setMenuShortcutsIgnored?.(false).catch(() => undefined);
+      inputRef.current = null;
+      input.dispose();
+    };
+  }, [inControl]);
 
   return (
     <div
       ref={containerRef}
-      className="relative m-2 flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-md bg-black"
+      tabIndex={control.canOperate ? 0 : undefined}
+      aria-label={gt("Blender viewport")}
+      data-in-control={inControl ? "" : undefined}
+      className="relative m-2 flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-md bg-black outline-none data-[in-control]:ring-2 data-[in-control]:ring-primary"
+      onPointerDown={(event) => {
+        // The click that takes control stays out of Blender, so it selects nothing there.
+        if (inControl || !control.canOperate || control.controller !== "unclaimed") return;
+        if (event.button !== 0) return;
+        clientRef.current?.send({ type: "takeControl", takeOver: false });
+        event.currentTarget.focus();
+      }}
+      onBlur={(event) => {
+        // Leaving the window keeps control; clicking or tabbing elsewhere in T3 gives it back.
+        if (!inControl || !document.hasFocus()) return;
+        if (
+          event.relatedTarget instanceof Node &&
+          event.currentTarget.contains(event.relatedTarget)
+        )
+          return;
+        clientRef.current?.send({ type: "releaseControl" });
+      }}
     >
       <canvas ref={canvasRef} className={status === "live" ? "max-h-full max-w-full" : "hidden"} />
       {status === "live" ? null : <StreamStatus status={status} />}
@@ -324,7 +603,7 @@ function StreamStatus(props: { readonly status: Exclude<HostedBlenderStreamStatu
   }
 }
 
-function BlenderStatusStrip(props: StreamStats) {
+function BlenderStatusStrip(props: StreamStats & { readonly control: HostedBlenderControl }) {
   const parts = [
     props.frameSize ? `${props.frameSize.width}×${props.frameSize.height}` : null,
     props.rate ? `${props.rate.framesPerSecond} fps` : null,
@@ -334,7 +613,13 @@ function BlenderStatusStrip(props: StreamStats) {
   return (
     <div className="flex h-7 shrink-0 items-center gap-3 border-t border-border bg-muted/40 px-3 text-xs text-muted-foreground">
       <span>
-        <T context="hosted Blender pane status, viewing without control">Watching</T>
+        {props.control.controller === "you" ? (
+          <T>You're in control</T>
+        ) : props.control.controller === "another-viewer" ? (
+          <T>Another device is in control</T>
+        ) : (
+          <T context="hosted Blender pane status, viewing without control">Watching</T>
+        )}
       </span>
       {props.server?.target === "output" ? (
         <span className="text-warning-foreground">
@@ -348,4 +633,8 @@ function BlenderStatusStrip(props: StreamStats) {
       ) : null}
     </div>
   );
+}
+
+interface KeyboardLockNavigator extends Navigator {
+  readonly keyboard?: { readonly lock?: () => Promise<void>; readonly unlock?: () => void };
 }
