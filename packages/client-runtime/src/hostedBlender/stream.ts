@@ -97,6 +97,8 @@ export function createHostedBlenderStreamClient(
   let configuring = false;
   let size: { readonly width: number; readonly height: number } | null = null;
   let live = false;
+  // Whether the server last said this viewer controls Blender, on the current socket.
+  let controlling = false;
   // The server sends the next frame only after an ack, so holding it while the decoder is
   // configured or behind keeps every delta's reference frame and bounds the decode queue.
   let ackOwed = false;
@@ -248,11 +250,16 @@ export function createHostedBlenderStreamClient(
       switch (message.value.type) {
         case "stats":
           return events.onStats(message.value);
-        case "control":
+        case "control": {
+          const granted = !controlling && message.value.controller === "you";
+          controlling = message.value.controller === "you";
+          // The display follows the viewer in control; repeat the size in case it never landed.
+          if (granted) sendSize();
           return events.onControl?.({
             canOperate: message.value.canOperate,
             controller: message.value.controller,
           });
+        }
         case "cursor":
           return events.onCursor?.(message.value.captured);
         case "viewport":
@@ -263,6 +270,7 @@ export function createHostedBlenderStreamClient(
       if (socket !== ws) return;
       socket = null;
       closeDecoder();
+      controlling = false;
       events.onControl?.(VIEW_ONLY);
       events.onCursor?.(false);
       if (stopped) return;
@@ -292,6 +300,7 @@ export function createHostedBlenderStreamClient(
     const ws = socket;
     socket = null;
     closeDecoder();
+    controlling = false;
     events.onControl?.(VIEW_ONLY);
     events.onCursor?.(false);
     ws?.close();

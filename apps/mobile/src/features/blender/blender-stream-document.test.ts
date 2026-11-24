@@ -15,6 +15,11 @@ describe("mobile Blender stream bridge", () => {
       null,
     );
     expect(blenderStreamMessage("not json")).toBe(null);
+    expect(blenderStreamMessage('{"type":"frameSize","width":1046,"height":2004}')).toEqual({
+      type: "frameSize",
+      width: 1046,
+      height: 2004,
+    });
   });
 });
 

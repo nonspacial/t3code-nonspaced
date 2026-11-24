@@ -94,7 +94,12 @@ export function start(configuration: BlenderStreamConfiguration) {
   let captured = false;
   let touch: HostedBlenderTouch | null = null;
   /** Letterboxes the frame in the viewer: as large as fits, centred. */
+  let frameSize = { width: 0, height: 0 };
   const fit = () => {
+    if (canvas.width !== frameSize.width || canvas.height !== frameSize.height) {
+      frameSize = { width: canvas.width, height: canvas.height };
+      post({ type: "frameSize", ...frameSize });
+    }
     const viewerWidth = window.innerWidth;
     const viewerHeight = window.innerHeight;
     if (canvas.width <= 0 || canvas.height <= 0 || viewerWidth <= 0 || viewerHeight <= 0) return;
@@ -113,13 +118,18 @@ export function start(configuration: BlenderStreamConfiguration) {
     { access: configuration.access, threadId: configuration.threadId },
     sink,
     {
-      onStatus: (status) => post({ type: "status", status }),
+      onStatus: (status) => {
+        // A WebView can start before it is laid out, with no resize event once it is.
+        if (status === "live") resize();
+        post({ type: "status", status });
+      },
       onStats: (stats) => post(stats),
       onFrameRate: (rate) => post({ type: "rate", ...rate }),
       onUnauthorized: () => post({ type: "unauthorized" }),
       onControl: (next) => {
         control = next;
         if (next.controller === "you" && touch === null) {
+          resize();
           // Blender keeps the previous controller's layout; touch input and Z assume US.
           client.send({ type: "keymap", ...keymapForLayout("us") });
           touch = createHostedBlenderTouch({

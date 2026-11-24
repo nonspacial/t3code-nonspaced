@@ -30,6 +30,8 @@ const BlenderStreamMessage = Schema.Union([
     bitsPerSecond: Schema.Number,
   }),
   Schema.Struct({ type: Schema.Literal("unauthorized") }),
+  /** The size of the frames shown, in stream pixels. */
+  Schema.Struct({ type: Schema.Literal("frameSize"), width: Schema.Number, height: Schema.Number }),
   Schema.Struct({
     type: Schema.Literal("control"),
     canOperate: Schema.Boolean,

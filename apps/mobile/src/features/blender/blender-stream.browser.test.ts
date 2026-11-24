@@ -129,6 +129,15 @@ describe("mobile Blender stream", () => {
     expect(fixture.resizes().at(-1)).toEqual({ type: "resize", width: 1600, height: 800 });
   });
 
+  it("measures the viewer again when granted control, even without a resize event", () => {
+    using fixture = viewer();
+    // The WebView had no size yet when the page started; it was laid out without an event.
+    vi.stubGlobal("innerWidth", 398);
+    vi.stubGlobal("innerHeight", 763);
+    fixture.socket.serverSays({ type: "control", canOperate: true, controller: "you" });
+    expect(fixture.resizes().at(-1)).toEqual({ type: "resize", width: 796, height: 1526 });
+  });
+
   it("fits the frame inside the viewer and centres it", () => {
     using fixture = viewer();
     // An 800×400 frame in a 400×800 viewer: full width, centred vertically.
@@ -225,6 +234,8 @@ describe("mobile Blender stream", () => {
     size.height = 2004;
     keyframe(0x28);
     await vi.waitFor(() => expect([canvas.width, canvas.height]).toEqual([1046, 2004]));
+    // The status strip shows the frame size, as on the web.
+    expect(fixture.posted).toContainEqual({ type: "frameSize", width: 1046, height: 2004 });
     expect(Number.parseFloat(canvas.style.width)).toBeCloseTo(400);
     expect(Number.parseFloat(canvas.style.height)).toBeCloseTo((2004 * 400) / 1046);
     expect(Number.parseFloat(canvas.style.top)).toBeCloseTo((800 - (2004 * 400) / 1046) / 2);

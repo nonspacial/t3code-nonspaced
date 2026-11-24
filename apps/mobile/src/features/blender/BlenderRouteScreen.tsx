@@ -292,6 +292,10 @@ function BlenderStream({
   const { access, error, refresh } = useHostedBlenderStreamAccess(props.environmentId, viewer);
   const [control, setControl] = useState<HostedBlenderControl>(VIEW_ONLY);
   const [rate, setRate] = useState<HostedBlenderFrameRate | null>(null);
+  const [frameSize, setFrameSize] = useState<{
+    readonly width: number;
+    readonly height: number;
+  } | null>(null);
   const [memoryBytes, setMemoryBytes] = useState<number | null>(null);
   const [takenOver, setTakenOver] = useState(false);
   // A new viewer mints a fresh ticket and starts a new WebView.
@@ -313,6 +317,8 @@ function BlenderStream({
         return changeControl({ canOperate: message.canOperate, controller: message.controller });
       case "rate":
         return setRate(message);
+      case "frameSize":
+        return setFrameSize({ width: message.width, height: message.height });
       case "stats":
         return setMemoryBytes(message.memoryBytes);
       case "unauthorized":
@@ -330,6 +336,7 @@ function BlenderStream({
           ? gt("Watching. Tap to take control.")
           : gt("Watching", { $context: "hosted Blender pane status, viewing without control" });
   const stats = [
+    frameSize ? `${frameSize.width}×${frameSize.height}` : null,
     rate ? `${rate.framesPerSecond} fps` : null,
     memoryBytes !== null ? formatAttachmentSize(memoryBytes, messages) : null,
   ]

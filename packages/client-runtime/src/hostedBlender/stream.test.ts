@@ -240,3 +240,31 @@ it("starts a new decoder when a keyframe brings a new frame size, and keeps it o
   expect(decoders[1]!.codec).toBe("avc1.640028");
   client.stop();
 });
+
+it("sends its size again when it is granted control, so the display follows it", () => {
+  FakeSocket.instances = [];
+  vi.stubGlobal("WebSocket", FakeSocket);
+  vi.stubGlobal("EncodedVideoChunk", vi.fn());
+  vi.stubGlobal("VideoDecoder", vi.fn());
+  const client = createHostedBlenderStreamClient(
+    {
+      access: { httpBase: "https://t3", wsBase: "wss://t3/blender", credentials: false, query: {} },
+      threadId: "thread-1",
+    },
+    { present: vi.fn(() => true) },
+    { onStatus: vi.fn(), onStats: vi.fn(), onFrameRate: vi.fn(), onUnauthorized: vi.fn() },
+  );
+  const socket = FakeSocket.instances[0]!;
+  client.resize(1044, 2002);
+  socket.open();
+  const resize = JSON.stringify({ type: "resize", width: 1044, height: 2002 });
+  expect(socket.sent).toEqual([resize]);
+  socket.receive(JSON.stringify({ type: "control", canOperate: true, controller: "unclaimed" }));
+  expect(socket.sent).toEqual([resize]);
+  socket.receive(JSON.stringify({ type: "control", canOperate: true, controller: "you" }));
+  expect(socket.sent).toEqual([resize, resize]);
+  // Still in control: nothing new to say.
+  socket.receive(JSON.stringify({ type: "control", canOperate: true, controller: "you" }));
+  expect(socket.sent).toEqual([resize, resize]);
+  client.stop();
+});
