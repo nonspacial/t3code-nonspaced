@@ -355,6 +355,10 @@
       "types": "./src/filePreview.ts",
       "import": "./src/filePreview.ts"
     },
+    "./modelView": {
+      "types": "./src/modelView.ts",
+      "import": "./src/modelView.ts"
+    },
     "./imageDimensions": {
       "types": "./src/imageDimensions.ts",
       "import": "./src/imageDimensions.ts"

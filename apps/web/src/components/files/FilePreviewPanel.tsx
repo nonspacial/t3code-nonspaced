@@ -139,6 +139,8 @@ import {
 } from "./filePreviewMode";
 import { setMarkdownTaskChecked } from "@t3tools/shared/markdownTaskEdits";
 import { changeFileSaveSession, useFileSaveSession } from "./fileSaveSessions";
+import type { ModelAnnotationTarget, ModelViewRequest } from "./ModelFilePreview";
+import type { ModelView } from "@t3tools/shared/modelView";
 import { revisionedQuery } from "~/state/revisionedQuery";
 import {
   getOptimisticProjectFileQueryData,
@@ -164,6 +166,8 @@ interface FilePreviewPanelProps {
   openInShortcutEnabled: boolean;
   revealLine: number | null;
   revealRequestId: number;
+  /** A 3D view link's camera for the model this opens. */
+  revealView: ModelView | null;
   onOpenFile: (relativePath: string) => void;
   onNavigateFolder: (relativePath: string, folderTrail: string, keepSource: boolean) => void;
   /** Retained descendant breadcrumb path after navigating up; see navigateFolder. */
@@ -529,6 +533,8 @@ function WorkspaceDocumentPreview(props: {
   readonly name: string;
   readonly workspaceMutationId: string | null;
   readonly refreshRevision: number;
+  readonly modelView: ModelViewRequest | null;
+  readonly modelAnnotation: ModelAnnotationTarget;
 }) {
   const disposition =
     !props.document || servedAsDownload(props.absolutePath)
@@ -580,6 +586,8 @@ function WorkspaceDocumentPreview(props: {
       asset={{ environmentId: props.environmentId, resource }}
       workspaceRoot={props.workspaceRoot}
       origin={gt("File", { $context: "label for a file opened from the workspace" })}
+      modelView={props.modelView}
+      modelAnnotation={props.modelAnnotation}
     />
   );
 }
@@ -1252,6 +1260,7 @@ export default function FilePreviewPanel({
   openInShortcutEnabled,
   revealLine,
   revealRequestId,
+  revealView,
   onOpenFile,
   onNavigateFolder,
   folderTrail,
@@ -1739,6 +1748,12 @@ export default function FilePreviewPanel({
               asset={{ environmentId, attachmentId: attachment.id }}
               htmlRender={attachment.htmlRender === true}
               threadRef={threadRef}
+              modelAnnotation={{
+                composerTarget: composerDraftTarget,
+                environmentId,
+                projectId,
+                linkPath: null,
+              }}
             />
           ) : relativePath && isVideo && absolutePath ? (
             <WorkspaceVideoPreview
@@ -1817,6 +1832,13 @@ export default function FilePreviewPanel({
               name={relativePath.split(/[\\/]/).at(-1) || relativePath}
               workspaceMutationId={workspaceMutationId}
               refreshRevision={fileRefreshRevision}
+              modelView={revealView ? { view: revealView, requestId: revealRequestId } : null}
+              modelAnnotation={{
+                composerTarget: composerDraftTarget,
+                environmentId,
+                projectId,
+                linkPath: relativePath,
+              }}
             />
           ) : relativePath && file.error && file.data === null ? (
             <div
