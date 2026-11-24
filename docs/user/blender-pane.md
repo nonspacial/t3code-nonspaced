@@ -7,14 +7,14 @@ Hosted Blender is off until you set it up. Until then, the pane says **Setup nee
 ## Set it up
 
 1. Open **Settings › Blender** and switch on **Hosted Blender**.
-2. T3 Code checks the server for Blender 4.5 or later, labwc, GStreamer 1.24 or later with an H.264 encoder (and its OpenGL plugin on NVIDIA), access to the GPU, and the official Blender Lab MCP server. It also runs a one-second test encode and keeps the first encoder that works. The result stays until you choose **Check again**, so check again after you install or change something.
+2. When you switch it on, T3 Code checks the server for Blender 4.5 or later, labwc, GStreamer 1.24 or later with an H.264 encoder (and its OpenGL plugin on NVIDIA), access to the GPU, and the official Blender Lab MCP server. It also runs a one-second test encode and keeps the first encoder that works. The result stays until you choose **Check again**, so check again after you install or change something. Only someone who may run programs on the server starts a check; after a restart, the first **Open in hosted Blender** or **Check again** does.
 3. If something is missing, choose either:
    - **Install with an agent**, which starts a thread in No project with your default agent and tells it what to install for your Linux distribution. When a command needs your password, the agent asks for it in a private card, never in the chat. T3 Code checks again when the agent finishes.
    - **Show me the commands**, which shows `pacman`, `apt` or `dnf` commands you can copy and run yourself.
 
    T3 Code never installs system packages itself.
 
-4. Switch on **Allow agents to start hosted Blenders**. It needs the setup finished, including the Blender MCP server. If T3 Code doesn't find `blender-mcp` on your PATH or in `~/.local/bin`, set **Blender MCP path**.
+4. Switch on **Allow agents to start hosted Blenders**. It needs the setup finished, including the Blender MCP server. If T3 Code doesn't find `blender-mcp` on your PATH or in `~/.local/bin`, set **Blender MCP path** (a path starting with `~/` means the server's home folder). An unrelated project on PyPI is also called `blender-mcp`; T3 Code says so if that's the one it finds.
 
 Without a GPU, or without access to it, hosted Blender still works, but Blender is slow; Settings and the pane's status strip say so.
 

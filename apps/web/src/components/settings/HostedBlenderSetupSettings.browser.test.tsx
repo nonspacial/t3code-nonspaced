@@ -172,6 +172,36 @@ describe("HostedBlenderSetupSettings", () => {
     await expect.element(screen.getByText("Install with an agent")).not.toBeInTheDocument();
   });
 
+  it("waits for someone allowed to run programs before checking", async () => {
+    state.settings = { hostedBlenderEnabled: true };
+    state.setup = { result: null, checking: false, installThreadId: null };
+    state.check.mockClear();
+    await using screen = await render(<HostedBlenderSetupSettings environmentId={environmentId} />);
+    await expect.element(screen.getByText("Not checked yet")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Check again" }));
+    expect(state.check).toHaveBeenCalledWith({ environmentId, input: {} });
+  });
+
+  it("says when the blender-mcp found isn't Blender Lab's, and keeps agents off", async () => {
+    state.settings = { hostedBlenderEnabled: true };
+    state.setup = checked(
+      OK.map((check) =>
+        check.item === "blenderMcp"
+          ? { item: "blenderMcp", status: "unrecognized", found: "/usr/bin/blender-mcp" }
+          : check,
+      ),
+    );
+    await using screen = await render(<HostedBlenderSetupSettings environmentId={environmentId} />);
+    await expect.element(screen.getByText("Not Blender Lab's")).toBeInTheDocument();
+    await expect
+      .element(screen.getByText("is a different project with the same name", { exact: false }))
+      .toBeInTheDocument();
+    await expect
+      .element(screen.getByRole("switch", { name: "Allow agents to start hosted Blenders" }))
+      .toBeDisabled();
+    await expect.element(screen.getByText("Install with an agent")).toBeInTheDocument();
+  });
+
   it("says why a host can't run hosted Blender", async () => {
     state.settings = { hostedBlenderEnabled: true };
     state.setup = {

@@ -245,7 +245,15 @@ function MissingRequirements(props: { readonly missing: ReadonlyArray<HostedBlen
   if (props.missing.includes("enabled")) {
     return <T>Switch on Hosted Blender in Settings › Blender to watch and steer Blender here.</T>;
   }
-  const names: Record<Exclude<HostedBlenderRequirement, "enabled">, string> = {
+  if (props.missing.includes("check")) {
+    return (
+      <T>
+        T3 Code hasn't checked this server yet. Open a .blend in hosted Blender, or check it in
+        Settings › Blender.
+      </T>
+    );
+  }
+  const names: Record<Exclude<HostedBlenderRequirement, "enabled" | "check">, string> = {
     blender: "Blender",
     labwc: "labwc",
     helper: gt("T3 Code's hidden display helper"),
@@ -254,7 +262,7 @@ function MissingRequirements(props: { readonly missing: ReadonlyArray<HostedBlen
     glupload: gt("GStreamer's OpenGL plugin"),
   };
   const list = props.missing
-    .filter((requirement) => requirement !== "enabled")
+    .filter((requirement) => requirement !== "enabled" && requirement !== "check")
     .map((requirement) => names[requirement])
     .join(", ");
   return (

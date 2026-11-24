@@ -218,6 +218,11 @@ it("shows Setup needed, saying what is missing, with a way into Settings › Ble
     await expect
       .element(screen.getByText("Switch on Hosted Blender in Settings › Blender", { exact: false }))
       .toBeInTheDocument();
+    stream.state = { status: "notSetUp", missing: ["check"] };
+    await screen.rerender(<BlenderPanel threadRef={threadRef} visible />);
+    await expect
+      .element(screen.getByText("T3 Code hasn't checked this server yet.", { exact: false }))
+      .toBeInTheDocument();
     stream.state = { status: "notSetUp", missing: ["labwc", "encoder"] };
     await screen.rerender(<BlenderPanel threadRef={threadRef} visible />);
     await expect

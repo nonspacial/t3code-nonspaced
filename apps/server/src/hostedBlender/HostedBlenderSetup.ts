@@ -31,6 +31,7 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import * as BlenderDetection from "../blend/BlenderDetection.ts";
+import { expandHome } from "../blend/BlenderDetection.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -51,6 +52,11 @@ import {
   type SetupFacts,
 } from "./setupChecks.ts";
 
+// A console script is a few lines; anything bigger is not one.
+const MAX_CONSOLE_SCRIPT_BYTES = 64 * 1024;
+// Blender Lab's package declares `blender-mcp = blmcp:main`.
+const OFFICIAL_MCP_ENTRY_POINT = /^from blmcp import main$/m;
+
 // The install agent may wait on the user's password card for a long time.
 const INSTALL_WAIT_MS = 6 * 60 * 60 * 1000;
 
@@ -66,12 +72,14 @@ export type HostedBlenderReadiness =
 export class HostedBlenderSetup extends Context.Service<
   HostedBlenderSetup,
   {
-    /** The first subscriber starts the first check. */
+    /** Passive: watching never runs a check, which starts programs on the host. */
     readonly state: Stream.Stream<HostedBlenderSetupState>;
     /** "Check again". A check already running is joined, not repeated. */
     readonly check: Effect.Effect<void>;
+    /** Checks unless a result is already kept: first use by a caller allowed to run programs. */
+    readonly ensureChecked: Effect.Effect<void>;
     readonly installWithAgent: Effect.Effect<HostedBlenderInstallResult, HostedBlenderSetupError>;
-    /** Follows the switch and the last check; waits for the first check when switched on. */
+    /** Follows the switch and the last check; passive, like `state`. */
     readonly readiness: Stream.Stream<HostedBlenderReadiness>;
   }
 >()("t3/hostedBlender/HostedBlenderSetup") {}
@@ -79,6 +87,8 @@ export class HostedBlenderSetup extends Context.Service<
 interface Internal {
   readonly state: HostedBlenderSetupState;
   readonly tools: { readonly helper: string; readonly blender: string } | null;
+  /** From the last check, for the install prompt. */
+  readonly osRelease: OsRelease | null;
 }
 
 const ProbeOutput = Schema.fromJsonString(Schema.Struct({ encoder: Schema.NullOr(Schema.String) }));
@@ -93,11 +103,11 @@ const BLOCKING_REQUIREMENTS: ReadonlyArray<HostedBlenderRequirement> = [
   "glupload",
 ];
 
-const readinessOf = (enabled: boolean, internal: Internal): HostedBlenderReadiness | null => {
+const readinessOf = (enabled: boolean, internal: Internal): HostedBlenderReadiness => {
   const result = internal.state.result;
   if (result?.status === "unavailable") return { status: "unavailable", reason: result.reason };
   if (!enabled) return { status: "notSetUp", missing: ["enabled"] };
-  if (result === null) return null;
+  if (result === null) return { status: "notSetUp", missing: ["check"] };
   if (result.ready && internal.tools !== null) return { status: "ok", ...internal.tools };
   return {
     status: "notSetUp",
@@ -135,6 +145,7 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
   const ref = yield* SubscriptionRef.make<Internal>({
     state: { result: null, checking: false, installThreadId: null },
     tools: null,
+    osRelease: null,
   });
   const update = (change: (internal: Internal) => Internal) => SubscriptionRef.update(ref, change);
 
@@ -195,7 +206,8 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
     return { total: nodes.length, accessible };
   });
 
-  const findBlenderMcp = Effect.fnUntraced(function* (configured: string) {
+  const findBlenderMcpPath = Effect.fnUntraced(function* (setting: string) {
+    const configured = expandHome(setting, homeDirectory, path.join);
     if (configured !== "") {
       const candidate = /[\\/]/.test(configured)
         ? path.resolve(configured)
@@ -207,6 +219,28 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
     // Where `uv tool install` and `pipx` put it, which a desktop app's PATH often lacks.
     const local = path.join(homeDirectory, ".local", "bin", "blender-mcp");
     return (yield* isExecutable(local)) ? local : null;
+  });
+
+  // PyPI's unrelated `blender-mcp` installs the same command; Blender Lab's console script
+  // (from uv, pipx or pip, through any symlink) imports its `blmcp` package.
+  const findBlenderMcp = Effect.fnUntraced(function* (setting: string) {
+    const found = yield* findBlenderMcpPath(setting);
+    if (found === null) return null;
+    const script = yield* fileSystem.realPath(found).pipe(
+      Effect.flatMap((real) =>
+        fileSystem
+          .stat(real)
+          .pipe(
+            Effect.flatMap((info) =>
+              Number(info.size) > MAX_CONSOLE_SCRIPT_BYTES
+                ? Effect.succeed("")
+                : fileSystem.readFileString(real),
+            ),
+          ),
+      ),
+      Effect.orElseSucceed(() => ""),
+    );
+    return { path: found, official: OFFICIAL_MCP_ENTRY_POINT.test(script) };
   });
 
   const isExecutable = (candidate: string) =>
@@ -318,6 +352,7 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
       state: { ...internal.state, result, checking: false },
       tools:
         helper !== null && facts.blender !== null ? { helper, blender: facts.blender.path } : null,
+      osRelease: facts.osRelease,
     }));
   }).pipe(
     Effect.onExit(() =>
@@ -349,16 +384,9 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
     Effect.flatMap((internal) => (internal.state.result === null ? check : Effect.void)),
   );
 
-  const state: HostedBlenderSetup["Service"]["state"] = Stream.unwrap(
-    ensureChecked.pipe(
-      Effect.forkIn(serviceScope),
-      Effect.as(
-        SubscriptionRef.changes(ref).pipe(
-          Stream.map((internal) => internal.state),
-          Stream.changesWith((a, b) => JSON.stringify(a) === JSON.stringify(b)),
-        ),
-      ),
-    ),
+  const state: HostedBlenderSetup["Service"]["state"] = SubscriptionRef.changes(ref).pipe(
+    Stream.map((internal) => internal.state),
+    Stream.changesWith((a, b) => JSON.stringify(a) === JSON.stringify(b)),
   );
 
   const enabledChanges = Stream.unwrap(
@@ -384,23 +412,29 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
         )
       : enabledChanges.pipe(
           Stream.switchMap((enabled) =>
-            Stream.unwrap(
-              (enabled ? ensureChecked.pipe(Effect.forkIn(serviceScope)) : Effect.void).pipe(
-                Effect.as(
-                  SubscriptionRef.changes(ref).pipe(
-                    Stream.map((internal) => readinessOf(enabled, internal)),
-                    Stream.filter((value): value is HostedBlenderReadiness => value !== null),
-                  ),
-                ),
-              ),
+            SubscriptionRef.changes(ref).pipe(
+              Stream.map((internal) => readinessOf(enabled, internal)),
             ),
           ),
           Stream.changesWith((a, b) => JSON.stringify(a) === JSON.stringify(b)),
         );
 
+  // Switching Hosted Blender on (settings write access) checks the server; its starting value doesn't.
+  if (platform === "linux") {
+    yield* enabledChanges.pipe(
+      Stream.drop(1),
+      Stream.filter((enabled) => enabled),
+      Stream.runForEach(() => check),
+      Effect.forkIn(serviceScope),
+    );
+  }
+
   const failLaunch = () => new HostedBlenderSetupError({ reason: "launchFailed" });
 
-  const launch = Effect.fn("HostedBlenderSetup.launch")(function* (result: CheckedSetup) {
+  const launch = Effect.fn("HostedBlenderSetup.launch")(function* (
+    result: CheckedSetup,
+    release: OsRelease | null,
+  ) {
     const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
     const { projectId } = yield* folders.ensureScratchProject.pipe(
       Effect.mapError(() => new HostedBlenderSetupError({ reason: "noProject" })),
@@ -446,7 +480,7 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
           runtimeMode: defaults.defaultRuntimeMode,
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           workspaceStrategy: { type: "root" },
-          initialMessage: { text: installPrompt(result), attachments: [] },
+          initialMessage: { text: installPrompt(result, release), attachments: [] },
           createdBy: "user",
           creationSource: "server",
         }),
@@ -491,7 +525,7 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
         return yield* new HostedBlenderSetupError({ reason: "nothingToInstall" });
       }
       // The browser gets only the reason; the cause stays in the server log.
-      const launched = yield* launch(result).pipe(
+      const launched = yield* launch(result, (yield* SubscriptionRef.get(ref)).osRelease).pipe(
         Effect.tapCause((cause) =>
           Effect.logWarning("Could not start the hosted Blender setup thread", { cause }),
         ),
@@ -509,7 +543,7 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
     Effect.withSpan("HostedBlenderSetup.installWithAgent"),
   );
 
-  return HostedBlenderSetup.of({ state, check, installWithAgent, readiness });
+  return HostedBlenderSetup.of({ state, check, ensureChecked, installWithAgent, readiness });
 });
 
 export const layer = Layer.effect(HostedBlenderSetup, makeWith({ systemRoot: "/" }));

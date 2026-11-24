@@ -10,7 +10,7 @@ import type {
 import { resolvePastedPath } from "@t3tools/shared/path";
 import { useNavigate } from "@tanstack/react-router";
 import { T, useGT, useMessages, Var } from "gt-react";
-import { useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { hostedBlenderEnvironment, useHostedBlenderSetupState } from "~/state/hostedBlender";
@@ -34,7 +34,10 @@ import {
 type CheckedSetup = Extract<HostedBlenderSetupResult, { status: "checked" }>;
 
 const canInstall = (result: CheckedSetup) =>
-  result.checks.some((check) => check.status === "missing" || check.status === "outdated");
+  result.checks.some(
+    (check) =>
+      check.status === "missing" || check.status === "outdated" || check.status === "unrecognized",
+  );
 
 /**
  * Hosted Blender's setup steps: the switch, what this server has, how to install the rest, and
@@ -111,7 +114,7 @@ function SetupStatus(props: {
   readonly state: ReturnType<typeof useHostedBlenderSetupState>;
 }) {
   const result = props.state?.result ?? null;
-  if (result === null) {
+  if (result === null && props.state?.checking !== false) {
     return (
       <SettingsRow
         title={<T>Checking this server…</T>}
@@ -119,6 +122,19 @@ function SetupStatus(props: {
           <T>T3 Code looks for Blender, labwc, GStreamer and the GPU, and runs a test encode.</T>
         }
         control={<Spinner />}
+      />
+    );
+  }
+  if (result === null) {
+    // Nobody allowed to run programs here has checked yet; watching never starts a check.
+    return (
+      <CheckAgainRow
+        environmentId={props.environmentId}
+        checking={false}
+        title={<T>Not checked yet</T>}
+        description={
+          <T>Check this server for Blender, labwc, GStreamer and the GPU, with a test encode.</T>
+        }
       />
     );
   }
@@ -224,6 +240,12 @@ function CheckBadge(props: { readonly check: HostedBlenderSetupCheck }) {
           <T>Slow</T>
         </Badge>
       );
+    case "unrecognized":
+      return (
+        <Badge variant="warning">
+          <T>Not Blender Lab's</T>
+        </Badge>
+      );
   }
 }
 
@@ -310,6 +332,11 @@ function CheckDescription(props: {
         <T>
           <Var>{found}</Var>
         </T>
+      ) : check.status === "unrecognized" ? (
+        <T>
+          <Var>{found}</Var> is a different project with the same name, not the Blender Lab MCP.
+          Install the official one, or set its path below.
+        </T>
       ) : (
         <T>Agents need the official Blender Lab MCP server. The pane works without it.</T>
       );
@@ -319,6 +346,9 @@ function CheckDescription(props: {
 function CheckAgainRow(props: {
   readonly environmentId: EnvironmentId;
   readonly checking: boolean;
+  /** A row that says something besides offering the button, shown even without permission. */
+  readonly title?: ReactNode;
+  readonly description?: ReactNode;
 }) {
   const m = useMessages();
   const gt = useGT();
@@ -326,7 +356,7 @@ function CheckAgainRow(props: {
     hostedBlenderEnvironment.checkSetup.permissionAtom(props.environmentId),
   );
   const check = useAtomCommand(hostedBlenderEnvironment.checkSetup, { reportFailure: false });
-  if (!canCheck) return null;
+  if (!canCheck && props.title === undefined) return null;
   const run = async () => {
     const result = await check({ environmentId: props.environmentId, input: {} });
     if (result._tag === "Failure") {
@@ -341,15 +371,19 @@ function CheckAgainRow(props: {
   };
   return (
     <SettingsRow
-      title={<T>Check again</T>}
+      title={props.title ?? <T>Check again</T>}
       description={
-        <T>The result is kept until you check again, such as after installing something.</T>
+        props.description ?? (
+          <T>The result is kept until you check again, such as after installing something.</T>
+        )
       }
       control={
-        <Button variant="outline" size="sm" disabled={props.checking} onClick={() => void run()}>
-          {props.checking ? <Spinner /> : null}
-          <T>Check again</T>
-        </Button>
+        canCheck ? (
+          <Button variant="outline" size="sm" disabled={props.checking} onClick={() => void run()}>
+            {props.checking ? <Spinner /> : null}
+            <T>Check again</T>
+          </Button>
+        ) : null
       }
     />
   );

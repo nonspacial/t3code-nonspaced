@@ -49,7 +49,8 @@ export interface SetupFacts {
   readonly nvidia: boolean;
   readonly glupload: boolean;
   readonly renderNodes: { readonly total: number; readonly accessible: number };
-  readonly blenderMcp: string | null;
+  /** `official`: its console script runs Blender Lab's `blmcp`, not a lookalike's module. */
+  readonly blenderMcp: { readonly path: string; readonly official: boolean } | null;
 }
 
 export type CheckedSetup = Extract<HostedBlenderSetupResult, { status: "checked" }>;
@@ -151,7 +152,6 @@ const PACKAGES: Record<
   apt: {
     install: "sudo apt install",
     packages: {
-      blender: ["blender"],
       labwc: ["labwc"],
       gstreamer: [
         "gstreamer1.0-tools",
@@ -205,13 +205,24 @@ const installCommands = (
     if (needs("glupload", "missing")) for (const name of packages.glupload ?? []) wanted.add(name);
     if (wanted.size > 0) commands.push(`${install} ${[...wanted].join(" ")}`);
   }
-  if (
-    needs("blender", "outdated") ||
-    (needs("blender", "missing") && packageManager !== "pacman")
-  ) {
+  // Ubuntu's and Debian's own Blender packages are older than the minimum, so apt never offers one.
+  if (needs("blender", "outdated") || (needs("blender", "missing") && packageManager === "apt")) {
+    commands.push(
+      `# Your distro's Blender is older than ${MIN_BLENDER}. Download Blender from https://www.blender.org/download/,`,
+      "# unpack it (for example into /opt/blender) and set its path in Settings › General › 3D previews.",
+    );
+  } else if (needs("blender", "missing") && packageManager !== "pacman") {
     commands.push(
       `# If your distro's Blender is older than ${MIN_BLENDER}, download Blender from https://www.blender.org/download/`,
       "# and set its path in Settings › General › 3D previews.",
+    );
+  }
+  if (
+    packageManager === "dnf" &&
+    (needs("gstreamer", "missing", "outdated") || needs("encoder", "missing"))
+  ) {
+    commands.push(
+      "# Fedora's working openh264 comes from the fedora-cisco-openh264 repository; the default noopenh264 is a stub.",
     );
   }
   if (needs("gpu", "missing")) {
@@ -220,7 +231,13 @@ const installCommands = (
       "# Then log out and back in, and restart T3 Code.",
     );
   }
-  if (needs("blenderMcp", "missing")) {
+  if (needs("blenderMcp", "unrecognized")) {
+    commands.push(
+      "# The blender-mcp found is a different project with the same name. Remove it first,",
+      "# for example with `uv tool uninstall blender-mcp` or `pipx uninstall blender-mcp`.",
+    );
+  }
+  if (needs("blenderMcp", "missing", "unrecognized")) {
     commands.push(
       "# The official Blender Lab MCP server (needs uv; `pipx install` works too):",
       `uv tool install "${BLENDER_MCP_PACKAGE}"`,
@@ -261,7 +278,13 @@ export const evaluateSetup = (
     facts.renderNodes.total === 0
       ? check("gpu", "warning")
       : check("gpu", facts.renderNodes.accessible > 0 ? "ok" : "missing"),
-    check("blenderMcp", facts.blenderMcp === null ? "missing" : "ok", facts.blenderMcp),
+    facts.blenderMcp === null
+      ? check("blenderMcp", "missing")
+      : check(
+          "blenderMcp",
+          facts.blenderMcp.official ? "ok" : "unrecognized",
+          facts.blenderMcp.path,
+        ),
   ];
   const packageManager = packageManagerFor(facts.osRelease);
   return {
@@ -282,7 +305,10 @@ export const evaluateSetup = (
 
 /** Something "Install with an agent" could fix. */
 export const needsInstall = (result: Pick<CheckedSetup, "checks">) =>
-  result.checks.some((entry) => entry.status === "missing" || entry.status === "outdated");
+  result.checks.some(
+    (entry) =>
+      entry.status === "missing" || entry.status === "outdated" || entry.status === "unrecognized",
+  );
 
 const ITEM_NAMES: Record<HostedBlenderSetupItem, string> = {
   helper: "T3 Code's hidden display helper",
@@ -296,20 +322,41 @@ const ITEM_NAMES: Record<HostedBlenderSetupItem, string> = {
   blenderMcp: `the official Blender Lab MCP server, \`blender-mcp\` (${BLENDER_MCP_PACKAGE})`,
 };
 
-/** The first message of the "Install with an agent" thread. */
-export const installPrompt = (result: Omit<CheckedSetup, "checkedAt">): string => {
+/** The distro as os-release's ID and VERSION_ID, only when both are plain tokens. */
+const distroLabel = (release: OsRelease | null) =>
+  release !== null &&
+  /^[a-z0-9._-]{1,32}$/.test(release.id) &&
+  (release.versionId === null || /^[0-9A-Za-z._-]{1,16}$/.test(release.versionId))
+    ? [release.id, release.versionId].filter(Boolean).join(" ")
+    : "unknown";
+
+/**
+ * The first message of the "Install with an agent" thread. PRETTY_NAME is free text from the
+ * host, so the agent gets only the checked ID and VERSION_ID.
+ */
+export const installPrompt = (
+  result: Omit<CheckedSetup, "checkedAt">,
+  release: OsRelease | null,
+): string => {
   const missing = result.checks.filter(
-    (entry) => entry.status === "missing" || entry.status === "outdated",
+    (entry) =>
+      entry.status === "missing" || entry.status === "outdated" || entry.status === "unrecognized",
   );
   const lines = [
     "Set up this machine so T3 Code can run hosted Blenders.",
     "",
-    `Distro: ${result.distro ?? "unknown"}${result.packageManager === null ? "" : ` (${result.packageManager})`}.`,
+    `Distro: ${distroLabel(release)}${result.packageManager === null ? "" : ` (${result.packageManager})`}.`,
     "",
     "T3 Code's setup check found these missing or too old:",
     ...missing.map(
       (entry) =>
-        `- ${ITEM_NAMES[entry.item]}${entry.status === "outdated" && entry.found ? `: found ${entry.found}` : ""}`,
+        `- ${ITEM_NAMES[entry.item]}${
+          entry.status === "outdated" && entry.found
+            ? `: found ${entry.found}`
+            : entry.status === "unrecognized"
+              ? ": the `blender-mcp` installed is a different project with the same name"
+              : ""
+        }`,
     ),
     "",
     ...(result.commands.length > 0

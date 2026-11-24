@@ -8,9 +8,13 @@ export const HOSTED_BLENDER_STREAM_STOPPED_CLOSE_CODE = 4404;
 /** Too many viewers are already watching this hosted Blender. */
 export const HOSTED_BLENDER_STREAM_FULL_CLOSE_CODE = 4429;
 
-/** What the server lacks to host Blender. `enabled` is the Hosted Blender switch in Settings. */
+/**
+ * What the server lacks to host Blender. `enabled` is the Hosted Blender switch in Settings;
+ * `check` means nobody with permission to run it has checked the server yet.
+ */
 export const HostedBlenderRequirement = Schema.Literals([
   "enabled",
+  "check",
   "helper",
   "blender",
   "labwc",
@@ -35,8 +39,11 @@ export type HostedBlenderSetupItem = typeof HostedBlenderSetupItem.Type;
 
 export const HostedBlenderSetupCheck = Schema.Struct({
   item: HostedBlenderSetupItem,
-  /** `warning` works, but slowly or only partly: no GPU, or no access to its render node. */
-  status: Schema.Literals(["ok", "missing", "outdated", "warning"]),
+  /**
+   * `warning` works, but slowly or only partly: no GPU. `unrecognized` is a program by the right
+   * name that isn't the expected one, such as PyPI's unrelated `blender-mcp`.
+   */
+  status: Schema.Literals(["ok", "missing", "outdated", "warning", "unrecognized"]),
   /** What was found: a version, a path or an encoder. */
   found: Schema.optionalKey(Schema.String),
 });

@@ -28,8 +28,13 @@ export function OpenInHostedBlender(props: {
 
   const showPane = () => useRightPanelStore.getState().open(props.threadRef, "blender");
   const openFile = async () => {
-    // The pane explains what's missing; there is nothing to start yet.
-    if (state.status === "notSetUp") return showPane();
+    // The pane explains what's missing; there is nothing to start yet. A server nobody has
+    // checked is checked by opening, which needs the same permission.
+    if (
+      state.status === "notSetUp" &&
+      !(state.missing.length === 1 && state.missing[0] === "check")
+    )
+      return showPane();
     setPending(true);
     const result = await open({
       environmentId: props.threadRef.environmentId,

@@ -646,6 +646,8 @@ const make = Effect.gen(function* () {
     relativePath,
   }) {
     yield* Effect.annotateCurrentSpan({ threadId });
+    // Opening is the pane's first use, by a caller allowed to start programs here.
+    yield* setup.ensureChecked;
     const tools = yield* setup.readiness.pipe(Stream.runHead, Effect.map(Option.getOrNull));
     if (tools?.status !== "ok") {
       return yield* new HostedBlenderError({ reason: tools?.status ?? "notSetUp" });

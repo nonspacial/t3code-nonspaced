@@ -61,6 +61,7 @@ const layerFor = (host: Host) =>
           HostedBlenderSetup.HostedBlenderSetup.of({
             state: Stream.never,
             check: Effect.void,
+            ensureChecked: Effect.void,
             installWithAgent: Effect.die("not used"),
             readiness: Stream.concat(Stream.succeed(readinessFor(host)), Stream.never),
           }),

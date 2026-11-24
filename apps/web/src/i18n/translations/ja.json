@@ -3324,6 +3324,7 @@
   "ccb9bcd7825f2f99": "This server's Linux release ships labwc and GStreamer too old for hosted Blender. You can still open 3D files in the file preview.",
   "efd53a6196afbf6d": "Flatpak and Snap builds of Blender aren't supported yet. Settings › Blender says how to use another Blender.",
   "ec1b57292361ae76": "Switch on Hosted Blender in Settings › Blender to watch and steer Blender here.",
+  "e4ec327ad1a82eb5": "T3 Code hasn't checked this server yet. Open a .blend in hosted Blender, or check it in Settings › Blender.",
   "af467bacc13f5e57": [
     "This server is missing: ",
     {
@@ -8763,6 +8764,8 @@
   "6d0cb7390c17be3b": "自動で検出",
   "0726bb02c4c42175": "Checking this server…",
   "3a450021c92f3e4e": "T3 Code looks for Blender, labwc, GStreamer and the GPU, and runs a test encode.",
+  "b0537628ad92ed53": "Not checked yet",
+  "33bb3044d9712567": "Check this server for Blender, labwc, GStreamer and the GPU, with a test encode.",
   "c3f155eda04d9708": "Hosted Blender needs a Linux server. 3D file previews still work on this one.",
   "60f2565d2d2a6c3e": [
     {
@@ -8777,6 +8780,7 @@
   "f9ab32870fe2bf3a": "Missing",
   "d724abd4cc4a85e5": "Too old",
   "7b01b12da1a9fd17": "Slow",
+  "a5fe3dee0a941705": "Not Blender Lab's",
   "7174ef3cfccc7a54": "Runs Blender on the hidden display and streams it.",
   "59e399ec181acb63": "T3 Code's own helper is missing from this install. Update or reinstall T3 Code.",
   "92a36f954d094a6f": [
@@ -8838,6 +8842,14 @@
     "k": "_gt_value_1",
     "v": "v"
   },
+  "92c9412a1a79bb73": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " is a different project with the same name, not the Blender Lab MCP. Install the official one, or set its path below."
+  ],
   "9a397640135c1803": "Agents need the official Blender Lab MCP server. The pane works without it.",
   "7c26d4f38c0094aa": "The result is kept until you check again, such as after installing something.",
   "021b62ff834041f0": "Install what's missing",

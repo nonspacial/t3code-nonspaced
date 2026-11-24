@@ -5,7 +5,12 @@ import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, expect, it } from "@effect/vitest";
-import { type HostedBlenderSetupState, ProjectId, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  type HostedBlenderSetupState,
+  type ServerSettings as ServerSettingsValue,
+  ProjectId,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -76,6 +81,17 @@ const fakeHost = (dir: string) => {
   };
 };
 
+/** A pip console script, as `uv tool install` and `pipx` write it, importing `module`. */
+const consoleScript = (file: string, module: string) => {
+  NodeFS.mkdirSync(NodePath.dirname(file), { recursive: true });
+  NodeFS.writeFileSync(
+    file,
+    `#!/usr/bin/python3\n# -*- coding: utf-8 -*-\nimport sys\nfrom ${module} import main\nif __name__ == "__main__":\n    sys.exit(main())\n`,
+    { mode: 0o755 },
+  );
+  return file;
+};
+
 interface Options {
   readonly host: ReturnType<typeof fakeHost>;
   readonly home: string;
@@ -84,7 +100,35 @@ interface Options {
   readonly defaultModel?: boolean;
   readonly launched?: Queue.Queue<ThreadLaunch.ThreadLaunchInput>;
   readonly agentDone?: Deferred.Deferred<void>;
+  readonly blenderMcpPath?: string;
+  /** Settings written while the service runs, as the Settings page's switch does. */
+  readonly settingsChanges?: Queue.Queue<Partial<ServerSettingsValue>>;
 }
+
+/** Settings whose changes reach `subscribeChanges`, which `layerTest` never streams. */
+const changingSettings = (
+  initial: Partial<ServerSettingsValue>,
+  changes: Queue.Queue<Partial<ServerSettingsValue>>,
+) =>
+  Layer.effect(
+    ServerSettings.ServerSettingsService,
+    Effect.gen(function* () {
+      const base = yield* ServerSettings.ServerSettingsService;
+      let current = { ...(yield* base.getSettings), ...initial };
+      return {
+        ...base,
+        getSettings: Effect.sync(() => current),
+        subscribeChanges: Effect.succeed(
+          Stream.fromQueue(changes).pipe(
+            Stream.map((patch) => {
+              current = { ...current, ...patch };
+              return current;
+            }),
+          ),
+        ),
+      };
+    }),
+  ).pipe(Layer.provide(ServerSettings.ServerSettingsService.layerTest()));
 
 const setupFor = (options: Options) =>
   Layer.effect(
@@ -94,10 +138,16 @@ const setupFor = (options: Options) =>
     Layer.provide(
       Layer.mergeAll(
         ProcessRunner.layer,
-        ServerSettings.ServerSettingsService.layerTest({
-          hostedBlenderEnabled: options.enabled ?? true,
-          defaultModelSelection: options.defaultModel === false ? null : model,
-        }),
+        options.settingsChanges
+          ? changingSettings(
+              { hostedBlenderEnabled: options.enabled ?? true },
+              options.settingsChanges,
+            )
+          : ServerSettings.ServerSettingsService.layerTest({
+              hostedBlenderEnabled: options.enabled ?? true,
+              defaultModelSelection: options.defaultModel === false ? null : model,
+              blenderMcpPath: options.blenderMcpPath ?? "",
+            }),
         Layer.succeed(BlenderDetection.BlenderDetection, {
           find: Effect.succeed({ path: options.host.blender, version: "5.0.1" }),
         }),
@@ -161,14 +211,47 @@ const checkedResult = (state: HostedBlenderSetupState) => {
 };
 
 describe("HostedBlenderSetup", () => {
+  it.live("never runs anything for someone who only watches", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir;
+      const host = fakeHost(dir);
+      const service = yield* serviceFor({ host, home: dir });
+      const next = yield* watch(service);
+      assert.deepStrictEqual(yield* next(() => true), {
+        result: null,
+        checking: false,
+        installThreadId: null,
+      });
+      // Switched on but never checked: the pane says so instead of waiting.
+      assert.deepStrictEqual(Option.getOrThrow(yield* Stream.runHead(service.readiness)), {
+        status: "notSetUp",
+        missing: ["check"],
+      });
+      expect(host.probeCount()).toBe(0);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("checks when Hosted Blender is switched on", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir;
+      const host = fakeHost(dir);
+      const settingsChanges = yield* Queue.unbounded<Partial<ServerSettingsValue>>();
+      const service = yield* serviceFor({ host, home: dir, enabled: false, settingsChanges });
+      const next = yield* watch(service);
+      expect(host.probeCount()).toBe(0);
+      yield* Queue.offer(settingsChanges, { hostedBlenderEnabled: true });
+      expect(checkedResult(yield* next((state) => state.result !== null)).ready).toBe(true);
+      expect(host.probeCount()).toBe(1);
+    }).pipe(Effect.scoped),
+  );
+
   it.live("checks on first use, with a test encode through the helper, and remembers it", () =>
     Effect.gen(function* () {
       const dir = yield* tempDir;
       const host = fakeHost(dir);
       const service = yield* serviceFor({ host, home: dir });
-      // Nothing runs until something asks.
-      expect(host.probeCount()).toBe(0);
       const next = yield* watch(service);
+      yield* service.ensureChecked;
       const result = checkedResult(yield* next((state) => state.result !== null));
       expect(result.ready).toBe(true);
       expect(result.distro).toBe("Arch Linux");
@@ -181,6 +264,7 @@ describe("HostedBlenderSetup", () => {
 
       // labwc goes away, but the remembered result stands until "Check again".
       NodeFS.rmSync(NodePath.join(host.bin, "labwc"));
+      yield* service.ensureChecked;
       const again = yield* watch(service);
       expect(checkedResult(yield* again((state) => state.result !== null)).ready).toBe(true);
       expect(host.probeCount()).toBe(1);
@@ -198,14 +282,51 @@ describe("HostedBlenderSetup", () => {
     Effect.gen(function* () {
       const dir = yield* tempDir;
       const host = fakeHost(dir);
-      const mcp = script(NodePath.join(dir, ".local", "bin", "blender-mcp"), "exit 0");
+      const mcp = consoleScript(NodePath.join(dir, ".local", "bin", "blender-mcp"), "blmcp");
       const service = yield* serviceFor({ host, home: dir });
+      yield* service.ensureChecked;
       const next = yield* watch(service);
       expect(checkedResult(yield* next((state) => state.result !== null)).checks).toContainEqual({
         item: "blenderMcp",
         status: "ok",
         found: mcp,
       });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("tells the third-party blender-mcp from Blender Lab's", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir;
+      const host = fakeHost(dir);
+      // PyPI's unrelated `blender-mcp` installs the same command name.
+      const lookalike = consoleScript(
+        NodePath.join(dir, ".local", "bin", "blender-mcp"),
+        "blender_mcp.server",
+      );
+      const service = yield* serviceFor({ host, home: dir });
+      yield* service.ensureChecked;
+      const result = checkedResult(
+        yield* (yield* watch(service))((state) => state.result !== null),
+      );
+      expect(result.checks).toContainEqual({
+        item: "blenderMcp",
+        status: "unrecognized",
+        found: lookalike,
+      });
+      expect(result.commands.join("\n")).toContain("projects.blender.org/lab/blender_mcp");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("expands ~ in the Blender MCP path", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir;
+      const host = fakeHost(dir);
+      const mcp = consoleScript(NodePath.join(dir, "tools", "blender-mcp"), "blmcp");
+      const service = yield* serviceFor({ host, home: dir, blenderMcpPath: "~/tools/blender-mcp" });
+      yield* service.ensureChecked;
+      expect(
+        checkedResult(yield* (yield* watch(service))((state) => state.result !== null)).checks,
+      ).toContainEqual({ item: "blenderMcp", status: "ok", found: mcp });
     }).pipe(Effect.scoped),
   );
 
@@ -221,6 +342,7 @@ describe("HostedBlenderSetup", () => {
       expect(host.probeCount()).toBe(0);
 
       const on = yield* serviceFor({ host, home: dir });
+      yield* on.ensureChecked;
       assert.deepStrictEqual(Option.getOrThrow(yield* Stream.runHead(on.readiness)), {
         status: "ok",
         helper: host.helper,
@@ -229,6 +351,7 @@ describe("HostedBlenderSetup", () => {
 
       NodeFS.rmSync(NodePath.join(host.bin, "gst-inspect-1.0"));
       const missing = yield* serviceFor({ host, home: dir });
+      yield* missing.ensureChecked;
       assert.deepStrictEqual(Option.getOrThrow(yield* Stream.runHead(missing.readiness)), {
         status: "notSetUp",
         missing: ["gstreamer", "encoder"],
@@ -289,7 +412,7 @@ describe("HostedBlenderSetup", () => {
     Effect.gen(function* () {
       const dir = yield* tempDir;
       const host = fakeHost(dir);
-      script(NodePath.join(dir, ".local", "bin", "blender-mcp"), "exit 0");
+      consoleScript(NodePath.join(dir, ".local", "bin", "blender-mcp"), "blmcp");
       const complete = yield* serviceFor({ host, home: dir });
       expect((yield* Effect.flip(complete.installWithAgent)).reason).toBe("nothingToInstall");
 
