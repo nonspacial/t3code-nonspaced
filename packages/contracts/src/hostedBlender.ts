@@ -42,12 +42,15 @@ export const HostedBlenderThreadState = Schema.Union([
     status: Schema.Literal("closed"),
     relativePath: TrimmedNonEmptyString,
     recovery: Schema.Boolean,
+    /** The last try to restore `recovery` failed; the copy is kept. */
+    restoreFailed: Schema.optional(Schema.Boolean),
   }),
   /** Blender stopped on its own. `recovery` is its newest autosave, which Restart can restore. */
   Schema.Struct({
     status: Schema.Literal("crashed"),
     relativePath: TrimmedNonEmptyString,
     recovery: Schema.Boolean,
+    restoreFailed: Schema.optional(Schema.Boolean),
   }),
   HostedBlenderRunningState,
 ]);

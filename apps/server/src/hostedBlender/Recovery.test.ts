@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { endingOf, newestSession } from "./Recovery.ts";
+import { afterDeadline, endingOf, leftoverEnding, newestSession } from "./Recovery.ts";
 
 describe("newestSession", () => {
   it("keeps the newest of Blender's quit copy and its autosaves", () => {
@@ -65,5 +65,30 @@ describe("endingOf", () => {
     expect(endingOf({ ...running, wasRunning: false, ending: true, quitting: true })).toBe(
       "closed",
     );
+  });
+});
+
+describe("afterDeadline", () => {
+  it("never stops a Blender that said it is saving or writing its quit copy", () => {
+    // Settling waits for it however long the write takes.
+    expect(afterDeadline({ acknowledged: true, shutdown: false })).toBe("wait");
+    // Shutting down leaves it to finish alone; the next start collects its copy.
+    expect(afterDeadline({ acknowledged: true, shutdown: true })).toBe("detach");
+  });
+
+  it("stops one that never answered, as a last resort", () => {
+    expect(afterDeadline({ acknowledged: false, shutdown: false })).toBe("forceQuit");
+    expect(afterDeadline({ acknowledged: false, shutdown: true })).toBe("forceQuit");
+  });
+});
+
+describe("leftoverEnding", () => {
+  it("reads how a launch a stopped server left behind ended", () => {
+    expect(leftoverEnding({ outcome: "closing", hasQuitCopy: true })).toBe("closed");
+    expect(leftoverEnding({ outcome: "closing", hasQuitCopy: false })).toBe("closed");
+    // A save that finished quits Blender, which leaves its quit copy: nothing to recover.
+    expect(leftoverEnding({ outcome: "saving", hasQuitCopy: true })).toBe("saved");
+    expect(leftoverEnding({ outcome: "saving", hasQuitCopy: false })).toBe("crashed");
+    expect(leftoverEnding({ outcome: null, hasQuitCopy: false })).toBe("crashed");
   });
 });

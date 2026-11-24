@@ -3310,6 +3310,15 @@
   "3f25b97ec987231e": "Blender couldn't open the file on the hidden display. Check that Blender opens it and that GStreamer has an H.264 encoder, then open it in hosted Blender again.",
   "c9d23ccb15073177": "Blender 已崩溃",
   "9f406050b6efb934": "Blender 已关闭",
+  "df374db2c12ff019": [
+    "Blender 无法恢复 ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " 的副本。副本已保留：请重试、打开上次保存的文件，或丢弃该副本。"
+  ],
   "ff3775198cef1512": [
     {
       "i": 1,

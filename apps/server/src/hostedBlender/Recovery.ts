@@ -35,3 +35,24 @@ export const newestSession = (
 ): string | undefined =>
   files.filter((file) => SESSION_FILE.test(file.name)).toSorted((a, b) => b.mtimeMs - a.mtimeMs)[0]
     ?.name;
+
+/**
+ * What an ending does once its deadline passes. A Blender that acknowledged its save or quit is
+ * still writing, so stopping it could cut the file short: settling waits, and a shutdown leaves
+ * it to finish alone.
+ */
+export const afterDeadline = (input: {
+  readonly acknowledged: boolean;
+  readonly shutdown: boolean;
+}): "wait" | "detach" | "forceQuit" =>
+  !input.acknowledged ? "forceQuit" : input.shutdown ? "detach" : "wait";
+
+/** What T3 was doing to a launch it left behind (its `outcome` file), and how that ended. */
+export const leftoverEnding = (input: {
+  readonly outcome: "closing" | "saving" | null;
+  readonly hasQuitCopy: boolean;
+}): "closed" | "crashed" | "saved" => {
+  if (input.outcome === "closing") return "closed";
+  if (input.outcome === "saving" && input.hasQuitCopy) return "saved";
+  return "crashed";
+};

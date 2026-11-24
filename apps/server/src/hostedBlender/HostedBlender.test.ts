@@ -10,6 +10,7 @@ import { type HostedBlenderThreadState, ThreadId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -35,6 +36,8 @@ interface Host {
   readonly env: NodeJS.ProcessEnv;
   readonly workspaceRoot: string;
   readonly baseDir: string;
+  /** Runs before each thread lookup, so a test can hold `open` mid-validation. */
+  readonly beforeThreadLookup?: () => Effect.Effect<void>;
 }
 
 const layerFor = (host: Host) =>
@@ -49,10 +52,12 @@ const layerFor = (host: Host) =>
         }),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadShell: (id) =>
-            Effect.succeed(
-              id === threadId || id === otherThreadId
-                ? ({ worktreePath: host.workspaceRoot, projectId: "project" } as never)
-                : null,
+            Effect.suspend(() => host.beforeThreadLookup?.() ?? Effect.void).pipe(
+              Effect.as(
+                id === threadId || id === otherThreadId
+                  ? ({ worktreePath: host.workspaceRoot, projectId: "project" } as never)
+                  : null,
+              ),
             ),
         }),
         Layer.mock(ProjectService.ProjectService)({}),
@@ -129,34 +134,61 @@ def event(value):
         sys.stdout.buffer.write(struct.pack(">IB", len(data) + 1, 1) + data)
         sys.stdout.buffer.flush()
 state = {"connection": None}
+def signal_to_test(name):
+    # STANDIN_SIGNAL is a FIFO the test may be reading, to wait on this without polling.
+    path = os.environ.get("STANDIN_SIGNAL")
+    if path and os.path.exists(path):
+        with open(path, "w") as fifo:
+            fifo.write(name)
 def crash(*_args):
     open(os.path.join(tmp, "cube_4242_autosave.blend"), "w").write("autosave")
     event({"type": "exited", "process": "blender", "code": None, "signal": 11})
     if state["connection"] is not None:
         state["connection"].close()
 signal.signal(signal.SIGUSR1, crash)
+state["finishing"] = threading.Event()
+state["finishing"].set()
 server = socket.socket(socket.AF_UNIX)
-server.bind(t3[t3.index("--t3-control") + 1])
-server.listen(1)
+def listen():
+    # "late-control": the add-on's socket appears only once the test creates STANDIN_BIND.
+    if scenario == "late-control":
+        import time
+        while not os.path.exists(os.environ["STANDIN_BIND"]):
+            time.sleep(0.05)
+    server.bind(t3[t3.index("--t3-control") + 1])
+    server.listen(1)
 event({"type": "ready", "capture": "extImageCopyCapture", "target": "window",
        "encoder": "x264enc", "width": 1280, "height": 720, "cursorTracking": True})
 if scenario != "never-shows":
     event({"type": "windowCaptured", "title": "3D Viewport"})
+def send(connection, value):
+    connection.sendall((json.dumps(value) + "\n").encode())
 def control():
+    listen()
     connection, _ = server.accept()
     state["connection"] = connection
-    connection.sendall(b'{"type": "hello", "pid": %d}\n' % os.getpid())
-    connection.sendall(b'{"type": "state", "filepath": "cube.blend", "dirty": true}\n')
+    send(connection, {"type": "hello", "pid": os.getpid()})
+    first = {"type": "state", "filepath": "cube.blend", "dirty": scenario != "clean"}
+    if "--t3-recover" in t3:
+        first["restore"] = "failed" if scenario == "restore-fails" else "ok"
+    send(connection, first)
     saves = 0
     for line in connection.makefile():
         command = json.loads(line)
         if command.get("type") == "quit" and not command.get("save"):
             if scenario == "ignores-quit":
                 continue
+            send(connection, {"type": "quitting"})
+            state["finishing"].clear()
+            if scenario == "slow-quit":
+                # Still writing its quit copy past T3's shutdown deadline.
+                import time
+                time.sleep(5)
             if scenario != "no-quit-copy":
-                open(os.path.join(tmp, "quit.blend"), "w").write("quit copy")
+                open(os.path.join(tmp, "quit.blend"), "w").write("quit copy %d" % os.getpid())
             event({"type": "exited", "process": "blender", "code": 0, "signal": None})
             connection.close()
+            state["finishing"].set()
             return
         if command.get("type") != "quit" or not command.get("save"):
             continue
@@ -164,6 +196,22 @@ def control():
         with open(os.environ["STANDIN_SAVES"], "a") as log:
             log.write("save\n")
         connection.sendall(b'{"type": "saving"}\n')
+        if scenario == "slow-save":
+            signal_to_test("saving")
+            # Acknowledged, then a save that outlasts T3's deadlines before Blender quits.
+            import time
+            state["finishing"].clear()
+            time.sleep(5)
+            with open(os.environ["STANDIN_SAVES"], "a") as log:
+                log.write("saved\n")
+            try:
+                send(connection, {"type": "saved"})
+            except OSError:
+                pass  # T3 stopped meanwhile; the add-on drops a closed connection the same way.
+            open(os.path.join(tmp, "quit.blend"), "w").write("quit copy %d" % os.getpid())
+            event({"type": "exited", "process": "blender", "code": 0, "signal": None})
+            state["finishing"].set()
+            return
         if scenario == "exit-while-saving":
             os._exit(0)
         if scenario == "drop-socket":
@@ -181,20 +229,31 @@ def control():
             threading.Timer(1.0, lambda: connection.sendall(
                 b'{"type": "quitFailed", "reason": "saveFailed"}\n')).start()
 threading.Thread(target=control, daemon=True).start()
+def stopped(how):
+    signal_to_test(how)
+    marker = os.environ.get("STANDIN_MARKER")
+    if marker:
+        open(marker, "w").write(how)
+    os._exit(0)
 for line in sys.stdin:
+    # Detached, the real helper lets Blender finish, then exits with it.
+    if '"detach"' in line:
+        state["finishing"].wait()
+        stopped("finished")
     if '"quit"' in line:
-        marker = os.environ.get("STANDIN_MARKER")
-        if marker:
-            open(marker, "w").write("quit")
-        os._exit(0)
-os._exit(0)
+        stopped("quit" if state["finishing"].is_set() else "killed")
+stopped("quit" if state["finishing"].is_set() else "killed")
 `;
 const python = NodeChildProcess.execFileSync("sh", ["-c", "command -v python3"], {
   encoding: "utf8",
 }).trim();
 
 /** A workspace with cube.blend, served by the stand-in helper in `scenario`. */
-const standIn = Effect.fn(function* (prefix: string, scenario: string) {
+const standIn = Effect.fn(function* (
+  prefix: string,
+  scenario: string,
+  beforeThreadLookup?: () => Effect.Effect<void>,
+) {
   const dir = yield* tempDir(prefix);
   const bin = fakeTools(dir);
   NodeFS.writeFileSync(NodePath.join(bin, "helper"), `#!${python}\n${STANDIN_HELPER}`, {
@@ -207,6 +266,7 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
   const savesLog = NodePath.join(dir, "saves.log");
   const launchesLog = NodePath.join(dir, "launches.log");
   const pidFile = NodePath.join(dir, "helper.pid");
+  const signalFifo = NodePath.join(dir, "signal");
   const layer = layerFor({
     env: {
       PATH: bin,
@@ -216,10 +276,13 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
       STANDIN_SAVES: savesLog,
       STANDIN_LAUNCHES: launchesLog,
       STANDIN_PID: pidFile,
+      STANDIN_BIND: NodePath.join(dir, "bind"),
+      STANDIN_SIGNAL: signalFifo,
     },
     helper: NodePath.join(bin, "helper"),
     workspaceRoot: dir,
     baseDir: dir,
+    ...(beforeThreadLookup === undefined ? {} : { beforeThreadLookup }),
   });
   const service = yield* serviceFor(layer);
   const states = yield* Queue.unbounded<HostedBlenderThreadState>();
@@ -260,6 +323,21 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
     runtime,
     launches,
     hostedDir,
+    savesLog: () => (NodeFS.existsSync(savesLog) ? NodeFS.readFileSync(savesLog, "utf8") : ""),
+    /**
+     * The next signal the stand-in sends ("saving", or how it stopped). Call it before the
+     * signal can be sent: the stand-in only signals while the test is listening.
+     */
+    nextSignal: () => {
+      NodeChildProcess.execFileSync("mkfifo", [signalFifo]);
+      // Read from now on, so a stand-in writing first never waits on the test.
+      const read = NodeFS.promises.readFile(signalFifo, "utf8");
+      return Effect.promise(() => read).pipe(
+        Effect.ensuring(Effect.sync(() => NodeFS.rmSync(signalFifo, { force: true }))),
+      );
+    },
+    /** Lets a "late-control" stand-in's add-on socket appear. */
+    bind: () => NodeFS.writeFileSync(NodePath.join(dir, "bind"), ""),
     /** Crashes the stand-in Blender, by the pid it wrote itself at spawn. */
     crash: () => process.kill(Number(NodeFS.readFileSync(pidFile, "utf8")), "SIGUSR1"),
   };
@@ -356,7 +434,7 @@ describe("Endings and recovery", () => {
       // Never saved over the user's file: the copy is Blender's own, in T3's private folder.
       expect(saveCommands()).toBe(0);
       const recovery = recoveryOf(hostedDir);
-      expect(recovery?.contents).toBe("quit copy");
+      expect(recovery?.contents).toMatch(/^quit copy /);
       expect(NodeFS.readdirSync(NodePath.join(hostedDir, "launches"))).toEqual([]);
 
       yield* service.reopen({ threadId, restore: true });
@@ -386,7 +464,7 @@ describe("Endings and recovery", () => {
       yield* service.closeOnSettle({ threadId });
       // Blender left no quit copy, so there's only the file as saved.
       expect(yield* awaitStatus("closed")).toMatchObject({ recovery: false });
-      yield* service.quit({ threadId, save: false });
+      yield* service.dismiss({ threadId });
       yield* awaitStatus("stopped");
       const missing = yield* service.reopen({ threadId, restore: true }).pipe(Effect.flip);
       expect(missing.reason).toBe("nothingToReopen");
@@ -421,7 +499,7 @@ describe("Endings and recovery", () => {
       yield* awaitDirty(true);
       yield* service.dismiss({ threadId });
       expect((yield* firstState(service)).status).toBe("running");
-      expect(recoveryOf(hostedDir)?.contents).toBe("quit copy");
+      expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
       yield* service.closeOnSettle({ threadId });
       yield* awaitStatus("closed");
       yield* service.dismiss({ threadId });
@@ -447,6 +525,171 @@ describe("Endings and recovery", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("a shutdown never cuts short a save Blender acknowledged", () =>
+    Effect.gen(function* () {
+      const { layer, nextSignal, savesLog, hostedDir } = yield* standIn("slow-save", "slow-save");
+      const finished = yield* Effect.gen(function* () {
+        const first = yield* serviceFor(layer);
+        const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+        yield* first.threadState(threadId).pipe(
+          Stream.runForEach((state) => Queue.offer(states, state)),
+          Effect.forkScoped,
+        );
+        yield* first.open({ threadId, relativePath: "cube.blend" });
+        yield* Queue.take(states).pipe(
+          Effect.repeat({ until: (state) => state.status === "running" && state.dirty }),
+        );
+        const saving = nextSignal();
+        yield* first.quit({ threadId, save: true }).pipe(Effect.ignore, Effect.forkDetach);
+        yield* saving;
+        // The save outlasts the shutdown deadline; the server stops while it is written.
+        return nextSignal();
+      }).pipe(Effect.scoped);
+      expect(yield* finished).toBe("finished");
+      expect(savesLog()).toContain("saved");
+      // The next start finds it saved and quit: nothing to reopen.
+      const second = yield* serviceFor(layer);
+      expect((yield* firstState(second)).status).toBe("stopped");
+      expect(recoveryOf(hostedDir)).toBeNull();
+      expect(NodeFS.readdirSync(NodePath.join(hostedDir, "launches"))).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "a shutdown leaves Blender writing its quit copy to finish, and the next start keeps it",
+    () =>
+      Effect.gen(function* () {
+        const { layer, nextSignal, hostedDir } = yield* standIn("slow-quit", "slow-quit");
+        const finished = yield* Effect.gen(function* () {
+          const first = yield* serviceFor(layer);
+          const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+          yield* first.threadState(threadId).pipe(
+            Stream.runForEach((state) => Queue.offer(states, state)),
+            Effect.forkScoped,
+          );
+          yield* first.open({ threadId, relativePath: "cube.blend" });
+          yield* Queue.take(states).pipe(
+            Effect.repeat({ until: (state) => state.status === "running" && state.dirty }),
+          );
+          return nextSignal();
+        }).pipe(Effect.scoped);
+        // A start while it is still writing waits for it, then keeps its copy as closed.
+        const second = yield* serviceFor(layer);
+        const reopened = yield* second.threadState(threadId).pipe(
+          Stream.filter((state) => state.status !== "stopped"),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        expect(yield* finished).toBe("finished");
+        expect(reopened).toEqual({ status: "closed", relativePath: "cube.blend", recovery: true });
+        expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("a different file can't start while a settle that keeps a copy finishes", () =>
+    Effect.gen(function* () {
+      let hold: Deferred.Deferred<void> | null = null;
+      const { dir, service, openReady, awaitStatus } = yield* standIn("race", "", () =>
+        hold === null ? Effect.void : Deferred.await(hold),
+      );
+      NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+      yield* openReady;
+      // Opening the other file passes its first checks while cube.blend is still running...
+      const gate = yield* Deferred.make<void>();
+      hold = gate;
+      const opening = yield* service
+        .open({ threadId, relativePath: "other.blend" })
+        .pipe(Effect.flip, Effect.forkChild);
+      // ...and is still validating when the settle finishes and keeps cube.blend's copy.
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      yield* Deferred.succeed(gate, undefined);
+      expect((yield* Fiber.join(opening)).reason).toBe("recoveryPending");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("keeps the launch folder for the next start when its copy can't be kept", () =>
+    Effect.gen(function* () {
+      const { layer, service, openReady, awaitStatus, hostedDir } = yield* standIn("disk", "");
+      yield* openReady;
+      // Stands in for a full disk: the recovery folder can't be made.
+      NodeFS.mkdirSync(hostedDir, { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(hostedDir, "recovery"), "");
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("stopped");
+      expect(NodeFS.readdirSync(NodePath.join(hostedDir, "launches"))).toHaveLength(1);
+      NodeFS.rmSync(NodePath.join(hostedDir, "recovery"));
+      const next = yield* serviceFor(layer);
+      expect(yield* firstState(next)).toEqual({
+        status: "closed",
+        relativePath: "cube.blend",
+        recovery: true,
+      });
+      expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a restore that fails is reported and keeps the copy it came from", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, hostedDir, launches } = yield* standIn(
+        "restore-fails",
+        "restore-fails",
+      );
+      yield* openReady;
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      const kept = recoveryOf(hostedDir)?.contents;
+      yield* service.reopen({ threadId, restore: true });
+      expect(yield* awaitStatus("closed")).toEqual({
+        status: "closed",
+        relativePath: "cube.blend",
+        recovery: true,
+        restoreFailed: true,
+      });
+      expect(launches()).toHaveLength(2);
+      expect(recoveryOf(hostedDir)?.contents).toBe(kept);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a Quit with nothing running never removes a kept copy", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, hostedDir } = yield* standIn("stale-quit", "");
+      yield* openReady;
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      yield* service.quit({ threadId, save: false });
+      expect((yield* firstState(service)).status).toBe("closed");
+      expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a file opened as last saved and left unchanged keeps the waiting copy", () =>
+    Effect.gen(function* () {
+      const { service, awaitStatus, hostedDir } = yield* standIn("unchanged", "clean");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitStatus("running");
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      const kept = recoveryOf(hostedDir)?.contents;
+      yield* service.reopen({ threadId, restore: false });
+      yield* awaitStatus("running");
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      expect(recoveryOf(hostedDir)?.contents).toBe(kept);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("an ending waits for a slow Blender's add-on, so its session is still kept", () =>
+    Effect.gen(function* () {
+      const { service, awaitStatus, bind } = yield* standIn("late", "late-control");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitStatus("running");
+      yield* service.closeOnSettle({ threadId });
+      bind();
+      expect(yield* awaitStatus("closed")).toMatchObject({ recovery: true });
+    }).pipe(Effect.scoped),
+  );
+
   it.live("a T3 restart saves every Blender's copy on the way down and offers Reopen after", () =>
     Effect.gen(function* () {
       const { layer, hostedDir, marker, launches } = yield* standIn("restart", "");
@@ -464,7 +707,7 @@ describe("Endings and recovery", () => {
         );
       }).pipe(Effect.scoped);
       expect(NodeFS.readFileSync(marker, "utf8")).toBe("quit");
-      expect(recoveryOf(hostedDir)?.contents).toBe("quit copy");
+      expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
 
       const second = yield* serviceFor(layer);
       assert.deepStrictEqual(yield* firstState(second), {
@@ -608,6 +851,35 @@ describe("Endings and recovery", () => {
   );
 });
 
+it.effect("keeps connecting to the add-on for the whole start window", () =>
+  Effect.gen(function* () {
+    const { service, awaitStatus, awaitDirty, bind, launches } = yield* standIn(
+      "late-connect",
+      "late-control",
+    );
+    yield* service.open({ threadId, relativePath: "cube.blend" });
+    yield* awaitStatus("running");
+    // Long past the old 30-second retry budget, but inside the 90-second start window.
+    yield* TestClock.adjust("40 seconds");
+    const t3 = launches()[0]!;
+    const socketPath = t3[t3.indexOf("--t3-control") + 1]!;
+    const appeared = Effect.promise(
+      () =>
+        new Promise<void>((resolve) => {
+          const watcher = NodeFS.watch(NodePath.dirname(socketPath), () => {
+            if (!NodeFS.existsSync(socketPath)) return;
+            watcher.close();
+            resolve();
+          });
+        }),
+    );
+    bind();
+    yield* appeared;
+    yield* TestClock.adjust("1 second");
+    yield* awaitDirty(true);
+  }).pipe(Effect.scoped),
+);
+
 it.effect("gives up on a start that never shows Blender by asking the helper to quit", () =>
   Effect.gen(function* () {
     const { service, awaitStatus, marker, runtime } = yield* standIn("timeout", "never-shows");
@@ -693,7 +965,7 @@ describe("HostedBlender.open", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("reports a start that never shows Blender, until quit or another open clears it", () =>
+  it.live("reports a start that never shows Blender, until dismissed or opened again", () =>
     Effect.gen(function* () {
       const dir = yield* tempDir("failed");
       const bin = fakeTools(dir);
@@ -718,7 +990,7 @@ describe("HostedBlender.open", () => {
       yield* service.open({ threadId, relativePath: "cube.blend" });
       yield* awaitStatus("starting");
       yield* awaitStatus("failed");
-      yield* service.quit({ threadId, save: false });
+      yield* service.dismiss({ threadId });
       yield* awaitStatus("stopped");
     }).pipe(Effect.scoped),
   );
@@ -990,6 +1262,38 @@ def unregister():
     bpy.app.handlers.load_post.remove(_edit)
 `;
 
+const objectsIn = (file: string) =>
+  NodeChildProcess.execFileSync(
+    "blender",
+    [
+      "--background",
+      "--factory-startup",
+      file,
+      "--python-expr",
+      "import bpy; print('OBJECTS', sorted(o.name for o in bpy.data.objects))",
+    ],
+    { encoding: "utf8" },
+  )
+    .split("\n")
+    .find((line) => line.startsWith("OBJECTS"));
+
+// Makes every quit outlast T3's 3-second shutdown deadline: Blender runs exit_pre handlers
+// before it writes its quit copy.
+const SLOW_EXIT_STARTUP_SCRIPT = `import time
+import bpy
+from bpy.app.handlers import persistent
+
+@persistent
+def _slow(*_args):
+    time.sleep(5)
+
+def register():
+    bpy.app.handlers.exit_pre.append(_slow)
+
+def unregister():
+    bpy.app.handlers.exit_pre.remove(_slow)
+`;
+
 describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
   it.live(
     "settles into a recovery copy that Reopen restores and saves to the user's file, and crashes into Restart",
@@ -1029,20 +1333,6 @@ describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
         );
         const awaitState = (matches: (state: HostedBlenderThreadState) => boolean) =>
           Queue.take(states).pipe(Effect.repeat({ until: matches }));
-        const objectsIn = (file: string) =>
-          NodeChildProcess.execFileSync(
-            "blender",
-            [
-              "--background",
-              "--factory-startup",
-              file,
-              "--python-expr",
-              "import bpy; print('OBJECTS', sorted(o.name for o in bpy.data.objects))",
-            ],
-            { encoding: "utf8" },
-          )
-            .split("\n")
-            .find((line) => line.startsWith("OBJECTS"));
 
         yield* service.open({ threadId, relativePath: "cube.blend" });
         yield* awaitState((state) => state.status === "running");
@@ -1079,6 +1369,114 @@ describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
         yield* awaitState((state) => state.status === "running");
         yield* service.quit({ threadId, save: false });
         yield* awaitState((state) => state.status === "stopped");
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "a shutdown lets Blender finish its quit copy; restores never run file scripts, and a failed one keeps the copy",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tempDir("real-slow-exit");
+        const workspace = NodePath.join(dir, "work");
+        NodeFS.mkdirSync(workspace, { recursive: true });
+        const blendPath = NodePath.join(workspace, "cube.blend");
+        // The file carries a script that would run on load if scripts were allowed.
+        NodeChildProcess.execFileSync("blender", [
+          "--background",
+          "--factory-startup",
+          "--python-expr",
+          [
+            "import bpy",
+            "text = bpy.data.texts.new('t3_marker.py')",
+            `text.write('import os\\nopen(os.path.join(os.environ["HB_TEST_DIR"], "script-ran"), "w").close()\\n')`,
+            "text.use_module = True",
+            `bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(blendPath)})`,
+          ].join("; "),
+        ]);
+        const configHome = NodePath.join(dir, "config");
+        const settings = NodePath.join(configHome, "blender", "5.3");
+        const startup = NodePath.join(settings, "scripts", "startup");
+        NodeFS.mkdirSync(startup, { recursive: true });
+        NodeFS.writeFileSync(NodePath.join(startup, "t3_test_edit.py"), EDITING_STARTUP_SCRIPT);
+        NodeFS.writeFileSync(NodePath.join(startup, "t3_test_slow.py"), SLOW_EXIT_STARTUP_SCRIPT);
+        // Preferences that would let it run: only T3's own setting may keep it off.
+        NodeChildProcess.execFileSync(
+          "blender",
+          [
+            "--background",
+            "--factory-startup",
+            "--python-expr",
+            "import bpy; bpy.context.preferences.filepaths.use_scripts_auto_execute = True; bpy.ops.wm.save_userpref()",
+          ],
+          {
+            env: {
+              ...Object.fromEntries(
+                Object.entries(hostEnvironment).filter(([key]) => !key.startsWith("BLENDER_USER_")),
+              ),
+              BLENDER_USER_RESOURCES: settings,
+              TMPDIR: dir,
+            },
+            stdio: "ignore",
+          },
+        );
+        const layer = layerFor({
+          env: {
+            PATH: hostEnvironment.PATH,
+            XDG_RUNTIME_DIR: hostEnvironment.XDG_RUNTIME_DIR,
+            XDG_CONFIG_HOME: configHome,
+            HB_TEST_DIR: dir,
+          },
+          helper: helperBuild,
+          workspaceRoot: workspace,
+          baseDir: dir,
+        });
+        const watch = Effect.fn(function* (service: HostedBlender.HostedBlender["Service"]) {
+          const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+          yield* service.threadState(threadId).pipe(
+            Stream.runForEach((state) => Queue.offer(states, state)),
+            Effect.forkScoped,
+          );
+          return (matches: (state: HostedBlenderThreadState) => boolean) =>
+            Queue.take(states).pipe(Effect.repeat({ until: matches }));
+        });
+
+        // T3 stops while Blender is still writing its quit copy.
+        yield* Effect.gen(function* () {
+          const first = yield* serviceFor(layer);
+          const awaitState = yield* watch(first);
+          yield* first.open({ threadId, relativePath: "cube.blend" });
+          yield* awaitState((state) => state.status === "running");
+        }).pipe(Effect.scoped);
+        const hostedDir = NodePath.join(dir, "userdata", "hosted-blender");
+
+        // The next start waits for it, then offers its copy, edit included.
+        const service = yield* serviceFor(layer);
+        const awaitState = yield* watch(service);
+        expect(yield* awaitState((state) => state.status !== "stopped")).toEqual({
+          status: "closed",
+          relativePath: "cube.blend",
+          recovery: true,
+        });
+        const session = recoveryOf(hostedDir)!.session;
+        expect(objectsIn(session)).toContain("T3Edit");
+
+        // Restoring it never runs the file's script.
+        yield* service.reopen({ threadId, restore: true });
+        yield* awaitState((state) => state.status === "running" && state.dirty);
+        expect(NodeFS.existsSync(NodePath.join(dir, "script-ran"))).toBe(false);
+
+        // A copy Blender can't read is reported and kept, never replaced by the saved file.
+        yield* service.closeOnSettle({ threadId });
+        yield* awaitState((state) => state.status === "closed");
+        NodeFS.writeFileSync(session, "not a blend file");
+        yield* service.reopen({ threadId, restore: true });
+        expect(yield* awaitState((state) => state.status === "closed")).toEqual({
+          status: "closed",
+          relativePath: "cube.blend",
+          recovery: true,
+          restoreFailed: true,
+        });
+        expect(NodeFS.readFileSync(session, "utf8")).toBe("not a blend file");
       }).pipe(Effect.scoped),
   );
 });

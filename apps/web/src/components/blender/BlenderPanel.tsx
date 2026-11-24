@@ -163,13 +163,18 @@ function ReopenCard(props: {
       );
     }
   };
-  const { recovery } = props.state;
+  const { recovery, restoreFailed } = props.state;
   return (
     <>
       <StateCard
         title={crashed ? <T>Blender crashed</T> : <T>Blender was closed</T>}
         description={
-          crashed ? (
+          restoreFailed ? (
+            <T>
+              Blender couldn't restore the copy of <Var>{name}</Var>. The copy is kept: try again,
+              open the file as last saved, or discard the copy.
+            </T>
+          ) : crashed ? (
             recovery ? (
               <T>
                 <Var>{name}</Var> stopped unexpectedly. Restart opens the file as last saved, or

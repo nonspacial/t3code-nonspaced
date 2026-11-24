@@ -30,6 +30,8 @@ class _State:
     sent = None
     # A restored session until it is marked unsaved or saved.
     restored = False
+    # "ok" or "failed" once a restore T3 asked for has run; T3 waits for it.
+    restore = None
 
 
 def _listen():
@@ -74,7 +76,10 @@ def _drop_client():
 
 
 def _snapshot():
-    return {"type": "state", "filepath": bpy.data.filepath, "dirty": bool(bpy.data.is_dirty)}
+    snapshot = {"type": "state", "filepath": bpy.data.filepath, "dirty": bool(bpy.data.is_dirty)}
+    if _State.restore is not None:
+        snapshot["restore"] = _State.restore
+    return snapshot
 
 
 def _main_window():
@@ -110,6 +115,8 @@ def _handle(command):
     kind = command.get("type")
     if kind == "quit":
         if not command.get("save"):
+            # T3 waits on this rather than stopping a Blender still writing its quit copy.
+            _send({"type": "quitting"})
             _push_undo_step()
         else:
             # Answered before the save, which blocks Blender for as long as a big file takes.
@@ -200,12 +207,15 @@ def _keep_recovery_files():
 def _recover():
     # Restores a recovery copy or autosave over the file Blender opened. Blender recovers its
     # own session files with their original path, so saving still writes the user's file.
+    # Scripts stay off as --disable-autoexec says; left out, recovering reads the preference.
     window = _main_window()
     try:
         with bpy.context.temp_override(window=window):
-            _State.restored = "FINISHED" in bpy.ops.wm.recover_auto_save(filepath=RECOVER_PATH)
-    except Exception as error:  # noqa: BLE001 - the file as saved stays open
+            result = bpy.ops.wm.recover_auto_save(filepath=RECOVER_PATH, use_scripts=False)
+            _State.restored = "FINISHED" in result
+    except Exception as error:  # noqa: BLE001 - reported to T3, which keeps the copy
         print("T3 control add-on: recovery failed:", error, file=sys.stderr)
+    _State.restore = "ok" if _State.restored else "failed"
     return None
 
 

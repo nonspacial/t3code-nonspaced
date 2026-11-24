@@ -3307,6 +3307,15 @@
   "3f25b97ec987231e": "Blender couldn't open the file on the hidden display. Check that Blender opens it and that GStreamer has an H.264 encoder, then open it in hosted Blender again.",
   "c9d23ccb15073177": "Blender ist abgestürzt",
   "9f406050b6efb934": "Blender wurde geschlossen",
+  "df374db2c12ff019": [
+    "Blender konnte die Kopie von ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " nicht wiederherstellen. Die Kopie bleibt erhalten: Versuche es erneut, öffne die zuletzt gespeicherte Datei oder verwirf die Kopie."
+  ],
   "ff3775198cef1512": [
     {
       "i": 1,
