@@ -1,0 +1,283 @@
+<!doctype html>
+<!--
+  PROTOTYPE, throwaway. Wayfinder ticket #15 "Prototype the Blender pane UI".
+  Question: what should the Blender pane look like across its states?
+  Three structurally different variants (A/B/C), each driven through every decided state.
+  Assumption: standalone page using T3's theme tokens (rendered inside T3) rather than a route in the
+  real app, to avoid a full monorepo install + dev server for a rough first look.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: var(--font-sans); color: var(--foreground); font-size: 13px; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  .app { position: relative; display: grid; grid-template-columns: 34% 66%; height: 600px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--background); }
+  /* mock chat column */
+  .chat { border-right: 1px solid var(--border); padding: 12px; display: flex; flex-direction: column; gap: 10px; overflow: hidden; background: var(--background); }
+  .msg { border-radius: 10px; padding: 8px 10px; line-height: 1.45; font-size: 12.5px; }
+  .msg.user { background: var(--secondary); align-self: flex-end; max-width: 85%; }
+  .msg.agent { background: var(--card); border: 1px solid var(--border); }
+  .msg .who { font-size: 11px; color: var(--muted-foreground); margin-bottom: 3px; }
+  .filelink { color: var(--primary); text-decoration: underline; cursor: pointer; font-family: var(--font-mono); font-size: 12px; }
+  .composer { margin-top: auto; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; color: var(--muted-foreground); font-size: 12px; }
+  /* right panel shell */
+  .panel { display: flex; flex-direction: column; min-width: 0; background: var(--card); }
+  .tabs { display: flex; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--border); background: var(--secondary); overflow: hidden; }
+  .tab { font-size: 12px; padding: 5px 10px; border-radius: 6px 6px 0 0; color: var(--muted-foreground); white-space: nowrap; display: flex; gap: 6px; align-items: center; border: 1px solid transparent; }
+  .tab.on { background: var(--card); color: var(--foreground); border-color: var(--border); border-bottom-color: var(--card); margin-bottom: -1px; }
+  .body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  /* shared bits */
+  .chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--popover); color: var(--popover-foreground); white-space: nowrap; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); display: inline-block; }
+  .dot.warn { background: var(--warning); } .dot.bad { background: var(--destructive); } .dot.info { background: var(--info); }
+  .btn { border: 1px solid var(--border); background: var(--background); border-radius: 6px; padding: 4px 10px; font-size: 12px; white-space: nowrap; }
+  .btn.primary { background: var(--primary); color: var(--primary-foreground); border-color: transparent; }
+  .btn.ghost { background: transparent; }
+  .muted { color: var(--muted-foreground); }
+  .card { background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; max-width: 360px; box-shadow: 0 8px 24px rgb(0 0 0 / .25); }
+  .card h4 { margin: 0 0 6px; font-size: 14px; }
+  .card p { margin: 0 0 10px; line-height: 1.45; font-size: 12.5px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .check { display: grid; grid-template-columns: 16px 1fr auto; gap: 6px; font-size: 12px; margin: 3px 0; align-items: center; }
+  .ok { color: var(--success); } .no { color: var(--destructive); } .wa { color: var(--warning); }
+  code, .mono { font-family: var(--font-mono); font-size: 11.5px; }
+  .cmd { background: var(--code-background, var(--secondary)); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
+  .banner { display: flex; align-items: center; gap: 10px; padding: 7px 10px; font-size: 12px; border-bottom: 1px solid var(--border); background: var(--secondary); }
+  .banner.warn { background: var(--warning-surface, var(--secondary)); }
+  .banner.bad { background: var(--destructive-surface, var(--secondary)); }
+  .banner .grow { flex: 1; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .seg span { padding: 3px 9px; font-size: 12px; color: var(--muted-foreground); cursor: pointer; }
+  .seg span.on { background: var(--accent); color: var(--accent-foreground); }
+  .menu { position: absolute; z-index: 5; background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); border-radius: 8px; padding: 4px; min-width: 230px; box-shadow: 0 8px 24px rgb(0 0 0 / .3); font-size: 12px; }
+  .menu div { padding: 6px 8px; border-radius: 5px; }
+  .menu div:hover { background: var(--accent); color: var(--accent-foreground); }
+  .menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
+  .list { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .list td, .list th { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--border); }
+  .list th { color: var(--muted-foreground); font-weight: 500; font-size: 11px; }
+
+  /* fake Blender stream (fixed colours: it's a picture of Blender's own UI) */
+  .stream { position: relative; flex: 1; min-height: 0; background: #1d1d1d; overflow: hidden; }
+  .stream.letterbox { margin: 8px; border-radius: 6px; }
+  .bl { position: absolute; inset: 0; display: grid; grid-template-rows: 16px 1fr 26px; font-size: 9px; color: #bdbdbd; font-family: var(--font-sans); }
+  .bl-top { display: flex; gap: 9px; align-items: center; padding: 0 7px; background: #2b2b2b; border-bottom: 1px solid #111; white-space: nowrap; overflow: hidden; }
+  .bl-top .ws.on { background: #4a4a4a; color: #fff; padding: 0 5px; border-radius: 3px; }
+  .bl-mid { display: grid; grid-template-columns: 18px 1fr 120px; min-height: 0; }
+  .bl-tools { background: #2b2b2b; border-right: 1px solid #111; }
+  .bl-vp { position: relative; background: #393939; overflow: hidden; }
+  .bl-vp svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .bl-side { background: #282828; border-left: 1px solid #111; padding: 5px; line-height: 1.7; }
+  .bl-side .sel { background: #334d80; color: #fff; padding: 0 3px; border-radius: 2px; }
+  .bl-tl { background: #232323; border-top: 1px solid #111; }
+  .dim .bl { filter: grayscale(.6) brightness(.45); }
+  .controlled { outline: 2px solid var(--primary); outline-offset: -2px; }
+  .center { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; }
+  .ov-tl { position: absolute; top: 8px; left: 8px; display: flex; gap: 6px; align-items: center; z-index: 3; }
+  .ov-tr { position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; align-items: center; z-index: 3; }
+  .ov-b { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); z-index: 3; }
+  .glass { background: color-mix(in oklab, var(--popover) 82%, transparent); backdrop-filter: blur(6px); border: 1px solid var(--border); border-radius: 8px; padding: 3px 6px; display: flex; gap: 6px; align-items: center; }
+  .strip { display: flex; gap: 14px; align-items: center; padding: 5px 10px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--muted-foreground); background: var(--secondary); }
+  .toolbar { display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .toolbar .title { font-weight: 600; }
+  .skeleton { position: absolute; inset: 0; background: repeating-linear-gradient(135deg, var(--secondary) 0 12px, var(--card) 12px 24px); opacity: .6; }
+  .hint { font-size: 11px; color: var(--muted-foreground); }
+
+  /* prototype controls (not part of the design) */
+  .proto { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; align-items: center; }
+  .switcher { display: inline-flex; align-items: center; gap: 4px; background: #111; color: #fff; border-radius: 999px; padding: 4px; box-shadow: 0 4px 14px rgb(0 0 0 / .35); font-size: 12px; }
+  .switcher button { background: #2a2a2a; border: 0; color: #fff; border-radius: 999px; width: 28px; height: 26px; }
+  .switcher .lbl { padding: 0 10px; min-width: 250px; text-align: center; }
+  .states { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
+  .states button { background: #222; color: #ddd; border: 1px solid #444; border-radius: 999px; padding: 2px 9px; font-size: 11px; }
+  .states button.on { background: #fff; color: #111; }
+  .note { font-size: 11px; color: var(--muted-foreground); text-align: center; max-width: 680px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="chat">
+    <div class="msg user">Tighten the shoulder loop on hero to match Ref_Front, then copy it back.</div>
+    <div class="msg agent"><div class="who">Codex · working in a hosted Blender</div>Working copy made beside the master. Editing the shoulder loop now.<br><span class="filelink" data-open>models/hero.wip-a1b2.blend</span></div>
+    <div class="msg agent"><div class="who">Codex</div>Copied back <b>Body</b> and <b>Shoulder_L/R</b> into <span class="filelink" data-open>models/hero.blend</span> and saved it.</div>
+    <div class="composer">Message…</div>
+  </div>
+  <div class="panel">
+    <div class="tabs" id="tabs"></div>
+    <div class="body" id="body"></div>
+  </div>
+</div>
+<div class="proto">
+  <div class="switcher"><button id="prev">←</button><span class="lbl" id="vlabel"></span><button id="next">→</button></div>
+  <div class="states" id="states"></div>
+  <div class="note" id="note"></div>
+</div>
+
+<script>
+const VARIANTS = {
+  A: "Stream fills the pane, controls float over it",
+  B: "Toolbar above, status strip below, states as full cards",
+  C: "One tab per Blender, banners for states, Blenders drawer",
+};
+const STATES = [
+  ["setup", "Setup needed"], ["starting", "Starting"], ["watching", "Watching"], ["agent", "Agent acting"],
+  ["control", "In control"], ["takenover", "Taken over"], ["crashed", "Crashed"], ["reopen", "Reopen"],
+  ["move", "Move into T3"], ["nogpu", "No GPU"], ["unavailable", "Not available"], ["running", "Running Blenders"],
+];
+let variant = "A", state = "watching", file = "working", menuOpen = false;
+
+const blender = (extra = "") => `
+  <div class="bl ${extra}">
+    <div class="bl-top"><span>File</span><span>Edit</span><span>Render</span><span class="ws on">Layout</span><span>Modeling</span><span>Sculpting</span><span>Shading</span></div>
+    <div class="bl-mid">
+      <div class="bl-tools"></div>
+      <div class="bl-vp"><svg viewBox="0 0 400 220" preserveAspectRatio="xMidYMid slice">
+        <g stroke="#4a4a4a"><line x1="0" y1="165" x2="400" y2="165"/><line x1="40" y1="145" x2="360" y2="145"/><line x1="200" y1="125" x2="200" y2="220"/></g>
+        <line x1="0" y1="165" x2="400" y2="165" stroke="#8b3a3a"/>
+        <g stroke="${file === "master" ? "#7aa7ff" : "#f0a030"}" stroke-width="1.4" fill="#8c8c8c" stroke-linejoin="round">
+          <polygon points="186,108 214,108 213,150 187,150"/><polygon points="180,68 220,68 216,110 184,110"/>
+          <polygon points="190,38 210,38 214,50 210,66 190,66 186,50"/>
+          <polygon points="180,70 ${file === "master" ? "169,76 166,106 172,107" : "164,74 160,104 166,105"} 179,80"/>
+          <polygon points="220,70 ${file === "master" ? "231,76 234,106 228,107" : "236,74 240,104 234,105"} 221,80"/>
+        </g></svg></div>
+      <div class="bl-side">▾ Collection<br>&nbsp;▸ Camera<br>&nbsp;<span class="sel">▸ Body</span><br>&nbsp;▸ Shoulder_L<br>&nbsp;▸ Ref_Front</div>
+    </div>
+    <div class="bl-tl"></div>
+  </div>`;
+
+const fileName = () => file === "master" ? "hero.blend" : "hero.wip-a1b2.blend";
+const fileRole = () => file === "master" ? "Master" : "Working copy";
+
+function setupCard() {
+  return `<div class="card"><h4>Set up hosted Blender</h4>
+    <div class="check"><span class="ok">✓</span><span>Blender 5.3</span><span class="muted mono">/usr/bin/blender</span></div>
+    <div class="check"><span class="no">✗</span><span>labwc</span><span class="muted">not installed</span></div>
+    <div class="check"><span class="ok">✓</span><span>GStreamer 1.28</span><span class="muted">NVIDIA encoder</span></div>
+    <div class="check"><span class="ok">✓</span><span>GPU</span><span class="muted">RTX 4090</span></div>
+    <div class="check"><span class="wa">!</span><span>Official Blender MCP</span><span class="muted">Claude only</span></div>
+    <div class="row" style="margin-top:10px"><button class="btn primary">Install with an agent</button><button class="btn">Show me the commands</button><button class="btn ghost">Check again</button></div>
+  </div>`;
+}
+const cards = {
+  starting: `<div class="card"><h4>Starting Blender…</h4><p class="muted">Opening hero.wip-a1b2.blend on the hidden display.</p></div>`,
+  crashed: `<div class="card"><h4>Blender stopped unexpectedly</h4><p>The agent's last tool call failed with "crashed". Restarting reopens the file from disk.</p><label class="row" style="margin-bottom:10px"><input type="checkbox" checked> Restore the autosave from 14:32</label><div class="row"><button class="btn primary">Restart</button><button class="btn ghost">Leave it stopped</button></div></div>`,
+  reopen: `<div class="card"><h4>This Blender was closed when the thread settled</h4><p>A recovery copy was saved, including changes that weren't saved yet. Undo history is gone.</p><div class="row"><button class="btn primary">Reopen</button><button class="btn ghost">Open the file without recovery</button></div></div>`,
+  move: `<div class="card"><h4>hero.blend is open in your desktop Blender</h4><p>Move it into T3? T3 saves it there, closes that Blender, and reopens it here. Undo history won't carry over.</p><div class="row"><button class="btn primary">Move into T3</button><button class="btn">Keep it on the desktop</button></div></div>`,
+  unavailable: `<div class="card"><h4>Not available on this host</h4><p>Hosted Blender needs a Linux server with labwc. This server runs macOS. The 3D preview still works.</p><div class="row"><button class="btn">Open the 3D preview</button></div></div>`,
+};
+const runningTable = `<table class="list"><tr><th>Thread</th><th>File</th><th>Memory</th><th></th></tr>
+  <tr><td>Hero shoulder fix</td><td class="mono">hero.wip-a1b2.blend</td><td>1.1 GB</td><td><button class="btn">Quit</button></td></tr>
+  <tr><td>Hero shoulder fix, Scene pass</td><td class="mono">hero.blend <span class="muted">(master)</span></td><td>0.9 GB</td><td><button class="btn">Quit</button></td></tr>
+  <tr><td>Rig tidy-up</td><td class="mono">rig.wip-77c0.blend</td><td>0.8 GB</td><td><button class="btn">Quit</button></td></tr></table>`;
+const settingsMenu = (pos) => `<div class="menu" style="${pos}">
+  <div>Restart Blender</div><div>Quit Blender (offers to save)</div><hr>
+  <div>Running Blenders… <span class="muted">3</span></div><hr>
+  <div>Keyboard layout: UK <span class="muted">(detected)</span></div><div>Scrolling: trackpad <span class="muted">(auto)</span></div></div>`;
+
+function streamState() {
+  if (["setup", "starting", "crashed", "reopen", "move", "unavailable"].includes(state)) return "card";
+  return "live";
+}
+
+function variantA() {
+  const live = streamState() === "live";
+  const control = state === "control";
+  let html = `<div class="stream ${live ? "" : "dim"} ${control ? "controlled" : ""}">${state === "setup" || state === "unavailable" ? "" : blender()}`;
+  if (state === "starting") html += `<div class="skeleton"></div>`;
+  html += `<div class="ov-tl"><div class="glass"><span class="seg"><span class="${file === "working" ? "on" : ""}" data-file="working">Working copy</span><span class="${file === "master" ? "on" : ""}" data-file="master">Master</span></span></div></div>`;
+  const status = state === "agent" ? `<span class="chip"><span class="dot info"></span>Agent editing</span>`
+    : control ? `<span class="chip"><span class="dot"></span>You're in control · F6 to leave</span>`
+    : state === "takenover" ? `<span class="chip"><span class="dot warn"></span>Pixel 9 is in control</span>`
+    : live ? `<span class="chip"><span class="dot"></span>Live · watching</span>` : "";
+  html += `<div class="ov-tr">${status}${control ? `<button class="btn">⛶ Fullscreen</button>` : ""}<button class="btn" data-menu>⋯</button></div>`;
+  if (menuOpen) html += settingsMenu("top:40px;right:8px");
+  if (state === "watching") html += `<div class="ov-b"><span class="chip">Click to take control</span></div>`;
+  if (state === "takenover") html += `<div class="ov-b"><div class="glass" style="padding:6px 10px">Your phone took control. <button class="btn primary">Take over</button></div></div>`;
+  if (state === "nogpu") html += `<div class="ov-b"><div class="glass" style="padding:6px 10px"><span class="wa">!</span> No GPU: Blender is running in software and will be slow.</div></div>`;
+  if (state === "running") html += `<div class="center"><div class="card" style="max-width:480px"><h4>Running hosted Blenders</h4>${runningTable}</div></div>`;
+  if (state === "setup") html += `<div class="center">${setupCard()}</div>`;
+  else if (cards[state]) html += `<div class="center">${cards[state]}</div>`;
+  return html + `</div>`;
+}
+
+function variantB() {
+  const control = state === "control";
+  const toolbar = `<div class="toolbar"><span class="title mono">${fileName()}</span>
+    <span class="seg"><span class="${file === "working" ? "on" : ""}" data-file="working">Working copy</span><span class="${file === "master" ? "on" : ""}" data-file="master">Master</span></span>
+    <span style="flex:1"></span>
+    ${control ? `<button class="btn">⛶ Fullscreen</button>` : `<button class="btn primary">Take control</button>`}
+    <button class="btn" data-menu>⋯</button></div>`;
+  let main;
+  if (state === "setup") main = `<div class="center" style="position:relative;flex:1">${setupCard()}</div>`;
+  else if (cards[state]) main = `<div class="center" style="position:relative;flex:1">${cards[state]}</div>`;
+  else if (state === "running") main = `<div style="padding:12px;flex:1">${runningTable}</div>`;
+  else main = `<div class="stream letterbox ${control ? "controlled" : ""}">${blender()}${state === "starting" ? `<div class="skeleton"></div>` : ""}</div>`;
+  const who = control ? "You're in control · F6 or click outside to leave" : state === "takenover" ? "Pixel 9 is in control · Take over" : "Watching · click to take control";
+  const agent = state === "agent" ? `<span><span class="dot info"></span> Agent editing</span>` : `<span class="muted">Agent idle</span>`;
+  const strip = `<div class="strip"><span>${who}</span>${agent}<span style="flex:1"></span>${state === "nogpu" ? `<span class="wa">No GPU: running in software</span>` : `<span class="mono">1600×900 · 24 fps · 2.1 Mbps · NVENC</span>`}</div>`;
+  return toolbar + (menuOpen ? settingsMenu("top:40px;right:10px") : "") + main + strip;
+}
+
+function variantC() {
+  let html = "";
+  const banners = {
+    agent: `<div class="banner"><span class="dot info"></span><span class="grow">Agent is editing this file</span></div>`,
+    control: `<div class="banner"><span class="dot"></span><span class="grow">You're in control. F6 or click outside to leave.</span><button class="btn">⛶ Fullscreen</button></div>`,
+    takenover: `<div class="banner warn"><span class="grow">Your phone took control.</span><button class="btn primary">Take over</button></div>`,
+    crashed: `<div class="banner bad"><span class="grow">Blender stopped unexpectedly. <label><input type="checkbox" checked> restore autosave from 14:32</label></span><button class="btn primary">Restart</button></div>`,
+    reopen: `<div class="banner"><span class="grow">Closed when the thread settled. A recovery copy was kept.</span><button class="btn primary">Reopen</button></div>`,
+    move: `<div class="banner warn"><span class="grow">hero.blend is open in your desktop Blender.</span><button class="btn primary">Move into T3</button><button class="btn ghost">Keep on desktop</button></div>`,
+    nogpu: `<div class="banner warn"><span class="grow">No GPU: Blender is running in software and will be slow.</span></div>`,
+    starting: `<div class="banner"><span class="grow">Starting Blender…</span></div>`,
+  };
+  if (banners[state]) html += banners[state];
+  if (state === "setup") return html + `<div class="center" style="position:relative;flex:1">${setupCard()}</div>`;
+  if (state === "unavailable") return html + `<div class="center" style="position:relative;flex:1">${cards.unavailable}</div>`;
+  const dim = ["crashed", "reopen", "move", "starting"].includes(state);
+  html += `<div class="stream ${dim ? "dim" : ""} ${state === "control" ? "controlled" : ""}">${blender()}`;
+  if (state === "watching") html += `<div class="ov-b"><span class="chip">Click to take control</span></div>`;
+  html += `<div class="ov-tr"><button class="btn" data-menu>Blenders ▾</button></div>`;
+  if (menuOpen || state === "running") html += `<div class="menu" style="top:40px;right:8px;min-width:420px;padding:10px"><b>Running hosted Blenders</b>${runningTable}<hr><div>Keyboard layout: UK (detected) · Scrolling: trackpad (auto)</div></div>`;
+  return html + `</div>`;
+}
+
+function renderTabs() {
+  const tabs = document.getElementById("tabs");
+  if (variant === "C") {
+    tabs.innerHTML = `<div class="tab">Files</div>
+      <div class="tab ${file === "working" ? "on" : ""}" data-file="working"><span class="dot ${state === "crashed" ? "bad" : ""}"></span>hero.wip-a1b2 · Working</div>
+      <div class="tab ${file === "master" ? "on" : ""}" data-file="master"><span class="dot"></span>hero · Master</div><div class="tab">Terminal</div>`;
+  } else {
+    tabs.innerHTML = `<div class="tab">Files</div><div class="tab on"><span class="dot ${state === "crashed" ? "bad" : ""}"></span>Blender · hero</div><div class="tab">Terminal</div>`;
+  }
+}
+
+function render() {
+  renderTabs();
+  const body = document.getElementById("body");
+  body.innerHTML = variant === "A" ? variantA() : variant === "B" ? variantB() : variantC();
+  document.getElementById("vlabel").textContent = `${variant} (${VARIANTS[variant]})`;
+  document.getElementById("states").innerHTML = STATES.map(([k, l]) => `<button class="${k === state ? "on" : ""}" data-state="${k}">${l}</button>`).join("");
+  document.getElementById("note").textContent = `State: ${STATES.find(([k]) => k === state)[1]} · showing ${fileRole()} (${fileName()}) · ←/→ switch variant · click a state · click Working copy/Master · ⋯/Blenders opens the menu`;
+}
+
+document.addEventListener("click", (e) => {
+  const t = e.target.closest("[data-state],[data-file],[data-menu],#prev,#next,[data-open]");
+  if (!t) { if (menuOpen) { menuOpen = false; render(); } return; }
+  if (t.id === "prev" || t.id === "next") { const keys = Object.keys(VARIANTS); variant = keys[(keys.indexOf(variant) + (t.id === "next" ? 1 : keys.length - 1)) % keys.length]; menuOpen = false; }
+  else if (t.dataset.state) { state = t.dataset.state; menuOpen = false; }
+  else if (t.dataset.file) { file = t.dataset.file; }
+  else if (t.hasAttribute("data-menu")) { menuOpen = !menuOpen; }
+  else if (t.hasAttribute("data-open")) { file = t.textContent.includes("wip") ? "working" : "master"; state = "watching"; }
+  render();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  document.getElementById(e.key === "ArrowRight" ? "next" : "prev").click();
+});
+render();
+</script>
+</body>
+</html>
