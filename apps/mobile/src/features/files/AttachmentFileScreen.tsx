@@ -5,6 +5,7 @@ import {
   clampFileAttachmentUploadBytes,
   formatAttachmentSize,
 } from "@t3tools/client-runtime/state/attachments";
+import { isBlendPreviewPath } from "@t3tools/shared/filePreview";
 import { msg, useGT } from "gt-react-native";
 import { useRef, useState } from "react";
 import { View } from "react-native";
@@ -243,7 +244,13 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
   const refresh = useRefreshAssetUrl(environmentId, resource);
   const capabilities = useEnvironmentServerConfig(environmentId)?.environment.capabilities;
 
-  if (!blendFacts && document.kind === "archive" && isZipFile(params) && !document.error) {
+  // A .blend is never a ZIP, even sent or drafted with a ZIP label.
+  if (
+    !isBlendPreviewPath(params.name) &&
+    document.kind === "archive" &&
+    isZipFile(params) &&
+    !document.error
+  ) {
     const threadDraftKey =
       environmentId && params.threadId
         ? scopedThreadKey(environmentId, ThreadId.make(params.threadId))

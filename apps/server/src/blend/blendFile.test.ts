@@ -193,6 +193,8 @@ describe("readBlendFile", () => {
       "x".repeat(300),
       `a${"[1]".repeat(200)}`,
       "a[99999][99999][99999][99999]",
+      "a[]",
+      "a[1e2]",
     ]) {
       expect(() => parseSdnaFieldName(name)).toThrow("damaged");
     }

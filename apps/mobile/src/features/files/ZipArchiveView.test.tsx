@@ -290,6 +290,44 @@ it("opens a .blend attachment's facts, and its file viewer from the menu", async
   await screen.settle(() => expect(screen.container.textContent).toContain("native viewer open"));
 });
 
+it("does not open an unsent draft .blend labelled application/zip as a ZIP", async () => {
+  const screen = setup();
+  appAtomRegistry.set(composerDraftsAtom, {
+    "draft-1": {
+      text: "",
+      attachments: [
+        {
+          id: "attachment-2",
+          type: "file",
+          name: "rig.blend",
+          mimeType: "application/zip",
+          sizeBytes: 200,
+          fileUri: "file:///rig.blend",
+        },
+      ],
+    },
+  });
+  await act(async () =>
+    screen.root.render(
+      <AttachmentFileScreen
+        route={{
+          params: {
+            attachmentId: "attachment-2",
+            name: "rig.blend",
+            mimeType: "application/zip",
+            sizeBytes: "200",
+            draftKey: "draft-1",
+          },
+        }}
+      />,
+    ),
+  );
+  await screen.settle(() => {
+    expect(screen.container.querySelector('[aria-label="Filter files in ZIP"]')).toBeNull();
+    expect(screen.container.textContent).not.toContain("first.txt");
+  });
+});
+
 it("keeps the ZIP filter and archive open when native Back closes a selected entry", async () => {
   const screen = setup();
   await screen.render();

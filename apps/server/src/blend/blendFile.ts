@@ -284,8 +284,9 @@ export function parseSdnaFieldName(rawName: string): {
   let items = 1;
   for (let open = rawName.indexOf("["); open !== -1; open = rawName.indexOf("[", open + 1)) {
     const close = rawName.indexOf("]", open);
-    const dimension = close === -1 ? Number.NaN : Number(rawName.slice(open + 1, close));
-    if (!Number.isInteger(dimension) || dimension < 0) throw damaged();
+    const digits = close === -1 ? "" : rawName.slice(open + 1, close);
+    if (!/^\d+$/.test(digits)) throw damaged();
+    const dimension = Number(digits);
     items *= dimension;
     if (items > MAX_SDNA_FIELD_ITEMS) throw damaged();
   }
