@@ -92,6 +92,7 @@ const CONTROL_DIR_NAME_LENGTH = "/t3hb-XXXXXX".length;
 /** Where a launch's private control and runtime folder goes, so the helper never falls back. */
 export const runtimeParent = (xdgRuntimeDir: string | undefined): string =>
   xdgRuntimeDir?.startsWith("/") &&
-  xdgRuntimeDir.length + CONTROL_DIR_NAME_LENGTH <= HELPER_RUNTIME_PARENT_MAX
+  // The helper and the socket path limit count UTF-8 bytes, not characters.
+  Buffer.byteLength(xdgRuntimeDir) + CONTROL_DIR_NAME_LENGTH <= HELPER_RUNTIME_PARENT_MAX
     ? xdgRuntimeDir
     : "/tmp";

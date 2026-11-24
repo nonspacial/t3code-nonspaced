@@ -30,7 +30,6 @@ export function OpenInHostedBlender(props: {
 
   const showPane = () => useRightPanelStore.getState().open(props.threadRef, "blender");
   const openFile = async () => {
-    if (pending) return;
     // The pane explains what's missing; there is nothing to start yet.
     if (state.status === "notSetUp") return showPane();
     setPending(true);
@@ -50,7 +49,11 @@ export function OpenInHostedBlender(props: {
   };
 
   return (
-    <PreviewAction label={gt("Open in hosted Blender")} onPress={() => void openFile()}>
+    <PreviewAction
+      label={gt("Open in hosted Blender")}
+      disabled={pending}
+      onPress={() => void openFile()}
+    >
       <BoxIcon />
     </PreviewAction>
   );

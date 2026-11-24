@@ -46,6 +46,7 @@ import {
   newestBlenderConfigVersion,
 } from "./BlenderLaunch.ts";
 import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
+import { type ControlConnection, requestSave, type SaveReply } from "./ControlSave.ts";
 import * as HiddenDisplayBinary from "./HiddenDisplayBinary.ts";
 import {
   encodeHelperCommand,
@@ -114,9 +115,6 @@ export class HostedBlender extends Context.Service<
   }
 >()("t3/hostedBlender/HostedBlender") {}
 
-/** `closed`: the control socket went away before the add-on answered. */
-type SaveReply = "saving" | "saved" | "quitFailed" | "closed";
-
 interface ViewerEntry {
   readonly queue: Queue.Queue<HostedBlenderViewerOutput>;
   readonly flow: ViewerFlow;
@@ -137,7 +135,7 @@ interface Instance {
   viewport: { readonly width: number; readonly height: number } | null;
   lastKeyframeRequest: number;
   helper: (command: HelperCommand) => Effect.Effect<void>;
-  control: ((line: string) => Effect.Effect<void>) | null;
+  control: ControlConnection | null;
   /** What the add-on says while `quit` waits on a save. */
   saveReplies: Queue.Queue<SaveReply> | null;
   /** The one save-and-quit in flight; every caller gets its result. */
@@ -318,7 +316,9 @@ const make = Effect.gen(function* () {
         Effect.retry({ schedule: Schedule.spaced("200 millis"), times: CONTROL_CONNECT_ATTEMPTS }),
       );
       const writer = yield* socket.writer;
-      instance.control = (line) => writer.write(line).pipe(Effect.ignore);
+      const closed = yield* Deferred.make<void>();
+      yield* Effect.addFinalizer(() => Deferred.succeed(closed, undefined));
+      instance.control = { write: (line) => writer.write(line).pipe(Effect.ignore), closed };
       const decoder = new TextDecoder();
       let buffer = "";
       return yield* Effect.forever(
@@ -341,9 +341,8 @@ const make = Effect.gen(function* () {
     (effect, instance) =>
       effect.pipe(
         Effect.ensuring(
-          Effect.suspend(() => {
+          Effect.sync(() => {
             instance.control = null;
-            return instance.saveReplies ? Queue.offer(instance.saveReplies, "closed") : Effect.void;
           }),
         ),
       ),
@@ -624,27 +623,29 @@ const make = Effect.gen(function* () {
       // Quit without saving: Blender may be stopped however it takes.
       if (control === null) return yield* forceQuit;
       instance.quitting = true;
-      yield* control(`${encodeControlCommand({ type: "quit", save })}\n`);
+      yield* control
+        .write(`${encodeControlCommand({ type: "quit", save })}\n`)
+        .pipe(Effect.raceFirst(Deferred.await(control.closed)));
       const ended = yield* Deferred.await(instance.ended).pipe(Effect.timeoutOption(QUIT_TIMEOUT));
       if (Option.isNone(ended)) yield* forceQuit;
       return;
     }
-    // Save and quit never stops Blender before the add-on says the file is saved.
-    if (control === null) return yield* saveFailed;
+    // Save and quit never stops Blender before the add-on says the file is saved. A save
+    // already asked for answers every caller, until Blender exits or it fails.
     let pending = instance.pendingSave;
     if (pending === null) {
+      if (control === null) return yield* saveFailed;
       const started = yield* Deferred.make<boolean>();
       pending = started;
       instance.pendingSave = started;
+      const clear = Effect.sync(() => {
+        if (instance.pendingSave === started) instance.pendingSave = null;
+      });
       yield* saveThenQuit(instance, control).pipe(
-        // Cleared before answering, so a retry after this result starts a new save.
-        Effect.ensuring(
-          Effect.sync(() => {
-            if (instance.pendingSave === started) instance.pendingSave = null;
-          }),
-        ),
+        // Only a failure clears it, before answering, so a retry starts a new save.
+        Effect.tap((saved) => (saved ? Effect.void : clear)),
         Effect.flatMap((saved) => Deferred.succeed(started, saved)),
-        Effect.onInterrupt(() => Deferred.succeed(started, false)),
+        Effect.onInterrupt(() => clear.pipe(Effect.andThen(Deferred.succeed(started, false)))),
         Effect.forkIn(serviceScope),
       );
     }
@@ -654,20 +655,17 @@ const make = Effect.gen(function* () {
     if (Option.isNone(ended)) yield* forceQuit;
   });
 
-  /** True only once the add-on confirms the file is written; Blender then quits itself. */
   const saveThenQuit = Effect.fn("HostedBlender.saveThenQuit")(
-    function* (instance: Instance, control: (line: string) => Effect.Effect<void>) {
+    function* (instance: Instance, connection: ControlConnection) {
       const replies = yield* Queue.unbounded<SaveReply>();
       instance.saveReplies = replies;
-      const next = Effect.raceFirst(
-        Queue.take(replies),
-        Deferred.await(instance.ended).pipe(Effect.as("closed" as const)),
-      );
-      yield* control(`${encodeControlCommand({ type: "quit", save: true })}\n`);
-      const started = yield* next.pipe(Effect.timeoutOption(CONTROL_REPLY_TIMEOUT));
-      if (Option.isNone(started) || started.value !== "saving") return false;
-      // However long a big file takes, the save finishes, fails, or Blender goes away.
-      return (yield* next) === "saved";
+      return yield* requestSave({
+        connection,
+        replies,
+        ended: Deferred.await(instance.ended),
+        command: `${encodeControlCommand({ type: "quit", save: true })}\n`,
+        replyTimeout: CONTROL_REPLY_TIMEOUT,
+      });
     },
     (effect, instance) =>
       effect.pipe(

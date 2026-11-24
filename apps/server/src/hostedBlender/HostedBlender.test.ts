@@ -12,6 +12,7 @@ import * as NetService from "@t3tools/shared/Net";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -106,7 +107,8 @@ const WAITING_HELPER = 'while read line; do case "$line" in *quit*) exit 0;; esa
 /**
  * Stands in for the helper and the Blender inside it: reports the viewport window on stdout,
  * answers on the control socket as the add-on would (per STANDIN_SCENARIO), and on the
- * helper's own `quit` writes STANDIN_MARKER and exits.
+ * helper's own `quit` writes STANDIN_MARKER and exits. Once its control connection is up it
+ * reports the file dirty, and it logs each save command it gets to STANDIN_SAVES.
  */
 const STANDIN_HELPER = String.raw`
 import json, os, socket, struct, sys, threading
@@ -129,18 +131,28 @@ if scenario != "never-shows":
 def control():
     connection, _ = server.accept()
     connection.sendall(b'{"type": "hello", "pid": %d}\n' % os.getpid())
+    connection.sendall(b'{"type": "state", "filepath": "cube.blend", "dirty": true}\n')
     saves = 0
     for line in connection.makefile():
         command = json.loads(line)
         if command.get("type") != "quit" or not command.get("save"):
             continue
         saves += 1
+        with open(os.environ["STANDIN_SAVES"], "a") as log:
+            log.write("save\n")
         connection.sendall(b'{"type": "saving"}\n')
         if scenario == "exit-while-saving":
             os._exit(0)
         if scenario == "drop-socket":
             connection.close()
             server.close()
+            return
+        if scenario == "saved-then-exit":
+            # Saved, then a moment before Blender is gone; "clean" marks the moment.
+            connection.sendall(b'{"type": "saved"}\n')
+            connection.sendall(b'{"type": "state", "filepath": "cube.blend", "dirty": false}\n')
+            connection.close()
+            threading.Timer(1.0, lambda: os._exit(0)).start()
             return
         if scenario == "slow-failing-save" and saves == 1:
             threading.Timer(1.0, lambda: connection.sendall(
@@ -169,6 +181,7 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
   NodeFS.mkdirSync(runtime);
   NodeFS.writeFileSync(NodePath.join(dir, "cube.blend"), "");
   const marker = NodePath.join(dir, "helper-quit");
+  const savesLog = NodePath.join(dir, "saves.log");
   const service = yield* serviceFor(
     layerFor({
       env: {
@@ -176,6 +189,7 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
         XDG_RUNTIME_DIR: runtime,
         STANDIN_SCENARIO: scenario,
         STANDIN_MARKER: marker,
+        STANDIN_SAVES: savesLog,
       },
       helper: NodePath.join(bin, "helper"),
       workspaceRoot: dir,
@@ -189,36 +203,51 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
   );
   const awaitStatus = (status: HostedBlenderThreadState["status"]) =>
     Queue.take(states).pipe(Effect.repeat({ until: (state) => state.status === status }));
-  return { service, awaitStatus, marker, runtime };
+  const awaitDirty = (dirty: boolean) =>
+    Queue.take(states).pipe(
+      Effect.repeat({ until: (state) => state.status === "running" && state.dirty === dirty }),
+    );
+  /** Opened, running, and with the control connection up, so a save really reaches it. */
+  const openReady = service
+    .open({ threadId, relativePath: "cube.blend" })
+    .pipe(Effect.andThen(awaitDirty(true)));
+  const saveCommands = () =>
+    NodeFS.existsSync(savesLog) ? NodeFS.readFileSync(savesLog, "utf8").split("\n").length - 1 : 0;
+  return { service, awaitStatus, awaitDirty, openReady, saveCommands, marker, runtime };
 });
 
 describe("Save and quit", () => {
   it.live("fails when Blender exits before confirming the save", () =>
     Effect.gen(function* () {
-      const { service, awaitStatus } = yield* standIn("exit-saving", "exit-while-saving");
-      yield* service.open({ threadId, relativePath: "cube.blend" });
-      yield* awaitStatus("running");
+      const { service, openReady, saveCommands } = yield* standIn(
+        "exit-saving",
+        "exit-while-saving",
+      );
+      yield* openReady;
       const failed = yield* service.quit({ threadId, save: true }).pipe(Effect.flip);
       expect(failed.reason).toBe("saveFailed");
+      expect(saveCommands()).toBe(1);
     }).pipe(Effect.scoped),
   );
 
   it.live("fails, and leaves Blender running, when the control socket closes mid-save", () =>
     Effect.gen(function* () {
-      const { service, awaitStatus } = yield* standIn("drop-socket", "drop-socket");
-      yield* service.open({ threadId, relativePath: "cube.blend" });
-      yield* awaitStatus("running");
+      const { service, openReady, saveCommands } = yield* standIn("drop-socket", "drop-socket");
+      yield* openReady;
       const failed = yield* service.quit({ threadId, save: true }).pipe(Effect.flip);
       expect(failed.reason).toBe("saveFailed");
+      expect(saveCommands()).toBe(1);
       expect((yield* firstState(service)).status).toBe("running");
     }).pipe(Effect.scoped),
   );
 
   it.live("answers every caller of a save already in flight", () =>
     Effect.gen(function* () {
-      const { service, awaitStatus } = yield* standIn("shared-save", "slow-failing-save");
-      yield* service.open({ threadId, relativePath: "cube.blend" });
-      yield* awaitStatus("running");
+      const { service, openReady, saveCommands } = yield* standIn(
+        "shared-save",
+        "slow-failing-save",
+      );
+      yield* openReady;
       const results = yield* Effect.all(
         [
           service.quit({ threadId, save: true }).pipe(Effect.flip),
@@ -227,7 +256,25 @@ describe("Save and quit", () => {
         { concurrency: "unbounded" },
       );
       expect(results.map((error) => error.reason)).toEqual(["saveFailed", "saveFailed"]);
+      expect(saveCommands()).toBe(1);
       expect((yield* firstState(service)).status).toBe("running");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("joins a confirmed save still waiting for Blender to exit", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitDirty, awaitStatus, saveCommands } = yield* standIn(
+        "saved-window",
+        "saved-then-exit",
+      );
+      yield* openReady;
+      const first = yield* Effect.forkChild(service.quit({ threadId, save: true }));
+      // Saved, socket closing, Blender not yet gone: a second Save and quit lands here.
+      yield* awaitDirty(false);
+      yield* service.quit({ threadId, save: true });
+      yield* Fiber.join(first);
+      yield* awaitStatus("stopped");
+      expect(saveCommands()).toBe(1);
     }).pipe(Effect.scoped),
   );
 });

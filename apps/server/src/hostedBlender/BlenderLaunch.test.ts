@@ -80,4 +80,6 @@ it("keeps the helper's runtime under a parent short enough that it never falls b
   expect(runtimeParent(`/run/user/${"x".repeat(60)}`)).toBe("/tmp");
   expect(runtimeParent(undefined)).toBe("/tmp");
   expect(runtimeParent("relative")).toBe("/tmp");
+  // 35 characters, but 60 bytes in UTF-8.
+  expect(runtimeParent(`/run/user/${"é".repeat(25)}`)).toBe("/tmp");
 });
