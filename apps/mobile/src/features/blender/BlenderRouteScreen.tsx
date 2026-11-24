@@ -2,7 +2,6 @@ import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navi
 import {
   type HostedBlenderControl,
   type HostedBlenderFrameRate,
-  type HostedBlenderStreamStatus,
   VIEW_ONLY,
 } from "@t3tools/client-runtime/hosted-blender/stream";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
@@ -14,7 +13,7 @@ import {
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { msg, useGT, useMessages } from "gt-react-native";
-import { type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useEffect, useReducer, useRef, useState } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -38,7 +37,11 @@ import {
 import { formatEnvironmentQueryError } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
-import type { BlenderStreamMessage } from "./blender-stream-document";
+import {
+  type BlenderStreamMessage,
+  blenderViewerReducer,
+  initialBlenderViewer,
+} from "./blender-stream-document";
 import { BlenderStreamWebView, type BlenderStreamRef } from "./BlenderStreamWebView";
 
 type BlenderRouteScreenProps = StaticScreenProps<{
@@ -283,18 +286,18 @@ function BlenderStream({
 }) {
   const gt = useGT();
   const messages = useMessages();
-  const [viewer, setViewer] = useState(uuidv4);
+  const [{ viewer, status }, dispatch] = useReducer(blenderViewerReducer, null, () =>
+    initialBlenderViewer(uuidv4()),
+  );
   const { access, error, refresh } = useHostedBlenderStreamAccess(props.environmentId, viewer);
-  const [status, setStatus] = useState<HostedBlenderStreamStatus | "error">("connecting");
   const [control, setControl] = useState<HostedBlenderControl>(VIEW_ONLY);
   const [rate, setRate] = useState<HostedBlenderFrameRate | null>(null);
   const [memoryBytes, setMemoryBytes] = useState<number | null>(null);
   const [takenOver, setTakenOver] = useState(false);
   // A new viewer mints a fresh ticket and starts a new WebView.
-  const restart = () => {
+  const restart = (cause: "unauthorized" | "reconnect") => {
     changeControl(VIEW_ONLY);
-    setStatus("connecting");
-    setViewer(uuidv4());
+    dispatch({ type: cause, viewer: uuidv4() });
   };
   const changeControl = (next: HostedBlenderControl) => {
     if (control.controller === "you" && next.controller === "another-viewer") setTakenOver(true);
@@ -305,7 +308,7 @@ function BlenderStream({
   const onMessage = (message: BlenderStreamMessage) => {
     switch (message.type) {
       case "status":
-        return setStatus(message.status);
+        return dispatch({ type: "status", status: message.status });
       case "control":
         return changeControl({ canOperate: message.canOperate, controller: message.controller });
       case "rate":
@@ -313,7 +316,7 @@ function BlenderStream({
       case "stats":
         return setMemoryBytes(message.memoryBytes);
       case "unauthorized":
-        return restart();
+        return restart("unauthorized");
     }
   };
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the toolbar lives in the parent; leaving the stream leaves this device view-only there
@@ -358,7 +361,7 @@ function BlenderStream({
             onFailed={() => {
               // A dead page holds nothing; the server gives control back when it disconnects.
               changeControl(VIEW_ONLY);
-              setStatus("error");
+              dispatch({ type: "status", status: "error" });
             }}
           />
         ) : null}
@@ -377,7 +380,11 @@ function BlenderStream({
               <>
                 <AppText className="text-center text-sm text-white/80">{overlay}</AppText>
                 {status === "error" || status === "full" ? (
-                  <Button label={gt("Reconnect")} tone="secondary" onPress={restart} />
+                  <Button
+                    label={gt("Reconnect")}
+                    tone="secondary"
+                    onPress={() => restart("reconnect")}
+                  />
                 ) : null}
               </>
             )}

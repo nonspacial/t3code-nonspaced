@@ -1,4 +1,5 @@
 import { createCanvasFrameSink } from "@t3tools/client-runtime/device/frame";
+import { keymapForLayout } from "@t3tools/client-runtime/hosted-blender/input";
 import {
   createHostedBlenderStreamClient,
   type HostedBlenderControl,
@@ -71,26 +72,43 @@ export function start(configuration: BlenderStreamConfiguration) {
   const surface = document.createElement("div");
   surface.setAttribute("role", "application");
   surface.setAttribute("aria-label", configuration.labels.viewport);
+  // Explicit sides, not `inset`, and the canvas placed by `fit`: a WebView that drops either
+  // shrinks the surface to the canvas at the top-left and never reports the viewer's size.
   Object.assign(surface.style, {
     position: "fixed",
-    inset: "0",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
+    top: "0",
+    left: "0",
+    width: "100%",
+    height: "100%",
     touchAction: "none",
     userSelect: "none",
     webkitUserSelect: "none",
     webkitTouchCallout: "none",
   });
   const canvas = document.createElement("canvas");
-  Object.assign(canvas.style, { maxWidth: "100%", maxHeight: "100%", pointerEvents: "none" });
+  Object.assign(canvas.style, { position: "absolute", pointerEvents: "none" });
   surface.append(canvas);
   document.body.replaceChildren(surface);
 
   let control = VIEW_ONLY;
   let captured = false;
   let touch: HostedBlenderTouch | null = null;
-  const sink = createCanvasFrameSink(canvas);
+  /** Letterboxes the frame in the viewer: as large as fits, centred. */
+  const fit = () => {
+    const viewerWidth = window.innerWidth;
+    const viewerHeight = window.innerHeight;
+    if (canvas.width <= 0 || canvas.height <= 0 || viewerWidth <= 0 || viewerHeight <= 0) return;
+    const ratio = Math.min(viewerWidth / canvas.width, viewerHeight / canvas.height);
+    const width = canvas.width * ratio;
+    const height = canvas.height * ratio;
+    Object.assign(canvas.style, {
+      width: `${width}px`,
+      height: `${height}px`,
+      left: `${(viewerWidth - width) / 2}px`,
+      top: `${(viewerHeight - height) / 2}px`,
+    });
+  };
+  const sink = createCanvasFrameSink(canvas, fit);
   const client = createHostedBlenderStreamClient(
     { access: configuration.access, threadId: configuration.threadId },
     sink,
@@ -102,6 +120,8 @@ export function start(configuration: BlenderStreamConfiguration) {
       onControl: (next) => {
         control = next;
         if (next.controller === "you" && touch === null) {
+          // Blender keeps the previous controller's layout; touch input and Z assume US.
+          client.send({ type: "keymap", ...keymapForLayout("us") });
           touch = createHostedBlenderTouch({
             send: client.send,
             slop: () => SLOP_CSS_PIXELS * scale(),
@@ -148,13 +168,14 @@ export function start(configuration: BlenderStreamConfiguration) {
   surface.addEventListener("pointercancel", (event) => touch?.cancel(event.pointerId));
   surface.addEventListener("contextmenu", (event) => event.preventDefault());
 
+  // The viewer's own size, which the display follows while this device is in control.
   const resize = () => {
     const ratio = globalThis.devicePixelRatio || 1;
-    client.resize(surface.clientWidth * ratio, surface.clientHeight * ratio);
+    client.resize(window.innerWidth * ratio, window.innerHeight * ratio);
+    fit();
   };
   resize();
-  const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resize);
-  observer?.observe(surface);
+  window.addEventListener("resize", resize);
 
   active = {
     stream: client,
@@ -164,7 +185,7 @@ export function start(configuration: BlenderStreamConfiguration) {
       y: Math.round(Math.min(canvas.height, MAX_STREAM_COORDINATE) / 2),
     }),
     dispose: () => {
-      observer?.disconnect();
+      window.removeEventListener("resize", resize);
       touch?.dispose();
       touch = null;
       client.stop();

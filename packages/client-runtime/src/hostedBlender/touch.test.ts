@@ -95,13 +95,46 @@ describe("hosted Blender touch gestures", () => {
       { type: "pointer", x: 150, y: 100 },
       { type: "key", code: SHIFT, pressed: true },
       { type: "button", button: MIDDLE, pressed: true },
-      { type: "pointer", x: 160, y: 115 },
       { type: "pointer", x: 170, y: 130 },
       { type: "button", button: MIDDLE, pressed: false },
       { type: "key", code: SHIFT, pressed: false },
     ]);
     vi.advanceTimersByTime(1000);
-    expect(sent).toHaveLength(7);
+    expect(sent).toHaveLength(6);
+  });
+
+  it("pans a parallel drag even though each finger reports its move separately", () => {
+    using fixture = gestures();
+    const { sent, touch } = fixture;
+    touch.down(1, { x: 100, y: 100 });
+    touch.down(2, { x: 200, y: 100 });
+    // The first finger's move alone changes the fingers' distance before the second's arrives.
+    for (let step = 1; step <= 3; step++) {
+      touch.move(1, { x: 100 + step * 16, y: 100 });
+      touch.move(2, { x: 200 + step * 16, y: 100 });
+    }
+    expect(sent.slice(0, 3)).toEqual([
+      { type: "pointer", x: 150, y: 100 },
+      { type: "key", code: SHIFT, pressed: true },
+      { type: "button", button: MIDDLE, pressed: true },
+    ]);
+    expect(sent.at(-1)).toEqual({ type: "pointer", x: 198, y: 100 });
+    expect(sent.some((message) => message.type === "scroll")).toBe(false);
+  });
+
+  it("zooms on a pinch made by one finger around a still one", () => {
+    using fixture = gestures();
+    const { sent, touch } = fixture;
+    touch.down(1, { x: 100, y: 100 });
+    touch.down(2, { x: 200, y: 100 });
+    touch.move(1, { x: 80, y: 100 });
+    expect(sent).toEqual([]);
+    touch.move(1, { x: 40, y: 100 });
+    expect(sent.filter((message) => message.type === "scroll")).toEqual([
+      { type: "scroll", axis: "vertical", source: "wheel", value: -15, steps: -1 },
+      { type: "scroll", axis: "vertical", source: "wheel", value: -15, steps: -1 },
+      { type: "scroll", axis: "vertical", source: "wheel", value: -15, steps: -1 },
+    ]);
   });
 
   it("zooms in on a pinch apart and out on a pinch together, one wheel notch at a time", () => {
@@ -129,6 +162,7 @@ describe("hosted Blender touch gestures", () => {
     touch.down(1, { x: 100, y: 100 });
     touch.down(2, { x: 200, y: 100 });
     touch.move(1, { x: 120, y: 130 });
+    touch.move(2, { x: 220, y: 130 });
     touch.cancel(2);
     expect(sent.slice(-2)).toEqual([
       { type: "button", button: MIDDLE, pressed: false },

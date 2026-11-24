@@ -36,7 +36,12 @@ type Gesture =
   | { readonly kind: "press"; readonly start: TouchPoint }
   | { readonly kind: "orbit"; last: TouchPoint }
   /** Two fingers down, not yet a pan or a pinch. */
-  | { readonly kind: "pair"; readonly centre: TouchPoint; readonly distance: number }
+  | {
+      readonly kind: "pair";
+      readonly starts: ReadonlyMap<number, TouchPoint>;
+      readonly centre: TouchPoint;
+      readonly distance: number;
+    }
   | { readonly kind: "pan"; last: TouchPoint }
   | { readonly kind: "pinch"; base: number }
   /** Finished (a long press, a lifted or extra finger); ignored until every finger lifts. */
@@ -123,7 +128,12 @@ export function createHostedBlenderTouch(options: {
       const both = pair();
       if (fingers.size === 2 && both && (gesture.kind === "press" || gesture.kind === "orbit")) {
         release();
-        gesture = { kind: "pair", centre: centreOf(...both), distance: distanceOf(...both) };
+        gesture = {
+          kind: "pair",
+          starts: new Map(fingers),
+          centre: centreOf(...both),
+          distance: distanceOf(...both),
+        };
         return;
       }
       release();
@@ -151,12 +161,10 @@ export function createHostedBlenderTouch(options: {
           const both = pair();
           if (!both) return;
           const centre = centreOf(...both);
-          const shift = distanceOf(gesture.centre, centre);
-          const spread = Math.abs(distanceOf(...both) - gesture.distance);
-          const threshold = slop();
-          if (shift <= threshold && spread <= threshold) return;
+          const kind = pairKind(gesture.starts, slop());
+          if (kind === null) return;
           pointer(gesture.centre);
-          if (spread > shift && gesture.distance > 0) {
+          if (kind === "pinch" && gesture.distance > 0) {
             gesture = { kind: "pinch", base: Math.log(gesture.distance) };
             return zoom(both);
           }
@@ -198,6 +206,23 @@ export function createHostedBlenderTouch(options: {
       gesture = { kind: "idle" };
     },
   };
+
+  // Each finger reports its own move, so one finger's move alone can look like a pinch. Judge by
+  // both fingers' travel: together is a pan, apart or together is a pinch. Until the second
+  // finger reports, wait, unless the first has gone far enough to be a pinch around a still one.
+  function pairKind(starts: ReadonlyMap<number, TouchPoint>, threshold: number) {
+    const travel = [...starts].map(([id, start]) => {
+      const now = fingers.get(id) ?? start;
+      return { x: now.x - start.x, y: now.y - start.y };
+    });
+    const [a, b] = travel;
+    if (!a || !b) return null;
+    const lengths = [Math.hypot(a.x, a.y), Math.hypot(b.x, b.y)];
+    const far = Math.max(...lengths);
+    if (far <= threshold) return null;
+    if (Math.min(...lengths) < threshold / 2) return far > threshold * 4 ? "pinch" : null;
+    return a.x * b.x + a.y * b.y > 0 ? "pan" : "pinch";
+  }
 
   function zoom(both: [TouchPoint, TouchPoint]) {
     if (gesture.kind !== "pinch") return;

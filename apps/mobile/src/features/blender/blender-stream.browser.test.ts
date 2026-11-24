@@ -41,6 +41,10 @@ function viewer() {
   );
   vi.stubGlobal("VideoDecoder", vi.fn());
   vi.stubGlobal("EncodedVideoChunk", vi.fn());
+  // A portrait phone: 400×800 CSS pixels at 2× density.
+  vi.stubGlobal("innerWidth", 400);
+  vi.stubGlobal("innerHeight", 800);
+  vi.stubGlobal("devicePixelRatio", 2);
   const posted: Array<Record<string, unknown>> = [];
   vi.stubGlobal("ReactNativeWebView", {
     postMessage: (message: string) => posted.push(JSON.parse(message)),
@@ -81,11 +85,21 @@ function viewer() {
         "type" in message &&
         message.type !== "resize",
     );
+  const resizes = () =>
+    socket.sent.filter(
+      (message) =>
+        typeof message === "object" &&
+        message !== null &&
+        "type" in message &&
+        message.type === "resize",
+    );
   return {
     socket,
     posted,
     touch,
     input,
+    resizes,
+    canvas,
     [Symbol.dispose]: () => {
       stop();
       vi.unstubAllGlobals();
@@ -104,6 +118,28 @@ describe("mobile Blender stream", () => {
       canOperate: true,
       controller: "another-viewer",
     });
+  });
+
+  it("sizes the hidden display to the phone's viewer, in device pixels", () => {
+    using fixture = viewer();
+    expect(fixture.resizes().at(-1)).toEqual({ type: "resize", width: 800, height: 1600 });
+    vi.stubGlobal("innerWidth", 800);
+    vi.stubGlobal("innerHeight", 400);
+    window.dispatchEvent(new Event("resize"));
+    expect(fixture.resizes().at(-1)).toEqual({ type: "resize", width: 1600, height: 800 });
+  });
+
+  it("fits the frame inside the viewer and centres it", () => {
+    using fixture = viewer();
+    // An 800×400 frame in a 400×800 viewer: full width, centred vertically.
+    window.dispatchEvent(new Event("resize"));
+    const { style } = fixture.canvas;
+    expect([style.width, style.height, style.left, style.top]).toEqual([
+      "400px",
+      "200px",
+      "0px",
+      "300px",
+    ]);
   });
 
   it("takes control on the first tap without clicking in Blender", () => {
@@ -134,6 +170,7 @@ describe("mobile Blender stream", () => {
     touch("pointermove", 1, 150, 60);
     touch("pointerup", 1, 150, 60);
     expect(input()).toEqual([
+      { type: "keymap", layout: "us", variant: "" },
       { type: "pointer", x: 200, y: 100 },
       { type: "button", button: 274, pressed: true },
       { type: "pointer", x: 300, y: 120 },
@@ -150,6 +187,8 @@ describe("mobile Blender stream", () => {
     command({ type: "releaseControl" });
     expect(input()).toEqual([
       { type: "takeControl", takeOver: true },
+      // The previous controller's layout stays until replaced; Z must arrive as Z.
+      { type: "keymap", layout: "us", variant: "" },
       // The pie opens where the pointer is, so Z first moves it to the middle of the viewport.
       { type: "pointer", x: 400, y: 200 },
       { type: "key", code: 44, pressed: true },

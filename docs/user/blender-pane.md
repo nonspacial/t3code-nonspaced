@@ -37,7 +37,7 @@ Closing the pane leaves Blender running; open it again from the file preview or 
 
 ## On a phone
 
-In the mobile app, open a `.blend` from the thread's files and choose **Open in hosted Blender** from the file's menu. While that file is open in the thread's hosted Blender, the same item shows it. Blender opens full screen, view-only, with the same permissions as on desktop: anyone who can see the thread can watch, and taking control needs permission to use terminals.
+In the mobile app, open a `.blend` from the thread's files and choose **Open in hosted Blender** from the file's menu. While a hosted Blender is running, the thread also shows a Blender button beside its device and browser previews, so anyone who can see the thread can watch it. Blender opens full screen, view-only, with the same permissions as on desktop: anyone who can see the thread can watch, and taking control needs permission to use terminals.
 
 Tap the stream, or choose **Take control** (**Take over** while another device has it), to control the viewport window by touch:
 
