@@ -5672,6 +5672,7 @@
   "e1de2d5335083143": "Konvertierung mit Blender {version}… {seconds} s",
   "41f9012753a424a9": "Konvertierung fehlgeschlagen",
   "047618ba1e0fe59d": "Konvertierung abgebrochen",
+  "9228469f14b148a6": "{file} geändert · wird aktualisiert…",
   "53a1519e0b7358cf": "Wartet: {ahead} davor",
   "202d05bbf54b83c1": "Zu langsam für eine Vorschau",
   "dd22e61b9a4efe81": "Die Konvertierung dauerte über eine Minute und wurde gestoppt. „Weiter versuchen“ konvertiert ohne Zeitlimit.",

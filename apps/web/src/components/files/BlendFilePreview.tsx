@@ -79,6 +79,10 @@ export function BlendFilePreview(props: {
   const gt = useGT();
   const messages = useMessages();
   const { environmentId, source, name } = props;
+  // The last converted view stays up while a refresh or a change converts again.
+  const [shown, setShown] = useState<ReadyStatus | null>(null);
+  // A view converted after a change comes with new scene facts too.
+  const changedAt = shown?.changed === undefined ? 0 : shown.convertedAt;
   const atom =
     source.kind === "file"
       ? revisionedQuery(
@@ -87,7 +91,7 @@ export function BlendFilePreview(props: {
             input: { cwd: source.cwd, relativePath: source.relativePath },
           }),
           source.workspaceMutationId,
-          { detail: String(source.refreshRevision) },
+          { detail: `${source.refreshRevision}:${changedAt}` },
         )
       : projectEnvironment.readBlendAttachmentPreview({
           environmentId,
@@ -117,8 +121,6 @@ export function BlendFilePreview(props: {
     messages,
   );
   const status = request.cancelled ? null : conversion.data;
-  // The last converted view stays up while a refresh converts again.
-  const [shown, setShown] = useState<ReadyStatus | null>(null);
   if (
     status?.status === "ready" &&
     (shown === null ||
@@ -350,6 +352,13 @@ function ConversionChip(props: {
   }
   if (props.cancelled) {
     return <PreviewStatusChip tone="warning">{gt("Conversion cancelled")}</PreviewStatusChip>;
+  }
+  if ((status?.status === "waiting" || status?.status === "converting") && status.changed) {
+    return (
+      <PreviewStatusChip tone="info">
+        {gt("{file} changed · updating…", { file: status.changed })}
+      </PreviewStatusChip>
+    );
   }
   switch (status?.status) {
     case "waiting":

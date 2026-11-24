@@ -5672,6 +5672,7 @@
   "e1de2d5335083143": "Conversion avec Blender {version}… {seconds} s",
   "41f9012753a424a9": "Échec de la conversion",
   "047618ba1e0fe59d": "Conversion annulée",
+  "9228469f14b148a6": "{file} modifié · mise à jour…",
   "53a1519e0b7358cf": "En attente : {ahead} avant",
   "202d05bbf54b83c1": "Trop lent pour l’aperçu",
   "dd22e61b9a4efe81": "La conversion a pris plus d’une minute et a été arrêtée. Continuer convertit sans limite.",

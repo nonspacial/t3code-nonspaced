@@ -5671,6 +5671,7 @@
   "e1de2d5335083143": "Convertendo com o Blender {version}… {seconds} s",
   "41f9012753a424a9": "Falha na conversão",
   "047618ba1e0fe59d": "Conversão cancelada",
+  "9228469f14b148a6": "{file} mudou · atualizando…",
   "53a1519e0b7358cf": "Aguardando: {ahead} na frente",
   "202d05bbf54b83c1": "Lento demais para pré-visualizar",
   "dd22e61b9a4efe81": "A conversão levou mais de um minuto e foi interrompida. Continuar tentando converte sem limite.",
