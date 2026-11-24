@@ -6,6 +6,7 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { T, useGT, useMessages } from "gt-react";
 import { BoxIcon } from "lucide-react";
+import type { ReactNode } from "react";
 
 import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
@@ -32,6 +33,8 @@ export function BlendFilePreview(props: {
   readonly environmentId: EnvironmentId;
   readonly name: string;
   readonly source: BlendFileSource;
+  /** More actions for the top-right group, before Reload. */
+  readonly actions?: ReactNode;
 }) {
   const gt = useGT();
   const messages = useMessages();
@@ -110,6 +113,7 @@ export function BlendFilePreview(props: {
         </div>
       ) : null}
       <div className="absolute end-2 top-2 flex gap-1">
+        {props.actions}
         <PreviewAction label={gt("Reload file")} onPress={refresh}>
           <RefreshIcon />
         </PreviewAction>

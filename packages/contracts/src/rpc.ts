@@ -366,6 +366,13 @@ import {
   DeviceShutdownInput,
 } from "./device.ts";
 import {
+  HostedBlenderError,
+  HostedBlenderOpenInput,
+  HostedBlenderQuitInput,
+  HostedBlenderSubscribeInput,
+  HostedBlenderThreadState,
+} from "./hostedBlender.ts";
+import {
   ServerConfigStreamEvent,
   DesktopUpdateCommitInput,
   OtlpEndpointCheckInput,
@@ -587,6 +594,10 @@ export const WS_METHODS = {
   deviceShutdown: "device.shutdown",
   deviceDetail: "device.detail",
   deviceAction: "device.action",
+
+  hostedBlenderOpen: "hostedBlender.open",
+  hostedBlenderQuit: "hostedBlender.quit",
+  hostedBlenderSubscribeThread: "hostedBlender.subscribeThread",
 
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
@@ -2118,6 +2129,23 @@ const WsSubscribeDeviceStateRpc = Rpc.make(WS_METHODS.subscribeDeviceState, {
   stream: true,
 });
 
+const WsHostedBlenderOpenRpc = Rpc.make(WS_METHODS.hostedBlenderOpen, {
+  payload: HostedBlenderOpenInput,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+const WsHostedBlenderQuitRpc = Rpc.make(WS_METHODS.hostedBlenderQuit, {
+  payload: HostedBlenderQuitInput,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+const WsHostedBlenderSubscribeThreadRpc = Rpc.make(WS_METHODS.hostedBlenderSubscribeThread, {
+  payload: HostedBlenderSubscribeInput,
+  success: HostedBlenderThreadState,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
 const WsOrchestrationV2DispatchCommandRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, {
   payload: OrchestrationV2RpcSchemas.dispatchCommand.input,
   success: OrchestrationV2RpcSchemas.dispatchCommand.output,
@@ -2711,6 +2739,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsDeviceDetailRpc,
   WsDeviceActionRpc,
   WsSubscribeDeviceStateRpc,
+  WsHostedBlenderOpenRpc,
+  WsHostedBlenderQuitRpc,
+  WsHostedBlenderSubscribeThreadRpc,
   WsSubscribeServerConfigRpc,
   WsSubscribeServerLifecycleRpc,
   WsSubscribeAuthAccessRpc,

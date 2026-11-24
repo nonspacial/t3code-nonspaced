@@ -35,13 +35,20 @@ export function PreviewStatusChip(props: {
 export function PreviewAction(props: {
   readonly label: string;
   readonly onPress: () => void;
+  readonly disabled?: boolean;
   readonly children: ReactNode;
 }) {
   return (
     <Tooltip>
       <TooltipTrigger
         render={
-          <Button aria-label={props.label} size="icon-xs" variant="glass" onClick={props.onPress} />
+          <Button
+            aria-label={props.label}
+            size="icon-xs"
+            variant="glass"
+            disabled={props.disabled ?? false}
+            onClick={props.onPress}
+          />
         }
       >
         {props.children}

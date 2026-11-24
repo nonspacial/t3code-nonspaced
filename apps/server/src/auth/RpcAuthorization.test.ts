@@ -61,6 +61,15 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("lets thread readers watch a hosted Blender and only operators start or quit one", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.hostedBlenderSubscribeThread)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    for (const method of [WS_METHODS.hostedBlenderOpen, WS_METHODS.hostedBlenderQuit]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+    }
+  });
+
   it("keeps triage, which seeds an agent that reads logs and the database, behind operate scope", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.serverPrepareTriage)).toBe(
       AuthOrchestrationOperateScope,
