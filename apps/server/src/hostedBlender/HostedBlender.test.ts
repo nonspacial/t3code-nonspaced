@@ -592,6 +592,21 @@ const leftover = (
   return { hostedDir, launchDir };
 };
 
+/** Once `file` exists in `dir`, checked as the watch starts, so one already there counts. */
+const fileAppears = (dir: string, file: string, ready = () => NodeFS.existsSync(file)) =>
+  Effect.promise(
+    () =>
+      new Promise<void>((resolve) => {
+        const check = () => {
+          if (!ready()) return;
+          watcher.close();
+          resolve();
+        };
+        const watcher = NodeFS.watch(dir, check);
+        check();
+      }),
+  );
+
 /** A service on `dir` whose Blenders never start: only startup and records are under test. */
 const idleService = (dir: string) => {
   const bin = fakeTools(dir);
@@ -660,19 +675,11 @@ describe("Salvaging what a stopped server left", () => {
         ],
         { cwd: launchDir, stdio: "ignore", detached: true },
       );
-      const childStarted = new Promise<void>((resolve) => {
-        const watcher = NodeFS.watch(dir, () => {
-          if (
-            !NodeFS.existsSync(childPidFile) ||
-            NodeFS.readFileSync(childPidFile, "utf8") === ""
-          ) {
-            return;
-          }
-          watcher.close();
-          resolve();
-        });
-      });
-      yield* Effect.promise(() => childStarted);
+      yield* fileAppears(
+        dir,
+        childPidFile,
+        () => NodeFS.existsSync(childPidFile) && NodeFS.readFileSync(childPidFile, "utf8") !== "",
+      );
       const childPid = Number(NodeFS.readFileSync(childPidFile, "utf8"));
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
@@ -712,16 +719,7 @@ describe("Salvaging what a stopped server left", () => {
         { cwd: launchDir, stdio: "ignore", detached: true },
       );
       yield* Effect.addFinalizer(() => Effect.sync(() => helper.kill("SIGKILL")));
-      yield* Effect.promise(
-        () =>
-          new Promise<void>((resolve) => {
-            const watcher = NodeFS.watch(dir, () => {
-              if (!NodeFS.existsSync(readyFile)) return;
-              watcher.close();
-              resolve();
-            });
-          }),
-      );
+      yield* fileAppears(dir, readyFile);
       leftover(dir, { helperPid: helper.pid! });
       // Stands in for a Blender stuck in the kernel: SIGKILL doesn't take, SIGTERM is ignored.
       const service = yield* idleService(dir).pipe(
