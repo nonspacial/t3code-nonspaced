@@ -11,6 +11,7 @@ import { type HostedBlenderThreadState, type RuntimeMode, ThreadId } from "@t3to
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -1539,15 +1540,19 @@ event({"type": "windowCaptured", "title": "3D Viewport"})
 import socket, threading
 t3 = sys.argv[sys.argv.index("--t3-control"):]
 listener = ["ready" if "--t3-mcp-listen" in t3 else "off"]
+blend = next(arg for arg in sys.argv if arg.endswith(".blend"))
 def control():
     server = socket.socket(socket.AF_UNIX)
     server.bind(t3[1])
     server.listen(1)
     connection, _ = server.accept()
-    def state():
-        connection.sendall((json.dumps({"type": "state", "filepath": "cube.blend", "dirty": False,
+    def state(filepath):
+        connection.sendall((json.dumps({"type": "state", "filepath": filepath, "dirty": False,
                                         "agentListener": listener[0]}) + "\n").encode())
-    state()
+    state(blend)
+    if os.environ.get("STANDIN_AFTER") == "otherFile":
+        # Someone opens another file through Blender's own UI.
+        state("/elsewhere/other.blend")
     for line in connection.makefile():
         with open(os.environ["STANDIN_ARGS"] + ".control", "a") as log:
             log.write(line)
@@ -1564,6 +1569,7 @@ describe("Agent access at launch", () => {
   const launch = Effect.fn(function* (
     host: Pick<Host, "runtimeMode" | "interactionMode" | "agentPort" | "revocations">,
     options: { readonly agentWorkingCopy?: boolean } = { agentWorkingCopy: true },
+    after?: "otherFile",
   ) {
     const dir = yield* tempDir("agent-access");
     const bin = fakeTools(dir);
@@ -1576,7 +1582,12 @@ describe("Agent access at launch", () => {
     const argsLog = NodePath.join(dir, "args.log");
     const service = yield* serviceFor(
       layerFor({
-        env: { PATH: bin, XDG_RUNTIME_DIR: runtime, STANDIN_ARGS: argsLog },
+        env: {
+          PATH: bin,
+          XDG_RUNTIME_DIR: runtime,
+          STANDIN_ARGS: argsLog,
+          ...(after === undefined ? {} : { STANDIN_AFTER: after }),
+        },
         helper: NodePath.join(bin, "helper"),
         workspaceRoot: dir,
         baseDir: dir,
@@ -1652,4 +1663,21 @@ describe("Agent access at launch", () => {
       expect(controlLog().match(/stopAgentListener/g)).toHaveLength(1);
     }).pipe(Effect.scoped),
   );
+
+  it.live("closes the listener once Blender opens a file other than the working copy", () =>
+    Effect.gen(function* () {
+      const { service, controlLog } = yield* launch({ agentPort: 41234 }, undefined, "otherFile");
+      // The stand-in exits when it hears the stop.
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "stopped"),
+        Stream.runHead,
+      );
+      expect(controlLog()).toContain("stopAgentListener");
+    }).pipe(Effect.scoped),
+  );
+
+  it("waits for the control connection as long as Blender may take to start", () => {
+    expect(HostedBlender.CONTROL_CONNECT_ATTEMPTS * 200).toBeGreaterThanOrEqual(90_000);
+    expect(Duration.toMillis(HostedBlender.AGENT_LISTENER_TIMEOUT)).toBeGreaterThan(90_000);
+  });
 });

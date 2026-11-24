@@ -40,7 +40,7 @@ What the agent may do without asking follows the thread's access mode. In **Full
 
 While the agent is running something in Blender, the composer says **Working in Blender**, with **Stop** to stop the turn.
 
-Only the working copy the agent started takes its calls. A file you opened from the pane, even the working copy, doesn't; the agent quits it, saving first, and starts it again. Switching **Allow agents to start hosted Blenders** off, or the thread's agent session ending, closes the agent's connection to Blender at once; Blender keeps running, and you can still watch and use it in the pane.
+Only the working copy the agent started takes its calls. A file you opened from the pane, even the working copy, doesn't; the agent quits it, saving first, and starts it again. Switching **Allow agents to start hosted Blenders** off, or the thread's agent session ending, closes the agent's connection to Blender at once, and so does opening another file in that Blender; Blender keeps running, and you can still watch and use it in the pane. The agent gets it back by quitting and starting the working copy again.
 
 ## Watching
 

@@ -26,10 +26,39 @@ export const workingCopyName = (masterName: string, threadId: string) =>
   `${masterName.replace(/\.blend$/i, "")}.wip-${threadTag(threadId)}.blend`;
 
 /**
- * Copies the master to `workingCopy` without ever replacing what is there: the copy is made under
- * a private name and hard-linked into place, which fails if the name is taken. A taken name is
- * reused only as a regular file that isn't the master, so a link to the master can't open it for
- * editing. False when the copy already existed.
+ * A working copy is opened only as a regular file that isn't its master, so neither a symlink nor
+ * a hard link to the master opens the master for editing.
+ */
+const assertSeparateCopy = Effect.fn("HostedBlender.assertSeparateCopy")(function* (
+  workingCopy: string,
+  master: string,
+  requested: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const notSeparate = () =>
+    new HostedBlenderToolError({
+      reason: `${workingCopy} exists but is not a separate copy of ${requested}. Ask the user to move it aside.`,
+    });
+  const existing = yield* fileSystem.lstat(workingCopy).pipe(Effect.mapError(notSeparate));
+  if (existing.type !== "File") return yield* notSeparate();
+  // The master of a working copy named directly may be gone; then there's nothing to be.
+  const original = yield* fileSystem.stat(master).pipe(Effect.option);
+  if (
+    Option.isSome(original) &&
+    Option.isSome(existing.ino) &&
+    Option.isSome(original.value.ino) &&
+    existing.ino.value === original.value.ino.value &&
+    existing.dev === original.value.dev
+  ) {
+    return yield* notSeparate();
+  }
+});
+
+/**
+ * Copies the master to `workingCopy` without ever replacing what is there. An existing copy is
+ * checked and reused before anything is copied; otherwise the copy is made under a private name
+ * and hard-linked into place, which fails if a concurrent start got there first, whose copy is
+ * then checked the same way. False when the copy already existed.
  */
 const createWorkingCopy = Effect.fn("HostedBlender.createWorkingCopy")(function* (
   master: string,
@@ -40,6 +69,10 @@ const createWorkingCopy = Effect.fn("HostedBlender.createWorkingCopy")(function*
   const path = yield* Path.Path;
   const couldNotCopy = () =>
     new HostedBlenderToolError({ reason: `T3 could not copy ${requested} to ${workingCopy}.` });
+  if (Option.isSome(yield* fileSystem.lstat(workingCopy).pipe(Effect.option))) {
+    yield* assertSeparateCopy(workingCopy, master, requested);
+    return false;
+  }
   const linked = yield* Effect.scoped(
     Effect.gen(function* () {
       const staging = yield* fileSystem.makeTempDirectoryScoped({
@@ -52,18 +85,7 @@ const createWorkingCopy = Effect.fn("HostedBlender.createWorkingCopy")(function*
     }),
   ).pipe(Effect.mapError(couldNotCopy));
   if (linked) return true;
-  const existing = yield* fileSystem.lstat(workingCopy).pipe(Effect.mapError(couldNotCopy));
-  const original = yield* fileSystem.stat(master).pipe(Effect.mapError(couldNotCopy));
-  const sameFile =
-    Option.isSome(existing.ino) &&
-    Option.isSome(original.ino) &&
-    existing.ino.value === original.ino.value &&
-    existing.dev === original.dev;
-  if (existing.type !== "File" || sameFile) {
-    return yield* new HostedBlenderToolError({
-      reason: `${workingCopy} exists but is not a separate copy of ${requested}. Ask the user to move it aside.`,
-    });
-  }
+  yield* assertSeparateCopy(workingCopy, master, requested);
   return false;
 });
 
@@ -127,6 +149,17 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
     // Named directly, the working copy is opened as it is.
     const isCopy = path.basename(master).endsWith(`.wip-${threadTag(input.threadId)}.blend`);
     const workingCopy = isCopy ? master : path.join(path.dirname(master), name);
+    if (isCopy) {
+      // Checked as named, before any link is followed, against the master it was copied from.
+      yield* assertSeparateCopy(
+        requested,
+        path.join(
+          path.dirname(requested),
+          path.basename(requested).replace(/\.wip-[a-z0-9]+\.blend$/i, ".blend"),
+        ),
+        input.path,
+      );
+    }
     const created = isCopy ? false : yield* createWorkingCopy(master, workingCopy, input.path);
     // Paths under the workspace as configured, as the client matches file links against it.
     const relativePath = path.relative(realRoot, workingCopy);

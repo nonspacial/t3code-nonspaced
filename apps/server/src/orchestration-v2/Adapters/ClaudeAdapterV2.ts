@@ -2464,6 +2464,24 @@ const subagentDeviceInstructions: HookCallback = () =>
     },
   });
 
+// PreToolUse hooks run before Claude's permission rules and modes, so no allow rule or mode can
+// let a hosted Blender tool off the read-only list through in Plan, a tool added later included.
+const denyHostedBlenderWritesInPlan: HookCallback = (hookInput) =>
+  Promise.resolve(
+    hookInput.hook_event_name === "PreToolUse" &&
+      claudeHostedBlenderToolDecision(hookInput.tool_name, HOSTED_BLENDER_PLAN_POLICY) === "deny"
+      ? {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse" as const,
+            permissionDecision: "deny" as const,
+            permissionDecisionReason:
+              "Plan mode offers only read-only Blender tools: scene summaries, screenshots and doc search.",
+          },
+        }
+      : {},
+  );
+const HOSTED_BLENDER_PLAN_POLICY = { runtimeMode: "approval-required", interactionMode: "plan" };
+
 export function makeClaudeQueryOptions(input: {
   readonly modelSelection: ModelSelection;
   readonly modelCatalog?: ClaudeModelCatalog;
@@ -2485,6 +2503,8 @@ export function makeClaudeQueryOptions(input: {
   readonly deviceToolsAvailable?: boolean;
   /** T3 gave the session its hosted Blender MCP servers. */
   readonly hostedBlenderToolsAvailable?: boolean;
+  /** Plan mode: only the read-only hosted Blender tools may run. */
+  readonly hostedBlenderReadOnly?: boolean;
   readonly tools?: ClaudeAgentSdkQueryTools;
   readonly allowedTools?: ReadonlyArray<string>;
   readonly disallowedTools?: ReadonlyArray<string>;
@@ -2588,6 +2608,7 @@ export function makeClaudeQueryOptions(input: {
           },
         } as ClaudeSdkSettings);
   const deviceInstructions = input.mcpServers !== undefined && input.deviceToolsAvailable === true;
+  const blenderReadOnly = input.mcpServers !== undefined && input.hostedBlenderReadOnly === true;
   const agentFeedback = input.mcpServers === undefined ? "off" : (input.agentFeedback ?? "off");
   const options: ClaudeAgentSdkQueryOptions = {
     model: compiledSelection.apiModelId,
@@ -2661,11 +2682,14 @@ export function makeClaudeQueryOptions(input: {
         ...launchAppendSystemPrompt,
       ].join("\n\n"),
     },
-    ...(deviceInstructions || input.onStop !== undefined
+    ...(deviceInstructions || input.onStop !== undefined || blenderReadOnly
       ? {
           hooks: {
             ...(deviceInstructions
               ? { SubagentStart: [{ hooks: [subagentDeviceInstructions] }] }
+              : {}),
+            ...(blenderReadOnly
+              ? { PreToolUse: [{ hooks: [denyHostedBlenderWritesInPlan] }] }
               : {}),
             ...(input.onStop === undefined ? {} : { Stop: [{ hooks: [input.onStop] }] }),
           },
@@ -2808,6 +2832,7 @@ export function claudeMcpQueryOverrides(input: {
   readonly allowedTools?: ReadonlyArray<string>;
   readonly disallowedTools?: ReadonlyArray<string>;
   readonly mcpServers?: ClaudeQueryOptions["mcpServers"];
+  readonly hostedBlenderReadOnly?: true;
 } {
   const session = input.mcpSession;
   if (session === undefined) {
@@ -2827,7 +2852,9 @@ export function claudeMcpQueryOverrides(input: {
     allowedTools: Array.from(
       new Set([...(input.allowedTools ?? []), ...mcpAllowedTools, ...blender.allowedTools]),
     ),
-    ...(blender.disallowedTools.length === 0 ? {} : { disallowedTools: blender.disallowedTools }),
+    ...(blender.disallowedTools.length === 0
+      ? {}
+      : { disallowedTools: blender.disallowedTools, hostedBlenderReadOnly: true as const }),
     mcpServers: {
       "t3-code": {
         type: "http",
@@ -13706,6 +13733,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               : { disallowedTools: mcpOverrides.disallowedTools }),
             deviceToolsAvailable: mcpSession?.capabilities?.has("device") === true,
             hostedBlenderToolsAvailable: mcpSession?.hostedBlender !== undefined,
+            ...(mcpOverrides.hostedBlenderReadOnly === true ? { hostedBlenderReadOnly: true } : {}),
             permissionMode: queryPolicy.permissionMode,
             ...(queryPolicy.allowDangerouslySkipPermissions === undefined
               ? {}

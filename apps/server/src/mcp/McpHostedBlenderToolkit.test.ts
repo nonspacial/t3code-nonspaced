@@ -66,6 +66,8 @@ const layerFor = (input: {
   readonly allowed?: boolean;
   readonly quits?: Array<HostedBlenderQuitInput>;
   readonly plan?: boolean;
+  /** Shell reads after the first in each call, which the live-caller check makes, return null. */
+  readonly shellReads?: { count: number };
   readonly listener?: HostedBlender.AgentListenerState;
 }) =>
   McpHttpServer.layerHostedBlenderToolkit.pipe(
@@ -86,13 +88,15 @@ const layerFor = (input: {
         }),
         Layer.mock(ThreadManagement.ThreadManagementService)({
           getThreadShell: (id) =>
-            Effect.succeed({
-              ...McpToolAccessTestkit.liveThreadShell(
-                id,
-                input.plan === true ? { interactionMode: "plan" } : {},
-              ),
-              worktreePath: workspace,
-            }),
+            input.shellReads !== undefined && ++input.shellReads.count > 1
+              ? Effect.succeed(null)
+              : Effect.succeed({
+                  ...McpToolAccessTestkit.liveThreadShell(
+                    id,
+                    input.plan === true ? { interactionMode: "plan" } : {},
+                  ),
+                  worktreePath: workspace,
+                }),
         }),
         Layer.mock(ProjectService.ProjectService)({}),
       ),
@@ -228,5 +232,22 @@ describe("hosted Blender MCP tools", () => {
       }
       expect(quits).toEqual([]);
     }).pipe(Effect.provide(layerFor({ state: running, quits, plan: true })));
+  });
+
+  it.effect("refuses start and quit when the thread's mode can't be read", () => {
+    const quits: Array<HostedBlenderQuitInput> = [];
+    const shellReads = { count: 0 };
+    return Effect.gen(function* () {
+      for (const [name, args] of [
+        ["blender_start", { path: "hero.blend" }],
+        ["blender_quit", { save: true }],
+      ] as const) {
+        shellReads.count = 0;
+        const refused = yield* call(name, args, threadCaller(["hosted-blender"]));
+        expect(refused.isError).toBe(true);
+        expect(JSON.stringify(refused.content)).toContain("could not read");
+      }
+      expect(quits).toEqual([]);
+    }).pipe(Effect.provide(layerFor({ state: running, quits, shellReads })));
   });
 });

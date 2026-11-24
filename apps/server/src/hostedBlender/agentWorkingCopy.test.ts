@@ -252,4 +252,35 @@ describe("startAgentWorkingCopy", () => {
       assert.equal(result.master, NodePath.join(root, "models", "hero.blend"));
     }).pipe(Effect.scoped),
   );
+
+  it.effect("checks a working copy named directly the same way", () =>
+    Effect.gen(function* () {
+      const root = yield* tempWorkspace;
+      const master = writeMaster(root, "hero.blend");
+      NodeFS.linkSync(master, NodePath.join(root, "hero.wip-3c4d5e6f.blend"));
+      const opened: Array<HostedBlenderOpenInput> = [];
+      const error = yield* Effect.flip(
+        startAgentWorkingCopy({ threadId, path: "hero.wip-3c4d5e6f.blend" }).pipe(
+          Effect.provide(layerFor({ root, opened })),
+        ),
+      );
+      expect(error.reason).toContain("not a separate copy");
+      assert.deepEqual(opened, []);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("reopens an existing copy without copying the master again", () =>
+    Effect.gen(function* () {
+      const root = yield* tempWorkspace;
+      writeMaster(root, "hero.blend");
+      writeMaster(root, "hero.wip-3c4d5e6f.blend", "agent edits");
+      // No room for another copy: a staging folder can't be made beside the master.
+      NodeFS.chmodSync(root, 0o555);
+      yield* Effect.addFinalizer(() => Effect.sync(() => NodeFS.chmodSync(root, 0o755)));
+      const result = yield* startAgentWorkingCopy({ threadId, path: "hero.blend" }).pipe(
+        Effect.provide(layerFor({ root, opened: [] })),
+      );
+      assert.isFalse(result.created);
+    }).pipe(Effect.scoped),
+  );
 });

@@ -27,7 +27,7 @@ context = types.SimpleNamespace(
     preferences=types.SimpleNamespace(addons=addons, is_dirty=True),
     window_manager=types.SimpleNamespace(windows=[]),
 )
-data = types.SimpleNamespace(filepath="", is_dirty=False)
+data = types.SimpleNamespace(filepath=state.get("filepath", "/work/hero.wip-1a2b3c4d.blend"), is_dirty=False)
 from . import app, ops
 # Blender registers enabled add-ons before --python scripts run.
 for name in state["enabled"]:
@@ -104,25 +104,49 @@ def log(*entry):
 `,
 };
 
-// Runs T3's queued listener start, optionally with the port taken or then stopped by T3.
+// Plays T3's side of the control socket: connect, then end the grant one way or another.
 const AFTER_REGISTER = String.raw`
 import json as _j
+_scenario = _j.loads(os.environ["STUB_STATE"])
 _held = None
-if _j.loads(os.environ["STUB_STATE"]).get("portTaken"):
+if _scenario.get("portTaken"):
     _held = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     _held.bind(("127.0.0.1", int(MCP_PORT)))
     _held.listen(1)
-if _start_agent_listener in bpy.app.registered:
-    _start_agent_listener()
-_reports = [_snapshot()["agentListener"]]
-if _j.loads(os.environ["STUB_STATE"]).get("stop"):
+_server = lambda: sys.modules.get("${MCP}.mcp_to_blender_server")
+def _report():
+    server = _server()
+    return {
+        "listener": _snapshot()["agentListener"],
+        "listening": None if server is None or server._state.sock is None else server._state.sock.getsockname()[1],
+        "enabled": "${MCP}" in bpy.context.preferences.addons,
+    }
+_steps = [_report()]
+_t3 = None
+if _scenario.get("connect", True):
+    _t3 = socket.socket(socket.AF_UNIX)
+    _t3.connect(SOCKET_PATH)
+    _tick()
+    _steps.append(_report())
+_then = _scenario.get("then")
+if _then == "revoke":
     _handle({"type": "stopAgentListener"})
-    _reports.append(_snapshot()["agentListener"])
-_server = sys.modules.get("${MCP}.mcp_to_blender_server")
+elif _then == "drop":
+    _t3.close()
+    _tick()
+elif _then == "otherFile":
+    bpy.data.filepath = "/work/other.blend"
+    _on_load_post()
+if _then is not None:
+    _steps.append(_report())
+    # The extension's own Start button, pressed after the grant ended.
+    _addon = bpy.context.preferences.addons.get("${MCP}")
+    if _addon is not None:
+        bpy.ops.blmcp.server_start()
+    _steps.append(_report())
 _addon = bpy.context.preferences.addons.get("${MCP}")
 print(_j.dumps({
-    "listener": _reports,
-    "listening": None if _server is None or _server._state.sock is None else _server._state.sock.getsockname()[1],
+    "steps": _steps,
     "autostart": any(getattr(f, "__name__", "") == "_autostart_timer" for f in bpy.app.registered),
     "useAutostart": None if _addon is None else _addon.preferences.use_autostart,
 }))
@@ -151,7 +175,8 @@ const runAddon = (input: {
   readonly enabled: ReadonlyArray<string>;
   readonly listen: boolean;
   readonly portTaken?: boolean;
-  readonly stop?: boolean;
+  readonly connect?: boolean;
+  readonly then?: "revoke" | "drop" | "otherFile";
 }) => {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-control-addon-"));
   dirs.push(dir);
@@ -165,7 +190,15 @@ const runAddon = (input: {
   const port = freePort();
   const stdout = NodeChildProcess.execFileSync(
     "python3",
-    [addon, "--", "--t3-mcp-port", String(port), ...(input.listen ? ["--t3-mcp-listen"] : [])],
+    [
+      addon,
+      "--",
+      "--t3-control",
+      NodePath.join(dir, "control.sock"),
+      "--t3-mcp-port",
+      String(port),
+      ...(input.listen ? ["--t3-mcp-listen"] : []),
+    ],
     {
       env: { ...process.env, PYTHONPATH: dir, STUB_STATE: JSON.stringify(input), STUB_LOG: log },
       encoding: "utf8",
@@ -180,46 +213,56 @@ const runAddon = (input: {
   return { port, calls, ...JSON.parse(stdout.trim().split("\n").at(-1)!) };
 };
 
+const after = (result: { readonly steps: ReadonlyArray<unknown> }) => result.steps.at(-1);
+const ended = { listener: "off", listening: null, enabled: false };
+
 describe("T3's control add-on and Blender Lab's MCP add-on", () => {
   it("keeps the official listener off without --t3-mcp-listen, for this session only", () => {
     const result = runAddon({ installed: [MCP], enabled: [MCP], listen: false });
     expect(result.calls).toEqual([["disable", MCP, false]]);
-    expect(result.listener).toEqual(["off"]);
-    expect(result.listening).toBeNull();
+    expect(result.steps).toEqual([ended, ended]);
   });
 
-  it("starts it itself on T3's port, never 9876, with its own autostart off", () => {
+  it("starts nothing until T3 connects, then starts it on T3's port with its autostart off", () => {
     const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true });
     expect(result.calls).toEqual([]);
-    expect(result.listener).toEqual(["ready"]);
-    expect(result.listening).toBe(result.port);
+    expect(result.steps).toEqual([
+      { listener: "starting", listening: null, enabled: true },
+      { listener: "ready", listening: result.port, enabled: true },
+    ]);
     expect(result.autostart).toBe(false);
     expect(result.useAutostart).toBe(false);
+  });
+
+  it("never starts it while T3 isn't connected", () => {
+    const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, connect: false });
+    expect(result.steps).toEqual([{ listener: "starting", listening: null, enabled: true }]);
   });
 
   it("enables an installed but disabled extension with its preferences, then starts it", () => {
     const result = runAddon({ installed: [MCP], enabled: [], listen: true });
     expect(result.calls).toEqual([["enable", MCP, true]]);
-    expect(result.listener).toEqual(["ready"]);
-    expect(result.listening).toBe(result.port);
+    expect(after(result)).toEqual({ listener: "ready", listening: result.port, enabled: true });
   });
 
   it("fails closed when another process holds the port", () => {
     const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, portTaken: true });
-    expect(result.listener).toEqual(["failed"]);
-    expect(result.listening).toBeNull();
+    expect(after(result)).toMatchObject({ listener: "failed", listening: null });
   });
 
   it("reports failed when the extension isn't installed", () => {
     const result = runAddon({ installed: [], enabled: [], listen: true });
-    expect(result.listener).toEqual(["failed"]);
+    expect(after(result)).toMatchObject({ listener: "failed" });
   });
 
-  it("closes the listener when T3 revokes agent access", () => {
-    const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, stop: true });
-    expect(result.listener).toEqual(["ready", "off"]);
-    expect(result.listening).toBeNull();
-  });
+  it.each(["revoke", "drop", "otherFile"] as const)(
+    "closes the listener and disables the extension when the grant ends by %s, for good",
+    (then) => {
+      const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, then });
+      expect(result.steps.slice(-2)).toEqual([ended, ended]);
+      expect(result.calls).toContainEqual(["disable", MCP, false]);
+    },
+  );
 
   it("leaves other add-ons alone", () => {
     const result = runAddon({

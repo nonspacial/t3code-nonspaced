@@ -31,6 +31,10 @@ HIT_BUDGET = 0.1
 class _State:
     # "off", "starting", "ready" or "failed": whether Blender Lab's listener takes agent calls.
     agent_listener = "starting" if MCP_LISTEN else "off"
+    # The agent may use Blender Lab only while T3 holds this connection, for this one file. Once
+    # that ends it stays ended until Blender restarts.
+    grant = "pending" if MCP_LISTEN else "ended"
+    authorized_file = None
     mcp_name = None
     server = None
     client = None
@@ -74,6 +78,8 @@ def _drop_client():
             _State.client.close()
         except OSError:
             pass
+        # Fail closed: without T3 on the other end, nothing may grant the agent Blender.
+        _end_grant()
     _State.client = None
     _State.buffer = b""
     _State.sent = None
@@ -292,7 +298,7 @@ def _handle(command):
         _send({"type": "reply", "id": command.get("id"), "result": result})
         return
     if kind == "stopAgentListener":
-        _stop_agent_listener()
+        _end_grant()
         return
     if kind == "quit":
         if command.get("save"):
@@ -317,6 +323,9 @@ def _tick():
             connection.setblocking(False)
             _State.client = connection
             _send({"type": "hello", "pid": os.getpid()})
+            if _State.grant == "pending":
+                _State.grant = "granted"
+                _start_agent_listener()
         else:
             connection.close()
     except BlockingIOError:
@@ -344,6 +353,7 @@ def _tick():
             # Casting blocks Blender's UI; the next request waits for the next tick.
             if command.get("type") == "hits":
                 break
+        _check_authorized_file()
         snapshot = _snapshot()
         if snapshot != _State.sent:
             _State.sent = snapshot
@@ -384,8 +394,8 @@ def _setup_mcp_addon():
             addon_utils.disable(name, default_set=False)
     if MCP_LISTEN:
         _State.mcp_name = names[0] if names else None
+        _State.authorized_file = os.path.realpath(bpy.data.filepath) if bpy.data.filepath else None
         _cancel_mcp_autostart()
-        bpy.app.timers.register(_start_agent_listener, first_interval=TICK)
     try:
         preferences.is_dirty = False
     except AttributeError:
@@ -425,6 +435,30 @@ def _start_agent_listener():
     return None
 
 
+def _check_authorized_file():
+    # Another file opened, or the copy saved under another name, is not what T3 authorized.
+    if _State.grant != "granted":
+        return
+    current = os.path.realpath(bpy.data.filepath) if bpy.data.filepath else None
+    if current is None or current != _State.authorized_file:
+        _end_grant()
+
+
+def _end_grant():
+    if _State.grant == "ended":
+        return
+    _State.grant = "ended"
+    _stop_agent_listener()
+    # Disabled for the session, so its own Start button can't reopen the port either.
+    if _State.mcp_name is not None:
+        import addon_utils
+
+        try:
+            addon_utils.disable(_State.mcp_name, default_set=False)
+        except Exception as error:  # noqa: BLE001 - reported, never a crash
+            print("T3 control add-on: Blender Lab MCP did not disable:", error, file=sys.stderr)
+
+
 def _stop_agent_listener():
     # Its stop closes the listening socket and every client connection.
     server = _mcp_server()
@@ -462,6 +496,7 @@ def _open_viewport_window():
 
 @persistent
 def _on_load_post(*_args):
+    _check_authorized_file()
     bpy.app.timers.register(_open_viewport_window, first_interval=0.2)
 
 

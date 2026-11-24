@@ -41,8 +41,14 @@ const requireHostedBlender = Effect.gen(function* () {
 // Plan mode is read-only: it may look at Blender, never start or quit it.
 const refuseInPlanMode = Effect.fnUntraced(function* (threadId: ThreadId, tool: string) {
   const threads = yield* ThreadManagementService.ThreadManagementService;
+  // A mode that can't be read counts as Plan: refusing is the safe answer.
   const shell = yield* threads.getThreadShell(threadId).pipe(Effect.orElseSucceed(() => null));
-  if (shell?.interactionMode === "plan") {
+  if (shell === null) {
+    return yield* new HostedBlenderToolError({
+      reason: `${tool} needs this thread's mode, which T3 could not read. Try again.`,
+    });
+  }
+  if (shell.interactionMode === "plan") {
     return yield* new HostedBlenderToolError({
       reason: `${tool} changes this thread's hosted Blender, and Plan mode is read-only. blender_status still works; ask the user to leave Plan mode first.`,
     });

@@ -74,9 +74,14 @@ const INITIAL_SIZE = { width: 1280, height: 720 };
 const MEMORY_SAMPLE_INTERVAL = Duration.seconds(5);
 const KEYFRAME_REQUEST_INTERVAL_MS = 250;
 const QUIT_TIMEOUT = Duration.seconds(20);
-const CONTROL_CONNECT_ATTEMPTS = 150;
+const CONTROL_RETRY_INTERVAL = Duration.millis(200);
 // A start that shows no viewport window by then has failed (a broken file, no encoder).
 const START_TIMEOUT = Duration.seconds(90);
+// The add-on starts the agent listener only once this connection is up, so it waits as long as a
+// start does: a slow file still gets its listener while T3 is listening for it.
+export const CONTROL_CONNECT_ATTEMPTS = Math.ceil(
+  Duration.toMillis(START_TIMEOUT) / Duration.toMillis(CONTROL_RETRY_INTERVAL),
+);
 const HELPER_QUIT_TIMEOUT = Duration.seconds(10);
 const CONTROL_REPLY_TIMEOUT = Duration.seconds(5);
 
@@ -100,7 +105,7 @@ const STOP_AGENT_LISTENER = `${Schema.encodeSync(
   Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("stopAgentListener") })),
 )({ type: "stopAgentListener" })}\n`;
 // Blender loads the file and the official add-on before its listener can come up.
-const AGENT_LISTENER_TIMEOUT = Duration.seconds(90);
+export const AGENT_LISTENER_TIMEOUT = Duration.sum(START_TIMEOUT, Duration.seconds(15));
 
 /** Whether the official add-on takes the thread's `blender-hosted` calls. */
 export type AgentListenerState = "off" | "starting" | "ready" | "failed";
@@ -593,6 +598,8 @@ const make = Effect.gen(function* () {
         if (listener !== undefined && !instance.agentListenerRevoked) {
           yield* setAgentListener(instance, listener);
         }
+        // Only the working copy T3 opened may reach the agent; the add-on closes it too.
+        if (message.value.filepath !== instance.blendPath) yield* revokeAgentListener(instance);
         if (instance.dirty === message.value.dirty) return;
         instance.dirty = message.value.dirty;
         return yield* publishNow();
@@ -616,7 +623,10 @@ const make = Effect.gen(function* () {
       const socket = yield* NodeSocket.makeNet({ path: socketPath });
       // The socket appears once Blender has loaded the file and run the add-on.
       const reader = yield* socket.reader.pipe(
-        Effect.retry({ schedule: Schedule.spaced("200 millis"), times: CONTROL_CONNECT_ATTEMPTS }),
+        Effect.retry({
+          schedule: Schedule.spaced(CONTROL_RETRY_INTERVAL),
+          times: CONTROL_CONNECT_ATTEMPTS,
+        }),
       );
       const writer = yield* socket.writer;
       const closed = yield* Deferred.make<void>();
@@ -646,10 +656,13 @@ const make = Effect.gen(function* () {
     (effect, instance) =>
       effect.pipe(
         Effect.ensuring(
-          Effect.sync(() => {
+          Effect.suspend(() => {
             // Nothing more will answer the requests still waiting.
             instance.requests.clear();
             instance.control = null;
+            // The add-on closes its listener when this connection drops, and nothing reopens it.
+            instance.agentListenerRevoked = true;
+            return setAgentListener(instance, "off");
           }),
         ),
       ),

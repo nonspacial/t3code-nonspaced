@@ -878,6 +878,55 @@ describe("ClaudeAdapterV2 MCP query overrides", () => {
       assert.include(overrides.disallowedTools ?? [], "mcp__blender-hosted__execute_blender_code");
     });
 
+    it("denies Blender tools off the read-only list in Plan before any permission rule", async () => {
+      const overrides = overridesFor(policyFor("full-access", "plan"));
+      assert.isTrue(overrides.hostedBlenderReadOnly);
+      assert.isUndefined(overridesFor(policyFor("auto")).hostedBlenderReadOnly);
+      const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+        nativeThreadId: "native-thread-claude-blender-plan",
+        resume: false,
+        cwd: "/workspace",
+        allowedTools: [...(overrides.allowedTools ?? []), "mcp__blender-hosted__*"],
+        mcpServers: overrides.mcpServers ?? {},
+        hostedBlenderReadOnly: true,
+      });
+      const hooks = (options.hooks?.PreToolUse ?? []).flatMap((matcher) => matcher.hooks);
+      assert.lengthOf(hooks, 1);
+      const decide = async (tool: string) => {
+        const output = await hooks[0]!(
+          {
+            hook_event_name: "PreToolUse",
+            tool_name: tool,
+            tool_input: {},
+            tool_use_id: `tool-${tool}`,
+            session_id: "session",
+            transcript_path: "",
+            cwd: "/workspace",
+          },
+          `tool-${tool}`,
+          { signal: new AbortController().signal },
+        );
+        return "hookSpecificOutput" in output &&
+          output.hookSpecificOutput?.hookEventName === "PreToolUse"
+          ? output.hookSpecificOutput.permissionDecision
+          : undefined;
+      };
+      assert.equal(await decide("mcp__blender-hosted__execute_blender_code"), "deny");
+      assert.equal(await decide("mcp__blender-master__a_tool_added_later"), "deny");
+      assert.isUndefined(await decide("mcp__blender-hosted__get_objects_summary"));
+      assert.isUndefined(await decide("mcp__blender__execute_blender_code"));
+      assert.isUndefined(
+        ClaudeAdapterV2.makeClaudeQueryOptions({
+          modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+          nativeThreadId: "native-thread-claude-blender-auto",
+          resume: false,
+          cwd: "/workspace",
+          mcpServers: overrides.mcpServers ?? {},
+        }).hooks?.PreToolUse,
+      );
+    });
+
     it("starts a new query when the mode crosses full access or plan", () => {
       const keyFor = (policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
         ClaudeAdapterV2.claudeEffectiveQueryPolicyKey(
