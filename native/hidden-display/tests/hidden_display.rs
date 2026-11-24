@@ -78,19 +78,24 @@ struct Helper {
 
 impl Helper {
     fn start(capture: &str) -> Helper {
-        // Unix socket paths are short; keep the state directory near the root.
-        let state = tempfile::Builder::new()
-            .prefix("t3hd")
-            .tempdir_in("/tmp")
-            .unwrap();
-        let log_path = state.path().join("client.log");
+        Helper::start_with(capture, "x264enc", false)
+    }
+
+    /// `gpu` leaves labwc on its GPU renderer, so NVENC captures into DMABufs.
+    fn start_with(capture: &str, encoder: &str, gpu: bool) -> Helper {
+        let state = tempfile::tempdir().unwrap();
+        // Deeper than a Unix socket path may be, as T3's real state directories can be.
+        let state_dir = state.path().join("a-state-directory-nested-deep".repeat(4));
+        std::fs::create_dir(&state_dir).unwrap();
+        let log_path = state_dir.join("client.log");
         let fifo = std::ffi::CString::new(log_path.to_str().unwrap()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
 
-        let mut child = Command::new(env!("CARGO_BIN_EXE_t3-hidden-display"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_t3-hidden-display"));
+        command
             .args([
                 "--state-dir",
-                state.path().to_str().unwrap(),
+                state_dir.to_str().unwrap(),
                 "--window-title",
                 TITLE,
             ])
@@ -100,19 +105,20 @@ impl Helper {
                 "--height",
                 "480",
                 "--encoder",
-                "x264enc",
+                encoder,
                 "--capture",
                 capture,
                 "--",
             ])
             .arg(test_client())
             .args([TITLE, log_path.to_str().unwrap()])
-            .env("WLR_RENDERER", "pixman")
             .env("T3CODE_THREAD_ID", "must-not-leak")
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("start the helper");
+            .stdout(Stdio::piped());
+        if !gpu {
+            command.env("WLR_RENDERER", "pixman");
+        }
+        let mut child = command.spawn().expect("start the helper");
         let stdin = child.stdin.take().unwrap();
         let mut stdout = child.stdout.take().unwrap();
         let (packet_sender, packets) = channel();
@@ -510,4 +516,27 @@ fn labwc_exits_when_the_helper_is_killed() {
     let ready = unsafe { libc::poll(&mut exited, 1, HANG_GUARD.as_millis() as i32) };
     unsafe { libc::close(pidfd) };
     assert_eq!(ready, 1, "labwc outlived the helper");
+}
+
+/// Resizing reallocates the DMABuf capture buffers; quitting afterwards must still be clean.
+#[test]
+fn quits_cleanly_after_a_resize_on_nvenc() {
+    if skip_without_labwc_and_x264() {
+        return;
+    }
+    if !std::path::Path::new("/dev/dri").exists()
+        || gstreamer::ElementFactory::find("nvh264enc").is_none()
+    {
+        eprintln!("skipping: needs an NVIDIA GPU with nvh264enc");
+        return;
+    }
+    let mut helper = Helper::start_with("auto", "nvh264enc", true);
+    helper.event("ready");
+    helper.frame_size(640, 480);
+    helper.send(json!({"type": "resize", "width": 800, "height": 600}));
+    helper.frame_size(800, 600);
+    helper.video();
+    helper.send(json!({"type": "quit"}));
+    let status = helper.child.wait().unwrap();
+    assert!(status.success(), "{status}");
 }

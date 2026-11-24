@@ -65,6 +65,7 @@ enum Cli {
     Watch {
         helper: libc::pid_t,
         labwc: libc::pid_t,
+        runtime: PathBuf,
     },
     Demux {
         h264: Option<PathBuf>,
@@ -78,9 +79,13 @@ fn parse_args(args: Vec<OsString>) -> Result<Cli, String> {
         Some("probe") => return Ok(Cli::Probe),
         Some("watch") => {
             let mut pid = || args.next().and_then(|pid| pid.to_str()?.parse().ok());
-            return match (pid(), pid()) {
-                (Some(helper), Some(labwc)) => Ok(Cli::Watch { helper, labwc }),
-                _ => Err("watch takes the helper's and labwc's pids".into()),
+            return match (pid(), pid(), args.next()) {
+                (Some(helper), Some(labwc), Some(runtime)) => Ok(Cli::Watch {
+                    helper,
+                    labwc,
+                    runtime: runtime.into(),
+                }),
+                _ => Err("watch takes the helper's and labwc's pids and the runtime dir".into()),
             };
         }
         Some("demux") => {
@@ -170,8 +175,12 @@ fn main() -> ExitCode {
     };
     match cli {
         Cli::Demux { h264 } => demux(h264),
-        Cli::Watch { helper, labwc } => {
-            display::watch(helper, labwc);
+        Cli::Watch {
+            helper,
+            labwc,
+            runtime,
+        } => {
+            display::watch(helper, labwc, &runtime);
             ExitCode::SUCCESS
         }
         Cli::Probe => {
@@ -246,7 +255,16 @@ fn run(args: RunArgs) -> ExitCode {
         });
     };
 
-    let paths = display::Paths::new(&args.state_dir, args.user_resources.as_deref());
+    let runtime = match display::RuntimeDir::create(std::env::var_os("XDG_RUNTIME_DIR").as_deref())
+    {
+        Ok(runtime) => runtime,
+        Err(error) => return fail(format!("could not create a runtime directory: {error}")),
+    };
+    let paths = display::Paths::new(
+        &args.state_dir,
+        runtime.path(),
+        args.user_resources.as_deref(),
+    );
     if let Err(error) = paths.prepare(args.window_title.as_deref()) {
         return fail(format!(
             "could not prepare {}: {error}",
@@ -668,10 +686,11 @@ mod tests {
     fn parses_subcommands() {
         assert_eq!(parse_args(args(&["probe"])), Ok(Cli::Probe));
         assert_eq!(
-            parse_args(args(&["watch", "42", "43"])),
+            parse_args(args(&["watch", "42", "43", "/run/t3"])),
             Ok(Cli::Watch {
                 helper: 42,
-                labwc: 43
+                labwc: 43,
+                runtime: "/run/t3".into()
             })
         );
         assert!(parse_args(args(&["watch", "42"])).is_err());

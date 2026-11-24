@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Everything a hidden display owns, all under one state directory.
+/// Everything a hidden display owns: the runtime directory (see `RuntimeDir`) and the rest
+/// under one state directory.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Paths {
     pub runtime: PathBuf,
@@ -21,10 +22,52 @@ pub struct Paths {
     pub user_resources: PathBuf,
 }
 
+/// Unix socket paths are capped at 108 bytes, and T3's state directories can be longer, so the
+/// private runtime directory that holds labwc's socket lives under a short parent instead:
+/// `$XDG_RUNTIME_DIR` when that is short, else `/tmp`. Removed when dropped.
+pub struct RuntimeDir(PathBuf);
+
+const MAX_RUNTIME_PARENT: usize = 64;
+
+impl RuntimeDir {
+    pub fn create(xdg_runtime_dir: Option<&std::ffi::OsStr>) -> io::Result<RuntimeDir> {
+        let parent = xdg_runtime_dir
+            .map(Path::new)
+            .filter(|dir| dir.is_absolute() && dir.as_os_str().len() <= MAX_RUNTIME_PARENT)
+            .unwrap_or(Path::new("/tmp"));
+        let template = std::ffi::CString::new(
+            parent
+                .join("t3-hidden-display-XXXXXX")
+                .into_os_string()
+                .into_encoded_bytes(),
+        )
+        .map_err(io::Error::other)?;
+        let mut template = template.into_bytes_with_nul();
+        // mkdtemp creates the directory 0700.
+        if unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) }.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        template.pop();
+        Ok(RuntimeDir(PathBuf::from(
+            <OsString as std::os::unix::ffi::OsStringExt>::from_vec(template),
+        )))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for RuntimeDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 impl Paths {
-    pub fn new(state: &Path, user_resources: Option<&Path>) -> Paths {
+    pub fn new(state: &Path, runtime: &Path, user_resources: Option<&Path>) -> Paths {
         Paths {
-            runtime: state.join("run"),
+            runtime: runtime.to_path_buf(),
             tmp: state.join("tmp"),
             labwc_config: state.join("labwc"),
             user_resources: user_resources
@@ -46,8 +89,6 @@ impl Paths {
                 .mode(0o700)
                 .create(directory)?;
         }
-        // XDG_RUNTIME_DIR must be 0700 even when it already existed.
-        fs::set_permissions(&self.runtime, fs::Permissions::from_mode(0o700))?;
         fs::write(self.labwc_config.join("rc.xml"), labwc_config(window_title))
     }
 }
@@ -171,6 +212,7 @@ pub fn spawn_labwc(labwc: &OsString, paths: &Paths, env: Env, cwd: &Path) -> io:
                 std::process::id().to_string(),
                 child.id().to_string(),
             ])
+            .arg(&paths.runtime)
             .stdin(Stdio::null())
             .stdout(io::stderr())
             .stderr(io::stderr())
@@ -184,16 +226,12 @@ pub fn spawn_labwc(labwc: &OsString, paths: &Paths, env: Env, cwd: &Path) -> io:
     Ok(child)
 }
 
-/// The watchdog: once `helper` exits, sends labwc SIGTERM (a no-op if it already exited).
-pub fn watch(helper: libc::pid_t, labwc: libc::pid_t) {
+/// The watchdog: once `helper` exits, stops labwc (a no-op if it already exited) and removes
+/// the runtime directory, which a killed helper cannot.
+pub fn watch(helper: libc::pid_t, labwc: libc::pid_t, runtime: &Path) {
     let Some(labwc) = pidfd(labwc) else { return };
     if let Some(helper) = pidfd(helper) {
-        let mut exited = libc::pollfd {
-            fd: helper.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        while unsafe { libc::poll(&mut exited, 1, -1) } < 0 {}
+        wait_exit(&helper);
     }
     unsafe {
         libc::syscall(
@@ -204,6 +242,17 @@ pub fn watch(helper: libc::pid_t, labwc: libc::pid_t) {
             0,
         )
     };
+    wait_exit(&labwc);
+    let _ = fs::remove_dir_all(runtime);
+}
+
+fn wait_exit(pidfd: &OwnedFd) {
+    let mut exited = libc::pollfd {
+        fd: pidfd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    while unsafe { libc::poll(&mut exited, 1, -1) } < 0 {}
 }
 
 pub fn pidfd(pid: libc::pid_t) -> Option<OwnedFd> {
@@ -268,6 +317,7 @@ fn find_socket(runtime: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     fn parent() -> Env {
         [
@@ -294,11 +344,11 @@ mod tests {
     }
 
     fn paths() -> Paths {
-        Paths::new(Path::new("/state"), None)
+        Paths::new(Path::new("/state"), Path::new("/state/run"), None)
     }
 
     #[test]
-    fn everything_lives_under_the_state_directory() {
+    fn everything_but_the_runtime_lives_under_the_state_directory() {
         assert_eq!(
             paths(),
             Paths {
@@ -309,9 +359,29 @@ mod tests {
             }
         );
         assert_eq!(
-            Paths::new(Path::new("/state"), Some(Path::new("/copy"))).user_resources,
+            Paths::new(
+                Path::new("/state"),
+                Path::new("/run"),
+                Some(Path::new("/copy"))
+            )
+            .user_resources,
             PathBuf::from("/copy")
         );
+    }
+
+    #[test]
+    fn the_runtime_directory_keeps_the_wayland_socket_path_short() {
+        let long = format!("/run/user/1000/{}", "deep/".repeat(20));
+        for xdg in [None, Some(long.as_str()), Some("relative"), Some("/tmp")] {
+            let runtime = RuntimeDir::create(xdg.map(std::ffi::OsStr::new)).unwrap();
+            let socket = runtime.path().join("wayland-0");
+            assert!(socket.as_os_str().len() < 108, "{}", socket.display());
+            let mode = fs::metadata(runtime.path()).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+            let kept = runtime.path().to_path_buf();
+            drop(runtime);
+            assert!(!kept.exists(), "removed when dropped");
+        }
     }
 
     #[test]

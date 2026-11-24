@@ -3,6 +3,7 @@
 use std::fs::File;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
+use std::rc::Rc;
 
 #[repr(C)]
 struct RawDevice(u8);
@@ -32,7 +33,11 @@ unsafe extern "C" {
 
 const GBM_BO_USE_RENDERING: u32 = 1 << 2;
 
-pub struct Device {
+/// Buffers share ownership of the device: destroying a GBM device before its buffers crashes
+/// NVIDIA's allocator when they are freed.
+pub struct Device(Rc<DeviceHandle>);
+
+struct DeviceHandle {
     raw: *mut RawDevice,
     _node: File,
 }
@@ -55,7 +60,7 @@ impl Device {
             .open(node.path())
             .ok()?;
         let raw = unsafe { gbm_create_device(file.as_raw_fd()) };
-        (!raw.is_null()).then_some(Device { raw, _node: file })
+        (!raw.is_null()).then(|| Device(Rc::new(DeviceHandle { raw, _node: file })))
     }
 
     /// Allocates a single-plane buffer with one of the offered modifiers.
@@ -71,7 +76,7 @@ impl Device {
         }
         let raw = unsafe {
             gbm_bo_create_with_modifiers2(
-                self.raw,
+                self.0.raw,
                 width,
                 height,
                 format,
@@ -83,7 +88,10 @@ impl Device {
         if raw.is_null() {
             return None;
         }
-        let bo = Bo { raw };
+        let bo = Bo {
+            raw,
+            _device: self.0.clone(),
+        };
         if unsafe { gbm_bo_get_plane_count(raw) } != 1 {
             return None;
         }
@@ -104,7 +112,7 @@ impl Device {
     }
 }
 
-impl Drop for Device {
+impl Drop for DeviceHandle {
     fn drop(&mut self) {
         unsafe { gbm_device_destroy(self.raw) };
     }
@@ -120,6 +128,7 @@ pub struct Plane {
 
 pub struct Bo {
     raw: *mut RawBo,
+    _device: Rc<DeviceHandle>,
 }
 
 impl Drop for Bo {
