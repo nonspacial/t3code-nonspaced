@@ -214,6 +214,7 @@ function defaultViewMode(path: string | null): FileViewMode {
       isWorkspaceImagePreviewPath(path) ||
       isVideoPreviewFile(path) ||
       isAudioPreviewFile(path) ||
+      isModelFactsFile(path) ||
       filePreviewDelimiter({ name: path }) !== null)
     ? "preview"
     : "source";
@@ -288,7 +289,7 @@ function FileContent(props: {
     return <BlendFileFacts name={basename(props.relativePath)} query={props.blendPreview} />;
   }
 
-  if (isModelFactsFile(props.relativePath)) {
+  if (props.activeMode === "preview" && isModelFactsFile(props.relativePath)) {
     return <ModelFileNotice name={basename(props.relativePath)} byteLength={props.byteLength} />;
   }
 
@@ -716,6 +717,7 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
       isImageFile ||
       isVideoFile ||
       isAudioFile ||
+      isModelFile ||
       filePreviewDelimiter({ name: relativePath }) !== null);
   const activeMode =
     relativePath !== null && modeOverride?.path === relativePath
@@ -724,7 +726,7 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
         ? "source"
         : defaultViewMode(relativePath);
   const resolvedActiveMode =
-    isVideoFile || isAudioFile || isModelFile ? "preview" : canPreview ? activeMode : "source";
+    isVideoFile || isAudioFile || isBlendFile ? "preview" : canPreview ? activeMode : "source";
   const blendPreview = useEnvironmentQuery(
     canReadFiles &&
       isBlendFile &&
@@ -889,7 +891,8 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
 
   const fileMenuActions = (() => {
     if (relativePath === null) return [];
-    const canToggleMode = canPreview && !isImageFile && !isVideoFile && !isAudioFile;
+    const canToggleMode =
+      canPreview && !isImageFile && !isVideoFile && !isAudioFile && !isBlendFile;
     return [
       canToggleMode
         ? ({

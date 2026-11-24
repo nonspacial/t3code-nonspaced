@@ -1,6 +1,6 @@
+import { blendFactRows } from "@t3tools/client-runtime/model/blend-facts";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import type { BlendPreview } from "@t3tools/contracts";
-import { fileBasename } from "@t3tools/shared/path";
 import { useGT, useMessages } from "gt-react-native";
 import type { ReactNode } from "react";
 import { Image, ScrollView, View } from "react-native";
@@ -38,9 +38,7 @@ function FactRows(props: { readonly rows: ReadonlyArray<readonly [string, string
           }
         >
           <Text className="text-sm text-foreground-muted">{label}</Text>
-          <Text className="flex-1 text-right text-sm text-foreground" numberOfLines={2}>
-            {value}
-          </Text>
+          <Text className="flex-1 text-right text-sm text-foreground">{value}</Text>
         </View>
       ))}
     </View>
@@ -70,27 +68,12 @@ export function BlendFileFacts(props: {
       <FilePreviewLoading message={gt("Reading Blender file...")} />
     );
   }
-  const rows: Array<readonly [string, string]> = [];
-  if (preview.scene) {
-    rows.push([gt("Scene", { $context: "a Blender scene" }), preview.scene.name]);
-    rows.push([
-      gt("Frames", { $context: "an animation's frame range" }),
-      gt("{start}–{end}", { start: preview.scene.frameStart, end: preview.scene.frameEnd }),
-    ]);
-  }
-  if (preview.scenes > 1) rows.push([gt("Scenes"), preview.scenes.toLocaleString()]);
-  rows.push([gt("Objects", { $context: "Blender objects" }), preview.objects.toLocaleString()]);
-  rows.push([gt("Meshes"), preview.meshes.toLocaleString()]);
-  rows.push([gt("Materials"), preview.materials.toLocaleString()]);
-  for (const library of preview.libraries)
-    rows.push([gt("Linked file"), fileBasename(library.replace(/^\/\//, ""))]);
+  const rows: Array<readonly [string, string]> = blendFactRows(preview, messages).map(
+    ({ label, values }) => [label, values.join("\n")] as const,
+  );
   rows.push([
     gt("Saved by", { $context: "the app version that saved a file" }),
-    `Blender ${preview.blenderVersion}`,
-  ]);
-  rows.push([
-    gt("Size", { $context: "file size" }),
-    formatAttachmentSize(preview.byteLength, messages),
+    gt("Blender {version}", { version: preview.blenderVersion }),
   ]);
   return (
     <FactsScroll>

@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { NonNegativeInt } from "./baseSchemas.ts";
-import { ProjectFileFailure, ProjectReadFileInput } from "./project.ts";
+import { ProjectFileFailure, ProjectFileOperation, ProjectReadFileInput } from "./project.ts";
 
 /** Like a file read: a workspace-relative path, or an absolute host path read in place. */
 export const BlendPreviewInput = Schema.Struct({
@@ -55,7 +55,8 @@ export class BlendPreviewError extends Schema.TaggedError<BlendPreviewError>()(
     relativePath: Schema.NonEmptyString,
     failure: BlendPreviewFailure,
     resolvedPath: Schema.optional(Schema.NonEmptyString),
-    cause: Schema.optional(Schema.Defect()),
+    operation: Schema.optional(ProjectFileOperation),
+    cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
@@ -64,3 +65,5 @@ export class BlendPreviewError extends Schema.TaggedError<BlendPreviewError>()(
       : `Could not read '${this.relativePath}' (${this.failure}).`;
   }
 }
+
+export const isBlendPreviewError = Schema.is(BlendPreviewError);

@@ -12,9 +12,9 @@ Models over 100 MB ask before loading, because a big model can slow the window d
 
 ## Blender files
 
-A `.blend` file, or a `.blend1` backup, opens to the thumbnail Blender saved with it and a Scene details box: the scene and its frame range, how many objects, meshes and materials the file has, the files it links in, and the Blender version that saved it. T3 Code reads these straight from the file, without Blender, so it works on any machine and never runs the file's scripts. This works for files inside the project and for `.blend` files opened from elsewhere on the machine.
+A `.blend` file, or a `.blend1` backup, opens to the thumbnail Blender saved with it and its scene facts: the scene and frame range, object, mesh and material counts, and the files it links in. T3 Code reads these straight from the file without Blender, so it works on any machine and never runs the file's scripts, including for `.blend` files outside the project.
 
-The thumbnail is only as fresh as the last save from Blender's window. A file saved by a script, or with thumbnails turned off, can show an old picture or none at all. A 3D view of `.blend` files isn't available yet.
+Blender only updates the thumbnail when you save from its window. A file saved by a script, or with thumbnails turned off, can show an old picture or none. A 3D view of `.blend` files isn't available yet.
 
 ## On mobile
 

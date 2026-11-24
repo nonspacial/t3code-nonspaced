@@ -113,7 +113,7 @@ export function isMarkdownPreviewFile(path: string): boolean {
   return /\.(?:md|mdx|markdown|mdown|mkd)$/i.test(path);
 }
 
-/** A 3D file shows facts instead of text: a `.blend`'s from the server, others just name and size. */
+/** A 3D file previews as facts: a `.blend`'s from the server, other formats' name and size. */
 export function isModelFactsFile(path: string): boolean {
   return isBlendPreviewPath(path) || modelPreviewFormat({ name: path }) !== null;
 }
@@ -129,7 +129,6 @@ export function needsWorkspaceFileContents(input: {
     path !== null &&
     !isVideoPreviewFile(path) &&
     !isAudioPreviewFile(path) &&
-    !isModelFactsFile(path) &&
     (input.activeMode === "source" ||
       isMarkdownPreviewFile(path) ||
       filePreviewDelimiter({ name: path }) !== null)

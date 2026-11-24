@@ -71,8 +71,13 @@ describe("readBlendFile", () => {
     expect(opaqueRows.at(0)).toBeGreaterThan((opaqueRows.at(-1) ?? 0) + 15);
   });
 
-  it("has no thumbnail when the file was saved without one", async () => {
-    const facts = await readBlendFile(fixture("bracket-4.blend"));
+  it.each([
+    // Saved with thumbnails turned off.
+    "parts-5.blend",
+    // Blender 4.5 cannot render a thumbnail in background mode, so it saves none.
+    "bracket-4.blend",
+  ])("has no thumbnail when %s was saved without one", async (file) => {
+    const facts = await readBlendFile(fixture(file));
     expect(facts.thumbnail).toBeNull();
   });
 

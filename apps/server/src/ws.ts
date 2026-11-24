@@ -3100,19 +3100,22 @@ export const layerWsRpc = (
           ),
         [WS_METHODS.projectsReadBlendPreview]: (input) =>
           blendPreview.read(input).pipe(
-            Effect.mapError((cause) =>
-              cause._tag === "BlendFileFormatError"
-                ? new BlendPreviewError({
-                    relativePath: input.relativePath,
-                    failure: "unreadable_blend_file",
-                    cause,
-                  })
-                : new BlendPreviewError({
-                    relativePath: input.relativePath,
-                    ...projectFileFailureContext(cause),
-                    cause,
-                  }),
-            ),
+            Effect.mapError((cause) => {
+              if (cause._tag === "BlendFileFormatError")
+                return new BlendPreviewError({
+                  relativePath: input.relativePath,
+                  failure: "unreadable_blend_file",
+                  cause,
+                });
+              const { failure, resolvedPath, operation } = projectFileFailureContext(cause);
+              return new BlendPreviewError({
+                relativePath: input.relativePath,
+                failure,
+                ...(resolvedPath === undefined ? {} : { resolvedPath }),
+                ...(operation === undefined ? {} : { operation }),
+                cause,
+              });
+            }),
           ),
         [WS_METHODS.projectsWriteFile]: (input) =>
           workspaceFileSystem.writeFile(input).pipe(

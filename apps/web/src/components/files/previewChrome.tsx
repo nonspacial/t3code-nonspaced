@@ -8,7 +8,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { cn } from "~/lib/utils";
 
-/** The chrome the 3D and `.blend` previews share: a status chip, icon actions and a facts box. */
+// The chrome the 3D and `.blend` previews share, kept apart from three.js so `.blend` loads light.
 const FACTS_OPEN_STORAGE_KEY = "t3code.modelPreviewFactsOpen";
 
 export function PreviewStatusChip(props: {
@@ -55,16 +55,10 @@ export function PreviewAction(props: {
 export function PreviewFacts(props: {
   readonly title: ReactNode;
   readonly rows: ReadonlyArray<readonly [label: string, value: ReactNode]>;
-  readonly className?: string;
 }) {
   const [open, setOpen] = useLocalStorage(FACTS_OPEN_STORAGE_KEY, true, Schema.Boolean);
   return (
-    <div
-      className={cn(
-        "surface-glass absolute end-2 bottom-2 w-48 rounded-lg border border-border/60 text-2xs shadow-sm",
-        props.className,
-      )}
-    >
+    <div className="surface-glass absolute end-2 bottom-2 w-48 rounded-lg border border-border/60 text-2xs shadow-sm">
       <Collapsible open={open} onOpenChange={setOpen}>
         <CollapsibleTrigger className="flex w-full items-center gap-1 px-2.5 py-1.5 text-left font-medium text-muted-foreground hover:text-foreground">
           {props.title}

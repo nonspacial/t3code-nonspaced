@@ -42,7 +42,8 @@ interface ByteSource {
 
 // Blocks this reader keeps in memory are small; the largest, DNA1, is a few hundred KB.
 const MAX_KEPT_BLOCK_BYTES = 16 * 1024 * 1024;
-const MAX_THUMBNAIL_SIDE = 1024;
+// Blender saves 128 px thumbnails; anything much larger is not one, and would bloat the RPC.
+const MAX_THUMBNAIL_SIDE = 256;
 const KEPT_CODES = new Set(["TEST", "GLOB", "SC", "LI", "ID", "DNA1"]);
 
 /** The file is not a .blend, or is damaged; any other failure is an I/O error. */

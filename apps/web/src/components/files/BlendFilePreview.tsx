@@ -1,27 +1,21 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
-import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
-import { type BlendPreview, BlendPreviewError, type EnvironmentId } from "@t3tools/contracts";
+import { blendFactRows } from "@t3tools/client-runtime/model/blend-facts";
+import { type EnvironmentId, isBlendPreviewError } from "@t3tools/contracts";
 import { fileBasename } from "@t3tools/shared/path";
 import * as Cause from "effect/Cause";
-import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { T, useGT, useMessages } from "gt-react";
 import { BoxIcon } from "lucide-react";
-import type { ReactNode } from "react";
 
-import { m } from "~/i18n/messages";
 import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { projectEnvironment } from "~/state/projects";
 import { revisionedQuery } from "~/state/revisionedQuery";
 
 import { filePreviewReadErrorMessage } from "./filePreviewMode";
 import { FileSurfaceFailure, FileSurfaceLoading } from "./fileSurfaceChrome";
 import { PreviewAction, PreviewFacts, PreviewStatusChip } from "./previewChrome";
-
-const isBlendPreviewError = Schema.is(BlendPreviewError);
 
 /** A `.blend`'s saved thumbnail and scene facts, read on its environment without Blender. */
 export function BlendFilePreview(props: {
@@ -33,6 +27,7 @@ export function BlendFilePreview(props: {
   readonly refreshRevision: number;
 }) {
   const gt = useGT();
+  const messages = useMessages();
   const query = projectEnvironment.readBlendPreview({
     environmentId: props.environmentId,
     input: { cwd: props.cwd, relativePath: props.relativePath },
@@ -70,10 +65,8 @@ export function BlendFilePreview(props: {
           <FileSurfaceFailure
             message={
               isBlendPreviewError(cause)
-                ? cause.failure === "unreadable_blend_file"
-                  ? gt("This file is not a Blender file, or it is damaged.")
-                  : filePreviewReadErrorMessage(cause, m)
-                : (thrownErrorMessage(cause, m) ?? gt("The file could not be read."))
+                ? filePreviewReadErrorMessage(cause, messages)
+                : (thrownErrorMessage(cause, messages) ?? gt("The file could not be read."))
             }
             onRetry={refresh}
           />
@@ -107,44 +100,28 @@ export function BlendFilePreview(props: {
           <RefreshIcon />
         </PreviewAction>
       </div>
-      {preview ? <BlendFacts preview={preview} /> : null}
+      {preview ? (
+        <PreviewFacts
+          title={<T>Scene details</T>}
+          rows={blendFactRows(preview, messages).map(
+            ({ label, values }) =>
+              [
+                label,
+                values.length === 1 ? (
+                  values[0]
+                ) : (
+                  <ul className="flex flex-col">
+                    {values.map((value) => (
+                      <li key={value} className="truncate">
+                        {value}
+                      </li>
+                    ))}
+                  </ul>
+                ),
+              ] as const,
+          )}
+        />
+      ) : null}
     </div>
   );
-}
-
-function BlendFacts(props: { readonly preview: BlendPreview }) {
-  const gt = useGT();
-  const messages = useMessages();
-  const { preview } = props;
-  const rows: Array<readonly [string, ReactNode]> = [];
-  if (preview.scene) {
-    rows.push([gt("Scene", { $context: "a Blender scene" }), preview.scene.name]);
-    rows.push([
-      gt("Frames", { $context: "an animation's frame range" }),
-      gt("{start}–{end}", { start: preview.scene.frameStart, end: preview.scene.frameEnd }),
-    ]);
-  }
-  if (preview.scenes > 1) rows.push([gt("Scenes"), preview.scenes.toLocaleString()]);
-  rows.push([gt("Objects", { $context: "Blender objects" }), preview.objects.toLocaleString()]);
-  rows.push([gt("Meshes"), preview.meshes.toLocaleString()]);
-  rows.push([gt("Materials"), preview.materials.toLocaleString()]);
-  if (preview.libraries.length > 0)
-    rows.push([
-      gt("Linked files"),
-      <ul key="libraries" className="flex flex-col">
-        {preview.libraries.map((library) => (
-          <Tooltip key={library}>
-            <TooltipTrigger render={<li className="truncate" />}>
-              {fileBasename(library.replace(/^\/\//, ""))}
-            </TooltipTrigger>
-            <TooltipPopup side="left">{library}</TooltipPopup>
-          </Tooltip>
-        ))}
-      </ul>,
-    ]);
-  rows.push([
-    gt("Size", { $context: "file size" }),
-    formatAttachmentSize(preview.byteLength, messages),
-  ]);
-  return <PreviewFacts title={<T>Scene details</T>} rows={rows} />;
 }
