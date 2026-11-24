@@ -10,6 +10,8 @@ import {
   type HostedBlenderThreadState,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
+import type { ModelView } from "@t3tools/shared/modelView";
+import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import { useMessages } from "gt-react";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -73,5 +75,21 @@ export function readHostedBlenderState(
       Effect.timeout("5 seconds"),
       Effect.orElseSucceed(() => null),
     ),
+  );
+}
+
+/**
+ * Moves the person's viewport window to a view link's camera. A Blender still starting, or a
+ * person who may only watch, leaves the view where it is.
+ */
+export async function setHostedBlenderView(
+  threadRef: ScopedThreadRef,
+  view: ModelView,
+): Promise<void> {
+  await runAtomCommand(
+    appAtomRegistry,
+    hostedBlenderEnvironment.setView,
+    { environmentId: threadRef.environmentId, input: { threadId: threadRef.threadId, view } },
+    { reportFailure: false },
   );
 }

@@ -10,11 +10,12 @@ import type {
   EnvironmentId,
   HostedBlenderRequirement,
   HostedBlenderRunningState,
+  ProjectId,
   ScopedThreadRef,
 } from "@t3tools/contracts";
-import { MoreVertical } from "lucide-react";
+import { CameraIcon, MoreVertical } from "lucide-react";
 import { T, useGT, useMessages, Var } from "gt-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
 
 import {
   AlertDialog,
@@ -30,6 +31,8 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "~/components/u
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "~/components/ui/menu";
 import { Spinner } from "~/components/ui/spinner";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
+import type { ComposerThreadTarget } from "~/composerDraftStore";
 import { formatBytes } from "~/lib/formatBytes";
 import { observeResize } from "~/lib/observeResize";
 import {
@@ -41,6 +44,8 @@ import {
 import { formatEnvironmentQueryError } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
 
+import { useBlenderAnnotation } from "./BlenderAnnotationEditor";
+
 interface StreamStats {
   readonly frameSize: { readonly width: number; readonly height: number } | null;
   readonly rate: HostedBlenderFrameRate | null;
@@ -49,11 +54,16 @@ interface StreamStats {
 
 const fileName = (relativePath: string) => relativePath.slice(relativePath.lastIndexOf("/") + 1);
 
-/** The thread's hosted Blender, live and view-only. Closing the pane leaves Blender running. */
-export function BlenderPanel(props: {
+interface BlenderPanelProps {
   readonly threadRef: ScopedThreadRef;
   readonly visible: boolean;
-}) {
+  /** Where Screenshot & annotate puts what it captures. */
+  readonly composerTarget: ComposerThreadTarget;
+  readonly projectId?: ProjectId | undefined;
+}
+
+/** The thread's hosted Blender, live and view-only. Closing the pane leaves Blender running. */
+export function BlenderPanel(props: BlenderPanelProps) {
   const state = useHostedBlenderState(props.threadRef);
   if (state === null) return <StateCard title={<Spinner />} />;
   switch (state.status) {
@@ -129,15 +139,23 @@ function MissingRequirements(props: { readonly missing: ReadonlyArray<HostedBlen
   );
 }
 
-function RunningBlender(props: {
-  readonly threadRef: ScopedThreadRef;
-  readonly visible: boolean;
-  readonly state: HostedBlenderRunningState;
-}) {
+function RunningBlender(props: BlenderPanelProps & { readonly state: HostedBlenderRunningState }) {
   const [stats, setStats] = useState<StreamStats>({ frameSize: null, rate: null, server: null });
+  const annotation = useBlenderAnnotation({
+    threadRef: props.threadRef,
+    relativePath: props.state.relativePath,
+    composerTarget: props.composerTarget,
+    projectId: props.projectId,
+    wholeDisplay: stats.server?.target === "output",
+  });
+  const live = props.state.status === "running" && props.visible && stats.frameSize !== null;
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <BlenderToolbar threadRef={props.threadRef} state={props.state} />
+      <BlenderToolbar
+        threadRef={props.threadRef}
+        state={props.state}
+        onAnnotate={live && annotation.editor === null ? annotation.start : null}
+      />
       {props.state.status === "starting" ? (
         <StateCard
           title={<T>Starting Blender…</T>}
@@ -149,11 +167,15 @@ function RunningBlender(props: {
         />
       ) : props.visible ? (
         // With nobody watching, the server stops capturing, so a hidden pane disconnects.
-        <BlenderStream
-          environmentId={props.threadRef.environmentId}
-          threadId={props.threadRef.threadId}
-          onStats={setStats}
-        />
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          <BlenderStream
+            environmentId={props.threadRef.environmentId}
+            threadId={props.threadRef.threadId}
+            canvasRef={annotation.canvasRef}
+            onStats={setStats}
+          />
+          {annotation.editor}
+        </div>
       ) : (
         <div className="min-h-0 flex-1" />
       )}
@@ -165,6 +187,8 @@ function RunningBlender(props: {
 function BlenderToolbar(props: {
   readonly threadRef: ScopedThreadRef;
   readonly state: HostedBlenderRunningState;
+  /** Null while there's no live frame to freeze. */
+  readonly onAnnotate: (() => void) | null;
 }) {
   const gt = useGT();
   const canQuit = useAtomValue(
@@ -196,6 +220,23 @@ function BlenderToolbar(props: {
   return (
     <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
       <span className="min-w-0 flex-1 truncate font-mono text-xs font-semibold">{name}</span>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              type="button"
+              aria-label={gt("Screenshot & annotate")}
+              disabled={props.onAnnotate === null}
+              onClick={() => props.onAnnotate?.()}
+            />
+          }
+        >
+          <CameraIcon />
+        </TooltipTrigger>
+        <TooltipPopup side="bottom">{gt("Screenshot & annotate")}</TooltipPopup>
+      </Tooltip>
       {canQuit ? (
         <Menu>
           <MenuTrigger
@@ -255,11 +296,12 @@ function BlenderToolbar(props: {
 function BlenderStream(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: string;
+  readonly canvasRef: RefObject<HTMLCanvasElement | null>;
   readonly onStats: (update: (current: StreamStats) => StreamStats) => void;
 }) {
   const access = useHostedBlenderStreamAccess(props.environmentId);
   const containerRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const { canvasRef } = props;
   const [status, setStatus] = useState<HostedBlenderStreamStatus>("connecting");
   const { environmentId, threadId, onStats } = props;
 
@@ -290,7 +332,7 @@ function BlenderStream(props: {
       stopObserving();
       client.stop();
     };
-  }, [access, environmentId, threadId, onStats]);
+  }, [access, environmentId, threadId, onStats, canvasRef]);
 
   return (
     <div

@@ -7,9 +7,11 @@ import os
 import socket
 import struct
 import sys
+import time
 
 import bpy
 from bpy.app.handlers import persistent
+from mathutils import Matrix, Vector
 
 
 def _option(name):
@@ -20,6 +22,8 @@ def _option(name):
 SOCKET_PATH = _option("--t3-control")
 MCP_PORT = _option("--t3-mcp-port")
 TICK = 0.1
+# Casting a mark's samples stops after this long, as the 3D preview's does.
+HIT_BUDGET = 0.1
 
 
 class _State:
@@ -91,8 +95,112 @@ def _save():
         return False
 
 
+def _viewport():
+    # The person's viewport window: the one _open_viewport_window made, never the main window.
+    windows = bpy.context.window_manager.windows
+    for index, window in enumerate(windows):
+        areas = window.screen.areas
+        if index == 0 or len(areas) != 1 or areas[0].type != "VIEW_3D":
+            continue
+        area = areas[0]
+        region = next((region for region in area.regions if region.type == "WINDOW"), None)
+        if region is not None:
+            return window, area, region, area.spaces.active.region_3d
+    return None
+
+
+def _camera_view(rv3d):
+    camera = bpy.context.scene.camera
+    if rv3d.view_perspective == "CAMERA" and camera is not None:
+        position = camera.matrix_world.translation
+        forward = camera.matrix_world.to_quaternion() @ Vector((0.0, 0.0, -1.0))
+        target = position + forward * rv3d.view_distance
+    else:
+        target = rv3d.view_location
+        position = target + rv3d.view_rotation @ Vector((0.0, 0.0, rv3d.view_distance))
+    return {"position": list(position), "target": list(target), "upAxis": "z"}
+
+
+def _view():
+    found = _viewport()
+    if found is None:
+        return None
+    window, _area, region, rv3d = found
+    width, height = window.width, window.height
+    # The matrix the last frame was drawn with, which is the frame the person froze.
+    matrix = [value for row in rv3d.perspective_matrix for value in row]
+    return {
+        "cameraView": _camera_view(rv3d),
+        "projection": {
+            "matrix": matrix,
+            "region": {
+                "x": region.x / width,
+                "y": 1 - (region.y + region.height) / height,
+                "width": region.width / width,
+                "height": region.height / height,
+            },
+        },
+    }
+
+
+def _hits(command):
+    inverse = Matrix([command["matrix"][row * 4:row * 4 + 4] for row in range(4)]).inverted()
+    region = command["region"]
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    scene = bpy.context.scene
+    deadline = time.perf_counter() + HIT_BUDGET
+    hits = []
+    for samples in command["marks"]:
+        hit = None
+        for sample in samples:
+            if time.perf_counter() >= deadline:
+                break
+            # The window fraction, inside the 3D view's drawing region, as clip coordinates.
+            x = (sample["x"] - region["x"]) / region["width"]
+            y = (sample["y"] - region["y"]) / region["height"]
+            if not (0 <= x <= 1 and 0 <= y <= 1):
+                continue
+            near = inverse @ Vector((x * 2 - 1, 1 - y * 2, -1.0, 1.0))
+            far = inverse @ Vector((x * 2 - 1, 1 - y * 2, 1.0, 1.0))
+            near, far = near.xyz / near.w, far.xyz / far.w
+            ray = far - near
+            found, location, _normal, _index, obj, _matrix = scene.ray_cast(
+                depsgraph, near, ray.normalized(), distance=ray.length
+            )
+            if found:
+                hit = {"object": obj.name if obj else None, "point": list(location)}
+                break
+        hits.append(hit)
+    return hits
+
+
+def _set_view(command):
+    found = _viewport()
+    if found is None:
+        return None
+    _window, area, _region, rv3d = found
+    position, target = Vector(command["position"]), Vector(command["target"])
+    offset = position - target
+    if rv3d.view_perspective == "CAMERA":
+        rv3d.view_perspective = "PERSP"
+    rv3d.view_location = target
+    rv3d.view_distance = offset.length
+    rv3d.view_rotation = offset.to_track_quat("Z", "Y")
+    area.tag_redraw()
+    return True
+
+
 def _handle(command):
     kind = command.get("type")
+    requests = {"view": lambda: _view(), "hits": lambda: _hits(command), "setView": lambda: _set_view(command)}
+    if kind in requests:
+        try:
+            result = requests[kind]()
+        except Exception as error:  # noqa: BLE001 - a failed request answers null, never a crash
+            print("T3 control add-on:", kind, "failed:", error, file=sys.stderr)
+            result = None
+        _send({"type": "reply", "id": command.get("id"), "result": result})
+        return
     if kind == "quit":
         if command.get("save"):
             # Answered before the save, which blocks Blender for as long as a big file takes.
@@ -172,11 +280,7 @@ def _disable_mcp_addon():
 
 
 def _has_viewport_window():
-    windows = bpy.context.window_manager.windows
-    return any(
-        index > 0 and len(window.screen.areas) == 1 and window.screen.areas[0].type == "VIEW_3D"
-        for index, window in enumerate(windows)
-    )
+    return _viewport() is not None
 
 
 def _open_viewport_window():

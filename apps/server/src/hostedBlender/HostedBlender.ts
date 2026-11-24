@@ -1,12 +1,17 @@
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
   HostedBlenderError,
+  HostedBlenderFindHitsInput,
+  HostedBlenderHits,
   type HostedBlenderOpenInput,
   type HostedBlenderQuitInput,
   type HostedBlenderRequirement,
   type HostedBlenderRunningState,
+  HostedBlenderSetViewInput,
   type HostedBlenderStreamServerMessage,
   type HostedBlenderThreadState,
+  HostedBlenderViewCapture,
+  HostedBlenderViewProjection,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -76,11 +81,36 @@ const ControlMessage = Schema.Union([
   Schema.Struct({ type: Schema.Literal("saving") }),
   Schema.Struct({ type: Schema.Literal("saved") }),
   Schema.Struct({ type: Schema.Literal("quitFailed"), reason: Schema.Literal("saveFailed") }),
+  /** The answer to the request with this `id`. */
+  Schema.Struct({ type: Schema.Literal("reply"), id: Schema.Int, result: Schema.Unknown }),
 ]);
 const decodeControlMessage = Schema.decodeUnknownOption(Schema.fromJsonString(ControlMessage));
 const encodeControlCommand = Schema.encodeSync(
   Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("quit"), save: Schema.Boolean })),
 );
+
+// Requests about the person's viewport window, each answered by one `reply`.
+const ControlRequest = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("view"), id: Schema.Int }),
+  Schema.Struct({
+    type: Schema.Literal("hits"),
+    id: Schema.Int,
+    ...HostedBlenderViewProjection.fields,
+    marks: HostedBlenderFindHitsInput.fields.marks,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("setView"),
+    id: Schema.Int,
+    ...HostedBlenderSetViewInput.fields.view.fields,
+  }),
+]);
+type ControlRequest = typeof ControlRequest.Type;
+type ControlRequestBody = ControlRequest extends infer Request
+  ? Request extends ControlRequest
+    ? Omit<Request, "id">
+    : never
+  : never;
+const encodeControlRequest = Schema.encodeSync(Schema.fromJsonString(ControlRequest));
 
 export type HostedBlenderViewerOutput =
   | { readonly _tag: "frame"; readonly data: Uint8Array }
@@ -112,6 +142,16 @@ export class HostedBlender extends Context.Service<
     readonly attachViewer: (
       threadId: string,
     ) => Effect.Effect<HostedBlenderAttachResult, never, Scope.Scope>;
+    /** The person's viewport window's camera, for an annotation of the frame shown now. */
+    readonly captureView: (
+      threadId: ThreadId,
+    ) => Effect.Effect<HostedBlenderViewCapture, HostedBlenderError>;
+    /** Casts each mark into the scene through a captured view. */
+    readonly findHits: (
+      input: HostedBlenderFindHitsInput,
+    ) => Effect.Effect<HostedBlenderHits, HostedBlenderError>;
+    /** Moves the person's viewport window, never the agent's main window. */
+    readonly setView: (input: HostedBlenderSetViewInput) => Effect.Effect<void, HostedBlenderError>;
   }
 >()("t3/hostedBlender/HostedBlender") {}
 
@@ -140,6 +180,9 @@ interface Instance {
   saveReplies: Queue.Queue<SaveReply> | null;
   /** The one save-and-quit in flight; every caller gets its result. */
   pendingSave: Deferred.Deferred<boolean> | null;
+  /** Requests to the add-on awaiting their `reply`, by id. */
+  readonly requests: Map<number, Deferred.Deferred<unknown>>;
+  lastRequestId: number;
   fiber: Fiber.Fiber<void> | null;
   /** Set by `quit`, so stopping a Blender that is still starting doesn't read as a failed start. */
   quitting: boolean;
@@ -305,6 +348,11 @@ const make = Effect.gen(function* () {
       case "quitFailed":
         if (instance.saveReplies) yield* Queue.offer(instance.saveReplies, message.value.type);
         return;
+      case "reply": {
+        const request = instance.requests.get(message.value.id);
+        if (request) yield* Deferred.succeed(request, message.value.result);
+        return;
+      }
     }
   });
 
@@ -594,6 +642,8 @@ const make = Effect.gen(function* () {
       control: null,
       saveReplies: null,
       pendingSave: null,
+      requests: new Map(),
+      lastRequestId: 0,
       fiber: null,
       quitting: false,
     };
@@ -746,7 +796,68 @@ const make = Effect.gen(function* () {
     };
   });
 
-  return HostedBlender.of({ open, quit, threadState, attachViewer });
+  const ask = Effect.fnUntraced(function* <A>(
+    threadId: ThreadId,
+    body: ControlRequestBody,
+    result: Schema.Decoder<A>,
+  ) {
+    const instance = instances.get(threadId);
+    if (instance === undefined || instance.status !== "running") {
+      return yield* new HostedBlenderError({ reason: "notRunning" });
+    }
+    const control = instance.control;
+    if (control === null) return yield* new HostedBlenderError({ reason: "noReply" });
+    instance.lastRequestId += 1;
+    const id = instance.lastRequestId;
+    const reply = yield* Deferred.make<unknown>();
+    instance.requests.set(id, reply);
+    const answer = yield* control
+      .write(`${encodeControlRequest({ ...body, id })}\n`)
+      .pipe(
+        Effect.andThen(Deferred.await(reply)),
+        Effect.asSome,
+        Effect.raceFirst(Deferred.await(control.closed).pipe(Effect.as(Option.none()))),
+        Effect.timeoutOption(CONTROL_REPLY_TIMEOUT),
+        Effect.map(Option.flatten),
+        Effect.ensuring(Effect.sync(() => instance.requests.delete(id))),
+      );
+    if (Option.isNone(answer)) return yield* new HostedBlenderError({ reason: "noReply" });
+    // The add-on answers null when Blender has no viewport window to read or move.
+    return yield* Schema.decodeUnknownEffect(result)(answer.value).pipe(
+      Effect.mapError(() => new HostedBlenderError({ reason: "noReply" })),
+    );
+  });
+
+  const captureView: HostedBlender["Service"]["captureView"] = Effect.fn(
+    "HostedBlender.captureView",
+  )(function* (threadId) {
+    yield* Effect.annotateCurrentSpan({ threadId });
+    return yield* ask(threadId, { type: "view" }, HostedBlenderViewCapture);
+  });
+
+  const findHits: HostedBlender["Service"]["findHits"] = Effect.fn("HostedBlender.findHits")(
+    function* ({ threadId, projection, marks }) {
+      yield* Effect.annotateCurrentSpan({ threadId, marks: marks.length });
+      return yield* ask(threadId, { type: "hits", ...projection, marks }, HostedBlenderHits);
+    },
+  );
+
+  const setView: HostedBlender["Service"]["setView"] = Effect.fn("HostedBlender.setView")(
+    function* ({ threadId, view }) {
+      yield* Effect.annotateCurrentSpan({ threadId });
+      yield* ask(threadId, { type: "setView", ...view }, Schema.Literal(true));
+    },
+  );
+
+  return HostedBlender.of({
+    open,
+    quit,
+    threadState,
+    attachViewer,
+    captureView,
+    findHits,
+    setView,
+  });
 });
 
 export const layer = Layer.effect(HostedBlender, make);

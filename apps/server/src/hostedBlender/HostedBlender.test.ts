@@ -133,9 +133,31 @@ def control():
     connection.sendall(b'{"type": "hello", "pid": %d}\n' % os.getpid())
     connection.sendall(b'{"type": "state", "filepath": "cube.blend", "dirty": true}\n')
     saves = 0
+    view = {"position": [7, -7, 5], "target": [0, 0, 1]}
     for line in connection.makefile():
         command = json.loads(line)
-        if command.get("type") != "quit" or not command.get("save"):
+        kind = command.get("type")
+        if kind in ("view", "hits", "setView") and scenario == "drop-on-view":
+            connection.close()
+            return
+        if kind == "view":
+            result = {"cameraView": {**view, "upAxis": "z"},
+                      "projection": {"matrix": [2] + [0] * 15,
+                                     "region": {"x": 0.1, "y": 0.05, "width": 0.8, "height": 0.9}}}
+        elif kind == "hits":
+            # Echoes what it was sent: the matrix's first entry and each mark's first sample.
+            result = [{"object": "m%g" % command["matrix"][0],
+                       "point": [mark[0]["x"], mark[0]["y"], len(command["marks"])]}
+                      if mark else None for mark in command["marks"]]
+        elif kind == "setView":
+            view = {"position": command["position"], "target": command["target"]}
+            result = True
+        else:
+            result = None
+        if kind in ("view", "hits", "setView"):
+            connection.sendall((json.dumps({"type": "reply", "id": command["id"], "result": result}) + "\n").encode())
+            continue
+        if kind != "quit" or not command.get("save"):
             continue
         saves += 1
         with open(os.environ["STANDIN_SAVES"], "a") as log:
@@ -275,6 +297,64 @@ describe("Save and quit", () => {
       yield* Fiber.join(first);
       yield* awaitStatus("stopped");
       expect(saveCommands()).toBe(1);
+    }).pipe(Effect.scoped),
+  );
+});
+
+describe("The viewport window", () => {
+  it.live("reads its camera and casts each mark through the frozen view", () =>
+    Effect.gen(function* () {
+      const { service, openReady } = yield* standIn("view", "");
+      yield* openReady;
+      const capture = yield* service.captureView(threadId);
+      assert.deepStrictEqual(capture, {
+        cameraView: { position: [7, -7, 5], target: [0, 0, 1], upAxis: "z" },
+        projection: {
+          matrix: [2, ...Array.from({ length: 15 }, () => 0)],
+          region: { x: 0.1, y: 0.05, width: 0.8, height: 0.9 },
+        },
+      });
+      const hits = yield* service.findHits({
+        threadId,
+        projection: capture.projection,
+        marks: [[{ x: 0.5, y: 0.25 }], []],
+      });
+      assert.deepStrictEqual(hits, [{ object: "m2", point: [0.5, 0.25, 2] }, null]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("moves to a link's view", () =>
+    Effect.gen(function* () {
+      const { service, openReady } = yield* standIn("set-view", "");
+      yield* openReady;
+      yield* service.setView({ threadId, view: { position: [1, 2, 3], target: [4, 5, 6] } });
+      const capture = yield* service.captureView(threadId);
+      assert.deepStrictEqual(capture.cameraView, {
+        position: [1, 2, 3],
+        target: [4, 5, 6],
+        upAxis: "z",
+      });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("fails when the thread has no hosted Blender", () =>
+    Effect.gen(function* () {
+      const { service } = yield* standIn("view-stopped", "");
+      const failed = yield* service.captureView(threadId).pipe(Effect.flip);
+      expect(failed.reason).toBe("notRunning");
+      const refused = yield* service
+        .setView({ threadId, view: { position: [1, 0, 0], target: [0, 0, 0] } })
+        .pipe(Effect.flip);
+      expect(refused.reason).toBe("notRunning");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("fails when Blender's control connection closes before answering", () =>
+    Effect.gen(function* () {
+      const { service, openReady } = yield* standIn("view-dropped", "drop-on-view");
+      yield* openReady;
+      const failed = yield* service.captureView(threadId).pipe(Effect.flip);
+      expect(failed.reason).toBe("noReply");
     }).pipe(Effect.scoped),
   );
 });
@@ -622,6 +702,35 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
       const argv = NodeFS.readFileSync(`/proc/${blenderPid}/cmdline`, "utf8").split("\0");
       expect(argv).toContain("--online-mode");
       expect(Number(argv[argv.indexOf("--t3-mcp-port") + 1])).not.toBe(9876);
+
+      // A view link moves the person's viewport window; the frame drawn after it is what a
+      // freeze would capture, so it is read back once Blender has drawn the new view.
+      yield* viewer.ack;
+      yield* service.setView({ threadId, view: { position: [6, -6, 5], target: [0, 0, 0] } });
+      yield* Queue.take(viewer.output).pipe(
+        Effect.repeat({ until: (output) => output._tag === "frame" }),
+      );
+      const capture = yield* service.captureView(threadId);
+      expect(capture.cameraView.upAxis).toBe("z");
+      capture.cameraView.position.forEach((value, index) =>
+        expect(value).toBeCloseTo([6, -6, 5][index]!, 3),
+      );
+      capture.cameraView.target.forEach((value) => expect(value).toBeCloseTo(0, 3));
+      const { region } = capture.projection;
+      // The factory scene's cube sits at the origin, in the middle of the 3D view; a corner of
+      // the view looks past it at nothing.
+      const hits = yield* service.findHits({
+        threadId,
+        projection: capture.projection,
+        marks: [
+          [{ x: region.x + region.width / 2, y: region.y + region.height / 2 }],
+          [{ x: region.x + region.width * 0.02, y: region.y + region.height * 0.02 }],
+        ],
+      });
+      expect(hits).toHaveLength(2);
+      expect(hits[0]?.object).toBe("Cube");
+      expect(Math.max(...hits[0]!.point.map(Math.abs))).toBeCloseTo(1, 3);
+      expect(hits[1]).toBeNull();
 
       // A save Blender can't write leaves it running, with the error for the pane.
       NodeFS.chmodSync(NodePath.join(workspace, "models"), 0o555);

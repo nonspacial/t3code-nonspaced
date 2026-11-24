@@ -1,9 +1,10 @@
 import type { HostedBlenderThreadState, ScopedThreadRef } from "@t3tools/contracts";
+import type { ModelView } from "@t3tools/shared/modelView";
 
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 
 import { rightPanelHostRef, useRightPanelStore } from "~/rightPanelStore";
-import { readHostedBlenderState } from "~/state/hostedBlender";
+import { readHostedBlenderState, setHostedBlenderView } from "~/state/hostedBlender";
 
 export const isBlendFile = (relativePath: string) => relativePath.toLowerCase().endsWith(".blend");
 
@@ -26,14 +27,17 @@ export const hostedBlenderOpensLink = (
 
 /**
  * Opens a chat link to a `.blend` in the Blender pane, or in the file preview otherwise. Reading
- * the thread's Blender takes a round trip, so a newer action in the panel meanwhile wins.
+ * the thread's Blender takes a round trip, so a newer action in the panel meanwhile wins. A
+ * `#view=` link moves the person's viewport window there; `openFile` carries it to the preview.
  */
 export async function openBlendLink(input: {
   readonly threadRef: ScopedThreadRef;
   readonly path: string;
   readonly workspaceRoot: string | undefined;
+  readonly view?: ModelView | undefined;
   readonly openFile: () => void;
   readonly readState?: (threadRef: ScopedThreadRef) => Promise<HostedBlenderThreadState | null>;
+  readonly setView?: (threadRef: ScopedThreadRef, view: ModelView) => Promise<void>;
 }): Promise<void> {
   const panels = useRightPanelStore.getState();
   const panelRef = rightPanelHostRef(input.threadRef);
@@ -49,6 +53,7 @@ export async function openBlendLink(input: {
   }
   if (hostedBlenderOpensLink(input.path, input.workspaceRoot, state)) {
     latest.open(input.threadRef, "blender");
+    if (input.view) await (input.setView ?? setHostedBlenderView)(input.threadRef, input.view);
   } else {
     input.openFile();
   }

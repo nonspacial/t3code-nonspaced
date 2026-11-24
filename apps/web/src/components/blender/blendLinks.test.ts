@@ -62,4 +62,38 @@ describe("openBlendLink", () => {
     expect(surfaces(threadRef)).not.toContain("blender");
     expect(openFile).not.toHaveBeenCalled();
   });
+
+  it("moves the person's viewport window to a view link's camera", async () => {
+    const threadRef = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-blend-3"));
+    const setView = vi.fn(async () => {});
+    const view = { position: [6, -6, 5], target: [0, 0, 1] } as const;
+    await openBlendLink({
+      threadRef,
+      path: "models/hero.blend",
+      workspaceRoot: "/work",
+      view,
+      openFile: vi.fn(),
+      readState: async () => running,
+      setView,
+    });
+    expect(surfaces(threadRef)).toContain("blender");
+    expect(setView).toHaveBeenCalledWith(threadRef, view);
+  });
+
+  it("leaves a view link on another file to the 3D preview", async () => {
+    const threadRef = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-blend-4"));
+    const setView = vi.fn(async () => {});
+    const openFile = vi.fn();
+    await openBlendLink({
+      threadRef,
+      path: "models/other.blend",
+      workspaceRoot: "/work",
+      view: { position: [6, -6, 5], target: [0, 0, 1] },
+      openFile,
+      readState: async () => running,
+      setView,
+    });
+    expect(openFile).toHaveBeenCalled();
+    expect(setView).not.toHaveBeenCalled();
+  });
 });
