@@ -632,7 +632,7 @@ export function cliNativeHelpers(input: {
     {
       name: "hidden-display",
       ...hiddenDisplay,
-      hint: "Run `vp run build:hidden-display` or pass --hidden-display-dir.",
+      hint: `Run \`cargo build --release --target ${LINUX_RUST_TARGETS[input.arch]}\` in native/hidden-display, or pass --hidden-display-dir.`,
     },
   ];
 }
@@ -806,7 +806,7 @@ const command = Command.make(
     ),
     hiddenDisplayDir: Flag.String("hidden-display-dir").pipe(
       Flag.withDescription(
-        "Linux: directory laid out like dist/hidden-display (defaults to apps/server/dist/hidden-display).",
+        "Linux: directory laid out like dist/hidden-display (defaults to the Cargo release build in native/hidden-display/target for the archive's Rust target).",
       ),
       Flag.optional,
     ),
