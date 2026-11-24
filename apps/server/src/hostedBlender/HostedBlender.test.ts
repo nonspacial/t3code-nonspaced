@@ -1539,7 +1539,8 @@ event({"type": "windowCaptured", "title": "3D Viewport"})
 # Answers the control socket as the add-on would: its listener, and what T3 asks of it.
 import socket, threading
 t3 = sys.argv[sys.argv.index("--t3-control"):]
-listener = ["ready" if "--t3-mcp-listen" in t3 else "off"]
+# Like the add-on: starting until T3's grant, then ready.
+listener = ["starting" if "--t3-mcp-listen" in t3 else "off"]
 blend = next(arg for arg in sys.argv if arg.endswith(".blend"))
 def control():
     server = socket.socket(socket.AF_UNIX)
@@ -1549,14 +1550,24 @@ def control():
     def state(filepath):
         connection.sendall((json.dumps({"type": "state", "filepath": filepath, "dirty": False,
                                         "agentListener": listener[0]}) + "\n").encode())
-    state(blend)
-    if os.environ.get("STANDIN_AFTER") == "otherFile":
-        # Someone opens another file through Blender's own UI.
+    after = os.environ.get("STANDIN_AFTER")
+    # Another file already open by the time T3 hears, claiming its listener is ready.
+    if after == "otherFileFirst":
+        listener[0] = "ready"
         state("/elsewhere/other.blend")
+    else:
+        state(blend)
     for line in connection.makefile():
         with open(os.environ["STANDIN_ARGS"] + ".control", "a") as log:
             log.write(line)
-        if json.loads(line).get("type") == "stopAgentListener":
+        kind = json.loads(line).get("type")
+        if kind == "grantAgentListener" and listener[0] == "starting":
+            listener[0] = "ready"
+            state(blend)
+            if after == "otherFile":
+                # Someone opens another file through Blender's own UI.
+                state("/elsewhere/other.blend")
+        if kind == "stopAgentListener":
             # Gone once it has heard the stop, so a test can wait for the stopped state.
             os._exit(0)
 threading.Thread(target=control, daemon=True).start()
@@ -1569,7 +1580,7 @@ describe("Agent access at launch", () => {
   const launch = Effect.fn(function* (
     host: Pick<Host, "runtimeMode" | "interactionMode" | "agentPort" | "revocations">,
     options: { readonly agentWorkingCopy?: boolean } = { agentWorkingCopy: true },
-    after?: "otherFile",
+    after?: "otherFile" | "otherFileFirst",
   ) {
     const dir = yield* tempDir("agent-access");
     const bin = fakeTools(dir);
@@ -1640,7 +1651,7 @@ describe("Agent access at launch", () => {
     Effect.gen(function* () {
       const { service, args } = yield* launch({ agentPort: 41234 }, {});
       expect(args).not.toContain("--t3-mcp-listen");
-      expect(yield* service.agentListener(threadId)).toBe("off");
+      expect((yield* service.agentListener(threadId))?.state).toBe("off");
       yield* service.quit({ threadId, save: false });
     }).pipe(Effect.scoped),
   );
@@ -1652,7 +1663,7 @@ describe("Agent access at launch", () => {
         agentPort: 41234,
         revocations: Stream.fromQueue(revoked),
       });
-      expect(yield* service.agentListener(threadId)).toBe("ready");
+      expect((yield* service.agentListener(threadId))?.state).toBe("ready");
       // Another thread's session ending leaves this one alone.
       yield* Queue.offer(revoked, otherThreadId);
       yield* Queue.offer(revoked, threadId);
@@ -1680,4 +1691,20 @@ describe("Agent access at launch", () => {
     expect(HostedBlender.CONTROL_CONNECT_ATTEMPTS * 200).toBeGreaterThanOrEqual(90_000);
     expect(Duration.toMillis(HostedBlender.AGENT_LISTENER_TIMEOUT)).toBeGreaterThan(90_000);
   });
+
+  it.live("never takes a listener state from a Blender that has another file open", () =>
+    Effect.gen(function* () {
+      const { service } = yield* launch({ agentPort: 41234 }, undefined, "otherFileFirst");
+      const report = yield* service.agentListener(threadId);
+      expect(report).toEqual({
+        state: "off",
+        ended: "otherFile",
+        openFile: "/elsewhere/other.blend",
+      });
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "stopped"),
+        Stream.runHead,
+      );
+    }).pipe(Effect.scoped),
+  );
 });

@@ -27,11 +27,11 @@ export const workingCopyName = (masterName: string, threadId: string) =>
 
 /**
  * A working copy is opened only as a regular file that isn't its master, so neither a symlink nor
- * a hard link to the master opens the master for editing.
+ * a hard link to the master opens the master for editing. A master that can't be read refuses.
  */
 const assertSeparateCopy = Effect.fn("HostedBlender.assertSeparateCopy")(function* (
   workingCopy: string,
-  master: string,
+  masters: ReadonlyArray<string>,
   requested: string,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -40,17 +40,16 @@ const assertSeparateCopy = Effect.fn("HostedBlender.assertSeparateCopy")(functio
       reason: `${workingCopy} exists but is not a separate copy of ${requested}. Ask the user to move it aside.`,
     });
   const existing = yield* fileSystem.lstat(workingCopy).pipe(Effect.mapError(notSeparate));
-  if (existing.type !== "File") return yield* notSeparate();
-  // The master of a working copy named directly may be gone; then there's nothing to be.
-  const original = yield* fileSystem.stat(master).pipe(Effect.option);
-  if (
-    Option.isSome(original) &&
-    Option.isSome(existing.ino) &&
-    Option.isSome(original.value.ino) &&
-    existing.ino.value === original.value.ino.value &&
-    existing.dev === original.value.dev
-  ) {
-    return yield* notSeparate();
+  if (existing.type !== "File" || masters.length === 0) return yield* notSeparate();
+  for (const master of masters) {
+    const original = yield* fileSystem.stat(master).pipe(Effect.mapError(notSeparate));
+    if (
+      Option.isNone(existing.ino) ||
+      Option.isNone(original.ino) ||
+      (existing.ino.value === original.ino.value && existing.dev === original.dev)
+    ) {
+      return yield* notSeparate();
+    }
   }
 });
 
@@ -70,7 +69,7 @@ const createWorkingCopy = Effect.fn("HostedBlender.createWorkingCopy")(function*
   const couldNotCopy = () =>
     new HostedBlenderToolError({ reason: `T3 could not copy ${requested} to ${workingCopy}.` });
   if (Option.isSome(yield* fileSystem.lstat(workingCopy).pipe(Effect.option))) {
-    yield* assertSeparateCopy(workingCopy, master, requested);
+    yield* assertSeparateCopy(workingCopy, [master], requested);
     return false;
   }
   const linked = yield* Effect.scoped(
@@ -85,9 +84,22 @@ const createWorkingCopy = Effect.fn("HostedBlender.createWorkingCopy")(function*
     }),
   ).pipe(Effect.mapError(couldNotCopy));
   if (linked) return true;
-  yield* assertSeparateCopy(workingCopy, master, requested);
+  yield* assertSeparateCopy(workingCopy, [master], requested);
   return false;
 });
+
+/** Why the agent can't use an open Blender, and what gets it back. */
+const noAccessReason = (name: string, ended: HostedBlender.AgentAccessEnded | null): string => {
+  switch (ended) {
+    case "connectionLost":
+      // T3 can't save through a connection it lost, so quitting with save would fail.
+      return `T3 lost its connection to the hosted Blender with ${name}, so it can no longer save it or hand it to you. Ask the user to save in the Blender pane (Ctrl+S) and tell you when it's done; then call blender_quit with save: false, and blender_start again.`;
+    case "otherFile":
+      return `The hosted Blender has another file open now, not ${name}, so your access ended. Ask the user before you go on; to work on ${name} again, call blender_quit with save: true, then blender_start.`;
+    default:
+      return `${name} is open in this thread's hosted Blender, but not for you: it was opened from the pane, before your session could reach it, or your access was switched off. Call blender_quit with save: true, then blender_start again.`;
+  }
+};
 
 /**
  * `blender_start`: copies the master to the thread's working copy unless one exists, and opens
@@ -146,17 +158,24 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
       return yield* new HostedBlenderToolError({ reason: `${input.path} was not found.` });
 
     const name = workingCopyName(path.basename(master), input.threadId);
-    // Named directly, the working copy is opened as it is.
-    const isCopy = path.basename(master).endsWith(`.wip-${threadTag(input.threadId)}.blend`);
+    // Named directly, the working copy is opened as it is: classified and checked as named,
+    // before any link is followed, against its master whatever that one's extension casing.
+    const copySuffix = `.wip-${threadTag(input.threadId)}.blend`;
+    const isCopy = path.basename(requested).endsWith(copySuffix);
     const workingCopy = isCopy ? master : path.join(path.dirname(master), name);
     if (isCopy) {
-      // Checked as named, before any link is followed, against the master it was copied from.
+      const stem = path.basename(requested).slice(0, -copySuffix.length);
+      const siblings = yield* fileSystem
+        .readDirectory(path.dirname(requested))
+        .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
       yield* assertSeparateCopy(
         requested,
-        path.join(
-          path.dirname(requested),
-          path.basename(requested).replace(/\.wip-[a-z0-9]+\.blend$/i, ".blend"),
-        ),
+        siblings
+          .filter(
+            (entry) =>
+              entry.startsWith(stem) && entry.slice(stem.length).toLowerCase() === ".blend",
+          )
+          .map((entry) => path.join(path.dirname(requested), entry)),
         input.path,
       );
     }
@@ -183,12 +202,10 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
     }
     // Answered only once Blender Lab's listener has come up on the thread's port.
     const listener = yield* hostedBlender.agentListener(input.threadId);
-    if (listener === "off") {
-      return yield* new HostedBlenderToolError({
-        reason: `${name} is open in this thread's hosted Blender, but not for you: it was opened from the pane, or before your session could reach it. Call blender_quit with save: true, then blender_start again.`,
-      });
+    if (listener?.state === "off") {
+      return yield* new HostedBlenderToolError({ reason: noAccessReason(name, listener.ended) });
     }
-    if (listener !== "ready") {
+    if (listener?.state !== "ready") {
       return yield* new HostedBlenderToolError({
         reason: `${name} is open, but Blender Lab's MCP add-on did not start listening for you. Check that the MCP extension is installed in the user's Blender and that nothing else holds its port, then call blender_quit and blender_start again.`,
       });

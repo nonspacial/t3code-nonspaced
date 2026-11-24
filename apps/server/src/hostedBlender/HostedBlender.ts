@@ -53,6 +53,7 @@ import {
 import { SessionControl } from "../preview/SessionControl.ts";
 import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
 import { type ControlConnection, requestSave, type SaveReply } from "./ControlSave.ts";
+import { type AgentListenerState, awaitAgentListener } from "./agentListenerWait.ts";
 import { HeldInput } from "./HeldInput.ts";
 import * as HostedBlenderAgents from "./HostedBlenderAgents.ts";
 import * as HostedBlenderSetup from "./HostedBlenderSetup.ts";
@@ -101,14 +102,31 @@ const ControlMessage = Schema.Union([
   Schema.Struct({ type: Schema.Literal("reply"), id: Schema.Int, result: Schema.Unknown }),
 ]);
 const decodeControlMessage = Schema.decodeUnknownOption(Schema.fromJsonString(ControlMessage));
-const STOP_AGENT_LISTENER = `${Schema.encodeSync(
-  Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("stopAgentListener") })),
-)({ type: "stopAgentListener" })}\n`;
+const encodeListenerCommand = Schema.encodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({ type: Schema.Literals(["grantAgentListener", "stopAgentListener"]) }),
+  ),
+);
+const STOP_AGENT_LISTENER = `${encodeListenerCommand({ type: "stopAgentListener" })}\n`;
+// The add-on enables and starts Blender Lab only on this; a stop it heard first wins.
+const GRANT_AGENT_LISTENER = `${encodeListenerCommand({ type: "grantAgentListener" })}\n`;
 // Blender loads the file and the official add-on before its listener can come up.
 export const AGENT_LISTENER_TIMEOUT = Duration.sum(START_TIMEOUT, Duration.seconds(15));
 
-/** Whether the official add-on takes the thread's `blender-hosted` calls. */
-export type AgentListenerState = "off" | "starting" | "ready" | "failed";
+export type { AgentListenerState };
+
+/**
+ * Why the agent's access ended: T3 took it back (a setting or the session), T3 lost its
+ * connection to Blender, or Blender has another file open.
+ */
+export type AgentAccessEnded = "revoked" | "connectionLost" | "otherFile";
+
+export interface AgentListenerReport {
+  readonly state: AgentListenerState;
+  readonly ended: AgentAccessEnded | null;
+  /** The file Blender has open, as its add-on last said. */
+  readonly openFile: string | null;
+}
 const encodeControlCommand = Schema.encodeSync(
   Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("quit"), save: Schema.Boolean })),
 );
@@ -192,7 +210,7 @@ export class HostedBlender extends Context.Service<
     readonly agentListener: (
       threadId: ThreadId,
       options?: { readonly wait?: boolean },
-    ) => Effect.Effect<AgentListenerState | null>;
+    ) => Effect.Effect<AgentListenerReport | null>;
     readonly quit: (input: HostedBlenderQuitInput) => Effect.Effect<void, HostedBlenderError>;
     readonly threadState: (threadId: ThreadId) => Stream.Stream<HostedBlenderThreadState>;
     /** `canOperate`: the viewer may take control (`terminal:operate`). */
@@ -264,6 +282,10 @@ interface Instance {
   readonly agentListenerSettled: Deferred.Deferred<void>;
   /** The thread lost agent access; the listener stays off until Blender restarts. */
   agentListenerRevoked: boolean;
+  agentAccessEnded: AgentAccessEnded | null;
+  /** The launch asked for the agent listener, which the add-on starts only once granted. */
+  agentListenerGranted: boolean;
+  openFile: string | null;
   /**
    * Which viewer controls the mouse and keyboard. There is no agent side: the agent works
    * through its own MCP connection, so a viewer in control never pauses it.
@@ -579,9 +601,13 @@ const make = Effect.gen(function* () {
 
   // Switching agents off, or the thread's session ending, closes the listener and every
   // connection to it. The pane keeps working.
-  const revokeAgentListener = Effect.fnUntraced(function* (instance: Instance) {
+  const revokeAgentListener = Effect.fnUntraced(function* (
+    instance: Instance,
+    reason: AgentAccessEnded = "revoked",
+  ) {
     if (instance.agentListener === "off" || instance.agentListenerRevoked) return;
     instance.agentListenerRevoked = true;
+    instance.agentAccessEnded = reason;
     yield* setAgentListener(instance, "off");
     if (instance.control) yield* instance.control.write(STOP_AGENT_LISTENER);
   });
@@ -594,12 +620,15 @@ const make = Effect.gen(function* () {
         instance.pid = message.value.pid;
         return;
       case "state": {
+        instance.openFile = message.value.filepath === "" ? null : message.value.filepath;
+        // Only the working copy T3 opened may reach the agent, so the file is checked before
+        // any listener state is taken; the add-on closes it too.
         const listener = message.value.agentListener;
-        if (listener !== undefined && !instance.agentListenerRevoked) {
+        if (message.value.filepath !== instance.blendPath) {
+          yield* revokeAgentListener(instance, "otherFile");
+        } else if (listener !== undefined && !instance.agentListenerRevoked) {
           yield* setAgentListener(instance, listener);
         }
-        // Only the working copy T3 opened may reach the agent; the add-on closes it too.
-        if (message.value.filepath !== instance.blendPath) yield* revokeAgentListener(instance);
         if (instance.dirty === message.value.dirty) return;
         instance.dirty = message.value.dirty;
         return yield* publishNow();
@@ -632,8 +661,9 @@ const make = Effect.gen(function* () {
       const closed = yield* Deferred.make<void>();
       yield* Effect.addFinalizer(() => Deferred.succeed(closed, undefined));
       instance.control = { write: (line) => writer.write(line).pipe(Effect.ignore), closed };
-      // Revoked before the add-on could hear it: its own start may have run since.
+      // Revoked before the add-on could hear it, or else granted now.
       if (instance.agentListenerRevoked) yield* instance.control.write(STOP_AGENT_LISTENER);
+      else if (instance.agentListenerGranted) yield* instance.control.write(GRANT_AGENT_LISTENER);
       const decoder = new TextDecoder();
       let buffer = "";
       return yield* Effect.forever(
@@ -661,6 +691,9 @@ const make = Effect.gen(function* () {
             instance.requests.clear();
             instance.control = null;
             // The add-on closes its listener when this connection drops, and nothing reopens it.
+            if (!instance.agentListenerRevoked && instance.agentListener !== "off") {
+              instance.agentAccessEnded = "connectionLost";
+            }
             instance.agentListenerRevoked = true;
             return setAgentListener(instance, "off");
           }),
@@ -738,6 +771,7 @@ const make = Effect.gen(function* () {
           ? yield* agents.value.listenerPort(instance.threadId)
           : null;
       if (agentPort === null) yield* setAgentListener(instance, "off");
+      instance.agentListenerGranted = agentPort !== null;
       const mcpPort = agentPort ?? (yield* net.reserveLoopbackPort());
       const shell = yield* ThreadManagementService.ThreadManagementService.pipe(
         Effect.flatMap((threads) => threads.getThreadShell(instance.threadId)),
@@ -945,6 +979,9 @@ const make = Effect.gen(function* () {
       agentListener: "starting",
       agentListenerSettled: yield* Deferred.make<void>(),
       agentListenerRevoked: false,
+      agentAccessEnded: null,
+      agentListenerGranted: false,
+      openFile: null,
       session: new SessionControl(null),
       held: new HeldInput(),
       cursorCaptured: false,
@@ -1286,13 +1323,18 @@ const make = Effect.gen(function* () {
   )(function* (threadId, options) {
     const instance = instances.get(threadId);
     if (instance === undefined) return null;
-    if (options?.wait === false) return instance.agentListener;
-    yield* Deferred.await(instance.agentListenerSettled).pipe(
-      Effect.raceFirst(Deferred.await(instance.ended)),
-      Effect.timeoutOption(AGENT_LISTENER_TIMEOUT),
-    );
-    // A listener that never came up is treated as failed, never as open.
-    return instance.agentListener === "starting" ? "failed" : instance.agentListener;
+    const state =
+      options?.wait === false
+        ? instance.agentListener
+        : yield* awaitAgentListener({
+            settled: Deferred.await(instance.agentListenerSettled).pipe(
+              Effect.raceFirst(Deferred.await(instance.ended)),
+            ),
+            current: () => instance.agentListener,
+            timeout: AGENT_LISTENER_TIMEOUT,
+            revoke: revokeAgentListener(instance),
+          });
+    return { state, ended: instance.agentAccessEnded, openFile: instance.openFile };
   });
 
   if (Option.isSome(agents)) {
@@ -1302,7 +1344,7 @@ const make = Effect.gen(function* () {
           [...instances.values()].filter(
             (instance) => threadId === null || instance.threadId === threadId,
           ),
-          revokeAgentListener,
+          (instance) => revokeAgentListener(instance),
           { discard: true },
         ),
       ),

@@ -69,6 +69,8 @@ const layerFor = (input: {
   /** Shell reads after the first in each call, which the live-caller check makes, return null. */
   readonly shellReads?: { count: number };
   readonly listener?: HostedBlender.AgentListenerState;
+  readonly ended?: HostedBlender.AgentAccessEnded;
+  readonly openFile?: string;
 }) =>
   McpHttpServer.layerHostedBlenderToolkit.pipe(
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
@@ -76,7 +78,12 @@ const layerFor = (input: {
       Layer.mergeAll(
         Layer.mock(HostedBlender.HostedBlender)({
           threadState: () => Stream.succeed(input.state),
-          agentListener: () => Effect.succeed(input.listener ?? "ready"),
+          agentListener: () =>
+            Effect.succeed({
+              state: input.listener ?? "ready",
+              ended: input.ended ?? null,
+              openFile: input.openFile ?? null,
+            }),
           quit: (quit) =>
             Effect.sync(() => {
               input.quits?.push(quit);
@@ -250,4 +257,28 @@ describe("hosted Blender MCP tools", () => {
       expect(quits).toEqual([]);
     }).pipe(Effect.provide(layerFor({ state: running, quits, shellReads })));
   });
+
+  it.effect("reports the file Blender has open and why access ended", () =>
+    Effect.gen(function* () {
+      const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
+      expect(status.structuredContent).toMatchObject({
+        blenders: [
+          {
+            file: "/home/user/acme/app/models/bracket-4.blend",
+            agentAccess: false,
+            agentAccessEnded: "otherFile",
+          },
+        ],
+      });
+    }).pipe(
+      Effect.provide(
+        layerFor({
+          state: running,
+          listener: "off",
+          ended: "otherFile",
+          openFile: "/home/user/acme/app/models/bracket-4.blend",
+        }),
+      ),
+    ),
+  );
 });

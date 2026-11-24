@@ -300,6 +300,9 @@ def _handle(command):
     if kind == "stopAgentListener":
         _end_grant()
         return
+    if kind == "grantAgentListener":
+        _grant_agent_listener()
+        return
     if kind == "quit":
         if command.get("save"):
             # Answered before the save, which blocks Blender for as long as a big file takes.
@@ -323,9 +326,6 @@ def _tick():
             connection.setblocking(False)
             _State.client = connection
             _send({"type": "hello", "pid": os.getpid()})
-            if _State.grant == "pending":
-                _State.grant = "granted"
-                _start_agent_listener()
         else:
             connection.close()
     except BlockingIOError:
@@ -366,40 +366,50 @@ def _is_mcp_addon(name):
 
 
 def _setup_mcp_addon():
-    # The official MCP add-on runs agent code, so it listens only for a thread whose agent
-    # session uses it (--t3-mcp-listen), on the port T3 assigned, started by T3 rather than by its
-    # own autostart. Otherwise disabling it for the session (not in the settings) runs its
-    # unregister, which cancels the autostart timer it registered before this script ran.
-    # T3's wrapper for the listener belongs here.
+    # The official MCP add-on runs agent code. However the copied settings left it, it starts
+    # disabled, with no Start button and no autostart, and comes back only when T3 grants this
+    # Blender's thread its agent (see _grant_agent_listener). Disabling with default_set also
+    # drops it from these settings (T3's own copy), so Reload Scripts can't bring it back.
     import addon_utils
 
     preferences = bpy.context.preferences
-    names = [name for name in preferences.addons.keys() if _is_mcp_addon(name)]
-    if MCP_LISTEN and not names:
-        installed = [module.__name__ for module in addon_utils.modules() if _is_mcp_addon(module.__name__)]
-        for name in installed[:1]:
-            # Its register() reads its preferences, which Blender creates only with default_set;
-            # these are T3's own copy of the user's settings.
-            addon_utils.enable(name, default_set=True)
-            names.append(name)
-    for name in names:
-        addon = preferences.addons.get(name)
-        if addon is not None and MCP_PORT is not None and addon.preferences is not None:
-            if hasattr(addon.preferences, "port"):
-                addon.preferences.port = int(MCP_PORT)
-                addon.preferences.host = "localhost"
-            if hasattr(addon.preferences, "use_autostart"):
-                addon.preferences.use_autostart = False
-        if not MCP_LISTEN:
-            addon_utils.disable(name, default_set=False)
+    for name in [name for name in preferences.addons.keys() if _is_mcp_addon(name)]:
+        addon_utils.disable(name, default_set=True)
     if MCP_LISTEN:
-        _State.mcp_name = names[0] if names else None
+        installed = [module.__name__ for module in addon_utils.modules() if _is_mcp_addon(module.__name__)]
+        _State.mcp_name = installed[0] if installed else None
         _State.authorized_file = os.path.realpath(bpy.data.filepath) if bpy.data.filepath else None
-        _cancel_mcp_autostart()
     try:
         preferences.is_dirty = False
     except AttributeError:
         pass
+
+
+def _grant_agent_listener():
+    # Only once, and never after the grant ended: a revoke T3 sent first wins.
+    if _State.grant != "pending":
+        return
+    _State.grant = "granted"
+    if _State.mcp_name is not None:
+        import addon_utils
+
+        preferences = bpy.context.preferences
+        try:
+            # Its register() reads its preferences, which Blender creates only with default_set.
+            addon_utils.enable(_State.mcp_name, default_set=True)
+            addon = preferences.addons.get(_State.mcp_name)
+            if addon is not None and addon.preferences is not None:
+                addon.preferences.port = int(MCP_PORT)
+                addon.preferences.host = "localhost"
+                addon.preferences.use_autostart = False
+            _cancel_mcp_autostart()
+        except Exception as error:  # noqa: BLE001 - reported as failed, never a crash
+            print("T3 control add-on: Blender Lab MCP did not enable:", error, file=sys.stderr)
+        try:
+            preferences.is_dirty = False
+        except AttributeError:
+            pass
+    _start_agent_listener()
 
 
 def _mcp_server():
@@ -449,12 +459,13 @@ def _end_grant():
         return
     _State.grant = "ended"
     _stop_agent_listener()
-    # Disabled for the session, so its own Start button can't reopen the port either.
+    # Disabled and dropped from these settings, so neither its own Start button nor Reload
+    # Scripts can reopen the port.
     if _State.mcp_name is not None:
         import addon_utils
 
         try:
-            addon_utils.disable(_State.mcp_name, default_set=False)
+            addon_utils.disable(_State.mcp_name, default_set=True)
         except Exception as error:  # noqa: BLE001 - reported, never a crash
             print("T3 control add-on: Blender Lab MCP did not disable:", error, file=sys.stderr)
 
@@ -495,6 +506,11 @@ def _open_viewport_window():
 
 
 @persistent
+def _on_save_post(*_args):
+    _check_authorized_file()
+
+
+@persistent
 def _on_load_post(*_args):
     _check_authorized_file()
     bpy.app.timers.register(_open_viewport_window, first_interval=0.2)
@@ -506,6 +522,8 @@ def register():
         _State.server = _listen()
         bpy.app.timers.register(_tick, first_interval=TICK, persistent=True)
     bpy.app.handlers.load_post.append(_on_load_post)
+    # Save As to another name is another file too, checked before anything else can run.
+    bpy.app.handlers.save_post.append(_on_save_post)
     bpy.app.timers.register(_open_viewport_window, first_interval=0.5)
 
 

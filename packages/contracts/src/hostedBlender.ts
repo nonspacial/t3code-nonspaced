@@ -422,6 +422,13 @@ export const HostedBlenderToolStatusResult = Schema.Struct({
       unsavedChanges: Schema.optionalKey(Schema.Boolean),
       /** Whether its Blender MCP takes this thread's `blender-hosted` calls. */
       agentAccess: Schema.optionalKey(Schema.Boolean),
+      /**
+       * Why that access ended: switched off or the session ended, T3 lost its connection to
+       * Blender, or Blender has another file open.
+       */
+      agentAccessEnded: Schema.optionalKey(
+        Schema.Literals(["revoked", "connectionLost", "otherFile"]),
+      ),
     }),
   ),
 });

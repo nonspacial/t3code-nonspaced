@@ -10,11 +10,12 @@ import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
 
 const MCP = "bl_ext.user_default.mcp";
 
-// Just enough of Blender for the add-on's register(), and a stand-in for Blender Lab's MCP
-// extension (checked against version 1.0.3) whose server binds a real loopback socket.
+// Blender and Blender Lab's MCP 1.0.3, stood in for: its server binds a real socket. As in
+// Blender's addon_utils, `default_set=False` leaves the preference entry that Reload Scripts
+// registers again, and the extension's operators exist only while it is registered.
 const STUBS = {
   "bpy/__init__.py": String.raw`
-import importlib, json, os, types
+import json, os, types
 state = json.loads(os.environ["STUB_STATE"])
 class Prefs:
     def __init__(self): self.port = 9876; self.host = "0.0.0.0"; self.use_autostart = True
@@ -29,9 +30,10 @@ context = types.SimpleNamespace(
 )
 data = types.SimpleNamespace(filepath=state.get("filepath", "/work/hero.wip-1a2b3c4d.blend"), is_dirty=False)
 from . import app, ops
-# Blender registers enabled add-ons before --python scripts run.
+# Blender registers the enabled add-ons before --python scripts run.
+import addon_utils
 for name in state["enabled"]:
-    importlib.import_module(name)
+    addon_utils.register(name)
 `,
   "bpy/app/__init__.py": String.raw`
 import types
@@ -45,10 +47,18 @@ timers = types.SimpleNamespace(
 )
 from . import handlers
 `,
-  "bpy/app/handlers.py": "load_post = []\ndef persistent(function):\n    return function\n",
+  "bpy/app/handlers.py":
+    "load_post = []\nsave_post = []\ndef persistent(function):\n    return function\n",
   "bpy/ops.py": String.raw`
 import sys, types
 NAME = "${MCP}"
+def _operator(run):
+    def call():
+        import addon_utils
+        if NAME not in addon_utils.registered:
+            raise AttributeError("bpy.ops.blmcp has no such operator")
+        return run()
+    return call
 def _start():
     import bpy
     prefs = bpy.context.preferences.addons[NAME].preferences
@@ -60,7 +70,7 @@ def _start():
 def _stop():
     sys.modules[NAME + ".mcp_to_blender_server"].stop()
     return {"FINISHED"}
-blmcp = types.SimpleNamespace(server_start=_start, server_stop=_stop)
+blmcp = types.SimpleNamespace(server_start=_operator(_start), server_stop=_operator(_stop))
 `,
   // Imported at the top for the capture and hit tests, which register() never runs.
   "gpu.py": "",
@@ -71,13 +81,21 @@ blmcp = types.SimpleNamespace(server_start=_start, server_stop=_stop)
 import bpy
 from . import mcp_to_blender_server
 def _autostart_timer(): mcp_to_blender_server.start("localhost", 9876)
-bpy.app.timers.register(_autostart_timer)
+def register():
+    # Like 1.0.3, it reads its preferences, which must exist.
+    if bpy.context.preferences.addons[__package__].preferences.use_autostart:
+        bpy.app.timers.register(_autostart_timer)
+def unregister():
+    if bpy.app.timers.is_registered(_autostart_timer):
+        bpy.app.timers.unregister(_autostart_timer)
+    mcp_to_blender_server.stop()
 `,
   "bl_ext/user_default/mcp/mcp_to_blender_server.py": String.raw`
 import socket, types
 _state = types.SimpleNamespace(sock=None)
 def is_running(): return _state.sock is not None
 def start(host, port):
+    if is_running(): raise RuntimeError("Server is already running")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1" if host == "localhost" else host, port))
     sock.listen(1)
@@ -87,26 +105,43 @@ def stop():
     _state.sock = None
 `,
   "addon_utils.py": String.raw`
-import importlib, json, os, types, bpy
+import importlib, json, os, types
 state = json.loads(os.environ["STUB_STATE"])
+registered = set()
 def modules():
     return [types.SimpleNamespace(__name__=name) for name in state["installed"]]
-def enable(name, default_set=True):
-    bpy.context.preferences.addons[name] = bpy.Addon()
-    importlib.import_module(name)
+def register(name):
+    importlib.import_module(name).register()
+    registered.add(name)
+def enable(name, default_set=False):
+    import bpy
+    if default_set and name not in bpy.context.preferences.addons:
+        bpy.context.preferences.addons[name] = bpy.Addon()
     log("enable", name, default_set)
-def disable(name, default_set=True):
-    bpy.context.preferences.addons.pop(name, None)
+    register(name)
+def disable(name, default_set=False):
+    import bpy
+    if name in registered:
+        importlib.import_module(name).unregister()
+        registered.discard(name)
+    if default_set:
+        bpy.context.preferences.addons.pop(name, None)
     log("disable", name, default_set)
+def reload_scripts():
+    import bpy
+    for name in bpy.context.preferences.addons.keys():
+        if name not in registered:
+            register(name)
 def log(*entry):
     with open(os.environ["STUB_LOG"], "a") as out:
         out.write(json.dumps(entry) + "\n")
 `,
 };
 
-// Plays T3's side of the control socket: connect, then end the grant one way or another.
+// Plays T3's side of the control socket, then whatever ends or tests the grant.
 const AFTER_REGISTER = String.raw`
 import json as _j
+import addon_utils as _addons
 _scenario = _j.loads(os.environ["STUB_STATE"])
 _held = None
 if _scenario.get("portTaken"):
@@ -119,8 +154,19 @@ def _report():
     return {
         "listener": _snapshot()["agentListener"],
         "listening": None if server is None or server._state.sock is None else server._state.sock.getsockname()[1],
-        "enabled": "${MCP}" in bpy.context.preferences.addons,
+        "enabled": "${MCP}" in _addons.registered,
     }
+def _press_start():
+    # The extension's own Start button, and Blender's Reload Scripts.
+    try:
+        bpy.ops.blmcp.server_start()
+    except AttributeError:
+        pass
+    _addons.reload_scripts()
+    try:
+        bpy.ops.blmcp.server_start()
+    except AttributeError:
+        pass
 _steps = [_report()]
 _t3 = None
 if _scenario.get("connect", True):
@@ -128,27 +174,35 @@ if _scenario.get("connect", True):
     _t3.connect(SOCKET_PATH)
     _tick()
     _steps.append(_report())
+    if _scenario.get("pressStartBeforeGrant"):
+        _press_start()
+        _steps.append(_report())
+    _t3.sendall("".join(json.dumps({"type": kind}) + "\n" for kind in _scenario.get("send", ["grantAgentListener"])).encode())
+    _tick()
+    _steps.append(_report())
 _then = _scenario.get("then")
 if _then == "revoke":
-    _handle({"type": "stopAgentListener"})
+    _t3.sendall(b'{"type": "stopAgentListener"}\n')
+    _tick()
 elif _then == "drop":
     _t3.close()
     _tick()
 elif _then == "otherFile":
     bpy.data.filepath = "/work/other.blend"
     _on_load_post()
+elif _then == "saveAs":
+    bpy.data.filepath = "/work/hero-final.blend"
+    _on_save_post()
+elif _then == "revert":
+    _on_load_post()
 if _then is not None:
     _steps.append(_report())
-    # The extension's own Start button, pressed after the grant ended.
-    _addon = bpy.context.preferences.addons.get("${MCP}")
-    if _addon is not None:
-        bpy.ops.blmcp.server_start()
+    _press_start()
     _steps.append(_report())
-_addon = bpy.context.preferences.addons.get("${MCP}")
 print(_j.dumps({
     "steps": _steps,
+    "inPrefs": "${MCP}" in bpy.context.preferences.addons,
     "autostart": any(getattr(f, "__name__", "") == "_autostart_timer" for f in bpy.app.registered),
-    "useAutostart": None if _addon is None else _addon.preferences.use_autostart,
 }))
 `;
 
@@ -176,7 +230,10 @@ const runAddon = (input: {
   readonly listen: boolean;
   readonly portTaken?: boolean;
   readonly connect?: boolean;
-  readonly then?: "revoke" | "drop" | "otherFile";
+  /** What T3 sends once connected; a grant by default. */
+  readonly send?: ReadonlyArray<"grantAgentListener" | "stopAgentListener">;
+  readonly pressStartBeforeGrant?: boolean;
+  readonly then?: "revoke" | "drop" | "otherFile" | "saveAs" | "revert";
 }) => {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-control-addon-"));
   dirs.push(dir);
@@ -214,29 +271,54 @@ const runAddon = (input: {
 };
 
 const after = (result: { readonly steps: ReadonlyArray<unknown> }) => result.steps.at(-1);
-const ended = { listener: "off", listening: null, enabled: false };
+const off = { listener: "off", listening: null, enabled: false };
+const pending = { listener: "starting", listening: null, enabled: false };
 
 describe("T3's control add-on and Blender Lab's MCP add-on", () => {
-  it("keeps the official listener off without --t3-mcp-listen, for this session only", () => {
-    const result = runAddon({ installed: [MCP], enabled: [MCP], listen: false });
-    expect(result.calls).toEqual([["disable", MCP, false]]);
-    expect(result.steps).toEqual([ended, ended]);
+  it("keeps it off without --t3-mcp-listen, and out of these settings so a reload can't start it", () => {
+    const result = runAddon({ installed: [MCP], enabled: [MCP], listen: false, then: "revert" });
+    expect(result.calls).toContainEqual(["disable", MCP, true]);
+    expect(
+      result.steps.every((step: unknown) => JSON.stringify(step) === JSON.stringify(off)),
+    ).toBe(true);
+    expect(result.inPrefs).toBe(false);
   });
 
-  it("starts nothing until T3 connects, then starts it on T3's port with its autostart off", () => {
+  it("starts it only on T3's grant, on T3's port, with its own autostart off", () => {
     const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true });
-    expect(result.calls).toEqual([]);
     expect(result.steps).toEqual([
-      { listener: "starting", listening: null, enabled: true },
+      pending,
+      pending,
       { listener: "ready", listening: result.port, enabled: true },
     ]);
     expect(result.autostart).toBe(false);
-    expect(result.useAutostart).toBe(false);
+  });
+
+  it("offers no Start button and starts nothing while the grant is pending", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      pressStartBeforeGrant: true,
+      send: [],
+    });
+    expect(result.steps).toEqual([pending, pending, pending, pending]);
+  });
+
+  it("never starts it when T3 revokes before it grants", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      send: ["stopAgentListener", "grantAgentListener"],
+    });
+    // Connected but not yet granted, then revoked: it was never ready.
+    expect(result.steps).toEqual([pending, pending, off]);
   });
 
   it("never starts it while T3 isn't connected", () => {
     const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, connect: false });
-    expect(result.steps).toEqual([{ listener: "starting", listening: null, enabled: true }]);
+    expect(result.steps).toEqual([pending]);
   });
 
   it("enables an installed but disabled extension with its preferences, then starts it", () => {
@@ -255,14 +337,25 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     expect(after(result)).toMatchObject({ listener: "failed" });
   });
 
-  it.each(["revoke", "drop", "otherFile"] as const)(
-    "closes the listener and disables the extension when the grant ends by %s, for good",
+  it.each(["revoke", "drop", "otherFile", "saveAs"] as const)(
+    "ends the grant for good on %s: closed, disabled and out of these settings",
     (then) => {
       const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, then });
-      expect(result.steps.slice(-2)).toEqual([ended, ended]);
-      expect(result.calls).toContainEqual(["disable", MCP, false]);
+      // After the end, then after Start and Reload Scripts.
+      expect(result.steps.slice(-2)).toEqual([off, off]);
+      expect(result.calls.at(-1)).toEqual(["disable", MCP, true]);
+      expect(result.inPrefs).toBe(false);
     },
   );
+
+  it("keeps access when the working copy itself is reverted", () => {
+    const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, then: "revert" });
+    expect(result.steps.at(-2)).toEqual({
+      listener: "ready",
+      listening: result.port,
+      enabled: true,
+    });
+  });
 
   it("leaves other add-ons alone", () => {
     const result = runAddon({

@@ -41,6 +41,8 @@ const layerFor = (input: {
   readonly root: string;
   readonly state?: HostedBlenderThreadState;
   readonly listener?: HostedBlender.AgentListenerState;
+  readonly ended?: HostedBlender.AgentAccessEnded;
+  readonly openFile?: string;
   readonly opened: Array<HostedBlenderOpenInput & { readonly agentWorkingCopy?: boolean }>;
   readonly openError?: HostedBlenderError;
 }) =>
@@ -53,7 +55,12 @@ const layerFor = (input: {
             })
           : Effect.fail(input.openError),
       threadState: () => Stream.succeed(input.state ?? { status: "stopped" }),
-      agentListener: () => Effect.succeed(input.listener ?? "ready"),
+      agentListener: () =>
+        Effect.succeed({
+          state: input.listener ?? "ready",
+          ended: input.ended ?? null,
+          openFile: input.openFile ?? null,
+        }),
     }),
     Layer.mock(ThreadManagementService.ThreadManagementService)({
       getThreadShell: () => Effect.succeed({ worktreePath: input.root, projectId: "p" } as never),
@@ -113,7 +120,8 @@ describe("startAgentWorkingCopy", () => {
   it.effect("opens the working copy itself when the agent names it", () =>
     Effect.gen(function* () {
       const root = yield* tempWorkspace;
-      writeMaster(root, "hero.wip-3c4d5e6f.blend");
+      writeMaster(root, "hero.blend");
+      writeMaster(root, "hero.wip-3c4d5e6f.blend", "agent edits");
       const opened: Array<HostedBlenderOpenInput & { readonly agentWorkingCopy?: boolean }> = [];
       const result = yield* startAgentWorkingCopy({
         threadId,
@@ -281,6 +289,51 @@ describe("startAgentWorkingCopy", () => {
         Effect.provide(layerFor({ root, opened: [] })),
       );
       assert.isFalse(result.created);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("checks a direct working copy against its master whatever the extension's case", () =>
+    Effect.gen(function* () {
+      const root = yield* tempWorkspace;
+      const master = writeMaster(root, "Hero.BLEND");
+      NodeFS.linkSync(master, NodePath.join(root, "Hero.wip-3c4d5e6f.blend"));
+      const error = yield* Effect.flip(
+        startAgentWorkingCopy({ threadId, path: "Hero.wip-3c4d5e6f.blend" }).pipe(
+          Effect.provide(layerFor({ root, opened: [] })),
+        ),
+      );
+      expect(error.reason).toContain("not a separate copy");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("refuses a direct working copy whose master can't be found", () =>
+    Effect.gen(function* () {
+      const root = yield* tempWorkspace;
+      writeMaster(root, "hero.wip-3c4d5e6f.blend");
+      const error = yield* Effect.flip(
+        startAgentWorkingCopy({ threadId, path: "hero.wip-3c4d5e6f.blend" }).pipe(
+          Effect.provide(layerFor({ root, opened: [] })),
+        ),
+      );
+      expect(error.reason).toContain("not a separate copy");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    { ended: "connectionLost" as const, says: "Ask the user to save in the Blender pane" },
+    { ended: "otherFile" as const, says: "has another file open" },
+    { ended: "revoked" as const, says: "blender_quit with save: true" },
+  ])("says how to get access back after $ended", ({ ended, says }) =>
+    Effect.gen(function* () {
+      const root = yield* tempWorkspace;
+      writeMaster(root, "hero.blend");
+      const error = yield* Effect.flip(
+        startAgentWorkingCopy({ threadId, path: "hero.blend" }).pipe(
+          Effect.provide(layerFor({ root, opened: [], listener: "off", ended })),
+        ),
+      );
+      expect(error.reason).toContain(says);
+      if (ended === "connectionLost") expect(error.reason).toContain("save: false");
     }).pipe(Effect.scoped),
   );
 });

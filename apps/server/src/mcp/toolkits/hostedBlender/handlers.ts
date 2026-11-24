@@ -76,16 +76,20 @@ const handlers = {
       }
       if (state?.status !== "starting" && state?.status !== "running") return { blenders: [] };
       const root = yield* threadWorkspaceRoot(threadId);
+      const listener = yield* hostedBlender.agentListener(threadId, { wait: false });
       return {
         blenders: [
           {
             role: "working",
             status: state.status,
-            file: root === undefined ? state.relativePath : path.join(root, state.relativePath),
+            // The file Blender has open now, which may no longer be the one it started with.
+            file:
+              listener?.openFile ??
+              (root === undefined ? state.relativePath : path.join(root, state.relativePath)),
             unsavedChanges: state.dirty,
             // Only a listener that came up on the thread's port takes `blender-hosted` calls.
-            agentAccess:
-              (yield* hostedBlender.agentListener(threadId, { wait: false })) === "ready",
+            agentAccess: listener?.state === "ready",
+            ...(listener?.ended == null ? {} : { agentAccessEnded: listener.ended }),
           },
         ],
       } satisfies HostedBlenderToolStatusResult;
