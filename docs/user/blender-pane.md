@@ -61,6 +61,14 @@ One device is in control at a time. While someone else is, the pane offers **Tak
 
 Closing the pane leaves Blender running; open it again from the file preview or a link. To stop Blender, choose **Quit Blender** from the pane's menu. If the file has unsaved changes, you can save them first or quit without saving. If the save fails, Blender keeps running so nothing is lost.
 
+## Point the agent at something
+
+**Screenshot & annotate** in the pane's toolbar has Blender take a picture of the 3D view in its viewport window and freezes it so you can draw on it, mark regions and write or dictate a comment, as in the [3D preview](3d-previews.md#point-the-agent-at-part-of-a-model). Add to chat puts it in the composer with the screenshot, titled with the file and whether it's a working copy or the master, such as "hero.wip-a1b2.blend · Working copy". The agent also gets the camera the picture was taken from and, for each mark, the object Blender finds under it and the 3D point it covers. If Blender can't take the picture, as in Cycles' rendered view, the frame you were watching is frozen instead, without the camera or what the marks cover. Very large viewports are pictured at a smaller size.
+
+## View links
+
+A link to the open `.blend` that ends in `#view=` and six numbers, such as `models/hero.blend#view=6,-6,5,0,0,0`, opens the pane and moves the viewport window to look from the first three numbers at the last three, in Blender's scene coordinates. It never moves the agent's own view. An annotation carries a link like this, so the agent can send you back to what you pointed at. A view link to a `.blend` that isn't open in the thread's hosted Blender opens the file preview instead. Only people who can control the thread move the view; others just see the pane open.
+
 ## On a phone
 
 In the mobile app, open a `.blend` from the thread's files and choose **Open in hosted Blender** from the file's menu. While a hosted Blender is running, the thread also shows a Blender button beside its device and browser previews, so anyone who can see the thread can watch it. Blender opens full screen, view-only, with the same permissions as on desktop: anyone who can see the thread can watch, and taking control needs permission to use terminals.

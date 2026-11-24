@@ -20,12 +20,13 @@ import type {
   EnvironmentId,
   HostedBlenderRequirement,
   HostedBlenderRunningState,
+  ProjectId,
   HostedBlenderThreadState,
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
-import { MoreVertical } from "lucide-react";
+import { CameraIcon, MoreVertical } from "lucide-react";
 import { msg, T, useGT, useMessages, Var } from "gt-react";
 import {
   type ReactNode,
@@ -68,6 +69,8 @@ import {
 } from "~/components/ui/menu";
 import { Spinner } from "~/components/ui/spinner";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
+import type { ComposerThreadTarget } from "~/composerDraftStore";
 import { isElectron } from "~/env";
 import { getLocalStorageItem, useLocalStorage } from "~/hooks/useLocalStorage";
 import { resolveShortcutCommand } from "~/keybindings";
@@ -89,6 +92,7 @@ import { appAtomRegistry } from "~/rpc/atomRegistry";
 
 import { HiddenThreadContext } from "../chat/backgroundThread";
 
+import { useBlenderAnnotation } from "./BlenderAnnotationEditor";
 import { attachBlenderInput, type BlenderInput } from "./blenderInput";
 
 interface StreamStats {
@@ -134,16 +138,22 @@ const leavesBlender = (event: KeyboardEvent) => {
 interface BlenderStreamHandle {
   readonly takeControl: (takeOver: boolean) => void;
   readonly fullscreen: () => void;
+  readonly focus: () => void;
 }
 
 const canUseFullscreen = () =>
   !isElectron && typeof document !== "undefined" && document.fullscreenEnabled;
 
 /** The thread's hosted Blender, live; clicking it takes control. Closing the pane leaves Blender running. */
-export function BlenderPanel(props: {
+interface BlenderPanelProps {
   readonly threadRef: ScopedThreadRef;
   readonly visible: boolean;
-}) {
+  /** Where Screenshot & annotate puts what it captures. */
+  readonly composerTarget: ComposerThreadTarget;
+  readonly projectId?: ProjectId | undefined;
+}
+
+export function BlenderPanel(props: BlenderPanelProps) {
   const state = useHostedBlenderState(props.threadRef);
   if (state === null) return <StateCard title={<Spinner />} />;
   switch (state.status) {
@@ -314,14 +324,18 @@ function MissingRequirements(props: { readonly missing: ReadonlyArray<HostedBlen
   );
 }
 
-function RunningBlender(props: {
-  readonly threadRef: ScopedThreadRef;
-  readonly visible: boolean;
-  readonly state: HostedBlenderRunningState;
-}) {
+function RunningBlender(props: BlenderPanelProps & { readonly state: HostedBlenderRunningState }) {
   const [stats, setStats] = useState<StreamStats>({ frameSize: null, rate: null, server: null });
   const [control, setControl] = useState<HostedBlenderControl>(VIEW_ONLY);
   const streamRef = useRef<BlenderStreamHandle | null>(null);
+  const annotation = useBlenderAnnotation({
+    threadRef: props.threadRef,
+    relativePath: props.state.relativePath,
+    composerTarget: props.composerTarget,
+    projectId: props.projectId,
+    onClose: () => streamRef.current?.focus(),
+  });
+  const live = props.state.status === "running" && props.visible && stats.frameSize !== null;
   return (
     <div className="flex h-full min-h-0 flex-col">
       <BlenderToolbar
@@ -329,6 +343,7 @@ function RunningBlender(props: {
         state={props.state}
         control={control}
         streamRef={streamRef}
+        onAnnotate={live ? annotation.start : null}
       />
       {props.state.status === "starting" ? (
         <StateCard
@@ -347,6 +362,9 @@ function RunningBlender(props: {
           onStats={setStats}
           onControl={setControl}
           handleRef={streamRef}
+          canvasRef={annotation.canvasRef}
+          paused={annotation.editor !== null}
+          overlay={annotation.editor}
         />
       ) : (
         <div className="min-h-0 flex-1" />
@@ -365,6 +383,8 @@ function BlenderToolbar(props: {
   readonly state: HostedBlenderRunningState;
   readonly control: HostedBlenderControl;
   readonly streamRef: RefObject<BlenderStreamHandle | null>;
+  /** Null while there's no live frame to freeze. */
+  readonly onAnnotate: (() => void) | null;
 }) {
   const gt = useGT();
   const canQuit = useAtomValue(
@@ -407,6 +427,25 @@ function BlenderToolbar(props: {
   return (
     <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
       <span className="min-w-0 flex-1 truncate font-mono text-xs font-semibold">{name}</span>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              type="button"
+              aria-label={gt("Screenshot & annotate")}
+              disabled={props.onAnnotate === null}
+              // Pressing it must not move focus off the stream, which would give control back.
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => props.onAnnotate?.()}
+            />
+          }
+        >
+          <CameraIcon />
+        </TooltipTrigger>
+        <TooltipPopup side="bottom">{gt("Screenshot & annotate")}</TooltipPopup>
+      </Tooltip>
       {!canOperate ? null : controller !== "you" ? (
         <Button
           variant="outline"
@@ -581,11 +620,20 @@ function BlenderStream(props: {
   readonly handleRef: RefObject<BlenderStreamHandle | null>;
   readonly onFrameSize?: (size: { readonly width: number; readonly height: number }) => void;
   readonly floating?: boolean;
+  /** The pane's annotation reads the stream's canvas; the floating player has none. */
+  readonly canvasRef?: RefObject<HTMLCanvasElement | null>;
+  /** The annotation editor needs the keyboard and pointer; control stays with this device. */
+  readonly paused?: boolean;
+  /** Covers the stream, inside the same focus boundary: focus there hasn't left Blender. */
+  readonly overlay?: ReactNode;
 }) {
   const gt = useGT();
   const access = useHostedBlenderStreamAccess(props.environmentId);
   const containerRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const boundaryRef = useRef<HTMLDivElement>(null);
+  const ownCanvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasRef = props.canvasRef ?? ownCanvasRef;
+  const paused = props.paused === true;
   const clientRef = useRef<HostedBlenderStreamClient | null>(null);
   const inputRef = useRef<BlenderInput | null>(null);
   const capturedRef = useRef(false);
@@ -615,8 +663,8 @@ function BlenderStream(props: {
     takingRef.current = false;
     // A grant that lands after the user moved on in T3 would leave an unfocused pane holding
     // the keyboard; give it straight back. Leaving the window altogether keeps it.
-    const container = containerRef.current;
-    if (granted && document.hasFocus() && !container?.contains(document.activeElement)) {
+    const boundary = boundaryRef.current;
+    if (granted && document.hasFocus() && !boundary?.contains(document.activeElement)) {
       clientRef.current?.send({ type: "releaseControl" });
     }
     setControl(next);
@@ -660,6 +708,7 @@ function BlenderStream(props: {
           .then(() => (navigator as KeyboardLockNavigator).keyboard?.lock?.())
           .catch(() => undefined);
       },
+      focus: () => container.focus(),
     };
     // A pane in a hidden tab or a minimized window is not on screen.
     const showVisibility = () => client.setVisible(onScreen());
@@ -682,7 +731,7 @@ function BlenderStream(props: {
       handleRef.current = null;
       changeControl(VIEW_ONLY);
     };
-  }, [access, environmentId, threadId, onStats, handleRef, floating]);
+  }, [access, environmentId, threadId, onStats, handleRef, floating, canvasRef]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the server when Settings or Usage cover or uncover the thread, without reconnecting
   useEffect(() => {
@@ -694,7 +743,7 @@ function BlenderStream(props: {
     const container = containerRef.current;
     const canvas = canvasRef.current;
     const client = clientRef.current;
-    if (!inControl || container === null || canvas === null || client === null) return;
+    if (!inControl || paused || container === null || canvas === null || client === null) return;
     const input = attachBlenderInput({
       surface: container,
       canvas,
@@ -722,28 +771,12 @@ function BlenderStream(props: {
       inputRef.current = null;
       input.dispose();
     };
-  }, [inControl]);
+  }, [inControl, paused, canvasRef]);
 
   return (
     <div
-      ref={containerRef}
-      tabIndex={canOperate ? 0 : undefined}
-      aria-label={gt("Blender viewport")}
-      data-in-control={inControl ? "" : undefined}
-      className={cn(
-        "relative flex items-center justify-center overflow-hidden bg-black",
-        floating
-          ? "size-full"
-          : "m-2 min-h-0 flex-1 rounded-md outline-none data-[in-control]:ring-2 data-[in-control]:ring-primary",
-      )}
-      onPointerDown={(event) => {
-        // The click that takes control stays out of Blender, so it selects nothing there.
-        if (inControl || !canOperate || control.controller !== "unclaimed") return;
-        if (event.button !== 0 || clientRef.current === null) return;
-        takingRef.current = true;
-        clientRef.current.send({ type: "takeControl", takeOver: false });
-        event.currentTarget.focus();
-      }}
+      ref={boundaryRef}
+      className={floating ? "relative size-full" : "relative flex min-h-0 flex-1 flex-col"}
       onBlur={(event) => {
         // Leaving the window keeps control; clicking or tabbing elsewhere in T3 gives it back.
         if (!(inControl || takingRef.current) || !document.hasFocus()) return;
@@ -756,8 +789,33 @@ function BlenderStream(props: {
         clientRef.current?.send({ type: "releaseControl" });
       }}
     >
-      <canvas ref={canvasRef} className={status === "live" ? "max-h-full max-w-full" : "hidden"} />
-      {status === "live" ? null : <StreamStatus status={status} />}
+      <div
+        ref={containerRef}
+        tabIndex={canOperate ? 0 : undefined}
+        aria-label={gt("Blender viewport")}
+        data-in-control={inControl ? "" : undefined}
+        className={cn(
+          "relative flex items-center justify-center overflow-hidden bg-black",
+          floating
+            ? "size-full"
+            : "m-2 min-h-0 flex-1 rounded-md outline-none data-[in-control]:ring-2 data-[in-control]:ring-primary",
+        )}
+        onPointerDown={(event) => {
+          // The click that takes control stays out of Blender, so it selects nothing there.
+          if (inControl || !canOperate || control.controller !== "unclaimed") return;
+          if (event.button !== 0 || clientRef.current === null) return;
+          takingRef.current = true;
+          clientRef.current.send({ type: "takeControl", takeOver: false });
+          event.currentTarget.focus();
+        }}
+      >
+        <canvas
+          ref={canvasRef}
+          className={status === "live" ? "max-h-full max-w-full" : "hidden"}
+        />
+        {status === "live" ? null : <StreamStatus status={status} />}
+      </div>
+      {props.overlay}
     </div>
   );
 }

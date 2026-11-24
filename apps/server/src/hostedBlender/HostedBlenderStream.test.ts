@@ -34,6 +34,9 @@ const serve = (
       quit: () => Effect.void,
       threadState: () => Stream.empty,
       attachViewer,
+      captureView: () => Effect.die("unused"),
+      findHits: () => Effect.die("unused"),
+      setView: () => Effect.die("unused"),
     });
     const auth = Layer.merge(
       Layer.mock(EnvironmentAuth.EnvironmentAuth, {

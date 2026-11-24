@@ -367,13 +367,18 @@ import {
 } from "./device.ts";
 import {
   HostedBlenderError,
-  HostedBlenderInstallResult,
+  HostedBlenderFindHitsInput,
+  HostedBlenderHits,
   HostedBlenderOpenInput,
   HostedBlenderQuitInput,
+  HostedBlenderSetViewInput,
+  HostedBlenderInstallResult,
   HostedBlenderSetupError,
   HostedBlenderSetupState,
   HostedBlenderSubscribeInput,
+  HostedBlenderThreadInput,
   HostedBlenderThreadState,
+  HostedBlenderViewCapture,
 } from "./hostedBlender.ts";
 import {
   ServerConfigStreamEvent,
@@ -604,6 +609,9 @@ export const WS_METHODS = {
   hostedBlenderOpen: "hostedBlender.open",
   hostedBlenderQuit: "hostedBlender.quit",
   hostedBlenderSubscribeThread: "hostedBlender.subscribeThread",
+  hostedBlenderCaptureView: "hostedBlender.captureView",
+  hostedBlenderFindHits: "hostedBlender.findHits",
+  hostedBlenderSetView: "hostedBlender.setView",
   hostedBlenderSubscribeSetup: "hostedBlender.subscribeSetup",
   hostedBlenderCheckSetup: "hostedBlender.checkSetup",
   hostedBlenderInstallWithAgent: "hostedBlender.installWithAgent",
@@ -2159,6 +2167,23 @@ const WsHostedBlenderQuitRpc = Rpc.make(WS_METHODS.hostedBlenderQuit, {
   error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
 });
 
+const WsHostedBlenderCaptureViewRpc = Rpc.make(WS_METHODS.hostedBlenderCaptureView, {
+  payload: HostedBlenderThreadInput,
+  success: HostedBlenderViewCapture,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+const WsHostedBlenderFindHitsRpc = Rpc.make(WS_METHODS.hostedBlenderFindHits, {
+  payload: HostedBlenderFindHitsInput,
+  success: HostedBlenderHits,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+const WsHostedBlenderSetViewRpc = Rpc.make(WS_METHODS.hostedBlenderSetView, {
+  payload: HostedBlenderSetViewInput,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
 const WsHostedBlenderSubscribeThreadRpc = Rpc.make(WS_METHODS.hostedBlenderSubscribeThread, {
   payload: HostedBlenderSubscribeInput,
   success: HostedBlenderThreadState,
@@ -2784,6 +2809,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsHostedBlenderOpenRpc,
   WsHostedBlenderQuitRpc,
   WsHostedBlenderSubscribeThreadRpc,
+  WsHostedBlenderCaptureViewRpc,
+  WsHostedBlenderFindHitsRpc,
+  WsHostedBlenderSetViewRpc,
   WsHostedBlenderSubscribeSetupRpc,
   WsHostedBlenderCheckSetupRpc,
   WsHostedBlenderInstallWithAgentRpc,

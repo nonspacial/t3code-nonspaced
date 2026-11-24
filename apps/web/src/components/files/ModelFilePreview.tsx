@@ -16,10 +16,7 @@ import { CameraIcon, FocusIcon } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { useAssetUrlMinter } from "~/assets/assetUrls";
-import { readComposerImageBytes } from "~/components/chat/composerAttachmentFiles";
-import { stackedThreadToast, toastManager } from "~/components/ui/toast";
-import { useComposerDraftStore, type ComposerThreadTarget } from "~/composerDraftStore";
-import { capturePreviewAnnotationScreenshot } from "~/lib/previewAnnotation";
+import type { ComposerThreadTarget } from "~/composerDraftStore";
 import { randomUUID } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
@@ -33,6 +30,7 @@ import { FileSurfaceFailure, FileSurfaceLoading } from "./fileSurfaceChrome";
 import { ModelAnnotationEditor, type ModelAnnotationResult } from "./ModelAnnotationEditor";
 import { modelAnnotationPayload } from "./modelAnnotation";
 import { PreviewAction, PreviewFacts, PreviewStatusChip } from "./previewChrome";
+import { useAttachModelAnnotation } from "./useAttachModelAnnotation";
 
 /** Models parse on the main thread; past this size the window can stall for seconds, so we ask first. */
 export const MODEL_CONFIRM_BYTES = 100 * 1024 * 1024;
@@ -206,8 +204,7 @@ export function ModelFilePreview(props: {
     readonly view: Extract<ModelView, { readonly phase: "ready" }>;
   } | null>(null);
   const [snapshot, setSnapshot] = useState<ModelSnapshot | null>(null);
-  const addPreviewAnnotation = useComposerDraftStore((store) => store.addPreviewAnnotation);
-  const addImage = useComposerDraftStore((store) => store.addImage);
+  const attachAnnotationToComposer = useAttachModelAnnotation();
   const mint = useAssetUrlMinter(props.companions?.environmentId ?? null);
   const companionModel = props.companions?.resource ?? null;
   const mintCompanion = useStableCallback(async (path: string, signal: AbortSignal) =>
@@ -384,31 +381,7 @@ export function ModelFilePreview(props: {
       cameraView: captured.cameraView,
       createdAt: new Date().toISOString(),
     });
-    const capture = capturePreviewAnnotationScreenshot(payload);
-    const annotation = capture.status === "failed" ? { ...payload, screenshot: null } : payload;
-    if (capture.status === "captured") await readComposerImageBytes(capture.file);
-    addPreviewAnnotation(target.composerTarget, annotation);
-    if (capture.status === "failed") {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: gt("Could not capture the 3D view"),
-          description: gt("The annotation was kept without the screenshot."),
-        }),
-      );
-      return;
-    }
-    if (capture.status === "captured" && annotation.screenshot) {
-      addImage(target.composerTarget, {
-        type: "image",
-        id,
-        name: capture.file.name,
-        mimeType: capture.file.type,
-        sizeBytes: capture.file.size,
-        previewUrl: annotation.screenshot.dataUrl,
-        file: capture.file,
-      });
-    }
+    await attachAnnotationToComposer(target.composerTarget, payload);
   };
 
   const missing = shown.phase === "ready" || shown.phase === "failed" ? shown.missing : [];
