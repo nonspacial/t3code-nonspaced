@@ -49,6 +49,9 @@ export function HostedBlenderSetupSettings(props: { readonly environmentId: Envi
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const enabled = settings.hostedBlenderEnabled;
+  const canOperate = useAtomValue(
+    hostedBlenderEnvironment.checkSetup.permissionAtom(props.environmentId),
+  );
   // Only a switched-on Hosted Blender is checked, so the subscription waits for the switch.
   const state = useHostedBlenderSetupState(enabled ? props.environmentId : null);
   const result = state?.result ?? null;
@@ -70,6 +73,8 @@ export function HostedBlenderSetupSettings(props: { readonly environmentId: Envi
           <ScopedSwitch
             settingKeys={["hostedBlenderEnabled"]}
             checked={enabled}
+            // Switching on runs the setup check, so it needs what Check again needs; off never does.
+            disabled={!enabled && !canOperate}
             onCheckedChange={(checked) =>
               updateSettings({ hostedBlenderEnabled: Boolean(checked) })
             }

@@ -18,6 +18,7 @@ import type { ScopedSettingsPatch } from "./scopedSettings";
 const state = vi.hoisted(() => ({
   settings: {} as Record<string, unknown>,
   setup: null as HostedBlenderSetupState | null,
+  canOperate: true,
   updateSettings: vi.fn<(patch: ScopedSettingsPatch) => void>(),
   install: vi.fn(async () => ({ _tag: "Success", value: { threadId: "thread-install" } })),
   check: vi.fn(async () => ({ _tag: "Success", value: undefined })),
@@ -42,7 +43,7 @@ vi.mock(import("./settingsLayout"), async (original) => ({
 }));
 vi.mock(import("~/state/hostedBlender"), async (original) => {
   const actual = await original();
-  const allowed = () => Atom.make(true);
+  const allowed = () => Atom.make(state.canOperate);
   return {
     ...actual,
     useHostedBlenderSetupState: (() => state.setup) as never,
@@ -107,6 +108,23 @@ describe("HostedBlenderSetupSettings", () => {
     await expect.element(screen.getByText("Check again")).not.toBeInTheDocument();
     await userEvent.click(toggle);
     expect(state.updateSettings).toHaveBeenCalledWith({ hostedBlenderEnabled: true });
+  });
+
+  it("lets only a session that may run programs here switch it on, and anyone switch it off", async () => {
+    state.canOperate = false;
+    try {
+      state.settings = {};
+      state.setup = null;
+      await using off = await render(<HostedBlenderSetupSettings environmentId={environmentId} />);
+      await expect.element(off.getByRole("switch", { name: "Hosted Blender" })).toBeDisabled();
+      await off.unmount();
+      state.settings = { hostedBlenderEnabled: true };
+      state.setup = checked(OK);
+      await using on = await render(<HostedBlenderSetupSettings environmentId={environmentId} />);
+      await expect.element(on.getByRole("switch", { name: "Hosted Blender" })).toBeEnabled();
+    } finally {
+      state.canOperate = true;
+    }
   });
 
   it("lists each check, the capture path and the encoder from the test encode", async () => {
