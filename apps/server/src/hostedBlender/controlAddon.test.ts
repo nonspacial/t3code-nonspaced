@@ -71,6 +71,13 @@ def _stop():
     sys.modules[NAME + ".mcp_to_blender_server"].stop()
     return {"FINISHED"}
 blmcp = types.SimpleNamespace(server_start=_operator(_start), server_stop=_operator(_stop))
+def _undo_push(message):
+    import bpy, addon_utils
+    addon_utils.log("undo_push", message)
+    # As in Blender: data edits leave the file clean; an undo push marks it modified.
+    bpy.data.is_dirty = True
+    return {"FINISHED"}
+ed = types.SimpleNamespace(undo_push=_undo_push)
 `,
   // Imported at the top for the capture and hit tests, which register() never runs.
   "gpu.py": "",
@@ -90,10 +97,41 @@ def unregister():
         bpy.app.timers.unregister(_autostart_timer)
     mcp_to_blender_server.stop()
 `,
+  "bl_ext/user_default/mcp/deferred_tool.py":
+    "pending = []\ndef has_pending(): return bool(pending)\n",
+  // 1.0.3's accept and execute path, which poll() looks up by name on each call.
   "bl_ext/user_default/mcp/mcp_to_blender_server.py": String.raw`
-import socket, types
-_state = types.SimpleNamespace(sock=None)
+import json, socket, types
+class _Client:
+    def __init__(self, conn): self.conn = conn; self.buffer = bytearray()
+_state = types.SimpleNamespace(sock=None, clients=[])
 def is_running(): return _state.sock is not None
+def _execute_code(code, strict_json):
+    namespace = {"result": {}}
+    exec(code, namespace)
+    return types.SimpleNamespace(response={"status": "ok", "result": namespace["result"]})
+def _accept_clients():
+    while True:
+        try:
+            conn, _addr = _state.sock.accept()
+        except OSError:
+            break
+        conn.setblocking(False)
+        _state.clients.append(_Client(conn))
+def poll():
+    _accept_clients()
+    for client in _state.clients[:]:
+        try:
+            client.buffer.extend(client.conn.recv(65536))
+        except BlockingIOError:
+            continue
+        if b"\0" not in client.buffer:
+            continue
+        request = json.loads(bytes(client.buffer[:client.buffer.index(b"\0")]))
+        result = _execute_code(request["code"], request["strict_json"])
+        client.conn.sendall((json.dumps(result.response) + "\0").encode())
+        client.conn.close()
+        _state.clients.remove(client)
 def start(host, port):
     import addon_utils
     addon_utils.log("start", port)
@@ -101,6 +139,7 @@ def start(host, port):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1" if host == "localhost" else host, port))
     sock.listen(1)
+    sock.setblocking(False)
     _state.sock = sock
 def stop():
     if _state.sock is not None: _state.sock.close()
@@ -111,7 +150,10 @@ import importlib, json, os, types
 state = json.loads(os.environ["STUB_STATE"])
 registered = set()
 def modules():
-    return [types.SimpleNamespace(__name__=name) for name in state["installed"]]
+    def module(name):
+        package = os.path.join(os.environ["PYTHONPATH"], *name.split("."))
+        return types.SimpleNamespace(__name__=name, __file__=os.path.join(package, "__init__.py"))
+    return [module(name) for name in state["installed"]]
 def register(name):
     importlib.import_module(name).register()
     registered.add(name)
@@ -203,7 +245,61 @@ if _then is not None:
     _steps.append(_report())
     _press_start()
     _steps.append(_report())
+if _scenario.get("reload"):
+    # Reload Scripts runs Blender Lab's module afresh; then its own Start button.
+    import importlib as _importlib
+    _server().stop()
+    _importlib.reload(_server())
+    bpy.ops.blmcp.server_start()
+    _tick()
+_call = _scenario.get("call")
+_called = None
+if _call is not None:
+    import struct as _st
+    _client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    _client.connect(("127.0.0.1", int(MCP_PORT)))
+    _table = _call.get("table")
+    if _table is not None:
+        # A /proc/net/tcp of T3's making: the kernel's format, with the uid the scenario asks.
+        def _hex(address):
+            raw = socket.inet_aton(address[0])
+            if _table.get("mapped"):
+                raw = b"\0" * 10 + b"\xff\xff" + raw
+            words = (_st.unpack("=I", raw[i:i + 4])[0] for i in range(0, len(raw), 4))
+            return "".join("%08X" % word for word in words) + ":%04X" % address[1]
+        _rows = ["  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode"]
+        if _table.get("row", True):
+            _rows.append("   0: %s %s 01 00000000:00000000 00:00000000 00000000 %5d        0 1 1" % (
+                _hex(_client.getsockname()),
+                _hex(("127.0.0.1", int(MCP_PORT))),
+                os.getuid() + _table.get("uidOffset", 0),
+            ))
+        _fake = os.path.join(os.path.dirname(SOCKET_PATH), "tcp")
+        with open(_fake, "w") as _out:
+            _out.write("\n".join(_rows) + "\n")
+        PROC_NET_TCP = (_fake,)
+    _client.sendall((json.dumps({
+        "type": "execute",
+        "code": "result = {'cube': 1}",
+        "strict_json": _call.get("strictJson", False),
+    }) + "\0").encode())
+    _server().poll()
+    _client.settimeout(5)
+    try:
+        _reply = _client.recv(65536)
+    except OSError:
+        _reply = b""
+    _acting = _snapshot()["agentActing"]
+    _Guard.acting_until = 0.0
+    _called = {
+        "reply": json.loads(_reply.rstrip(b"\0")) if _reply else None,
+        "dirty": bpy.data.is_dirty,
+        "acting": _acting,
+        "actingAfter": _snapshot()["agentActing"],
+    }
 print(_j.dumps({
+    "call": _called,
+    "mcpVersion": _snapshot()["mcpVersion"],
     "steps": _steps,
     "inPrefs": "${MCP}" in bpy.context.preferences.addons,
     "autostart": any(getattr(f, "__name__", "") == "_autostart_timer" for f in bpy.app.registered),
@@ -240,6 +336,22 @@ const runAddon = (input: {
   /** Another file is open by the time T3's grant arrives. */
   readonly fileBeforeGrant?: boolean;
   readonly then?: "revoke" | "drop" | "otherFile" | "saveAs" | "revert";
+  /** The installed extension's manifest version; 1.0.3 by default. */
+  readonly mcpVersion?: string;
+  /** Reload Scripts, then the extension's own Start button, before any call. */
+  readonly reload?: boolean;
+  /**
+   * An MCP call over real loopback TCP. With `table`, the add-on reads a /proc/net/tcp of
+   * the test's making: the client's row, or none, owned by this account plus `uidOffset`.
+   */
+  readonly call?: {
+    readonly strictJson?: boolean;
+    readonly table?: {
+      readonly row?: boolean;
+      readonly uidOffset?: number;
+      readonly mapped?: boolean;
+    };
+  };
 }) => {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-control-addon-"));
   dirs.push(dir);
@@ -247,6 +359,10 @@ const runAddon = (input: {
     NodeFS.mkdirSync(NodePath.dirname(NodePath.join(dir, file)), { recursive: true });
     NodeFS.writeFileSync(NodePath.join(dir, file), body);
   }
+  NodeFS.writeFileSync(
+    NodePath.join(dir, "bl_ext/user_default/mcp/blender_manifest.toml"),
+    `id = "mcp"\nversion = "${input.mcpVersion ?? "1.0.3"}"\n`,
+  );
   const addon = NodePath.join(dir, "t3_control.py");
   NodeFS.writeFileSync(addon, `${CONTROL_ADDON_SOURCE}\n${AFTER_REGISTER}`);
   const log = NodePath.join(dir, "calls.log");
@@ -397,5 +513,108 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     });
     expect(after(result)).toEqual(off);
     expect(bound(result)).toBe(false);
+  });
+
+  describe("its guard on Blender Lab's listener", () => {
+    const ok = { status: "ok", result: { cube: 1 } };
+
+    it("takes a call from this account, found by its real loopback connection", () => {
+      const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, call: {} });
+      expect(result.call.reply).toEqual(ok);
+    });
+
+    it("drops a connection another account owns", () => {
+      const result = runAddon({
+        installed: [MCP],
+        enabled: [MCP],
+        listen: true,
+        call: { table: { uidOffset: 1 } },
+      });
+      expect(result.call).toMatchObject({ reply: null, dirty: false, acting: false });
+    });
+
+    it("drops a connection whose owner can't be found", () => {
+      const result = runAddon({
+        installed: [MCP],
+        enabled: [MCP],
+        listen: true,
+        call: { table: { row: false } },
+      });
+      expect(result.call.reply).toBeNull();
+    });
+
+    it("reads an IPv4-mapped client from tcp6 rows", () => {
+      const result = runAddon({
+        installed: [MCP],
+        enabled: [MCP],
+        listen: true,
+        call: { table: { mapped: true } },
+      });
+      expect(result.call.reply).toEqual(ok);
+    });
+
+    it("guards Blender Lab again after Reload Scripts and its own Start button", () => {
+      const result = runAddon({
+        installed: [MCP],
+        enabled: [MCP],
+        listen: true,
+        reload: true,
+        call: { table: { uidOffset: 1 } },
+      });
+      expect(result.call.reply).toBeNull();
+    });
+
+    it("pushes an undo step after the agent's own code, which makes the file unsaved", () => {
+      const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, call: {} });
+      expect(result.call.dirty).toBe(true);
+      expect(result.calls).toContainEqual(["undo_push", "Agent edit"]);
+    });
+
+    it("pushes no undo step after Blender Lab's own read-only tool code", () => {
+      const result = runAddon({
+        installed: [MCP],
+        enabled: [MCP],
+        listen: true,
+        call: { strictJson: true },
+      });
+      expect(result.call).toMatchObject({ reply: ok, dirty: false });
+      expect(result.calls.some((call: ReadonlyArray<unknown>) => call[0] === "undo_push")).toBe(
+        false,
+      );
+    });
+
+    it("says the agent is acting during a call, and not once it has passed", () => {
+      const result = runAddon({
+        installed: [MCP],
+        enabled: [MCP],
+        listen: true,
+        call: { strictJson: true },
+      });
+      expect(result.call).toMatchObject({ acting: true, actingAfter: false });
+    });
+
+    it("never enables an untested version, and says which it is", () => {
+      const result = runAddon({
+        installed: [MCP],
+        enabled: [MCP],
+        listen: true,
+        mcpVersion: "1.1.0",
+      });
+      expect(after(result)).toEqual({ listener: "untested", listening: null, enabled: false });
+      expect(bound(result)).toBe(false);
+      expect(result.mcpVersion).toBe("1.1.0");
+    });
+
+    it("ends an untested version's refusal like any other grant", () => {
+      const result = runAddon({
+        installed: [MCP],
+        enabled: [MCP],
+        listen: true,
+        mcpVersion: "0.9.0",
+        then: "revoke",
+      });
+      expect(result.steps.slice(-2)).toEqual([off, off]);
+      expect(bound(result)).toBe(false);
+    });
   });
 });

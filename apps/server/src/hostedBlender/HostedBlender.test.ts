@@ -1547,9 +1547,9 @@ def control():
     server.bind(t3[1])
     server.listen(1)
     connection, _ = server.accept()
-    def state(filepath):
+    def state(filepath, **extra):
         connection.sendall((json.dumps({"type": "state", "filepath": filepath, "dirty": False,
-                                        "agentListener": listener[0]}) + "\n").encode())
+                                        "agentListener": listener[0], **extra}) + "\n").encode())
     after = os.environ.get("STANDIN_AFTER")
     # Another file already open by the time T3 hears, claiming its listener is ready.
     if after == "otherFileFirst":
@@ -1561,12 +1561,21 @@ def control():
         with open(os.environ["STANDIN_ARGS"] + ".control", "a") as log:
             log.write(line)
         kind = json.loads(line).get("type")
+        if kind == "grantAgentListener" and listener[0] == "starting" and after == "untested":
+            # The add-on found a Blender Lab version T3 hasn't tested and never enabled it.
+            listener[0] = "untested"
+            state(blend, mcpVersion="1.1.0")
+            continue
         if kind == "grantAgentListener" and listener[0] == "starting":
             listener[0] = "ready"
-            state(blend)
+            state(blend, agentActing=after == "acting", mcpVersion="1.0.3")
             if after == "otherFile":
                 # Someone opens another file through Blender's own UI.
                 state("/elsewhere/other.blend")
+        if kind == "stopAgentListener" and after == "acting":
+            listener[0] = "off"
+            state(blend, agentActing=False, mcpVersion="1.0.3")
+            continue
         if kind == "stopAgentListener":
             # Gone once it has heard the stop, so a test can wait for the stopped state.
             os._exit(0)
@@ -1580,7 +1589,7 @@ describe("Agent access at launch", () => {
   const launch = Effect.fn(function* (
     host: Pick<Host, "runtimeMode" | "interactionMode" | "agentPort" | "revocations">,
     options: { readonly agentWorkingCopy?: boolean } = { agentWorkingCopy: true },
-    after?: "otherFile" | "otherFileFirst",
+    after?: "otherFile" | "otherFileFirst" | "untested" | "acting",
   ) {
     const dir = yield* tempDir("agent-access");
     const bin = fakeTools(dir);
@@ -1687,6 +1696,40 @@ describe("Agent access at launch", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("passes on an untested Blender Lab version, which never listens", () =>
+    Effect.gen(function* () {
+      const { service } = yield* launch({ agentPort: 41234 }, undefined, "untested");
+      expect(yield* service.agentListener(threadId)).toMatchObject({
+        state: "untested",
+        mcpVersion: "1.1.0",
+      });
+      yield* service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("shows the agent acting while the add-on says so, for the pane's badge", () =>
+    Effect.gen(function* () {
+      const revoked = yield* Queue.unbounded<ThreadId | null>();
+      const { service } = yield* launch(
+        { agentPort: 41234, revocations: Stream.fromQueue(revoked) },
+        undefined,
+        "acting",
+      );
+      const acting = (value: boolean) =>
+        service.threadState(threadId).pipe(
+          Stream.filter(
+            (state) => state.status === "running" && (state.agentActing === true) === value,
+          ),
+          Stream.runHead,
+        );
+      expect(Option.getOrThrow(yield* acting(true))).toMatchObject({ agentActing: true });
+      // The add-on stops acting once access ends; the published state drops the flag.
+      yield* Queue.offer(revoked, threadId);
+      expect(Option.getOrThrow(yield* acting(false))).not.toHaveProperty("agentActing");
+      yield* service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
   it("waits for the control connection as long as Blender may take to start", () => {
     expect(HostedBlender.CONTROL_CONNECT_ATTEMPTS * 200).toBeGreaterThanOrEqual(90_000);
     expect(Duration.toMillis(HostedBlender.AGENT_LISTENER_TIMEOUT)).toBeGreaterThan(90_000);
@@ -1704,6 +1747,7 @@ describe("Agent access at launch", () => {
         state: "off",
         ended: "otherFile",
         openFile: "/elsewhere/other.blend",
+        mcpVersion: null,
       });
       yield* service.threadState(threadId).pipe(
         Stream.filter((state) => state.status === "stopped"),

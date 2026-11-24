@@ -93,7 +93,13 @@ const ControlMessage = Schema.Union([
     type: Schema.Literal("state"),
     filepath: Schema.String,
     dirty: Schema.Boolean,
-    agentListener: Schema.optional(Schema.Literals(["off", "starting", "ready", "failed"])),
+    agentListener: Schema.optional(
+      Schema.Literals(["off", "starting", "ready", "failed", "untested"]),
+    ),
+    /** Blender Lab is running agent calls, or just has. */
+    agentActing: Schema.optional(Schema.Boolean),
+    /** The installed Blender Lab extension's version, when the launch asked for its listener. */
+    mcpVersion: Schema.optional(Schema.NullOr(Schema.String)),
   }),
   Schema.Struct({ type: Schema.Literal("saving") }),
   Schema.Struct({ type: Schema.Literal("saved") }),
@@ -136,6 +142,8 @@ export interface AgentListenerReport {
    * before it has said.
    */
   readonly openFile: string | null | undefined;
+  /** The installed Blender Lab extension's version, once the add-on has said. */
+  readonly mcpVersion: string | null;
 }
 const encodeControlCommand = Schema.encodeSync(
   Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("quit"), save: Schema.Boolean })),
@@ -300,6 +308,9 @@ interface Instance {
   /** T3 lost its control connection: nothing can save through it any more. */
   controlLost: boolean;
   openFile: string | null | undefined;
+  mcpVersion: string | null;
+  /** The agent is acting through Blender Lab, as the add-on reports it; for the pane's badge. */
+  agentActing: boolean;
   /**
    * Which viewer controls the mouse and keyboard. There is no agent side: the agent works
    * through its own MCP connection, so a viewer in control never pauses it.
@@ -363,7 +374,12 @@ const make = Effect.gen(function* () {
           ]),
           ...Array.from(instances.values(), (instance): [string, PublishedState] => [
             instance.threadId,
-            { status: instance.status, relativePath: instance.relativePath, dirty: instance.dirty },
+            {
+              status: instance.status,
+              relativePath: instance.relativePath,
+              dirty: instance.dirty,
+              ...(instance.agentActing ? { agentActing: true } : {}),
+            },
           ]),
         ]),
       ),
@@ -635,6 +651,7 @@ const make = Effect.gen(function* () {
         return;
       case "state": {
         instance.openFile = message.value.filepath === "" ? null : message.value.filepath;
+        if (message.value.mcpVersion !== undefined) instance.mcpVersion = message.value.mcpVersion;
         // Only the working copy T3 opened may reach the agent, so the file is checked before
         // any listener state is taken; the add-on closes it too.
         const listener = message.value.agentListener;
@@ -655,8 +672,10 @@ const make = Effect.gen(function* () {
             yield* instance.control.write(GRANT_AGENT_LISTENER);
           }
         }
-        if (instance.dirty === message.value.dirty) return;
+        const agentActing = message.value.agentActing === true;
+        if (instance.dirty === message.value.dirty && instance.agentActing === agentActing) return;
         instance.dirty = message.value.dirty;
+        instance.agentActing = agentActing;
         return yield* publishNow();
       }
       case "saving":
@@ -721,7 +740,11 @@ const make = Effect.gen(function* () {
               instance.agentAccessEnded = "connectionLost";
             }
             instance.agentListenerRevoked = true;
-            return setAgentListener(instance, "off");
+            const wasActing = instance.agentActing;
+            instance.agentActing = false;
+            return setAgentListener(instance, "off").pipe(
+              Effect.andThen(wasActing ? publishNow() : Effect.void),
+            );
           }),
         ),
       ),
@@ -1010,6 +1033,8 @@ const make = Effect.gen(function* () {
       agentListenerGrantSent: false,
       controlLost: false,
       openFile: undefined,
+      mcpVersion: null,
+      agentActing: false,
       session: new SessionControl(null),
       held: new HeldInput(),
       cursorCaptured: false,
@@ -1366,6 +1391,7 @@ const make = Effect.gen(function* () {
       state,
       ended: agentAccessEndedFor(instance.controlLost, instance.agentAccessEnded),
       openFile: instance.openFile,
+      mcpVersion: instance.mcpVersion,
     };
   });
 

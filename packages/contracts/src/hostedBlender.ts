@@ -130,6 +130,8 @@ export const HostedBlenderRunningState = Schema.Struct({
   relativePath: TrimmedNonEmptyString,
   /** The file has changes Blender hasn't saved. */
   dirty: Schema.Boolean,
+  /** The agent is acting in this Blender through Blender Lab's MCP, as T3's add-on reports. */
+  agentActing: Schema.optionalKey(Schema.Boolean),
 });
 export type HostedBlenderRunningState = typeof HostedBlenderRunningState.Type;
 

@@ -43,6 +43,7 @@ const layerFor = (input: {
   readonly listener?: HostedBlender.AgentListenerState;
   readonly ended?: HostedBlender.AgentAccessEnded;
   readonly openFile?: string;
+  readonly mcpVersion?: string | null;
   readonly opened: Array<HostedBlenderOpenInput & { readonly agentWorkingCopy?: boolean }>;
   readonly openError?: HostedBlenderError;
 }) =>
@@ -60,6 +61,7 @@ const layerFor = (input: {
           state: input.listener ?? "ready",
           ended: input.ended ?? null,
           openFile: input.openFile ?? null,
+          mcpVersion: input.mcpVersion === undefined ? "1.0.3" : input.mcpVersion,
         }),
     }),
     Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -204,6 +206,25 @@ describe("startAgentWorkingCopy", () => {
       );
       expect(error.reason).toContain("did not start listening");
     }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    { mcpVersion: "1.1.0", says: ["MCP 1.1.0", "tested only 1.0.3", "update T3 Code"] },
+    { mcpVersion: "1.0.1", says: ["MCP 1.0.1", "update the MCP extension in their Blender"] },
+    { mcpVersion: null, says: ["can't read", "update the MCP extension"] },
+  ])(
+    "refuses an untested Blender Lab $mcpVersion and says what to update",
+    ({ mcpVersion, says }) =>
+      Effect.gen(function* () {
+        const root = yield* tempWorkspace;
+        writeMaster(root, "hero.blend");
+        const error = yield* Effect.flip(
+          startAgentWorkingCopy({ threadId, path: "hero.blend" }).pipe(
+            Effect.provide(layerFor({ root, opened: [], listener: "untested", mcpVersion })),
+          ),
+        );
+        for (const part of says) expect(error.reason).toContain(part);
+      }).pipe(Effect.scoped),
   );
 
   it.effect.each([

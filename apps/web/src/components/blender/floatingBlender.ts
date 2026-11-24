@@ -18,8 +18,11 @@ export interface FloatingBlenderInput {
 const isUp = (state: HostedBlenderThreadState | null) =>
   state?.status === "starting" || state?.status === "running";
 
+const agentActs = (state: HostedBlenderThreadState | null) =>
+  (state?.status === "starting" || state?.status === "running") && state.agentActing === true;
+
 /**
- * While an agent works in a thread with a hosted Blender, the Blender pane floats over chat,
+ * Once the agent acts in a thread's hosted Blender during a turn, the Blender pane floats over chat,
  * as an agent-opened device does. Each turn decides once, so a pane the user closed stays closed
  * until the next turn, and a browser or device already floating keeps its place. A floating pane
  * whose Blender stopped closes.
@@ -34,7 +37,7 @@ export function floatingBlenderAction(input: FloatingBlenderInput): {
   if (
     input.runningTurnId === null ||
     input.runningTurnId === input.decidedTurnId ||
-    !isUp(input.state) ||
+    !agentActs(input.state) ||
     input.autoShowFloatingPreview === null
   ) {
     return { action: "none", decidedTurnId: input.decidedTurnId };

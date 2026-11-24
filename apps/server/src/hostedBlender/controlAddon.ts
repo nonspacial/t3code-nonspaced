@@ -1,6 +1,8 @@
 // T3's control add-on, written beside each hosted Blender and loaded with `--python`. It is
 // never installed, so desktop Blenders never see it. Kept as a string so it ships inside the
 // server bundle.
+import { AGENT_GUARD_SOURCE } from "./agentGuard.ts";
+
 export const CONTROL_ADDON_SOURCE = String.raw`
 import json
 import os
@@ -36,6 +38,7 @@ class _State:
     grant = "pending" if MCP_LISTEN else "ended"
     authorized_file = None
     mcp_name = None
+    mcp_version = None
     server = None
     client = None
     buffer = b""
@@ -91,6 +94,8 @@ def _snapshot():
         "filepath": bpy.data.filepath,
         "dirty": bool(bpy.data.is_dirty),
         "agentListener": _State.agent_listener,
+        "agentActing": _agent_acting(_mcp_server()),
+        "mcpVersion": _State.mcp_version,
     }
 
 
@@ -362,12 +367,15 @@ def _tick():
             if command.get("type") == "hits":
                 break
         _check_authorized_file()
+        _check_guard()
         snapshot = _snapshot()
         if snapshot != _State.sent:
             _State.sent = snapshot
             _send(snapshot)
     return TICK
 
+
+${AGENT_GUARD_SOURCE}
 
 def _is_mcp_addon(name):
     return name.startswith("bl_ext.") and name.endswith(".mcp")
@@ -384,8 +392,9 @@ def _setup_mcp_addon():
     for name in [name for name in preferences.addons.keys() if _is_mcp_addon(name)]:
         addon_utils.disable(name, default_set=True)
     if MCP_LISTEN:
-        installed = [module.__name__ for module in addon_utils.modules() if _is_mcp_addon(module.__name__)]
-        _State.mcp_name = installed[0] if installed else None
+        installed = [module for module in addon_utils.modules() if _is_mcp_addon(module.__name__)]
+        _State.mcp_name = installed[0].__name__ if installed else None
+        _State.mcp_version = _mcp_version(getattr(installed[0], "__file__", None)) if installed else None
         _State.authorized_file = os.path.realpath(bpy.data.filepath) if bpy.data.filepath else None
     try:
         preferences.is_dirty = False
@@ -401,6 +410,10 @@ def _grant_agent_listener():
     # Checked again now: the file may have changed since T3 saw it.
     _check_authorized_file()
     if _State.grant != "granted":
+        return
+    if _State.mcp_name is not None and _State.mcp_version not in TESTED_MCP_VERSIONS:
+        # Never enabled: the guard may not hold on a version T3 hasn't tested.
+        _State.agent_listener = "untested"
         return
     if _State.mcp_name is not None:
         import addon_utils
@@ -439,11 +452,12 @@ def _start_agent_listener():
     # Fails closed: a port another process holds, or a listener on any other port, is "failed".
     server = _mcp_server()
     try:
-        if server is not None and not server.is_running():
+        guarded = server is not None and _guard_mcp_server(server)
+        if guarded and not server.is_running():
             bpy.ops.blmcp.server_start()
         sock = getattr(getattr(server, "_state", None), "sock", None)
         ready = (
-            server is not None
+            guarded
             and server.is_running()
             and sock is not None
             and sock.getsockname()[1] == int(MCP_PORT)
@@ -463,6 +477,13 @@ def _check_authorized_file():
         return
     current = os.path.realpath(bpy.data.filepath) if bpy.data.filepath else None
     if current is None or current != _State.authorized_file:
+        _end_grant()
+
+
+def _check_guard():
+    # Reload Scripts runs Blender Lab's module again without the guard: guard it again or end.
+    server = _mcp_server()
+    if _State.agent_listener == "ready" and server is not None and not _guard_mcp_server(server):
         _end_grant()
 
 

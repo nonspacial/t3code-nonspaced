@@ -8,7 +8,12 @@ import {
   resetFloatingBlenderDecisionsForTests,
 } from "./floatingBlender";
 
-const running = { status: "running", relativePath: "cube.blend", dirty: false } as const;
+const running = {
+  status: "running",
+  relativePath: "cube.blend",
+  dirty: false,
+  agentActing: true,
+} as const;
 const working: FloatingBlenderInput = {
   runningTurnId: "turn-1",
   decidedTurnId: null,
@@ -29,6 +34,16 @@ describe("floatingBlenderAction", () => {
     expect(
       floatingBlenderAction({ ...working, decidedTurnId: "turn-1", runningTurnId: "turn-2" }),
     ).toEqual({ action: "float", decidedTurnId: "turn-2" });
+  });
+
+  it("waits, undecided, for the agent to act in Blender, not just for any turn", () => {
+    const idle = { ...running, agentActing: false };
+    expect(floatingBlenderAction({ ...working, state: idle })).toEqual({
+      action: "none",
+      decidedTurnId: null,
+    });
+    const { agentActing: _acting, ...unreported } = running;
+    expect(floatingBlenderAction({ ...working, state: unreported }).decidedTurnId).toBeNull();
   });
 
   it("waits for both a turn and a Blender", () => {
