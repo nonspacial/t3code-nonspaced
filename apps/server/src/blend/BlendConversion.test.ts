@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import type { BlendConversionStatus } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -11,6 +12,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as AssetSigner from "../assets/AssetSigner.ts";
@@ -22,6 +24,7 @@ import * as WorkspaceFileSystem from "../workspace/WorkspaceFileSystem.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as BlendConversion from "./BlendConversion.ts";
 import { blendCacheDir } from "./blendCache.ts";
+import * as BlendFileWatcher from "./BlendFileWatcher.ts";
 import * as BlenderDetection from "./BlenderDetection.ts";
 
 type RunInput = Parameters<ProcessRunner.ProcessRunner["Service"]["run"]>[0];
@@ -53,8 +56,40 @@ const writeGlb = (input: RunInput) =>
     return output();
   }).pipe(Effect.provide(NodeServices.layer), Effect.orDie);
 
+/** A watcher the test drives: it hears each watch begin and says when files may have changed. */
+const makeWatcher = Effect.gen(function* () {
+  const opened = yield* Queue.unbounded<ReadonlyArray<string>>();
+  const closed = yield* Queue.unbounded<ReadonlyArray<string>>();
+  let current: Queue.Queue<void, Cause.Done> | null = null;
+  const watcher = BlendFileWatcher.BlendFileWatcher.of({
+    changes: (files) =>
+      Stream.callback<void>((events) =>
+        Effect.acquireRelease(
+          Effect.sync(() => {
+            current = events;
+            Queue.offerUnsafe(events, undefined);
+            Queue.offerUnsafe(opened, files);
+          }),
+          () =>
+            Effect.sync(() => {
+              current = null;
+              Queue.offerUnsafe(closed, files);
+            }),
+        ),
+      ),
+  });
+  const signal = Effect.sync(() => current && Queue.offerUnsafe(current, undefined));
+  return { watcher, opened, closed, signal };
+});
+
+/** Compares once when a watch begins and never hears of a change. */
+const quietWatcher = BlendFileWatcher.BlendFileWatcher.of({
+  changes: () => Stream.make(undefined).pipe(Stream.concat(Stream.never)),
+});
+
 const layerFor = (options: {
   readonly run: Run;
+  readonly watcher?: BlendFileWatcher.BlendFileWatcher["Service"];
   readonly blender?: BlenderDetection.DetectedBlender | null;
   readonly known?: boolean;
   readonly cacheMaxBytes?: number;
@@ -64,6 +99,7 @@ const layerFor = (options: {
       Layer.mergeAll(
         Layer.mock(ProcessRunner.ProcessRunner)({ run: options.run }),
         Layer.mock(AssetSigner.AssetSigner)({ sign: () => Effect.succeed("signature") }),
+        Layer.succeed(BlendFileWatcher.BlendFileWatcher, options.watcher ?? quietWatcher),
         Layer.succeed(BlenderDetection.BlenderDetection, {
           find: Effect.succeed(
             options.blender === undefined
@@ -132,15 +168,22 @@ const convertAll = (input: Parameters<BlendConversion.BlendConversion["Service"]
 /** Starts a conversion whose progress arrives on a queue. */
 const startConversion = (
   input: Parameters<BlendConversion.BlendConversion["Service"]["convert"]>[0],
+  method: "convert" | "watch" = "convert",
 ) =>
   Effect.gen(function* () {
     const conversion = yield* BlendConversion.BlendConversion;
     const progress = yield* Queue.unbounded<BlendConversionStatus>();
-    const fiber = yield* conversion
-      .convert(input, (value) => Queue.offer(progress, value).pipe(Effect.asVoid))
-      .pipe(Effect.forkChild);
+    const fiber = yield* conversion[method](input, (value) =>
+      Queue.offer(progress, value).pipe(Effect.asVoid),
+    ).pipe(Effect.forkChild);
     return { progress, fiber };
   });
+
+/** Moves a file's modification time on, as saving it does. */
+const touchFile = (file: string, at: number) =>
+  Effect.flatMap(FileSystem.FileSystem, (fileSystem) =>
+    fileSystem.utimes(file, at / 1000, at / 1000),
+  );
 
 describe("BlendConversion", () => {
   it.effect(
@@ -343,5 +386,167 @@ describe("BlendConversion", () => {
         [names["assembly.blend"], names["bracket-4.blend"]].toSorted(),
       );
     }).pipe(Effect.provide(layerFor({ run: writeGlb, cacheMaxBytes: 25 }))),
+  );
+
+  it.effect(
+    "while watched, converts again when the file or a file it links changes, until it is closed",
+    () => {
+      const runs: Array<RunInput> = [];
+      const run: Run = (input) =>
+        Effect.sync(() => runs.push(input)).pipe(Effect.andThen(writeGlb(input)));
+      return Effect.gen(function* () {
+        const { watcher, opened, closed, signal } = yield* makeWatcher;
+        yield* Effect.gen(function* () {
+          const { root, path, fileSystem } = yield* workspace;
+          const assembly = yield* fileSystem.realPath(path.join(root, "assembly.blend"));
+          const parts = yield* fileSystem.realPath(path.join(root, "parts-5.blend"));
+          const live = yield* startConversion(
+            { cwd: root, relativePath: "assembly.blend" },
+            "watch",
+          );
+          const statuses = (count: number) =>
+            Effect.forEach(Array.from({ length: count }), () => Queue.take(live.progress));
+
+          expect((yield* statuses(2)).map(({ status }) => status)).toEqual(["converting", "ready"]);
+          expect(yield* Queue.take(opened)).toEqual([assembly, parts]);
+
+          // Something else in the folder: nothing tracked changed, so nothing converts.
+          yield* signal;
+          yield* touchFile(assembly, Date.UTC(2031, 0, 1));
+          yield* signal;
+          expect((yield* Queue.take(closed)).length).toBe(2);
+          expect(yield* statuses(2)).toEqual([
+            expect.objectContaining({ status: "converting", changed: "assembly.blend" }),
+            expect.objectContaining({ status: "ready", cached: false, changed: "assembly.blend" }),
+          ]);
+
+          yield* Queue.take(opened);
+          yield* touchFile(parts, Date.UTC(2031, 0, 2));
+          yield* signal;
+          yield* Queue.take(closed);
+          expect(yield* statuses(2)).toEqual([
+            expect.objectContaining({ status: "converting", changed: "parts-5.blend" }),
+            expect.objectContaining({ status: "ready", changed: "parts-5.blend" }),
+          ]);
+          expect(runs).toHaveLength(3);
+
+          // Closing the preview ends the subscription, and with it the watch.
+          yield* Queue.take(opened);
+          yield* Fiber.interrupt(live.fiber);
+          expect(yield* Queue.take(closed)).toEqual([assembly, parts]);
+        }).pipe(Effect.provide(layerFor({ run, watcher })));
+      });
+    },
+  );
+
+  it.effect("converts again at once when the file was saved while it converted", () => {
+    const release = Deferred.makeUnsafe<void>();
+    const run: Run = (input) => Deferred.await(release).pipe(Effect.andThen(writeGlb(input)));
+    return Effect.gen(function* () {
+      const { root, path } = yield* workspace;
+      const live = yield* startConversion({ cwd: root, relativePath: "bracket.blend" }, "watch");
+      expect((yield* Queue.take(live.progress)).status).toBe("converting");
+      yield* touchFile(path.join(root, "bracket.blend"), Date.UTC(2031, 0, 1));
+      yield* Deferred.succeed(release, undefined);
+      expect((yield* Queue.take(live.progress)).status).toBe("ready");
+      expect(yield* Queue.take(live.progress)).toEqual(
+        expect.objectContaining({ status: "converting", changed: "bracket.blend" }),
+      );
+      yield* Fiber.interrupt(live.fiber);
+    }).pipe(Effect.provide(layerFor({ run })));
+  });
+
+  it.effect("keeps watching a file that is missing for a moment while it is saved", () =>
+    Effect.gen(function* () {
+      const { watcher, opened, signal } = yield* makeWatcher;
+      yield* Effect.gen(function* () {
+        const { root, path, fileSystem } = yield* workspace;
+        const bracket = path.join(root, "bracket.blend");
+        const live = yield* startConversion({ cwd: root, relativePath: "bracket.blend" }, "watch");
+        yield* Queue.take(live.progress);
+        expect((yield* Queue.take(live.progress)).status).toBe("ready");
+        yield* Queue.take(opened);
+
+        const saved = yield* fileSystem.readFile(bracket);
+        yield* fileSystem.remove(bracket);
+        yield* signal;
+        expect((yield* Queue.take(live.progress)).status).toBe("failed");
+
+        // The watch compares against the missing file now, so only its return converts again.
+        yield* Queue.take(opened);
+        yield* fileSystem.writeFile(bracket, saved);
+        yield* signal;
+        expect(yield* Queue.take(live.progress)).toEqual(
+          expect.objectContaining({ status: "converting", changed: "bracket.blend" }),
+        );
+        expect((yield* Queue.take(live.progress)).status).toBe("ready");
+        yield* Fiber.interrupt(live.fiber);
+      }).pipe(Effect.provide(layerFor({ run: writeGlb, watcher })));
+    }),
+  );
+
+  it.effect(
+    "converts again when the save that failed a round finishes before the watch reopens",
+    () =>
+      Effect.gen(function* () {
+        const { watcher, opened, signal } = yield* makeWatcher;
+        yield* Effect.gen(function* () {
+          const { root, path, fileSystem } = yield* workspace;
+          const bracket = path.join(root, "bracket.blend");
+          const saved = yield* fileSystem.readFile(bracket);
+          const conversion = yield* BlendConversion.BlendConversion;
+          const progress = yield* Queue.unbounded<BlendConversionStatus>();
+          const live = yield* conversion
+            .watch({ cwd: root, relativePath: "bracket.blend" }, (status) =>
+              // The save lands while the failed round reports, before anything is watched again.
+              (status.status === "failed"
+                ? fileSystem.writeFile(bracket, saved).pipe(Effect.orDie)
+                : Effect.void
+              ).pipe(Effect.andThen(Queue.offer(progress, status)), Effect.asVoid),
+            )
+            .pipe(Effect.forkChild);
+          yield* Queue.take(progress);
+          expect((yield* Queue.take(progress)).status).toBe("ready");
+          yield* Queue.take(opened);
+
+          yield* fileSystem.remove(bracket);
+          yield* signal;
+          expect((yield* Queue.take(progress)).status).toBe("failed");
+          expect(yield* Queue.take(progress)).toEqual(
+            expect.objectContaining({ status: "converting", changed: "bracket.blend" }),
+          );
+          yield* Fiber.interrupt(live);
+        }).pipe(Effect.provide(layerFor({ run: writeGlb, watcher })));
+      }),
+  );
+
+  it.effect("never watches a linked library among the server's own files", () =>
+    Effect.gen(function* () {
+      const { watcher, opened } = yield* makeWatcher;
+      yield* Effect.gen(function* () {
+        const { root, path, fileSystem } = yield* workspace;
+        const config = yield* ServerConfig.ServerConfig;
+        yield* fileSystem.makeDirectory(config.secretsDir, { recursive: true });
+        const secret = path.join(config.secretsDir, "parts-5.blend");
+        yield* fileSystem.rename(path.join(root, "parts-5.blend"), secret);
+        yield* fileSystem.symlink(secret, path.join(root, "parts-5.blend"));
+        const assembly = yield* fileSystem.realPath(path.join(root, "assembly.blend"));
+        const live = yield* startConversion({ cwd: root, relativePath: "assembly.blend" }, "watch");
+        expect(yield* Queue.take(opened)).toEqual([assembly]);
+        yield* Fiber.interrupt(live.fiber);
+      }).pipe(Effect.provide(layerFor({ run: writeGlb, watcher })));
+    }),
+  );
+
+  it.effect("stops watching a file it cannot convert", () =>
+    Effect.gen(function* () {
+      const { root } = yield* workspace;
+      const conversion = yield* BlendConversion.BlendConversion;
+      const seen: Array<BlendConversionStatus> = [];
+      yield* conversion.watch({ cwd: root, relativePath: "bracket.blend" }, (status) =>
+        Effect.sync(() => seen.push(status)),
+      );
+      expect(seen).toEqual([{ status: "unavailable", reason: "noBlender" }]);
+    }).pipe(Effect.provide(layerFor({ run: () => Effect.die("never"), blender: null }))),
   );
 });

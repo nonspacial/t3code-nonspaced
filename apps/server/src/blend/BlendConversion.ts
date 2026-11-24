@@ -11,9 +11,12 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 
 import { issueBlendGlbUrl } from "../assets/AssetAccess.ts";
 import * as AssetSigner from "../assets/AssetSigner.ts";
+import { makeIsServerInternalPath } from "../auth/serverInternalPaths.ts";
+import { readFileRevision } from "../assets/MediaFile.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as KnownWorkspaces from "../workspace/KnownWorkspaces.ts";
@@ -21,6 +24,7 @@ import * as WorkspaceFileSystem from "../workspace/WorkspaceFileSystem.ts";
 import type * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as BlenderDetection from "./BlenderDetection.ts";
 import { blendCacheDir, isBlendCacheFileName } from "./blendCache.ts";
+import * as BlendFileWatcher from "./BlendFileWatcher.ts";
 import { BLEND_EXPORT_SCRIPT } from "./blendExportScript.ts";
 import { type BlendFileFormatError, isBlendFileFormatError, readBlendFile } from "./blendFile.ts";
 
@@ -28,6 +32,13 @@ import { type BlendFileFormatError, isBlendFileFormatError, readBlendFile } from
 export const CONVERSION_TIME_LIMIT = Duration.seconds(60);
 const CACHE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 const LOG_MAX_CHARACTERS = 32 * 1024;
+
+type ConversionError =
+  | BlendFileFormatError
+  | WorkspaceFileSystem.WorkspaceFileSystemError
+  | WorkspacePaths.WorkspacePathOutsideRootError;
+
+type Emit = (status: BlendConversionStatus) => Effect.Effect<void>;
 
 export class BlendConversion extends Context.Service<
   BlendConversion,
@@ -38,13 +49,16 @@ export class BlendConversion extends Context.Service<
      */
     readonly convert: (
       input: BlendConversionInput,
-      emit: (status: BlendConversionStatus) => Effect.Effect<void>,
-    ) => Effect.Effect<
-      void,
-      | BlendFileFormatError
-      | WorkspaceFileSystem.WorkspaceFileSystemError
-      | WorkspacePaths.WorkspacePathOutsideRootError
-    >;
+      emit: Emit,
+    ) => Effect.Effect<void, ConversionError>;
+    /**
+     * Converts like `convert`, then again each time the file or a library it links changes,
+     * until interrupted. It ends only when the file cannot be converted at all.
+     */
+    readonly watch: (
+      input: BlendConversionInput,
+      emit: Emit,
+    ) => Effect.Effect<void, ConversionError>;
   }
 >()("t3/blend/BlendConversion") {}
 
@@ -80,6 +94,8 @@ interface Source {
   readonly blendPath: string;
   readonly libraries: ReadonlyArray<string>;
   readonly blender: BlenderDetection.DetectedBlender;
+  /** The file and the libraries it links, as they were when checked; null while missing. */
+  readonly revisions: ReadonlyArray<{ readonly file: string; readonly revision: string | null }>;
 }
 
 const encodeCacheKey = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -110,6 +126,8 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
   const digest = yield* Digest.Digest;
   const environment = yield* HostProcess.Environment;
   const signer = yield* AssetSigner.AssetSigner;
+  const watcher = yield* BlendFileWatcher.BlendFileWatcher;
+  const isServerInternalPath = yield* makeIsServerInternalPath;
   const cacheDir = blendCacheDir(path, config.providerStatusCacheDir);
 
   const lock = yield* Semaphore.make(1);
@@ -308,108 +326,188 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
       ),
   );
 
-  const convert: BlendConversion["Service"]["convert"] = Effect.fn("BlendConversion.convert")(
-    function* (input, emit) {
-      // Checked again once the conversion gets its turn: the file can be replaced while it waits.
-      const check = Effect.fnUntraced(function* () {
-        const target = yield* workspaceFileSystem.resolveReadPath(input);
-        const insideWorkspace = yield* knownWorkspaces.assertContains(input.cwd).pipe(
-          Effect.andThen(fileSystem.realPath(input.cwd)),
-          Effect.map((root) => KnownWorkspaces.isWithinRoot(path, target.realPath, root)),
-          Effect.orElseSucceed(() => false),
-        );
-        if (!insideWorkspace) {
-          return unavailable({ reason: "outsideWorkspace" });
-        }
-        const info = yield* fileSystem.stat(target.realPath).pipe(Effect.option);
-        if (info._tag === "None" || info.value.type !== "File") {
-          return yield* new WorkspaceFileSystem.WorkspacePathNotFileError({
-            workspaceRoot: input.cwd,
-            relativePath: input.relativePath,
-            resolvedPath: target.realPath,
-          });
-        }
-        const facts = yield* Effect.tryPromise({
-          try: () => readBlendFile(target.realPath),
-          catch: (cause) =>
-            isBlendFileFormatError(cause)
-              ? cause
-              : new WorkspaceFileSystem.WorkspaceFileSystemOperationError({
-                  workspaceRoot: input.cwd,
-                  relativePath: input.relativePath,
-                  resolvedPath: target.realPath,
-                  operationPath: target.realPath,
-                  operation: "read",
-                  cause,
-                }),
+  /** Converts once, returning the file as it was last checked, or null when it can't be. */
+  const convertOnce = Effect.fnUntraced(function* (input: BlendConversionInput, emit: Emit) {
+    // Checked again once the conversion gets its turn: the file can be replaced while it waits.
+    const check = Effect.fnUntraced(function* () {
+      const target = yield* workspaceFileSystem.resolveReadPath(input);
+      const insideWorkspace = yield* knownWorkspaces.assertContains(input.cwd).pipe(
+        Effect.andThen(fileSystem.realPath(input.cwd)),
+        Effect.map((root) => KnownWorkspaces.isWithinRoot(path, target.realPath, root)),
+        Effect.orElseSucceed(() => false),
+      );
+      if (!insideWorkspace) {
+        return unavailable({ reason: "outsideWorkspace" });
+      }
+      // Read before the file's contents, so a save from here on counts as a change.
+      const revision = yield* readFileRevision(target.realPath);
+      const info = yield* fileSystem.stat(target.realPath).pipe(Effect.option);
+      if (info._tag === "None" || info.value.type !== "File") {
+        return yield* new WorkspaceFileSystem.WorkspacePathNotFileError({
+          workspaceRoot: input.cwd,
+          relativePath: input.relativePath,
+          resolvedPath: target.realPath,
         });
-        const blender = yield* detection.find;
-        if (blender === null) return unavailable({ reason: "noBlender" });
-        if (savedByNewerBlender(facts.blenderVersion, blender.version)) {
-          return unavailable({ reason: "newerBlender", blenderVersion: blender.version });
-        }
-        return { blendPath: target.realPath, libraries: facts.libraries, blender };
-      });
-      const fromCache = Effect.fnUntraced(function* (key: Source) {
-        const cacheFileName = `${yield* cacheKey(key)}.glb`;
-        const hit = yield* cached(cacheFileName);
-        if (hit === null) return { cacheFileName, hit: false } as const;
-        yield* emit(
-          yield* ready(cacheFileName, {
-            byteLength: hit.size,
-            blenderVersion: key.blender.version,
-            convertedAt: hit.mtime ?? (yield* Clock.currentTimeMillis),
-            cached: true,
-          }),
-        );
-        return { cacheFileName, hit: true } as const;
-      });
-
-      const first = yield* check();
-      if ("status" in first) return yield* emit(first);
-      if (!input.refresh && (yield* fromCache(first)).hit) return;
-
-      const job = { emit };
-      const leave = Effect.suspend(() => {
-        const index = waiting.indexOf(job);
-        if (index !== -1) waiting.splice(index, 1);
-        return announce;
-      });
-      waiting.push(job);
-      yield* announce;
-      yield* lock
-        .withPermits(1)(
-          Effect.gen(function* () {
-            running = true;
-            yield* leave;
-            const source = yield* check();
-            if ("status" in source) return yield* emit(source);
-            // A conversion that waited may find the file converted by the one before it.
-            const lookup = input.refresh
-              ? { cacheFileName: `${yield* cacheKey(source)}.glb`, hit: false }
-              : yield* fromCache(source);
-            if (lookup.hit) return;
-            yield* run({
-              blendPath: source.blendPath,
-              blender: source.blender,
-              cacheFileName: lookup.cacheFileName,
-              keepTrying: input.keepTrying === true,
-              emit,
-            });
-          }).pipe(
-            Effect.ensuring(
-              Effect.suspend(() => {
-                running = false;
-                return announce;
+      }
+      const facts = yield* Effect.tryPromise({
+        try: () => readBlendFile(target.realPath),
+        catch: (cause) =>
+          isBlendFileFormatError(cause)
+            ? cause
+            : new WorkspaceFileSystem.WorkspaceFileSystemOperationError({
+                workspaceRoot: input.cwd,
+                relativePath: input.relativePath,
+                resolvedPath: target.realPath,
+                operationPath: target.realPath,
+                operation: "read",
+                cause,
               }),
-            ),
+      });
+      const blender = yield* detection.find;
+      if (blender === null) return unavailable({ reason: "noBlender" });
+      if (savedByNewerBlender(facts.blenderVersion, blender.version)) {
+        return unavailable({ reason: "newerBlender", blenderVersion: blender.version });
+      }
+      // The server's own files are never watched, so no change notice can tell of them.
+      const watchable = yield* Effect.filter(
+        facts.libraries.map((saved) => libraryPath(target.realPath, saved)),
+        (file) => Effect.map(isServerInternalPath(file), (internal) => !internal),
+      );
+      const libraries = yield* Effect.forEach(watchable, (file) =>
+        Effect.map(readFileRevision(file), (revision) => ({ file, revision })),
+      );
+      const source: Source = {
+        blendPath: target.realPath,
+        libraries: facts.libraries,
+        blender,
+        revisions: [{ file: target.realPath, revision }, ...libraries],
+      };
+      return source;
+    });
+    const fromCache = Effect.fnUntraced(function* (key: Source) {
+      const cacheFileName = `${yield* cacheKey(key)}.glb`;
+      const hit = yield* cached(cacheFileName);
+      if (hit === null) return { cacheFileName, hit: false } as const;
+      yield* emit(
+        yield* ready(cacheFileName, {
+          byteLength: hit.size,
+          blenderVersion: key.blender.version,
+          convertedAt: hit.mtime ?? (yield* Clock.currentTimeMillis),
+          cached: true,
+        }),
+      );
+      return { cacheFileName, hit: true } as const;
+    });
+
+    const first = yield* check();
+    if ("status" in first) {
+      yield* emit(first);
+      return null;
+    }
+    if (!input.refresh && (yield* fromCache(first)).hit) return first;
+
+    const job = { emit };
+    const leave = Effect.suspend(() => {
+      const index = waiting.indexOf(job);
+      if (index !== -1) waiting.splice(index, 1);
+      return announce;
+    });
+    waiting.push(job);
+    yield* announce;
+    return yield* lock
+      .withPermits(1)(
+        Effect.gen(function* () {
+          running = true;
+          yield* leave;
+          const source = yield* check();
+          if ("status" in source) {
+            yield* emit(source);
+            return null;
+          }
+          // A conversion that waited may find the file converted by the one before it.
+          const lookup = input.refresh
+            ? { cacheFileName: `${yield* cacheKey(source)}.glb`, hit: false }
+            : yield* fromCache(source);
+          if (lookup.hit) return source;
+          yield* run({
+            blendPath: source.blendPath,
+            blender: source.blender,
+            cacheFileName: lookup.cacheFileName,
+            keepTrying: input.keepTrying === true,
+            emit,
+          });
+          return source;
+        }).pipe(
+          Effect.ensuring(
+            Effect.suspend(() => {
+              running = false;
+              return announce;
+            }),
           ),
-        )
-        .pipe(Effect.onInterrupt(() => leave));
+        ),
+      )
+      .pipe(Effect.onInterrupt(() => leave));
+  });
+
+  /** The first file that differs from when it was checked, and every file as it was then. */
+  const nextChange = (source: Source) =>
+    watcher.changes(source.revisions.map(({ file }) => file)).pipe(
+      Stream.mapEffect(() =>
+        Effect.forEach(source.revisions, ({ file }) =>
+          Effect.map(readFileRevision(file), (revision) => ({ file, revision })),
+        ),
+      ),
+      Stream.map((revisions) => ({
+        changed: revisions.find(
+          ({ revision }, index) => revision !== source.revisions[index]?.revision,
+        ),
+        revisions,
+      })),
+      Stream.filter(({ changed }) => changed !== undefined),
+      Stream.runHead,
+    );
+
+  const watch: BlendConversion["Service"]["watch"] = Effect.fn("BlendConversion.watch")(
+    function* (input, emit) {
+      let request = input;
+      let changed: string | null = null;
+      const seen: { last: BlendConversionStatus | null } = { last: null };
+      const withChange: Emit = (status) => {
+        seen.last = status;
+        return changed !== null &&
+          (status.status === "waiting" ||
+            status.status === "converting" ||
+            status.status === "ready")
+          ? emit({ ...status, changed })
+          : emit(status);
+      };
+      let source = yield* convertOnce(request, withChange);
+      while (true) {
+        if (source === null || seen.last?.status === "unavailable") return;
+        const change = yield* nextChange(source);
+        if (change._tag === "None" || change.value.changed === undefined) return;
+        changed = path.basename(change.value.changed.file);
+        // A change makes a new cache key, so later rounds may use the cache again.
+        request = { ...input, refresh: false };
+        // A file caught mid-save fails this round, not the watch, which then waits for a version
+        // other than the one that failed, even one saved before it watches again.
+        const failedOn: Source = { ...source, revisions: change.value.revisions };
+        source = yield* convertOnce(request, withChange).pipe(
+          Effect.catch((error) =>
+            withChange({ status: "failed", log: error.message }).pipe(Effect.as(failedOn)),
+          ),
+        );
+      }
     },
   );
 
-  return BlendConversion.of({ convert });
+  const convert: BlendConversion["Service"]["convert"] = Effect.fn("BlendConversion.convert")(
+    function* (input, emit) {
+      yield* convertOnce(input, emit);
+    },
+  );
+
+  return BlendConversion.of({ convert, watch });
 });
 
 export const layer = Layer.effect(BlendConversion, make({ cacheMaxBytes: CACHE_MAX_BYTES }));
