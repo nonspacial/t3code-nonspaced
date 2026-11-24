@@ -66,7 +66,8 @@ import {
 import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
 import { useAssetUrlRefresh, useAssetUrlState } from "~/assets/assetUrls";
 import { OpenInPicker } from "~/components/chat/OpenInPicker";
-import { isBlendFile, OpenInHostedBlender } from "~/components/blender/OpenInHostedBlender";
+import { isBlendFile } from "~/components/blender/blendLinks";
+import { OpenInHostedBlender } from "~/components/blender/OpenInHostedBlender";
 import { MediaVideoPlayer } from "~/components/media/MediaVideoPlayer";
 import { MediaActions, type MediaActionSource } from "~/components/media/MediaActions";
 import { useRemoteOpenState } from "~/remoteOpen";

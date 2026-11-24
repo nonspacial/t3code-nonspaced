@@ -11,8 +11,6 @@ import { hostedBlenderEnvironment, useHostedBlenderState } from "~/state/hostedB
 import { formatEnvironmentQueryError } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
 
-export const isBlendFile = (relativePath: string) => relativePath.toLowerCase().endsWith(".blend");
-
 /** Opens a workspace `.blend` in the thread's hosted Blender, then shows the Blender pane. */
 export function OpenInHostedBlender(props: {
   readonly threadRef: ScopedThreadRef;

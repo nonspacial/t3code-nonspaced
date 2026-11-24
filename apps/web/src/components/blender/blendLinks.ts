@@ -5,6 +5,8 @@ import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { rightPanelHostRef, useRightPanelStore } from "~/rightPanelStore";
 import { readHostedBlenderState } from "~/state/hostedBlender";
 
+export const isBlendFile = (relativePath: string) => relativePath.toLowerCase().endsWith(".blend");
+
 const workspaceRelative = (path: string, workspaceRoot: string | undefined) => {
   const root = workspaceRoot?.replace(/\/+$/, "");
   const relative =
