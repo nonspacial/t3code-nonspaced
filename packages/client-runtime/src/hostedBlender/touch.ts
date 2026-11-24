@@ -24,6 +24,8 @@ const RIGHT: HostedBlenderPointerButton = 273;
 const MIDDLE: HostedBlenderPointerButton = 274;
 const SHIFT = 42;
 const LONG_PRESS_MS = 500;
+// How long a still finger gets to report its move before the other one's pinch counts alone.
+const ANCHOR_MS = 60;
 // One wheel notch per this much change in the natural log of the fingers' distance (~16%).
 const PINCH_STEP = 0.15;
 // libinput reports a wheel notch as 15 degrees, as `scrollInput` does.
@@ -68,11 +70,12 @@ export function createHostedBlenderTouch(options: {
   const fingers = new Map<number, TouchPoint>();
   let gesture: Gesture = { kind: "idle" };
   let captured = false;
-  let longPress: ReturnType<typeof setTimeout> | null = null;
+  // The long press while one finger is down, or the wait for a still finger while two are.
+  let timer: ReturnType<typeof setTimeout> | null = null;
 
-  const clearLongPress = () => {
-    if (longPress !== null) clearTimeout(longPress);
-    longPress = null;
+  const clearTimer = () => {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
   };
   const pointer = (point: TouchPoint) => send({ type: "pointer", x: point.x, y: point.y });
   const button = (code: HostedBlenderPointerButton, pressed: boolean) =>
@@ -91,7 +94,7 @@ export function createHostedBlenderTouch(options: {
   };
 
   const release = () => {
-    clearLongPress();
+    clearTimer();
     if (gesture.kind === "orbit") button(MIDDLE, false);
     if (gesture.kind === "pan") {
       button(MIDDLE, false);
@@ -116,8 +119,8 @@ export function createHostedBlenderTouch(options: {
       fingers.set(id, point);
       if (fingers.size === 1 && gesture.kind === "idle") {
         gesture = { kind: "press", start: point };
-        longPress = setTimeout(() => {
-          longPress = null;
+        timer = setTimeout(() => {
+          timer = null;
           if (gesture.kind !== "press") return;
           const start = gesture.start;
           gesture = { kind: "done" };
@@ -146,7 +149,7 @@ export function createHostedBlenderTouch(options: {
       switch (gesture.kind) {
         case "press": {
           if (distanceOf(gesture.start, point) <= slop()) return;
-          clearLongPress();
+          clearTimer();
           pointer(gesture.start);
           button(MIDDLE, true);
           moveTo(gesture.start, point);
@@ -161,8 +164,13 @@ export function createHostedBlenderTouch(options: {
           const both = pair();
           if (!both) return;
           const centre = centreOf(...both);
-          const kind = pairKind(gesture.starts, slop());
+          const kind = pairKind(gesture, both, slop());
           if (kind === null) return;
+          if (kind === "anchored") {
+            if (timer === null) timer = setTimeout(startAnchoredPinch, ANCHOR_MS);
+            return;
+          }
+          clearTimer();
           pointer(gesture.centre);
           if (kind === "pinch" && gesture.distance > 0) {
             gesture = { kind: "pinch", base: Math.log(gesture.distance) };
@@ -207,21 +215,41 @@ export function createHostedBlenderTouch(options: {
     },
   };
 
-  // Each finger reports its own move, so one finger's move alone can look like a pinch. Judge by
-  // both fingers' travel: together is a pan, apart or together is a pinch. Until the second
-  // finger reports, wait, unless the first has gone far enough to be a pinch around a still one.
-  function pairKind(starts: ReadonlyMap<number, TouchPoint>, threshold: number) {
-    const travel = [...starts].map(([id, start]) => {
-      const now = fingers.get(id) ?? start;
-      return { x: now.x - start.x, y: now.y - start.y };
+  // Each finger reports its own move, so one finger's move alone can look like a pinch. Once
+  // both have moved, a change in their separation larger than their midpoint's travel is a
+  // pinch, else a pan. While one is still, wait: a long move is a pinch around it at once, and a
+  // wheel step's change in separation becomes one if the still finger doesn't report soon.
+  function pairKind(
+    start: Extract<Gesture, { kind: "pair" }>,
+    both: [TouchPoint, TouchPoint],
+    threshold: number,
+  ): "pan" | "pinch" | "anchored" | null {
+    const lengths = [...start.starts].map(([id, from]) => {
+      const now = fingers.get(id) ?? from;
+      return Math.hypot(now.x - from.x, now.y - from.y);
     });
-    const [a, b] = travel;
-    if (!a || !b) return null;
-    const lengths = [Math.hypot(a.x, a.y), Math.hypot(b.x, b.y)];
+    if (lengths.length < 2) return null;
     const far = Math.max(...lengths);
     if (far <= threshold) return null;
-    if (Math.min(...lengths) < threshold / 2) return far > threshold * 4 ? "pinch" : null;
-    return a.x * b.x + a.y * b.y > 0 ? "pan" : "pinch";
+    const distance = distanceOf(...both);
+    if (Math.min(...lengths) < threshold / 2) {
+      if (far > threshold * 4) return "pinch";
+      const steps =
+        start.distance > 0 && distance > 0 ? Math.abs(Math.log(distance / start.distance)) : 0;
+      return steps >= PINCH_STEP ? "anchored" : null;
+    }
+    const spread = Math.abs(distance - start.distance);
+    const shift = distanceOf(start.centre, centreOf(...both));
+    return spread > shift ? "pinch" : "pan";
+  }
+
+  function startAnchoredPinch() {
+    timer = null;
+    const both = pair();
+    if (gesture.kind !== "pair" || !both || gesture.distance <= 0) return;
+    pointer(gesture.centre);
+    gesture = { kind: "pinch", base: Math.log(gesture.distance) };
+    zoom(both);
   }
 
   function zoom(both: [TouchPoint, TouchPoint]) {

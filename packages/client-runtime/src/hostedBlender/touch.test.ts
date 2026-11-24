@@ -137,6 +137,34 @@ describe("hosted Blender touch gestures", () => {
     ]);
   });
 
+  it("zooms on a pinch whose midpoint drifts, rather than panning", () => {
+    using fixture = gestures();
+    const { sent, touch } = fixture;
+    touch.down(1, { x: 100, y: 100 });
+    touch.down(2, { x: 200, y: 100 });
+    // The fingers spread 32 px while their midpoint drifts 20 px down.
+    touch.move(1, { x: 84, y: 120 });
+    touch.move(2, { x: 216, y: 120 });
+    expect(sent.some((message) => message.type === "key")).toBe(false);
+    expect(sent.filter((message) => message.type === "scroll")).toHaveLength(1);
+  });
+
+  it("zooms on a small pinch made by one finger once the other has had time to move", () => {
+    using fixture = gestures();
+    const { sent, touch } = fixture;
+    touch.down(1, { x: 100, y: 100 });
+    touch.down(2, { x: 200, y: 100 });
+    // The gap shrinks from 100 px to 69 px; the moving finger never travels 40 px.
+    for (const x of [192, 184, 176, 169]) touch.move(2, { x, y: 100 });
+    expect(sent).toEqual([]);
+    vi.advanceTimersByTime(100);
+    expect(sent).toEqual([
+      { type: "pointer", x: 150, y: 100 },
+      { type: "scroll", axis: "vertical", source: "wheel", value: 15, steps: 1 },
+      { type: "scroll", axis: "vertical", source: "wheel", value: 15, steps: 1 },
+    ]);
+  });
+
   it("zooms in on a pinch apart and out on a pinch together, one wheel notch at a time", () => {
     using fixture = gestures();
     const { sent, touch } = fixture;
