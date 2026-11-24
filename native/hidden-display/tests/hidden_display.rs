@@ -316,6 +316,8 @@ fn exercise(capture: &str) {
         assert_eq!(ready["capture"], "wlrScreencopy");
     }
     assert_eq!(ready["cursorTracking"], json!(ext));
+    // Older labwc has no window capture, so the fallback streams the whole display.
+    assert_eq!(ready["target"], if ext { "window" } else { "output" });
     if ext {
         assert!(
             helper.event("windowCaptured")["title"]

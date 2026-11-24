@@ -100,6 +100,15 @@ pub enum CaptureBackend {
     WlrScreencopy,
 }
 
+/// The window matched by `--window-title`, or the whole display when there is no title or the
+/// compositor cannot capture a single window.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CaptureTarget {
+    Window,
+    Output,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ChildProcess {
@@ -116,6 +125,9 @@ pub enum ChildProcess {
 pub enum Event {
     Ready {
         capture: CaptureBackend,
+        /// What the stream shows. With `output`, other windows (an F12 render, Preferences) can
+        /// cover the viewport.
+        target: CaptureTarget,
         encoder: String,
         width: u32,
         height: u32,
@@ -127,7 +139,8 @@ pub enum Event {
         width: u32,
         height: u32,
     },
-    /// The captured frames changed size; the next video packet is a keyframe at this size.
+    /// The captured frames changed size. Advisory: it is written from another thread than the
+    /// video, so it may land a packet early or late; the SPS in the stream is authoritative.
     FrameSize {
         width: u32,
         height: u32,
@@ -327,6 +340,7 @@ mod tests {
     fn events_serialize_as_tagged_camel_case() {
         let json = serde_json::to_value(Event::Ready {
             capture: CaptureBackend::ExtImageCopyCapture,
+            target: CaptureTarget::Window,
             encoder: "x264enc".into(),
             width: 640,
             height: 480,
@@ -338,6 +352,7 @@ mod tests {
             serde_json::json!({
                 "type": "ready",
                 "capture": "extImageCopyCapture",
+                "target": "window",
                 "encoder": "x264enc",
                 "width": 640,
                 "height": 480,

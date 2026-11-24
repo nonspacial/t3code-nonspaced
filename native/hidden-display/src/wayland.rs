@@ -48,7 +48,7 @@ use wayland_protocols_wlr::virtual_pointer::v1::client::{
     zwlr_virtual_pointer_manager_v1 as pointer_manager, zwlr_virtual_pointer_v1 as virtual_pointer,
 };
 
-use crate::control::{Axis, AxisSource, CaptureBackend, Command, Event};
+use crate::control::{Axis, AxisSource, CaptureBackend, CaptureTarget, Command, Event};
 use crate::encoder::{Encoder, Frame, SETTLE_DELAY, SETTLE_FRAMES, Settle};
 use crate::gbm;
 use crate::keyboard::Keyboard;
@@ -395,6 +395,15 @@ impl State {
             CaptureBackend::ExtImageCopyCapture
         } else {
             CaptureBackend::WlrScreencopy
+        }
+    }
+
+    /// `window_title` survives only when the compositor can capture a single window.
+    pub fn capture_target(&self) -> CaptureTarget {
+        if self.window_title.is_some() {
+            CaptureTarget::Window
+        } else {
+            CaptureTarget::Output
         }
     }
 

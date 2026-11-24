@@ -436,6 +436,7 @@ fn session(
     let (width, height) = state.output_size();
     emitter.emit(&Event::Ready {
         capture: state.capture_backend(),
+        target: state.capture_target(),
         encoder: kind.element().into(),
         width,
         height,

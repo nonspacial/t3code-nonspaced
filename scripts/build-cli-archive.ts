@@ -584,36 +584,56 @@ const signWindowsExecutable = Effect.fn("signWindowsExecutable")(function* (
   yield* Effect.log("[cli-archive] Signed t3.exe (Azure Trusted Signing).");
 });
 
-/** Native helpers staged beside the executable, each laid out like `dist/<name>/<platform-arch>`. */
+const LINUX_RUST_TARGETS = { x64: "x86_64-unknown-linux-gnu", arm64: "aarch64-unknown-linux-gnu" };
+
+/**
+ * Native helpers staged beside the executable as `<name>/<platform-arch>/<binary>`. A helper is
+ * either a pre-staged directory in that layout (`dir`) or a Cargo build of it (`binary`); the
+ * first candidate that exists is used.
+ */
 export function cliNativeHelpers(input: {
   readonly platform: BuildPlatform;
+  readonly arch: BuildArch;
+  readonly repoRoot: string;
   readonly serverDistDir: string;
+  /** The archive is for this machine, so a plain `cargo build` output fits it. */
+  readonly hostBuildFits: boolean;
   readonly resourceMonitorDir: Option.Option<string>;
   readonly hiddenDisplayDir: Option.Option<string>;
-}): ReadonlyArray<{ readonly name: string; readonly source: string; readonly hint: string }> {
-  const helper = (name: string, override: Option.Option<string>, flag: string, what: string) => ({
-    name,
-    source: Option.getOrElse(override, () => `${input.serverDistDir}/${name}`),
-    hint: `Build the ${what} or pass --${flag}.`,
+}): ReadonlyArray<{
+  readonly name: string;
+  readonly kind: "dir" | "binary";
+  readonly candidates: ReadonlyArray<string>;
+  readonly hint: string;
+}> {
+  const resourceMonitor = {
+    name: "resource-monitor",
+    kind: "dir" as const,
+    candidates: [
+      Option.getOrElse(input.resourceMonitorDir, () => `${input.serverDistDir}/resource-monitor`),
+    ],
+    hint: "Build the resource monitor or pass --resource-monitor-dir.",
+  };
+  // The hosted Blender's hidden display only exists on Linux.
+  if (input.platform !== "linux") return [resourceMonitor];
+  const crateTarget = `${input.repoRoot}/native/hidden-display/target`;
+  const hiddenDisplay = Option.match(input.hiddenDisplayDir, {
+    onSome: (dir) => ({ kind: "dir" as const, candidates: [dir] }),
+    onNone: () => ({
+      kind: "binary" as const,
+      candidates: [
+        `${crateTarget}/${LINUX_RUST_TARGETS[input.arch]}/release/t3-hidden-display`,
+        ...(input.hostBuildFits ? [`${crateTarget}/release/t3-hidden-display`] : []),
+      ],
+    }),
   });
   return [
-    helper(
-      "resource-monitor",
-      input.resourceMonitorDir,
-      "resource-monitor-dir",
-      "resource monitor",
-    ),
-    // The hosted Blender's hidden display only exists on Linux.
-    ...(input.platform === "linux"
-      ? [
-          helper(
-            "hidden-display",
-            input.hiddenDisplayDir,
-            "hidden-display-dir",
-            "hidden display helper",
-          ),
-        ]
-      : []),
+    resourceMonitor,
+    {
+      name: "hidden-display",
+      ...hiddenDisplay,
+      hint: "Run `vp run build:hidden-display` or pass --hidden-display-dir.",
+    },
   ];
 }
 
@@ -649,7 +669,10 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   const webClient = path.join(serverDir, "dist/client");
   const nativeHelpers = cliNativeHelpers({
     platform: input.platform,
+    arch: input.arch,
+    repoRoot,
     serverDistDir: path.join(serverDir, "dist"),
+    hostBuildFits: targetKey === hostKey,
     resourceMonitorDir: input.resourceMonitorDir,
     hiddenDisplayDir: input.hiddenDisplayDir,
   });
@@ -659,7 +682,15 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
     `Run \`node apps/server/scripts/cli.ts build-exe${targetKey === hostKey ? "" : ` --target ${targetKey}`}\` first.`,
   );
   yield* requireInput(path.join(webClient, "index.html"), "Run `vp run --filter t3 build` first.");
-  for (const helper of nativeHelpers) yield* requireInput(helper.source, helper.hint);
+  const helperSources: Array<string> = [];
+  for (const helper of nativeHelpers) {
+    const existing = yield* Effect.filter(helper.candidates, (candidate) =>
+      fs.exists(candidate).pipe(Effect.orElseSucceed(() => false)),
+    );
+    const source = existing[0] ?? helper.candidates[0]!;
+    yield* requireInput(source, helper.hint);
+    helperSources.push(source);
+  }
 
   const stem = cliArchiveStem(input.version, input.platform, input.arch);
   const stageRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-archive-" });
@@ -669,8 +700,20 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   yield* Effect.log(`[cli-archive] Staging ${stem}...`);
   yield* fs.copyFile(builtExecutable, path.join(contentDir, executableName));
   yield* stageWebClient(webClient, path.join(contentDir, "client"));
-  for (const helper of nativeHelpers) {
-    yield* fs.copy(helper.source, path.join(contentDir, helper.name));
+  for (const [index, helper] of nativeHelpers.entries()) {
+    const source = helperSources[index]!;
+    if (helper.kind === "dir") {
+      yield* fs.copy(source, path.join(contentDir, helper.name));
+    } else {
+      const directory = path.join(
+        contentDir,
+        helper.name,
+        cliArchivePlatformKey(input.platform, input.arch),
+      );
+      yield* fs.makeDirectory(directory, { recursive: true });
+      yield* fs.copyFile(source, path.join(directory, path.basename(source)));
+      yield* fs.chmod(path.join(directory, path.basename(source)), 0o755);
+    }
   }
   yield* stageRuntimeExternals({
     repoRoot,
