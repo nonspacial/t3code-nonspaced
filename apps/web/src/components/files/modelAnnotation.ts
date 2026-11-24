@@ -13,7 +13,9 @@ import { formatModelViewHash } from "@t3tools/shared/modelView";
 type Size = { readonly width: number; readonly height: number };
 
 const REGION_GRID = 5;
-const STROKE_SAMPLES = 24;
+/** Casts along a drawing, this many CSS pixels apart until a long one reaches the cap below. */
+const STROKE_SAMPLE_SPACING = 4;
+const STROKE_SAMPLES = 128;
 /** A drawing whose ends meet within this share of its box's diagonal is an outline. */
 const CLOSED_LOOP_GAP = 0.25;
 
@@ -47,12 +49,28 @@ export function markSamples(
   });
   const centre = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
   if (points) {
-    const step = Math.max(1, points.length / STROKE_SAMPLES);
+    // Pointer events are sparse on a fast stroke, so cast along each segment, not just at its ends.
+    let length = 0;
+    for (let index = 1; index < points.length; index += 1)
+      length += Math.hypot(
+        points[index]!.x - points[index - 1]!.x,
+        points[index]!.y - points[index - 1]!.y,
+      );
+    const spacing = Math.max(STROKE_SAMPLE_SPACING, length / STROKE_SAMPLES);
     const along: ViewSample[] = [];
-    for (let index = 0; index < points.length; index += step) {
-      const point = points[Math.floor(index)]!;
-      along.push(toSample(point.x, point.y));
+    let untilNext = 0;
+    for (let index = 1; index < points.length; index += 1) {
+      const from = points[index - 1]!;
+      const to = points[index]!;
+      const segment = Math.hypot(to.x - from.x, to.y - from.y);
+      for (; untilNext <= segment; untilNext += spacing) {
+        const t = segment === 0 ? 0 : untilNext / segment;
+        along.push(toSample(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t));
+      }
+      untilNext -= segment;
     }
+    const end = points.at(-1);
+    if (end) along.push(toSample(end.x, end.y));
     const first = points[0];
     const last = points.at(-1);
     const gap = first && last ? Math.hypot(last.x - first.x, last.y - first.y) : 0;

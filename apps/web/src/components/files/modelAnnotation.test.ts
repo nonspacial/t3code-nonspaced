@@ -44,19 +44,34 @@ describe("markSamples", () => {
     ];
     const samples = markSamples({ x: 100, y: 50, width: 200, height: 200 }, size, points);
     expect(samples[0]).toEqual({ x: 0.5, y: 0.5 });
-    expect(samples).toContainEqual({ x: 0.5, y: 50 / 300 });
+    // Then the line itself, past its top.
+    expect(
+      samples.some(
+        (sample) => Math.abs(sample.x - 0.5) <= 0.01 && Math.abs(sample.y - 50 / 300) <= 0.01,
+      ),
+    ).toBe(true);
   });
 
-  it("tries only the pixels an open line covers, never the empty middle of its box", () => {
+  it("tries the whole of an open line, so a part it crossed between pointer events counts", () => {
+    // A fast stroke recorded only its ends; a small part sits halfway along it.
     const points = [
       { x: 0, y: 0 },
       { x: 400, y: 300 },
     ];
     const samples = markSamples({ x: 0, y: 0, width: 400, height: 300 }, size, points);
-    expect(samples).toEqual([
-      { x: 0, y: 0 },
-      { x: 1, y: 1 },
-    ]);
+    const onPart = (sample: { x: number; y: number }) =>
+      Math.abs(sample.x - 0.5) <= 0.01 && Math.abs(sample.y - 0.5) <= 0.01;
+    expect(samples.some(onPart)).toBe(true);
+    expect(samples[0]).toEqual({ x: 0, y: 0 });
+    expect(samples.at(-1)).toEqual({ x: 1, y: 1 });
+    // Every sample lies on the line, never in the empty middle of its box off the line.
+    for (const sample of samples) expect(sample.y).toBeCloseTo(sample.x, 6);
+  });
+
+  it("caps the samples on a very long line", () => {
+    const points = Array.from({ length: 2000 }, (_unused, index) => ({ x: index % 400, y: 150 }));
+    const samples = markSamples({ x: 0, y: 140, width: 400, height: 20 }, size, points);
+    expect(samples.length).toBeLessThanOrEqual(130);
   });
 });
 
