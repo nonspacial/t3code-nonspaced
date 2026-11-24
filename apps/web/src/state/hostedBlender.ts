@@ -7,6 +7,7 @@ import { createHostedBlenderEnvironmentAtoms } from "@t3tools/client-runtime/sta
 import {
   type EnvironmentId,
   HOSTED_BLENDER_STREAM_PATH,
+  HostedBlenderError,
   type HostedBlenderThreadState,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -14,7 +15,9 @@ import type { ModelView } from "@t3tools/shared/modelView";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import { useMessages } from "gt-react";
 import type * as Duration from "effect/Duration";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
@@ -91,18 +94,28 @@ export function readLatest<A, E>(
   );
 }
 
+const isHostedBlenderError = Schema.is(HostedBlenderError);
+
 /**
- * Moves the person's viewport window to a view link's camera. A Blender still starting, or a
- * person who may only watch, leaves the view where it is.
+ * Moves the person's viewport window to a view link's camera on `relativePath`. A Blender still
+ * starting, or a person who may only watch, leaves the view where it is; `otherFile` means the
+ * Blender no longer has that file open.
  */
 export async function setHostedBlenderView(
   threadRef: ScopedThreadRef,
+  relativePath: string,
   view: ModelView,
-): Promise<void> {
-  await runAtomCommand(
+): Promise<"moved" | "otherFile" | "failed"> {
+  const result = await runAtomCommand(
     appAtomRegistry,
     hostedBlenderEnvironment.setView,
-    { environmentId: threadRef.environmentId, input: { threadId: threadRef.threadId, view } },
+    {
+      environmentId: threadRef.environmentId,
+      input: { threadId: threadRef.threadId, relativePath, view },
+    },
     { reportFailure: false },
   );
+  if (result._tag === "Success") return "moved";
+  const error = Cause.squash(result.cause);
+  return isHostedBlenderError(error) && error.reason === "otherFileOpen" ? "otherFile" : "failed";
 }

@@ -10,6 +10,7 @@ import { type HostedBlenderThreadState, ThreadId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import * as Context from "effect/Context";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -366,7 +367,11 @@ describe("The viewport window", () => {
     Effect.gen(function* () {
       const { service, openReady } = yield* standIn("set-view", "");
       yield* openReady;
-      yield* service.setView({ threadId, view: { position: [1, 2, 3], target: [4, 5, 6] } });
+      yield* service.setView({
+        threadId,
+        relativePath: "cube.blend",
+        view: { position: [1, 2, 3], target: [4, 5, 6] },
+      });
       const capture = yield* service.captureView(threadId);
       assert.deepStrictEqual(capture.cameraView, {
         position: [1, 2, 3],
@@ -376,13 +381,34 @@ describe("The viewport window", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("refuses a link's view for a file other than the one open", () =>
+    Effect.gen(function* () {
+      const { service, openReady } = yield* standIn("set-view-other", "");
+      yield* openReady;
+      const refused = yield* service
+        .setView({
+          threadId,
+          relativePath: "other.blend",
+          view: { position: [1, 2, 3], target: [4, 5, 6] },
+        })
+        .pipe(Effect.flip);
+      expect(refused.reason).toBe("otherFileOpen");
+      const capture = yield* service.captureView(threadId);
+      expect(capture.cameraView.position).toEqual([7, -7, 5]);
+    }).pipe(Effect.scoped),
+  );
+
   it.live("fails when the thread has no hosted Blender", () =>
     Effect.gen(function* () {
       const { service } = yield* standIn("view-stopped", "");
       const failed = yield* service.captureView(threadId).pipe(Effect.flip);
       expect(failed.reason).toBe("notRunning");
       const refused = yield* service
-        .setView({ threadId, view: { position: [1, 0, 0], target: [0, 0, 0] } })
+        .setView({
+          threadId,
+          relativePath: "cube.blend",
+          view: { position: [1, 0, 0], target: [0, 0, 0] },
+        })
         .pipe(Effect.flip);
       expect(refused.reason).toBe("notRunning");
     }).pipe(Effect.scoped),
@@ -941,7 +967,18 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
 
       // The viewport looks through its own local camera, not the scene's (until
       // the orbit below leaves camera view).
+      // Once the stream is quiet, reading the camera redraws the viewport, so a frame drawn from
+      // that camera follows the answer even in a still scene.
+      const nextFrame = (wait: Duration.Input) =>
+        Queue.take(viewer.output).pipe(
+          Effect.repeat({ until: (output) => output._tag === "frame" }),
+          Effect.timeoutOption(wait),
+        );
+      yield* viewer.ack;
+      while (Option.isSome(yield* nextFrame("1 second"))) yield* viewer.ack;
       const throughCamera = yield* service.captureView(threadId);
+      expect((yield* nextFrame("5 seconds"))._tag).toBe("Some");
+      yield* viewer.ack;
       throughCamera.cameraView.position.forEach((value, index) =>
         expect(value).toBeCloseTo([3, -4, 2][index]!, 3),
       );
@@ -991,7 +1028,11 @@ describe.skipIf(!canHostBlender)("a real hosted Blender", () => {
       // A view link moves the person's viewport window; the frame drawn after it is what a
       // freeze would capture, so it is read back once Blender has drawn the new view.
       yield* viewer.ack;
-      yield* service.setView({ threadId, view: { position: [6, -6, 5], target: [0, 0, 0] } });
+      yield* service.setView({
+        threadId,
+        relativePath: "models/cube.blend",
+        view: { position: [6, -6, 5], target: [0, 0, 0] },
+      });
       yield* Queue.take(viewer.output).pipe(
         Effect.repeat({ until: (output) => output._tag === "frame" }),
       );

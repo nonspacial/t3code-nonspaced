@@ -102,7 +102,7 @@ vi.mock(import("../state/filesystem"), async (original) => {
 });
 const hostedBlender = vi.hoisted(() => ({
   state: { status: "stopped" } as { status: string; relativePath?: string; dirty?: boolean },
-  setView: vi.fn(async () => {}),
+  setView: vi.fn(async () => "moved" as const),
 }));
 vi.mock(import("../state/hostedBlender"), async (original) => ({
   ...(await original()),
@@ -711,7 +711,7 @@ describe("ChatMarkdown 3D view links", () => {
     });
     await act(async () => screen.container.querySelector("a")!.click());
     await vi.waitFor(() =>
-      expect(hostedBlender.setView).toHaveBeenCalledWith(threadRef, {
+      expect(hostedBlender.setView).toHaveBeenCalledWith(threadRef, "bracket-5.blend", {
         position: [6, -6, 5],
         target: [0, 0, 0],
       }),

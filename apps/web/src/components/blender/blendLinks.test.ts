@@ -65,7 +65,7 @@ describe("openBlendLink", () => {
 
   it("moves the person's viewport window to a view link's camera", async () => {
     const threadRef = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-blend-3"));
-    const setView = vi.fn(async () => {});
+    const setView = vi.fn(async () => "moved" as const);
     const view = { position: [6, -6, 5], target: [0, 0, 1] } as const;
     await openBlendLink({
       threadRef,
@@ -77,12 +77,12 @@ describe("openBlendLink", () => {
       setView,
     });
     expect(surfaces(threadRef)).toContain("blender");
-    expect(setView).toHaveBeenCalledWith(threadRef, view);
+    expect(setView).toHaveBeenCalledWith(threadRef, "models/hero.blend", view);
   });
 
   it("leaves a view link on another file to the 3D preview", async () => {
     const threadRef = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-blend-4"));
-    const setView = vi.fn(async () => {});
+    const setView = vi.fn(async () => "moved" as const);
     const openFile = vi.fn();
     await openBlendLink({
       threadRef,
@@ -95,5 +95,22 @@ describe("openBlendLink", () => {
     });
     expect(openFile).toHaveBeenCalled();
     expect(setView).not.toHaveBeenCalled();
+  });
+
+  it("opens the file preview when the Blender has since moved on to another file", async () => {
+    const threadRef = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-blend-5"));
+    const openFile = vi.fn();
+    await openBlendLink({
+      threadRef,
+      path: "models/hero.blend",
+      workspaceRoot: "/work",
+      view: { position: [6, -6, 5], target: [0, 0, 1] },
+      openFile,
+      // The cached state still names the file; the server knows it's no longer open.
+      readState: async () => running,
+      setView: async () => "otherFile",
+    });
+    expect(openFile).toHaveBeenCalled();
+    expect(surfaces(threadRef)).not.toContain("blender");
   });
 });

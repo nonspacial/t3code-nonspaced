@@ -66,6 +66,7 @@ import {
   HelperPacketReader,
   isHelperPacketError,
 } from "./HelperProtocol.ts";
+import { sendHoldingSlot } from "./ControlSlot.ts";
 import { ViewerFlow } from "./ViewerFlow.ts";
 
 const MAX_VIEWERS = 4;
@@ -963,34 +964,34 @@ const make = Effect.gen(function* () {
     const control = instance.control;
     if (control === null) return yield* new HostedBlenderError({ reason: "noReply" });
     const reply = yield* Deferred.make<unknown>();
-    // A caller that stops waiting doesn't free the slot: Blender may still be working on it.
+    const closed = Deferred.await(control.closed);
+    const send = Effect.suspend(() => {
+      instance.lastRequestId += 1;
+      const id = instance.lastRequestId;
+      instance.requests.set(id, reply);
+      return control
+        .write(`${encodeControlRequest({ ...body, id })}\n`)
+        .pipe(Effect.raceFirst(closed));
+    });
     if (slot) {
-      const held = yield* Effect.uninterruptibleMask((restore) =>
-        restore(slot.take(1).pipe(Effect.timeoutOption(CONTROL_REPLY_TIMEOUT))).pipe(
-          Effect.tap((taken) =>
-            Option.isNone(taken)
-              ? Effect.void
-              : Effect.raceFirst(Deferred.await(reply), Deferred.await(control.closed)).pipe(
-                  Effect.ensuring(slot.release(1)),
-                  Effect.forkIn(serviceScope),
-                ),
-          ),
-        ),
-      );
-      if (Option.isNone(held)) return yield* new HostedBlenderError({ reason: "noReply" });
+      // A caller that stops waiting doesn't free the slot: Blender may still be working on it.
+      const sent = yield* sendHoldingSlot({
+        slot,
+        send,
+        settled: Effect.raceFirst(Deferred.await(reply), closed),
+        scope: serviceScope,
+        timeout: CONTROL_REPLY_TIMEOUT,
+      });
+      if (!sent) return yield* new HostedBlenderError({ reason: "noReply" });
+    } else {
+      yield* send;
     }
-    instance.lastRequestId += 1;
-    const id = instance.lastRequestId;
-    instance.requests.set(id, reply);
-    const answer = yield* control
-      .write(`${encodeControlRequest({ ...body, id })}\n`)
-      .pipe(
-        Effect.andThen(Deferred.await(reply)),
-        Effect.asSome,
-        Effect.raceFirst(Deferred.await(control.closed).pipe(Effect.as(Option.none()))),
-        Effect.timeoutOption(CONTROL_REPLY_TIMEOUT),
-        Effect.map(Option.flatten),
-      );
+    const answer = yield* Deferred.await(reply).pipe(
+      Effect.asSome,
+      Effect.raceFirst(closed.pipe(Effect.as(Option.none()))),
+      Effect.timeoutOption(CONTROL_REPLY_TIMEOUT),
+      Effect.map(Option.flatten),
+    );
     if (Option.isNone(answer)) return yield* new HostedBlenderError({ reason: "noReply" });
     // The add-on answers null when Blender has no viewport window to read or move.
     if (answer.value === null) return yield* new HostedBlenderError({ reason: "noViewport" });
@@ -1021,8 +1022,13 @@ const make = Effect.gen(function* () {
   );
 
   const setView: HostedBlender["Service"]["setView"] = Effect.fn("HostedBlender.setView")(
-    function* ({ threadId, view }) {
+    function* ({ threadId, relativePath, view }) {
       yield* Effect.annotateCurrentSpan({ threadId });
+      // The link was routed here on the client's last word on the file; Blender may have moved on.
+      const instance = instances.get(threadId);
+      if (instance !== undefined && instance.relativePath !== relativePath) {
+        return yield* new HostedBlenderError({ reason: "otherFileOpen" });
+      }
       yield* ask(threadId, { type: "setView", ...view }, Schema.Literal(true));
     },
   );

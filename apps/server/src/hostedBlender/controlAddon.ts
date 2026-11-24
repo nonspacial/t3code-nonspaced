@@ -127,10 +127,12 @@ def _view():
     found = _viewport()
     if found is None:
         return None
-    window, _area, region, space = found
+    window, area, region, space = found
     width, height = window.width, window.height
-    # The matrix the last frame was drawn with, which is the frame the person froze.
     matrix = [value for row in space.region_3d.perspective_matrix for value in row]
+    # A frame drawn from this camera then follows the answer, even in a still scene; the pane
+    # freezes that frame, so its pixels and this camera are the same view.
+    area.tag_redraw()
     return {
         "cameraView": _camera_view(space, window.scene),
         "projection": {

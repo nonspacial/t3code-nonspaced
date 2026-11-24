@@ -25,8 +25,8 @@ export interface FrozenBlenderFrame {
   readonly capture: HostedBlenderViewCapture | null;
 }
 
-/** Longer than a frame takes to reach the pane, so a view still changing shows up by then. */
-const SETTLE_MS = 250;
+/** How long the pane waits for the frame Blender draws after reporting its camera. */
+const REDRAW_WAIT_MS = 1000;
 
 const hasFrame = (canvas: HTMLCanvasElement | null): canvas is HTMLCanvasElement => {
   const box = canvas?.getBoundingClientRect();
@@ -48,9 +48,9 @@ function freezeBlenderFrame(
 }
 
 /**
- * Screenshot & annotate for the Blender pane. Frames carry no camera, so the camera belongs to
- * the frozen frame only if no frame arrived from the click until shortly after Blender answered;
- * otherwise the screenshot goes without camera and hits. The stream calls `frameRef` per frame.
+ * Screenshot & annotate for the Blender pane. Reading the camera makes Blender redraw the
+ * viewport, so the first frame after the answer shows that camera and is the one frozen; if none
+ * comes, the screenshot goes without camera and hits. The stream calls `frameRef` per frame.
  */
 export function useBlenderAnnotation(input: {
   readonly threadRef: ScopedThreadRef;
@@ -74,17 +74,18 @@ export function useBlenderAnnotation(input: {
   const start = async () => {
     if (!hasFrame(canvasRef.current)) return;
     setCapturing(true);
-    let still = true;
-    const changed = () => {
-      still = false;
-    };
-    frameRef.current = changed;
     const result = await captureView({ environmentId, input: { threadId } });
-    await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
-    if (frameRef.current === changed) frameRef.current = null;
-    setCapturing(false);
-    const capture = result._tag === "Success" && still ? result.value : null;
-    setFrozen(freezeBlenderFrame(canvasRef.current, capture));
+    const capture = result._tag === "Success" ? result.value : null;
+    const freeze = (redrawn: boolean) => {
+      if (frameRef.current !== onFrame) return;
+      frameRef.current = null;
+      clearTimeout(gaveUp);
+      setCapturing(false);
+      setFrozen(freezeBlenderFrame(canvasRef.current, redrawn ? capture : null));
+    };
+    const onFrame = () => freeze(true);
+    frameRef.current = onFrame;
+    const gaveUp = setTimeout(() => freeze(false), REDRAW_WAIT_MS);
   };
 
   const editor = frozen ? (

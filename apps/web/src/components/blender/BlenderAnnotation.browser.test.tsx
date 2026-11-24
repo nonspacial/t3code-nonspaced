@@ -34,6 +34,8 @@ const { commands, stream } = vi.hoisted(() => ({
     sink: null as null | { present: (source: CanvasImageSource, w: number, h: number) => boolean },
     events: null as HostedBlenderStreamEvents | null,
     sent: [] as HostedBlenderViewerMessage[],
+    /** The frame Blender draws after it reports its camera; null when none comes. */
+    redraw: "#3d3d3d" as string | null,
   },
 }));
 
@@ -65,12 +67,16 @@ vi.mock("~/state/hostedBlender", () => ({
   refreshHostedBlenderStreamAccess: () => {},
 }));
 
+// Reading the camera makes Blender redraw its viewport, so a frame follows the answer.
 vi.mock("~/state/use-atom-command", () => ({
   useAtomCommand:
-    (command: { label: "captureView" | "findHits" | "quit" }) => async (value: unknown) => ({
-      _tag: "Success",
-      value: await commands[command.label as "captureView" | "findHits"](value),
-    }),
+    (command: { label: "captureView" | "findHits" | "quit" }) => async (value: unknown) => {
+      const result = await commands[command.label as "captureView" | "findHits"](value);
+      const redraw = stream.redraw;
+      if (command.label === "captureView" && redraw !== null)
+        setTimeout(() => stream.sink?.present(frameOf(redraw), 320, 180));
+      return { _tag: "Success", value: result };
+    },
 }));
 
 // A stream that shows one grey frame of Blender through the real canvas sink, then whatever
@@ -133,6 +139,7 @@ function drag(target: Element, from: [number, number], to: [number, number]) {
 function setup(threadId: string, target: "window" | "output") {
   stream.target = target;
   stream.sent = [];
+  stream.redraw = "#3d3d3d";
   commands.captureView.mockReset().mockResolvedValue(capture);
   commands.findHits
     .mockReset()
@@ -211,20 +218,30 @@ async function frozenColor(screen: Awaited<ReturnType<typeof render>>) {
   return Array.from(context.getImageData(160, 90, 1, 1).data.slice(0, 3));
 }
 
-it("keeps the screenshot but not the camera when the view was still changing", async () => {
-  const blender = setup("thread-blender-catch-up", "window");
-  const reply = Promise.withResolvers<HostedBlenderViewCapture>();
-  commands.captureView.mockReset().mockReturnValue(reply.promise);
+it("freezes the frame Blender draws after it reports its camera, with that camera", async () => {
+  const blender = setup("thread-blender-after-reply", "window");
+  stream.redraw = "#ff0000";
   await using screen = await render(blender.element, pane());
   await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
-  reply.resolve(capture);
-  // A frame Blender drew before it answered is still arriving: it can't be tied to the camera.
-  await vi.waitFor(() => {
-    stream.sink!.present(frameOf("#ff0000"), 320, 180);
-    expect(screen.getByRole("img", { name: "Frozen 3D view to annotate" }).query()).not.toBeNull();
-  });
   expect(await frozenColor(screen)).toEqual([255, 0, 0]);
   const surface = screen.getByRole("img", { name: "Frozen 3D view to annotate" });
+  await userEvent.click(screen.getByRole("button", { name: "Mark a region" }));
+  drag(surface.element(), [0.4, 0.4], [0.6, 0.6]);
+  await userEvent.click(screen.getByRole("button", { name: "Add to chat" }));
+  await vi.waitFor(() => expect(blender.draft()?.previewAnnotations).toHaveLength(1));
+  const annotation = blender.draft()!.previewAnnotations[0]!;
+  expect(annotation.cameraView).toEqual(capture.cameraView);
+  expect(annotation.regions[0]?.hit).toEqual({ object: "Cube", point: [0.2, -1, 0.4] });
+});
+
+it("keeps the screenshot but not the camera when no frame follows Blender's answer", async () => {
+  const blender = setup("thread-blender-no-redraw", "window");
+  stream.redraw = null;
+  await using screen = await render(blender.element, pane());
+  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
+  const surface = screen.getByRole("img", { name: "Frozen 3D view to annotate" });
+  await expect.element(surface, { timeout: 3000 }).toBeVisible();
+  expect(await frozenColor(screen)).toEqual([0x3d, 0x3d, 0x3d]);
   await userEvent.click(screen.getByRole("button", { name: "Mark a region" }));
   drag(surface.element(), [0.4, 0.4], [0.6, 0.6]);
   await userEvent.click(screen.getByRole("button", { name: "Add to chat" }));
@@ -233,13 +250,6 @@ it("keeps the screenshot but not the camera when the view was still changing", a
   expect(annotation).not.toHaveProperty("cameraView");
   expect(annotation.regions[0]).not.toHaveProperty("hit");
   expect(commands.findHits).not.toHaveBeenCalled();
-});
-
-it("freezes the frame on screen when Blender sends no newer one", async () => {
-  const blender = setup("thread-blender-still", "window");
-  await using screen = await render(blender.element, pane());
-  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
-  expect(await frozenColor(screen)).toEqual([0x3d, 0x3d, 0x3d]);
 });
 
 it("hands the keyboard to the annotation editor while in control, and control back when it closes", async () => {

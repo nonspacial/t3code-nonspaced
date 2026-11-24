@@ -37,7 +37,7 @@ export async function openBlendLink(input: {
   readonly view?: ModelView | undefined;
   readonly openFile: () => void;
   readonly readState?: (threadRef: ScopedThreadRef) => Promise<HostedBlenderThreadState | null>;
-  readonly setView?: (threadRef: ScopedThreadRef, view: ModelView) => Promise<void>;
+  readonly setView?: typeof setHostedBlenderView;
 }): Promise<void> {
   const panels = useRightPanelStore.getState();
   const panelRef = rightPanelHostRef(input.threadRef);
@@ -52,8 +52,16 @@ export async function openBlendLink(input: {
     return;
   }
   if (hostedBlenderOpensLink(input.path, input.workspaceRoot, state)) {
-    latest.open(input.threadRef, "blender");
-    if (input.view) await (input.setView ?? setHostedBlenderView)(input.threadRef, input.view);
+    const moved = input.view
+      ? await (input.setView ?? setHostedBlenderView)(
+          input.threadRef,
+          workspaceRelative(input.path, input.workspaceRoot),
+          input.view,
+        )
+      : "moved";
+    // The state read may be from before a reconnect; the server has the last word on the file.
+    if (moved === "otherFile") input.openFile();
+    else latest.open(input.threadRef, "blender");
   } else {
     input.openFile();
   }
