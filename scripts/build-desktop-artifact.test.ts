@@ -570,6 +570,27 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
+  it.effect("ships the native Linux helpers as extra resources", () =>
+    Effect.gen(function* () {
+      const linux = yield* createBuildConfig(
+        "linux",
+        "AppImage",
+        "0.0.33",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+
+      for (const helper of ["kde-capture", "hyprland-capture", "hidden-display"]) {
+        assert.deepInclude(linux.extraResources as ReadonlyArray<unknown>, {
+          from: `apps/desktop/prod-resources/${helper}`,
+          to: helper,
+        });
+      }
+    }),
+  );
+
   it.effect("names updatable AppImages without a version and apart per channel", () =>
     Effect.gen(function* () {
       const appImageName = (version: string) =>

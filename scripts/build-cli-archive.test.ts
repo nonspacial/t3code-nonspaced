@@ -9,7 +9,11 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-import { awaitCliNotarization, signMacArchiveContents } from "./build-cli-archive.ts";
+import {
+  awaitCliNotarization,
+  cliNativeHelpers,
+  signMacArchiveContents,
+} from "./build-cli-archive.ts";
 
 const signedEnv = {
   T3CODE_CLI_MAC_SIGN_IDENTITY: "Developer ID Application: Test (TEAM)",
@@ -213,4 +217,25 @@ it.layer(NodeServices.layer)("build-cli-archive notarization", (it) => {
       assert.isTrue(notarySubcommands(stub.calls)[0]?.includes("--wait"));
     }).pipe(Effect.scoped),
   );
+});
+
+it("stages the hidden display helper beside the Linux executable only", () => {
+  const names = (platform: "linux" | "mac" | "win") =>
+    cliNativeHelpers({
+      platform,
+      serverDistDir: "/repo/apps/server/dist",
+      resourceMonitorDir: Option.none(),
+      hiddenDisplayDir: Option.none(),
+    }).map((helper) => helper.name);
+  assert.deepEqual(names("linux"), ["resource-monitor", "hidden-display"]);
+  assert.deepEqual(names("mac"), ["resource-monitor"]);
+  assert.deepEqual(names("win"), ["resource-monitor"]);
+
+  const [, hiddenDisplay] = cliNativeHelpers({
+    platform: "linux",
+    serverDistDir: "/repo/apps/server/dist",
+    resourceMonitorDir: Option.none(),
+    hiddenDisplayDir: Option.some("/ci/cli-hidden-display"),
+  });
+  assert.equal(hiddenDisplay?.source, "/ci/cli-hidden-display");
 });

@@ -119,6 +119,30 @@ describe("HiddenDisplayBinary", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("resolves the helper staged beside the standalone CLI", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-hidden-display-" });
+      const cliDirectory = path.join(baseDir, "t3-linux-x64");
+      const binaryPath = path.join(cliDirectory, "hidden-display/linux-x64/t3-hidden-display");
+      yield* writeBinary(binaryPath, 0o755);
+
+      const service = yield* makeService(baseDir, baseDir, { platform: "linux" }).pipe(
+        Effect.provideService(Path.Path, {
+          ...path,
+          resolve: (...segments) =>
+            path.resolve(
+              ...segments.map((segment) =>
+                segment === import.meta.dirname ? cliDirectory : segment,
+              ),
+            ),
+        }),
+      );
+      assert.equal(yield* service.resolve, binaryPath);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect.each([
     { platform: "darwin", libc: "gnu" },
     { platform: "win32", libc: "gnu" },

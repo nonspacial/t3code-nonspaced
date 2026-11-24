@@ -3,7 +3,9 @@
 
 use std::io::Write;
 use std::os::fd::{AsFd, FromRawFd, OwnedFd};
-use std::time::Instant;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use wayland_client::globals::{GlobalList, GlobalListContents};
 use wayland_client::protocol::{
@@ -53,11 +55,18 @@ use crate::keyboard::Keyboard;
 
 const DRM_FORMAT_XRGB8888: u32 = 0x3432_5258;
 const DRM_FORMAT_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
-/// DMABuf captures reach the encoder without a copy, so the compositor must never write into a
-/// buffer GStreamer still holds: at most the one queued in `appsrc`, the one being encoded and
-/// the retained last frame, all among the three most recent captures.
+/// Enough for GStreamer to hold three (queued in `appsrc`, encoding, kept for settle frames)
+/// while the compositor fills a fourth; `capture_next` skips any it still holds.
 const CAPTURE_BUFFERS: usize = 4;
+const CAPTURE_RETRY: Duration = Duration::from_millis(4);
 const XKB_V1: u32 = 1;
+
+/// The first buffer at or after `start`, round-robin, that GStreamer is not still reading.
+fn next_free(start: usize, count: usize, busy: impl Fn(usize) -> bool) -> Option<usize> {
+    (0..count)
+        .map(|offset| (start + offset) % count)
+        .find(|index| !busy(*index))
+}
 
 /// GStreamer's name for a `wl_shm` format, by byte order in memory.
 pub fn shm_gst_format(format: u32) -> Option<&'static str> {
@@ -72,6 +81,13 @@ pub fn shm_gst_format(format: u32) -> Option<&'static str> {
         Format::Rgb888 => "BGR",
         _ => return None,
     })
+}
+
+/// The display size to use for a requested one: 4:2:0 encoders need even dimensions, so odd
+/// ones round down. `None` when the request is unusable.
+pub fn even_size(width: u32, height: u32) -> Option<(u32, u32)> {
+    let valid = |n: u32| (2..=8192).contains(&n);
+    (valid(width) && valid(height)).then_some((width & !1, height & !1))
 }
 
 fn bytes_per_pixel(format: u32) -> u32 {
@@ -101,6 +117,7 @@ enum Memory {
     DmaBuf {
         plane: gbm::Plane,
         _bo: gbm::Bo,
+        busy: Arc<AtomicBool>,
     },
 }
 
@@ -119,6 +136,10 @@ impl Drop for Buffer {
 }
 
 impl Buffer {
+    fn busy(&self) -> bool {
+        matches!(&self.memory, Memory::DmaBuf { busy, .. } if busy.load(Ordering::Acquire))
+    }
+
     fn matches(&self, width: u32, height: u32, stride: u32, format: u32) -> bool {
         (self.width, self.height, self.stride) == (width, height, stride)
             && matches!(self.memory, Memory::Shm { format: current, .. } if current == format)
@@ -152,8 +173,9 @@ impl Buffer {
                 height: self.height,
                 stride: self.stride,
             },
-            Memory::DmaBuf { plane, .. } => Frame::DmaBuf {
+            Memory::DmaBuf { plane, busy, .. } => Frame::DmaBuf {
                 fd: &plane.fd,
+                busy,
                 size: plane.size,
                 offset: plane.offset,
                 stride: plane.stride,
@@ -254,6 +276,7 @@ pub struct State {
     cursor_position: (i32, i32),
     cursor_entered: bool,
     paused: bool,
+    capture_waiting: bool,
     t0: Instant,
 }
 
@@ -357,6 +380,7 @@ impl State {
             cursor_position: (0, 0),
             cursor_entered: false,
             paused: false,
+            capture_waiting: false,
             t0: Instant::now(),
         };
         state.send_keymap()?;
@@ -508,12 +532,12 @@ impl State {
             });
             return;
         };
-        if width == 0 || height == 0 || width > 8192 || height > 8192 {
+        let Some((width, height)) = even_size(width, height) else {
             self.events.push(Event::Error {
                 message: format!("invalid size {width}x{height}"),
             });
             return;
-        }
+        };
         let config = manager.create_configuration(self.output_serial, qh, ());
         let head = config.enable_head(head, qh, ());
         head.set_custom_mode(width as i32, height as i32, 0);
@@ -529,10 +553,23 @@ impl State {
     }
 
     /// Sends a settle frame when one is due.
-    pub fn tick(&mut self, now: Instant) {
+    pub fn tick(&mut self, now: Instant, qh: &QueueHandle<State>) {
         if !self.paused && self.settle.poll(now) {
             self.encoder.repeat_last();
         }
+        if std::mem::take(&mut self.capture_waiting) {
+            self.capture_next(qh);
+        }
+    }
+
+    /// How soon the loop must call `tick` again.
+    pub fn next_tick(&self, now: Instant) -> Option<Duration> {
+        let settle = self
+            .settle
+            .deadline()
+            .map(|deadline| deadline.saturating_duration_since(now));
+        let retry = self.capture_waiting.then_some(CAPTURE_RETRY);
+        settle.into_iter().chain(retry).min()
     }
 
     fn restart_capture(&mut self, qh: &QueueHandle<State>) {
@@ -660,7 +697,11 @@ impl State {
             let stride = plane.stride;
             buffers.push(Buffer {
                 wl,
-                memory: Memory::DmaBuf { plane, _bo: bo },
+                memory: Memory::DmaBuf {
+                    plane,
+                    _bo: bo,
+                    busy: Arc::new(AtomicBool::new(false)),
+                },
                 width: constraints.width,
                 height: constraints.height,
                 stride,
@@ -734,8 +775,15 @@ impl State {
             }
         }
         let capture = self.ext_capture.as_mut().unwrap();
-        let index = capture.next;
-        capture.next = (capture.next + 1) % capture.buffers.len();
+        let Some(index) = next_free(capture.next, capture.buffers.len(), |index| {
+            capture.buffers[index].busy()
+        }) else {
+            // Every buffer is still in GStreamer's hands; `tick` tries again shortly.
+            self.capture_waiting = true;
+            return;
+        };
+        self.capture_waiting = false;
+        capture.next = (index + 1) % capture.buffers.len();
         let buffer = &capture.buffers[index];
         let frame = capture.session.create_frame(qh, CaptureKind::Main);
         frame.attach_buffer(&buffer.wl);
@@ -1180,6 +1228,25 @@ delegate_noop!(State: ignore configuration_head::ZwlrOutputConfigurationHeadV1);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_skips_buffers_gstreamer_still_holds() {
+        let busy = [true, false, true, false];
+        assert_eq!(next_free(0, 4, |index| busy[index]), Some(1));
+        assert_eq!(next_free(2, 4, |index| busy[index]), Some(3));
+        assert_eq!(next_free(3, 4, |index| busy[index]), Some(3));
+        assert_eq!(next_free(0, 4, |_| true), None, "all busy: wait");
+        assert_eq!(next_free(0, 0, |_| false), None);
+    }
+
+    #[test]
+    fn rounds_display_sizes_down_to_even() {
+        assert_eq!(even_size(801, 601), Some((800, 600)));
+        assert_eq!(even_size(1280, 720), Some((1280, 720)));
+        assert_eq!(even_size(3, 2), Some((2, 2)));
+        assert_eq!(even_size(1, 600), None);
+        assert_eq!(even_size(8193, 600), None);
+    }
 
     #[test]
     fn maps_shm_formats_to_gstreamer_byte_order() {

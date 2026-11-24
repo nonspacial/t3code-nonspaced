@@ -1123,6 +1123,10 @@ export const LINUX_CAPTURE_EXTRA_RESOURCES = [
     to: "kde-capture",
   },
   {
+    from: "apps/desktop/prod-resources/hidden-display",
+    to: "hidden-display",
+  },
+  {
     from: "apps/desktop/gnome-extension",
     to: "gnome-extension",
     filter: gnomeCaptureBundle.files,

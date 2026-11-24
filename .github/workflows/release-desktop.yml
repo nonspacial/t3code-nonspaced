@@ -443,6 +443,22 @@ jobs:
         shell: bash
         run: command -v patchelf || { sudo apt-get update && sudo apt-get install -y patchelf; }
 
+      # Built here as well as in the desktop build so the CLI archive, built first, ships it.
+      - name: Stage hidden display for the CLI archive
+        if: inputs.cli_archive && inputs.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="native/hidden-display/target/${{ inputs.rust_target }}/release/t3-hidden-display"
+          if [[ ! -x "$binary" ]]; then
+            sudo apt-get update
+            sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgbm-dev libxkbcommon-dev
+            cargo build --locked --release --manifest-path native/hidden-display/Cargo.toml --target "${{ inputs.rust_target }}"
+          fi
+          target_dir="$RUNNER_TEMP/cli-hidden-display/${{ inputs.resource_key }}"
+          mkdir -p "$target_dir"
+          cp "$binary" "$target_dir/t3-hidden-display"
+
       - name: Build CLI archive
         id: build_cli
         if: inputs.cli_archive
@@ -463,6 +479,9 @@ jobs:
         run: |
           set -euo pipefail
           extra_args=()
+          if [[ "${{ inputs.platform }}" == "linux" ]]; then
+            extra_args+=(--hidden-display-dir "$RUNNER_TEMP/cli-hidden-display")
+          fi
           if [[ "${{ inputs.platform }}" == "mac" ]]; then
             if [[ -n "${APPLE_API_KEY:-}" ]]; then
               key_dir="$(mktemp -d "$RUNNER_TEMP/t3-cli-notary.XXXXXXXX")"

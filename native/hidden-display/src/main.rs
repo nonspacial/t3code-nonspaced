@@ -393,9 +393,10 @@ fn session(
         .roundtrip(&mut state)
         .map_err(|error| error.to_string())?;
 
-    state.resize(args.width, args.height, &qh);
+    let size = wayland::even_size(args.width, args.height).ok_or("invalid display size")?;
+    state.resize(size.0, size.1, &qh);
     let deadline = Instant::now() + STARTUP_TIMEOUT;
-    while state.output_size() != (args.width, args.height) {
+    while state.output_size() != size {
         let left = deadline
             .checked_duration_since(Instant::now())
             .ok_or("labwc did not apply the display size")?;
@@ -456,12 +457,9 @@ fn session(
             .map_err(|error| error.to_string())?;
         connection.flush().map_err(|error| error.to_string())?;
 
-        let timeout = state.settle.deadline().map(|deadline| {
-            deadline
-                .saturating_duration_since(Instant::now())
-                .as_millis()
-                .min(i32::MAX as u128) as i32
-        });
+        let timeout = state
+            .next_tick(Instant::now())
+            .map(|left| left.as_millis().min(i32::MAX as u128) as i32);
         let guard = queue.prepare_read();
         let wayland_fd = guard
             .as_ref()
@@ -520,7 +518,7 @@ fn session(
                 }),
             }
         }
-        state.tick(Instant::now());
+        state.tick(Instant::now(), &qh);
 
         if fds[3].revents != 0 {
             children.blender = None;

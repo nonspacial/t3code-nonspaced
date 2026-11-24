@@ -584,12 +584,46 @@ const signWindowsExecutable = Effect.fn("signWindowsExecutable")(function* (
   yield* Effect.log("[cli-archive] Signed t3.exe (Azure Trusted Signing).");
 });
 
+/** Native helpers staged beside the executable, each laid out like `dist/<name>/<platform-arch>`. */
+export function cliNativeHelpers(input: {
+  readonly platform: BuildPlatform;
+  readonly serverDistDir: string;
+  readonly resourceMonitorDir: Option.Option<string>;
+  readonly hiddenDisplayDir: Option.Option<string>;
+}): ReadonlyArray<{ readonly name: string; readonly source: string; readonly hint: string }> {
+  const helper = (name: string, override: Option.Option<string>, flag: string, what: string) => ({
+    name,
+    source: Option.getOrElse(override, () => `${input.serverDistDir}/${name}`),
+    hint: `Build the ${what} or pass --${flag}.`,
+  });
+  return [
+    helper(
+      "resource-monitor",
+      input.resourceMonitorDir,
+      "resource-monitor-dir",
+      "resource monitor",
+    ),
+    // The hosted Blender's hidden display only exists on Linux.
+    ...(input.platform === "linux"
+      ? [
+          helper(
+            "hidden-display",
+            input.hiddenDisplayDir,
+            "hidden-display-dir",
+            "hidden display helper",
+          ),
+        ]
+      : []),
+  ];
+}
+
 const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   readonly platform: BuildPlatform;
   readonly arch: BuildArch;
   readonly version: string;
   readonly outputDir: string;
   readonly resourceMonitorDir: Option.Option<string>;
+  readonly hiddenDisplayDir: Option.Option<string>;
   readonly notarySubmissionFile: Option.Option<string>;
 }) {
   const fs = yield* FileSystem.FileSystem;
@@ -613,19 +647,19 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
       ? path.join(serverDir, "dist-exe", executableName)
       : targetExecutable;
   const webClient = path.join(serverDir, "dist/client");
-  const resourceMonitorDir = Option.getOrElse(input.resourceMonitorDir, () =>
-    path.join(serverDir, "dist/resource-monitor"),
-  );
+  const nativeHelpers = cliNativeHelpers({
+    platform: input.platform,
+    serverDistDir: path.join(serverDir, "dist"),
+    resourceMonitorDir: input.resourceMonitorDir,
+    hiddenDisplayDir: input.hiddenDisplayDir,
+  });
 
   yield* requireInput(
     builtExecutable,
     `Run \`node apps/server/scripts/cli.ts build-exe${targetKey === hostKey ? "" : ` --target ${targetKey}`}\` first.`,
   );
   yield* requireInput(path.join(webClient, "index.html"), "Run `vp run --filter t3 build` first.");
-  yield* requireInput(
-    resourceMonitorDir,
-    "Build the resource monitor or pass --resource-monitor-dir.",
-  );
+  for (const helper of nativeHelpers) yield* requireInput(helper.source, helper.hint);
 
   const stem = cliArchiveStem(input.version, input.platform, input.arch);
   const stageRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-archive-" });
@@ -635,7 +669,9 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   yield* Effect.log(`[cli-archive] Staging ${stem}...`);
   yield* fs.copyFile(builtExecutable, path.join(contentDir, executableName));
   yield* stageWebClient(webClient, path.join(contentDir, "client"));
-  yield* fs.copy(resourceMonitorDir, path.join(contentDir, "resource-monitor"));
+  for (const helper of nativeHelpers) {
+    yield* fs.copy(helper.source, path.join(contentDir, helper.name));
+  }
   yield* stageRuntimeExternals({
     repoRoot,
     stageDir: contentDir,
@@ -722,6 +758,12 @@ const command = Command.make(
     resourceMonitorDir: Flag.String("resource-monitor-dir").pipe(
       Flag.withDescription(
         "Directory laid out like dist/resource-monitor (defaults to apps/server/dist/resource-monitor).",
+      ),
+      Flag.optional,
+    ),
+    hiddenDisplayDir: Flag.String("hidden-display-dir").pipe(
+      Flag.withDescription(
+        "Linux: directory laid out like dist/hidden-display (defaults to apps/server/dist/hidden-display).",
       ),
       Flag.optional,
     ),

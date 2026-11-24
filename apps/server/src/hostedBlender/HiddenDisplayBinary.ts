@@ -85,20 +85,24 @@ export const make = Effect.fn("hostedBlender.hiddenDisplayBinary.make")(function
   const overrides = [environment.T3CODE_HIDDEN_DISPLAY_PATH, config.hiddenDisplayPath].filter(
     (candidate): candidate is string => Boolean(candidate),
   );
-  // Only the desktop app ships the helper so far (passed in as `hiddenDisplayPath`); elsewhere
-  // it comes from a cargo build of `native/hidden-display`.
-  const built =
+  // The desktop app passes `hiddenDisplayPath`; the standalone CLI ships the helper beside its
+  // executable; a checkout has a cargo build of `native/hidden-display`.
+  const bundled =
     target === undefined
       ? []
       : [
-          path.resolve(import.meta.dirname, "../../../../native/hidden-display"),
-          path.resolve(import.meta.dirname, "../../../native/hidden-display"),
-        ].flatMap((crate) =>
-          [path.join("target", target, "release"), "target/release", "target/debug"].map(
-            (directory) => path.join(crate, directory, EXECUTABLE),
+          path.resolve(import.meta.dirname, "hidden-display", `linux-${architecture}`, EXECUTABLE),
+          path.resolve(import.meta.dirname, "hidden-display", EXECUTABLE),
+          ...[
+            path.resolve(import.meta.dirname, "../../../../native/hidden-display"),
+            path.resolve(import.meta.dirname, "../../../native/hidden-display"),
+          ].flatMap((crate) =>
+            [path.join("target", target, "release"), "target/release", "target/debug"].map(
+              (directory) => path.join(crate, directory, EXECUTABLE),
+            ),
           ),
-        );
-  const candidates = [...overrides, ...built];
+        ];
+  const candidates = [...overrides, ...bundled];
   if (candidates.length === 0) {
     return HiddenDisplayBinary.of({
       resolve: Effect.fail(new HiddenDisplayBinaryUnsupported({ platform, architecture })),

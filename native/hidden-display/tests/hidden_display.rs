@@ -401,7 +401,8 @@ fn exercise(capture: &str) {
 
     helper.quiet();
     helper.mark();
-    helper.send(json!({"type": "resize", "width": 800, "height": 600}));
+    // 4:2:0 needs even sizes, so an odd request takes effect one pixel smaller.
+    helper.send(json!({"type": "resize", "width": 801, "height": 601}));
     let resized = helper.event("resized");
     assert_eq!(
         (resized["width"].as_u64(), resized["height"].as_u64()),

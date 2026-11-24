@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gstreamer as gst;
+use gstreamer::glib;
 use gstreamer::prelude::*;
 use gstreamer_allocators as gst_alloc;
 use gstreamer_allocators::prelude::*;
@@ -193,6 +194,8 @@ pub enum Frame<'a> {
     },
     DmaBuf {
         fd: &'a OwnedFd,
+        /// Set while GStreamer holds this capture buffer; see `clear_when_freed`.
+        busy: &'a Arc<AtomicBool>,
         size: usize,
         offset: u32,
         stride: u32,
@@ -202,16 +205,41 @@ pub enum Frame<'a> {
     },
 }
 
+const DRM_FORMAT_XRGB8888: u32 = 0x3432_5258;
+
+/// Marks a capture buffer busy until GStreamer frees the memory that wraps it, so the compositor
+/// is never handed a buffer `glupload` may still be reading.
+pub fn clear_when_freed(memory: &gst::MemoryRef, busy: Arc<AtomicBool>) {
+    unsafe extern "C" fn freed(data: glib::ffi::gpointer, _: *mut gst::ffi::GstMiniObject) {
+        let busy = unsafe { Box::from_raw(data.cast::<Arc<AtomicBool>>()) };
+        busy.store(false, Ordering::Release);
+    }
+    busy.store(true, Ordering::Release);
+    unsafe {
+        gst::ffi::gst_mini_object_weak_ref(
+            memory.as_ptr().cast_mut().cast(),
+            Some(freed),
+            Box::into_raw(Box::new(busy)).cast(),
+        );
+    }
+}
+
+/// GStreamer writes a linear buffer as plain `XR24` and rejects `XR24:0x0000000000000000`.
+fn dmabuf_caps(modifier: u64, width: u32, height: u32) -> String {
+    let drm_format = gst_video::dma_drm_fourcc_to_string(DRM_FORMAT_XRGB8888, modifier);
+    format!(
+        "video/x-raw(memory:DMABuf),format=DMA_DRM,drm-format={drm_format},\
+         width={width},height={height},framerate={NOMINAL_FPS}/1"
+    )
+}
+
 impl Frame<'_> {
     fn caps(&self) -> gst::Caps {
         match self {
             Frame::System { format, width, height, .. } => {
                 format!("video/x-raw,format={format},width={width},height={height},framerate={NOMINAL_FPS}/1")
             }
-            Frame::DmaBuf { modifier, width, height, .. } => format!(
-                "video/x-raw(memory:DMABuf),format=DMA_DRM,drm-format=XR24:0x{modifier:016x},\
-                 width={width},height={height},framerate={NOMINAL_FPS}/1"
-            ),
+            Frame::DmaBuf { modifier, width, height, .. } => dmabuf_caps(*modifier, *width, *height),
         }
         .parse()
         .expect("frame caps")
@@ -336,6 +364,7 @@ impl Encoder {
             }
             Frame::DmaBuf {
                 fd,
+                busy,
                 size,
                 offset,
                 stride,
@@ -350,6 +379,7 @@ impl Encoder {
                 let Ok(memory) = (unsafe { allocator.alloc_dmabuf(dup, *size) }) else {
                     return resized;
                 };
+                clear_when_freed(&memory, Arc::clone(busy));
                 let mut buffer = gst::Buffer::new();
                 let buffer_mut = buffer.get_mut().unwrap();
                 buffer_mut.append_memory(memory);
@@ -470,6 +500,39 @@ impl Settle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_capture_buffer_stays_busy_until_gstreamer_frees_every_copy() {
+        gst::init().unwrap();
+        let busy = Arc::new(AtomicBool::new(false));
+        let memory = gst::Memory::from_slice(vec![0u8; 16]);
+        clear_when_freed(&memory, Arc::clone(&busy));
+        let mut buffer = gst::Buffer::new();
+        buffer.get_mut().unwrap().append_memory(memory);
+        let settle_copy = buffer.copy();
+        assert!(busy.load(Ordering::Acquire));
+        drop(buffer);
+        assert!(busy.load(Ordering::Acquire), "a settle copy still reads it");
+        drop(settle_copy);
+        assert!(!busy.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn dmabuf_caps_name_linear_and_tiled_buffers_the_way_gstreamer_parses_them() {
+        gst::init().unwrap();
+        for (modifier, drm_format) in [
+            (0, "drm-format=(string)XR24,"),
+            (
+                0x0300_0000_0060_6014,
+                "drm-format=(string)XR24:0x0300000000606014,",
+            ),
+        ] {
+            let caps: gst::Caps = dmabuf_caps(modifier, 64, 32)
+                .parse()
+                .expect("caps GStreamer parses");
+            assert!(caps.to_string().contains(drm_format), "{caps}");
+        }
+    }
 
     #[test]
     fn tries_nvidia_then_vaapi_then_x264_then_openh264() {
