@@ -579,6 +579,10 @@
       "types": "./src/device/duoControl.ts",
       "default": "./src/device/duoControl.ts"
     },
+    "./model/preview-scene": {
+      "types": "./src/model/previewScene.ts",
+      "default": "./src/model/previewScene.ts"
+    },
     "./diff-count": {
       "types": "./src/diffCount.ts",
       "default": "./src/diffCount.ts"

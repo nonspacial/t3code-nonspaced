@@ -8,6 +8,7 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Cause from "effect/Cause";
 import {
   filePreviewKind,
+  modelPreviewFormat,
   officePreviewKind,
   FILE_TEXT_PREVIEW_MAX_BYTES,
 } from "@t3tools/shared/filePreview";
@@ -63,6 +64,10 @@ const MermaidFilePreview = lazy(() =>
   import("./MermaidFilePreview").then((module) => ({ default: module.MermaidFilePreview })),
 );
 
+const ModelFilePreview = lazy(() =>
+  import("./ModelFilePreview").then((module) => ({ default: module.ModelFilePreview })),
+);
+
 const SourcePreview = lazy(() => import("./ReadOnlySourcePreview"));
 
 const STALE_URL_MS = 5 * 60_000;
@@ -110,12 +115,15 @@ export function AttachmentFilePreview(props: {
       };
   htmlRender?: boolean;
   threadRef?: ScopedThreadRef;
+  /** Lets a workspace 3D model load the files it references from its folder. */
+  workspaceRoot?: string;
   origin?: string;
   onRemove?: () => void;
   onClose?: () => void;
 }) {
   const kind = filePreviewKind(props);
   const officeKind = officePreviewKind(props);
+  const modelFormat = kind === "model" ? modelPreviewFormat(props) : null;
   const delimiter = filePreviewDelimiter(props);
   const renderedMode =
     kind === "mermaid"
@@ -336,6 +344,26 @@ export function AttachmentFilePreview(props: {
   ) : kind === "font" ? (
     <Suspense fallback={<FileSurfaceLoading />}>
       <FontFilePreview src={url} name={props.name} />
+    </Suspense>
+  ) : modelFormat ? (
+    <Suspense fallback={<FileSurfaceLoading />}>
+      <ModelFilePreview
+        key={`${url}:${revision}`}
+        src={url}
+        name={props.name}
+        format={modelFormat}
+        sizeBytes={props.sizeBytes}
+        companions={
+          props.asset && assetResource && props.workspaceRoot !== undefined
+            ? {
+                environmentId: props.asset.environmentId,
+                resource: assetResource,
+                workspaceRoot: props.workspaceRoot,
+              }
+            : null
+        }
+        onRefresh={() => setRevision((value) => value + 1)}
+      />
     </Suspense>
   ) : officeKind ? (
     <Suspense fallback={<FileSurfaceLoading />}>

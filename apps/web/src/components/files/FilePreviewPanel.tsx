@@ -20,6 +20,7 @@ import {
   isWorkspaceImagePreviewPath,
   isWorkspaceFontPreviewPath,
   isWorkspaceVideoPreviewPath,
+  modelPreviewFormat,
   officePreviewKind,
   binaryPreviewKind,
 } from "@t3tools/shared/filePreview";
@@ -132,6 +133,7 @@ import {
   filePreviewReadErrorMessage,
   isMarkdownPreviewFile,
   resolveFilePreviewPath,
+  servedAsDownload,
   shouldShowFileExplorer,
   workspaceAssetResource,
 } from "./filePreviewMode";
@@ -528,18 +530,23 @@ function WorkspaceDocumentPreview(props: {
   readonly workspaceMutationId: string | null;
   readonly refreshRevision: number;
 }) {
+  const disposition =
+    !props.document || servedAsDownload(props.absolutePath)
+      ? { disposition: "attachment" as const }
+      : {};
   const resource =
     props.draft && props.document
       ? {
           _tag: "draft-workspace-file" as const,
           cwd: props.workspaceRoot,
           path: props.absolutePath,
+          ...disposition,
         }
       : {
           _tag: "media-file" as const,
           threadId: props.threadRef.threadId,
           path: props.absolutePath,
-          ...(props.document ? {} : { disposition: "attachment" as const }),
+          ...disposition,
         };
   const gt = useGT();
   // Drafts keep reloading on every workspace mutation, as before.
@@ -571,6 +578,7 @@ function WorkspaceDocumentPreview(props: {
       mimeType="application/octet-stream"
       sizeBytes={0}
       asset={{ environmentId: props.environmentId, resource }}
+      workspaceRoot={props.workspaceRoot}
       origin={gt("File", { $context: "label for a file opened from the workspace" })}
     />
   );
@@ -1283,7 +1291,8 @@ export default function FilePreviewPanel({
     relativePath !== null &&
     (binaryPreviewKind({ name: relativePath }) !== null ||
       officePreviewKind({ name: relativePath }) !== null ||
-      isWorkspaceFontPreviewPath(relativePath));
+      isWorkspaceFontPreviewPath(relativePath) ||
+      modelPreviewFormat({ name: relativePath }) !== null);
   const isHtml = relativePath !== null && !isPdf && isBrowserPreviewFile(relativePath);
   const isHostFile =
     attachment !== undefined || (relativePath !== null && isHostPath(relativePath));
