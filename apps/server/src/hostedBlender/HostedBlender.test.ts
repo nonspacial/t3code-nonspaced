@@ -2570,7 +2570,7 @@ def unregister():
 `;
 
 describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
-  it.live("a reopened Blender's stream fills the pane size asked for while it started", () =>
+  it.live("a reopened Blender's viewport window fills the pane size asked for, and keeps it", () =>
     Effect.gen(function* () {
       const dir = yield* tempDir("real-reopen-size");
       const workspace = NodePath.join(dir, "work");
@@ -2606,22 +2606,31 @@ describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
       );
       const awaitState = (matches: (state: HostedBlenderThreadState) => boolean) =>
         Queue.take(states).pipe(Effect.repeat({ until: matches }));
-      // A frame of the size asked for, from a viewer that asked while Blender was starting.
+      // The viewport window fills the size asked for while Blender was starting, and stays that
+      // size: a window that later leaves fullscreen shrinks the stream a moment after.
       const fillsPane = Effect.gen(function* () {
         const attached = yield* service.attachViewer(threadId, { canOperate: false });
         assert.strictEqual(attached._tag, "attached");
         if (attached._tag !== "attached") return;
         yield* attached.viewer.resize(1046, 1336);
-        yield* Queue.take(attached.viewer.output).pipe(
+        const sizes = Queue.take(attached.viewer.output).pipe(
           Effect.repeat({
-            until: (output) =>
-              output._tag === "message" &&
-              output.message.type === "viewport" &&
-              output.message.height === 1336,
+            until: (output) => output._tag === "message" && output.message.type === "viewport",
           }),
-          Effect.timeoutOption("30 seconds"),
-          Effect.map((frame) => expect(Option.isSome(frame)).toBe(true)),
+          Effect.map((output) =>
+            output._tag === "message" && output.message.type === "viewport"
+              ? `${output.message.width}x${output.message.height}`
+              : "",
+          ),
         );
+        // The size it settles at: the last one before 6 seconds pass with no change.
+        let settled = yield* sizes.pipe(Effect.timeoutOption("30 seconds"));
+        while (Option.isSome(settled)) {
+          const next = yield* sizes.pipe(Effect.timeoutOption("6 seconds"));
+          if (Option.isNone(next)) break;
+          settled = next;
+        }
+        expect(Option.getOrNull(settled)).toBe("1046x1336");
       }).pipe(Effect.scoped);
 
       yield* service.open({ threadId, relativePath: "cube.blend" });
