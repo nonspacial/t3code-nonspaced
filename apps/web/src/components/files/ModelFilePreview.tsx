@@ -13,7 +13,7 @@ import type { ModelPreviewFormat } from "@t3tools/shared/filePreview";
 import type { ModelView as ModelCameraView } from "@t3tools/shared/modelView";
 import { msg, T, useGT, useLocale, useMessages } from "gt-react";
 import { CameraIcon, FocusIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { useAssetUrlMinter } from "~/assets/assetUrls";
 import { readComposerImageBytes } from "~/components/chat/composerAttachmentFiles";
@@ -160,6 +160,15 @@ export function ModelFilePreview(props: {
   readonly onRefresh: () => void;
   readonly view?: ModelViewRequest | null;
   readonly annotation?: ModelAnnotationTarget | null;
+  /** A GLB converted from a `.blend`, whose views and hits are in Blender's Z-up coordinates. */
+  readonly blenderSource?: boolean;
+  readonly refreshLabel?: string;
+  /** More actions for the top-right group, before Reload. */
+  readonly actions?: ReactNode;
+  /** Replaces the loaded model's status chip. */
+  readonly readyChip?: ReactNode;
+  /** Replaces the loaded model's details box. */
+  readonly facts?: ReactNode;
 }) {
   const gt = useGT();
   const messages = useMessages();
@@ -184,7 +193,8 @@ export function ModelFilePreview(props: {
   const workspaceRoot = props.companions?.workspaceRoot ?? null;
   const awaitingConfirm = !allowLarge && props.sizeBytes > MODEL_CONFIRM_BYTES;
   const { src, format } = props;
-  const attempt = `${allowLarge}:${format}:${src}`;
+  const blenderSource = props.blenderSource === true;
+  const attempt = `${allowLarge}:${format}:${blenderSource}:${src}`;
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- creates the WebGL viewer on a canvas, streams and parses the model into it, and disposes both on cleanup
   useEffect(() => {
@@ -224,6 +234,7 @@ export function ModelFilePreview(props: {
         data: bytes.data,
         companions: modelPath === null ? null : { modelPath, workspaceRoot, mint: mintCompanion },
         signal: controller.signal,
+        blenderSource,
       });
       if (!controller.signal.aborted) setView({ phase: "ready", ...loaded });
     })().catch((cause: unknown) => {
@@ -238,7 +249,17 @@ export function ModelFilePreview(props: {
       viewer?.dispose();
       canvas.remove();
     };
-  }, [attempt, src, format, allowLarge, awaitingConfirm, modelPath, workspaceRoot, mintCompanion]);
+  }, [
+    attempt,
+    src,
+    format,
+    allowLarge,
+    awaitingConfirm,
+    modelPath,
+    workspaceRoot,
+    mintCompanion,
+    blenderSource,
+  ]);
 
   const shown: ModelView = awaitingConfirm
     ? { phase: "confirm", bytes: props.sizeBytes }
@@ -402,7 +423,9 @@ export function ModelFilePreview(props: {
         </div>
       ) : null}
       <div className="absolute start-2 top-2 flex max-w-[calc(100%-6rem)]">
-        {missing.length > 0 ? (
+        {ready && missing.length === 0 && props.readyChip !== undefined ? (
+          props.readyChip
+        ) : missing.length > 0 ? (
           <Popover>
             <PopoverTrigger
               openOnHover
@@ -419,6 +442,7 @@ export function ModelFilePreview(props: {
         )}
       </div>
       <div className="absolute end-2 top-2 flex gap-1">
+        {props.actions}
         {ready && props.annotation ? (
           <PreviewAction label={gt("Screenshot & annotate")} onPress={startAnnotation}>
             <CameraIcon />
@@ -429,11 +453,13 @@ export function ModelFilePreview(props: {
             <FocusIcon />
           </PreviewAction>
         ) : null}
-        <PreviewAction label={gt("Reload model")} onPress={props.onRefresh}>
+        <PreviewAction label={props.refreshLabel ?? gt("Reload model")} onPress={props.onRefresh}>
           <RefreshIcon />
         </PreviewAction>
       </div>
-      {shown.phase === "ready" ? (
+      {shown.phase === "ready" && props.facts !== undefined ? (
+        props.facts
+      ) : shown.phase === "ready" ? (
         <PreviewFacts
           title={<T>Model details</T>}
           rows={modelFactRows(shown.facts, SIZE_UNITS[format], gt)}
