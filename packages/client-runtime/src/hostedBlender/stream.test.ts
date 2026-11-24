@@ -11,8 +11,10 @@ class FakeSocket extends EventTarget {
   readyState = 0;
   binaryType = "blob";
   sent: string[] = [];
-  constructor(readonly url: string) {
+  readonly url: string;
+  constructor(url: string) {
     super();
+    this.url = url;
     FakeSocket.instances.push(this);
   }
   send(data: string) {
@@ -54,7 +56,10 @@ it("decodes the stream from its first keyframe, acks every frame, and sizes the 
   vi.stubGlobal(
     "EncodedVideoChunk",
     class {
-      constructor(readonly init: EncodedVideoChunkInit) {}
+      readonly init: EncodedVideoChunkInit;
+      constructor(init: EncodedVideoChunkInit) {
+        this.init = init;
+      }
     },
   );
   vi.stubGlobal(
