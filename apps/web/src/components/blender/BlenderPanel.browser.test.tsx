@@ -86,7 +86,7 @@ it("takes control on a click, sends keys to Blender, and gives control back on a
     <div>
       <button type="button">Outside</button>
       <div style={{ height: 400, width: 600 }}>
-        <BlenderPanel threadRef={threadRef} visible />
+        <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
       </div>
     </div>,
   );
@@ -128,7 +128,7 @@ it("offers Take over while another device is in control, and says when control i
   using _app = startup();
   await using screen = await render(
     <div style={{ height: 400, width: 600 }}>
-      <BlenderPanel threadRef={threadRef} visible />
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
     </div>,
   );
   await control({ canOperate: true, controller: "another-viewer" });
@@ -155,7 +155,7 @@ it("gives back a take still on its way when the user clicks away first", async (
     <div>
       <button type="button">Outside</button>
       <div style={{ height: 400, width: 600 }}>
-        <BlenderPanel threadRef={threadRef} visible />
+        <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
       </div>
     </div>,
   );
@@ -173,7 +173,7 @@ it("keeps the status strip on one line in a narrow pane, shortening the stats fi
   using _app = startup();
   await using screen = await render(
     <div style={{ height: 400, width: 540 }}>
-      <BlenderPanel threadRef={threadRef} visible />
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
     </div>,
   );
   await control({ canOperate: true, controller: "another-viewer" });
@@ -205,7 +205,7 @@ it("gives control straight back when it's granted after focus has moved elsewher
     <div>
       <button type="button">Outside</button>
       <div style={{ height: 400, width: 600 }}>
-        <BlenderPanel threadRef={threadRef} visible />
+        <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
       </div>
     </div>,
   );
@@ -226,18 +226,24 @@ it("shows Setup needed, saying what is missing, with a way into Settings › Ble
   const running = stream.state;
   try {
     stream.state = { status: "notSetUp", missing: ["enabled"] };
-    await using screen = await render(<BlenderPanel threadRef={threadRef} visible />);
+    await using screen = await render(
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+    );
     await expect.element(screen.getByText("Setup needed")).toBeInTheDocument();
     await expect
       .element(screen.getByText("Switch on Hosted Blender in Settings › Blender", { exact: false }))
       .toBeInTheDocument();
     stream.state = { status: "notSetUp", missing: ["check"] };
-    await screen.rerender(<BlenderPanel threadRef={threadRef} visible />);
+    await screen.rerender(
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+    );
     await expect
       .element(screen.getByText("T3 Code hasn't checked this server yet.", { exact: false }))
       .toBeInTheDocument();
     stream.state = { status: "notSetUp", missing: ["labwc", "encoder"] };
-    await screen.rerender(<BlenderPanel threadRef={threadRef} visible />);
+    await screen.rerender(
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+    );
     await expect
       .element(screen.getByText("labwc, an H.264 encoder", { exact: false }))
       .toBeInTheDocument();
@@ -246,7 +252,9 @@ it("shows Setup needed, saying what is missing, with a way into Settings › Ble
     expect(screen.router?.state.location.search).toEqual({ machine: "environment-1" });
 
     stream.state = { status: "unavailable", reason: "sandboxedBlender" };
-    await screen.rerender(<BlenderPanel threadRef={threadRef} visible />);
+    await screen.rerender(
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+    );
     await expect.element(screen.getByText("Not available on this host")).toBeInTheDocument();
     await expect
       .element(screen.getByText("Flatpak and Snap builds of Blender", { exact: false }))
@@ -261,7 +269,9 @@ it("shows a closed or crashed Blender's card in the pane, never in the float", a
   const running = stream.state;
   try {
     stream.state = { status: "closed", relativePath: "models/hero.blend", recovery: true };
-    await using pane = await render(<BlenderPanel threadRef={threadRef} visible />);
+    await using pane = await render(
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+    );
     await expect.element(pane.getByText("Blender was closed")).toBeInTheDocument();
     await expect
       .element(pane.getByText("kept its unsaved changes", { exact: false }))
@@ -302,7 +312,9 @@ it("warns in the status strip when the server has no usable GPU", async () => {
       installThreadId: null,
     };
     try {
-      await using screen = await render(<BlenderPanel threadRef={threadRef} visible />);
+      await using screen = await render(
+        <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+      );
       await expect.element(screen.getByText(warning)).toBeInTheDocument();
     } finally {
       stream.setup = null;
@@ -314,7 +326,7 @@ it("sizes the display in real pixels, and says when the window hides the pane", 
   using _app = startup();
   await using screen = await render(
     <div style={{ height: 400, width: 600 }}>
-      <BlenderPanel threadRef={threadRef} visible />
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
     </div>,
   );
   const viewport = screen.getByLabelText("Blender viewport").element() as HTMLElement;
@@ -361,7 +373,7 @@ it("is off screen while Settings or Usage cover its thread, though the window is
   const pane = (hidden: boolean) => (
     <HiddenThreadContext value={hidden}>
       <div style={{ height: 400, width: 600 }}>
-        <BlenderPanel threadRef={threadRef} visible />
+        <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
       </div>
     </HiddenThreadContext>
   );

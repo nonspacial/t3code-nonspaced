@@ -100,6 +100,15 @@ vi.mock(import("../state/filesystem"), async (original) => {
         : actual.useFilesystemReadAccess(environmentId)) as never,
   };
 });
+const hostedBlender = vi.hoisted(() => ({
+  state: { status: "stopped" } as { status: string; relativePath?: string; dirty?: boolean },
+  setView: vi.fn(async () => "moved" as const),
+}));
+vi.mock(import("../state/hostedBlender"), async (original) => ({
+  ...(await original()),
+  readHostedBlenderState: (async () => hostedBlender.state) as never,
+  setHostedBlenderView: hostedBlender.setView as never,
+}));
 const threadWorktrees = vi.hoisted(() => new Map<string, string>());
 vi.mock(import("../state/entities"), async (original) => {
   const actual = await original();
@@ -682,6 +691,51 @@ describe("ChatMarkdown workspace file opens", () => {
         relativePath: "/elsewhere/other.md",
       });
     }
+  });
+});
+
+describe("ChatMarkdown 3D view links", () => {
+  const threadRef = {
+    environmentId: EnvironmentId.make("workspace"),
+    threadId: ThreadId.make("thread-view-links"),
+  };
+
+  it("moves the hosted Blender's viewport window to a view link on its open file", async () => {
+    setup();
+    threadWorktrees.set(threadRef.threadId, "/repo");
+    hostedBlender.state = { status: "running", relativePath: "bracket-5.blend", dirty: false };
+    hostedBlender.setView.mockClear();
+    await using screen = await renderText("look from [here](bracket-5.blend#view=6,-6,5,0,0,0)", {
+      cwd: "/repo",
+      threadRef,
+    });
+    await act(async () => screen.container.querySelector("a")!.click());
+    await vi.waitFor(() =>
+      expect(hostedBlender.setView).toHaveBeenCalledWith(threadRef, "bracket-5.blend", {
+        position: [6, -6, 5],
+        target: [0, 0, 0],
+      }),
+    );
+    expect(
+      selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, threadRef),
+    ).toMatchObject({ kind: "blender" });
+  });
+
+  it("opens a model's view link in the 3D preview at that camera", async () => {
+    setup();
+    threadWorktrees.set(threadRef.threadId, "/repo");
+    using openFile = vi.spyOn(useRightPanelStore.getState(), "openFile");
+    await using screen = await renderText("see [the part](out/part.glb#view=1,2,3,0,0,0)", {
+      cwd: "/repo",
+      threadRef,
+    });
+    await act(async () => screen.container.querySelector("a")!.click());
+    await vi.waitFor(() =>
+      expect(openFile).toHaveBeenCalledWith(threadRef, "out/part.glb", undefined, {
+        position: [1, 2, 3],
+        target: [0, 0, 0],
+      }),
+    );
   });
 });
 

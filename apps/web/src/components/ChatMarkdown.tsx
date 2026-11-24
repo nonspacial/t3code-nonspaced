@@ -961,7 +961,13 @@ function useChatMarkdownState(
           .getState()
           .openFile(threadRef, target, fileLinkMeta.line, fileLinkMeta.view);
       if (isBlendFile(target)) {
-        void openBlendLink({ threadRef, path: target, workspaceRoot: panelRoot, openFile });
+        void openBlendLink({
+          threadRef,
+          path: target,
+          workspaceRoot: panelRoot,
+          view: fileLinkMeta.view,
+          openFile,
+        });
       } else openFile();
     };
     if (

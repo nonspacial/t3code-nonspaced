@@ -8,12 +8,18 @@ import {
   type EnvironmentId,
   HOSTED_BLENDER_STREAM_PATH,
   type HostedBlenderRunningList,
+  HostedBlenderError,
   type HostedBlenderSetupState,
   type HostedBlenderThreadState,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
+import type { ModelView } from "@t3tools/shared/modelView";
+import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import { useMessages } from "gt-react";
+import type * as Duration from "effect/Duration";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
@@ -96,10 +102,48 @@ export function readHostedBlenderState(
     environmentId: threadRef.environmentId,
     input: { threadId: threadRef.threadId },
   });
+  return readLatest(appAtomRegistry, atom, "5 seconds");
+}
+
+/**
+ * An atom's latest value, or null when it fails or none comes in time. A subscription's
+ * values stay `waiting` for as long as its stream runs, so waiting values count.
+ */
+export function readLatest<A, E>(
+  registry: AtomRegistry.AtomRegistry,
+  atom: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
+  timeout: Duration.Input,
+): Promise<A | null> {
   return Effect.runPromise(
-    AtomRegistry.getResult(appAtomRegistry, atom, { suspendOnWaiting: true }).pipe(
-      Effect.timeout("5 seconds"),
+    AtomRegistry.getResult(registry, atom).pipe(
+      Effect.timeout(timeout),
       Effect.orElseSucceed(() => null),
     ),
   );
+}
+
+const isHostedBlenderError = Schema.is(HostedBlenderError);
+
+/**
+ * Moves the person's viewport window to a view link's camera on `relativePath`. A Blender still
+ * starting, or a person who may only watch, leaves the view where it is; `otherFile` means the
+ * Blender no longer has that file open.
+ */
+export async function setHostedBlenderView(
+  threadRef: ScopedThreadRef,
+  relativePath: string,
+  view: ModelView,
+): Promise<"moved" | "otherFile" | "failed"> {
+  const result = await runAtomCommand(
+    appAtomRegistry,
+    hostedBlenderEnvironment.setView,
+    {
+      environmentId: threadRef.environmentId,
+      input: { threadId: threadRef.threadId, relativePath, view },
+    },
+    { reportFailure: false },
+  );
+  if (result._tag === "Success") return "moved";
+  const error = Cause.squash(result.cause);
+  return isHostedBlenderError(error) && error.reason === "otherFileOpen" ? "otherFile" : "failed";
 }

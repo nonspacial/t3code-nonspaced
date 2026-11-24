@@ -81,6 +81,7 @@ import {
   needsWorkspaceFileContents,
 } from "./filePath";
 import { BlendFileFacts, ModelFileNotice } from "./ModelFileFacts";
+import { useOpenInHostedBlender } from "../blender/useOpenInHostedBlender";
 import { useWorkspaceFileAssetUrlState } from "./workspaceFileAssetUrl";
 import { MOBILE_FULL_FILE_MAX_BYTES, useFullFileText } from "./useFullFileText";
 
@@ -737,6 +738,11 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
       ? projectEnvironment.readBlendPreview({ environmentId, input: { cwd, relativePath } })
       : null,
   );
+  const openInHostedBlender = useOpenInHostedBlender(
+    isBlendFile && environmentId !== null && threadId !== null && relativePath !== null
+      ? { environmentId, threadId, relativePath }
+      : null,
+  );
   // Metadata is needed only to distinguish directories; file contents can load concurrently.
   const needsFileContents = needsWorkspaceFileContents({
     relativePath,
@@ -998,6 +1004,16 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
             icon: "safari",
             inline: false,
             onPress: () => tryOpenExternalUrl(assetPreviewUri, "file-preview"),
+          } as const)
+        : null,
+      openInHostedBlender
+        ? ({
+            id: "open-hosted-blender",
+            title: openInHostedBlender.title,
+            icon: "cube",
+            inline: false,
+            disabled: openInHostedBlender.disabled,
+            onPress: openInHostedBlender.onPress,
           } as const)
         : null,
       resolvedActiveMode === "preview" &&

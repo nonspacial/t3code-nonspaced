@@ -105,6 +105,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.hostedBlenderQuit]: AuthOrchestrationOperateScope,
   [WS_METHODS.hostedBlenderReopen]: AuthOrchestrationOperateScope,
   [WS_METHODS.hostedBlenderDismiss]: AuthOrchestrationOperateScope,
+  [WS_METHODS.hostedBlenderSetView]: AuthOrchestrationOperateScope,
   [WS_METHODS.hostedBlenderCheckSetup]: AuthOrchestrationOperateScope,
   [WS_METHODS.hostedBlenderInstallWithAgent]: AuthOrchestrationOperateScope,
   // Send stores and sends a report from a thread's turn: the bar of running that thread.
