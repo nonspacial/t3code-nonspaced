@@ -69,6 +69,25 @@ Closing the pane leaves Blender running; open it again from the file preview or 
 
 A link to the open `.blend` that ends in `#view=` and six numbers, such as `models/hero.blend#view=6,-6,5,0,0,0`, opens the pane and moves the viewport window to look from the first three numbers at the last three, in Blender's scene coordinates. It never moves the agent's own view. An annotation carries a link like this, so the agent can send you back to what you pointed at. A view link to a `.blend` that isn't open in the thread's hosted Blender opens the file preview instead. Only people who can control the thread move the view; others just see the pane open.
 
+## On a phone
+
+In the mobile app, open a `.blend` from the thread's files and choose **Open in hosted Blender** from the file's menu. While a hosted Blender is running, the thread also shows a Blender button beside its device and browser previews, so anyone who can see the thread can watch it. Blender opens full screen, view-only, with the same permissions as on desktop: anyone who can see the thread can watch, and taking control needs permission to use terminals.
+
+Tap the stream, or choose **Take control** (**Take over** while another device has it), to control the viewport window by touch:
+
+| Gesture              | Does        |
+| -------------------- | ----------- |
+| Tap                  | Click       |
+| One-finger drag      | Orbit       |
+| Two-finger drag      | Pan         |
+| Pinch                | Zoom        |
+| Long-press           | Right-click |
+| **Z** in the toolbar | Shading pie |
+
+Choose **Done** to give control back. Closing Blender's screen gives it back too and leaves Blender running; **Quit Blender** in its ⋯ menu quits it, offering to save first. Typing on a phone isn't supported yet.
+
+Setting up hosted Blender happens in **Settings › Blender** on the web or desktop. If it's switched off, not yet checked or missing something, the phone says so.
+
 ## Its settings
 
 The first time a hosted Blender starts, T3 Code copies your newest Blender settings (from `~/.config/blender`) into a copy of its own, so your preferences and add-ons come along. Links in your settings folder aren't copied, and changes a hosted Blender makes stay in its copy. Each hosted Blender keeps its own temporary files and add-on ports, so it never clashes with a Blender you're running. Python scripts embedded in `.blend` files don't run in a hosted Blender.
@@ -77,4 +96,4 @@ The first time a hosted Blender starts, T3 Code copies your newest Blender setti
 
 Hosted Blender works when T3 Code runs on Arch, Fedora 43 or later, Ubuntu 24.04 or later, or Debian 13 or later. Ubuntu 22.04 and Debian 12 ship labwc and GStreamer too old for it, and Flatpak and Snap builds of Blender aren't supported yet, so the pane and Settings say it isn't available there. On macOS and Windows it isn't available either; the [3D preview](3d-previews.md) still works there.
 
-The pane works on web and desktop, including over a remote connection or T3 Connect. The mobile app doesn't show it yet.
+The pane works on web, desktop and mobile, including over a remote connection or T3 Connect.
