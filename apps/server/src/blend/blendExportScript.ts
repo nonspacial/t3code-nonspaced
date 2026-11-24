@@ -11,6 +11,12 @@ import bpy
 output = sys.argv[sys.argv.index("--") + 1]
 export = bpy.ops.export_scene.gltf
 supported = set(export.get_rna_type().properties.keys())
+# Scanning for instances is slow in large scenes, so only a scene that makes some pays for it.
+uses_geometry_nodes = any(
+    modifier.type == "NODES" and modifier.show_viewport
+    for obj in bpy.context.scene.objects
+    for modifier in obj.modifiers
+)
 options = {
     "filepath": output,
     "export_format": "GLB",
@@ -19,8 +25,10 @@ options = {
     "export_apply": True,
     # Without this the exporter moves to frame 0, even with animation export off.
     "export_current_frame": True,
+    # Without this, objects parented to bones sit where the armature's rest pose puts them.
+    "export_rest_position_armature": False,
     # Geometry Nodes instances, such as Instance on Points, are dropped without this.
-    "export_gn_mesh": True,
+    "export_gn_mesh": uses_geometry_nodes,
     "export_cameras": False,
     "export_lights": False,
     "export_animations": False,
