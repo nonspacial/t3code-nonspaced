@@ -40,6 +40,18 @@ export function createHostedBlenderEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    captureView: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:hosted-blender:capture-view",
+      tag: WS_METHODS.hostedBlenderCaptureView,
+    }),
+    findHits: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:hosted-blender:find-hits",
+      tag: WS_METHODS.hostedBlenderFindHits,
+    }),
+    setView: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:hosted-blender:set-view",
+      tag: WS_METHODS.hostedBlenderSetView,
+    }),
     setupState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:hosted-blender:setup-state",
       tag: WS_METHODS.hostedBlenderSubscribeSetup,

@@ -83,6 +83,10 @@
       "types": "./src/hostedBlender/input.ts",
       "default": "./src/hostedBlender/input.ts"
     },
+    "./hosted-blender/touch": {
+      "types": "./src/hostedBlender/touch.ts",
+      "default": "./src/hostedBlender/touch.ts"
+    },
     "./hosted-blender/stream": {
       "types": "./src/hostedBlender/stream.ts",
       "default": "./src/hostedBlender/stream.ts"

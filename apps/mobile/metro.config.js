@@ -18,6 +18,7 @@ const licenseGeneratorSource = path.join(
 const escapedWorkspaceRoot = workspaceRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const generatedDeviceStreamRoot = path.join(__dirname, ".generated", "device-stream");
 const generatedPreviewStreamRoot = path.join(__dirname, ".generated", "preview-stream");
+const generatedBlenderStreamRoot = path.join(__dirname, ".generated", "blender-stream");
 
 config.watchFolders = [...new Set([...(config.watchFolders ?? []), workspaceRoot])];
 config.resolver = {
@@ -35,6 +36,7 @@ config.resolver = {
     "@t3tools/mobile-third-party-licenses": generatedLicenseModuleRoot,
     "@t3tools/mobile-device-stream": generatedDeviceStreamRoot,
     "@t3tools/mobile-preview-stream": generatedPreviewStreamRoot,
+    "@t3tools/mobile-blender-stream": generatedBlenderStreamRoot,
   },
 };
 
@@ -71,11 +73,14 @@ async function generateMobileThirdPartyLicenses() {
 }
 
 async function prepareStreamScripts() {
-  const { generateDeviceStreamScript, generatePreviewStreamScript } = await import(
-    pathToFileURL(path.join(__dirname, "scripts", "generate-device-stream.mts")).href
-  );
+  const { generateBlenderStreamScript, generateDeviceStreamScript, generatePreviewStreamScript } =
+    await import(pathToFileURL(path.join(__dirname, "scripts", "generate-device-stream.mts")).href);
   const generateAll = () =>
-    Promise.all([generateDeviceStreamScript(), generatePreviewStreamScript()]);
+    Promise.all([
+      generateDeviceStreamScript(),
+      generatePreviewStreamScript(),
+      generateBlenderStreamScript(),
+    ]);
   await generateAll();
   if (process.env.NODE_ENV !== "production") {
     let rebuild = Promise.resolve();
@@ -90,7 +95,21 @@ async function prepareStreamScripts() {
         ["preview-stream.browser.ts"],
         generatePreviewStreamScript,
       ],
-      ["packages/client-runtime/src/device", ["stream.ts", "hubAccess.ts"], generateAll],
+      [
+        "apps/mobile/src/features/blender",
+        ["blender-stream.browser.ts"],
+        generateBlenderStreamScript,
+      ],
+      [
+        "packages/client-runtime/src/device",
+        ["stream.ts", "hubAccess.ts", "frame.ts"],
+        generateAll,
+      ],
+      [
+        "packages/client-runtime/src/hostedBlender",
+        ["stream.ts", "touch.ts"],
+        generateBlenderStreamScript,
+      ],
       [
         "packages/client-runtime/src/preview",
         ["serverBrowserStream.ts"],

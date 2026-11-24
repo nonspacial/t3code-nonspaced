@@ -31,6 +31,9 @@ from . import app
   "bpy/app/__init__.py":
     "import types\ntimers = types.SimpleNamespace(register=lambda *a, **k: None)\nfrom . import handlers\n",
   "bpy/app/handlers.py": "load_post = []\ndef persistent(function):\n    return function\n",
+  // Imported at the top for the capture and hit tests, which register() never runs.
+  "gpu.py": "",
+  "mathutils.py": "class Matrix: pass\nclass Vector: pass\n",
   "addon_utils.py": String.raw`
 import json, os, types, bpy
 state = json.loads(os.environ["STUB_STATE"])

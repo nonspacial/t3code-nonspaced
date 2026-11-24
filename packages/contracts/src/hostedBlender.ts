@@ -1,6 +1,11 @@
 import * as Schema from "effect/Schema";
 
 import { ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  PreviewAnnotationCameraViewSchema,
+  PreviewAnnotationHitSchema,
+  PreviewAnnotationVectorSchema,
+} from "./ipc.ts";
 
 export const HOSTED_BLENDER_STREAM_PATH = "/api/hosted-blender-stream";
 /** The thread has no hosted Blender running, or it stopped while being watched. */
@@ -165,6 +170,64 @@ export const HostedBlenderQuitInput = Schema.Struct({
 });
 export type HostedBlenderQuitInput = typeof HostedBlenderQuitInput.Type;
 
+export const HostedBlenderThreadInput = Schema.Struct({ threadId: ThreadId });
+export type HostedBlenderThreadInput = typeof HostedBlenderThreadInput.Type;
+
+const Fraction = Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }));
+
+/**
+ * How the viewport window showed the scene when a frame was frozen, so a mark drawn on that
+ * frame can be cast into the scene later: the 3D view's `perspective_matrix` (row-major), and
+ * where its drawing region sits in the window, as fractions from the top-left corner.
+ */
+export const HostedBlenderViewProjection = Schema.Struct({
+  matrix: Schema.Array(Schema.Finite).check(Schema.isMinLength(16), Schema.isMaxLength(16)),
+  region: Schema.Struct({ x: Fraction, y: Fraction, width: Fraction, height: Fraction }),
+});
+export type HostedBlenderViewProjection = typeof HostedBlenderViewProjection.Type;
+
+/** The person's viewport window's camera, in Blender's scene coordinates. */
+export const HostedBlenderViewCapture = Schema.Struct({
+  /** Blender's own render of the viewport's 3D region, drawn with this camera, as a PNG. */
+  screenshot: Schema.Struct({
+    dataUrl: Schema.String,
+    width: Schema.Int,
+    height: Schema.Int,
+  }),
+  cameraView: PreviewAnnotationCameraViewSchema,
+  projection: HostedBlenderViewProjection,
+});
+export type HostedBlenderViewCapture = typeof HostedBlenderViewCapture.Type;
+
+/** A point on the streamed window, as fractions of its width and height from the top-left. */
+const WindowSample = Schema.Struct({ x: Fraction, y: Fraction });
+
+export const HostedBlenderFindHitsInput = Schema.Struct({
+  threadId: ThreadId,
+  projection: HostedBlenderViewProjection,
+  /** Each mark's samples, tried in order until one meets a surface. */
+  marks: Schema.Array(Schema.Array(WindowSample).check(Schema.isMaxLength(256))).check(
+    Schema.isMaxLength(64),
+  ),
+});
+export type HostedBlenderFindHitsInput = typeof HostedBlenderFindHitsInput.Type;
+
+/** What each mark covers, in the order of the marks; null where it meets nothing. */
+export const HostedBlenderHits = Schema.Array(Schema.NullOr(PreviewAnnotationHitSchema));
+export type HostedBlenderHits = typeof HostedBlenderHits.Type;
+
+export const HostedBlenderSetViewInput = Schema.Struct({
+  threadId: ThreadId,
+  /** The file the link points at; refused when the thread's Blender has another file open. */
+  relativePath: TrimmedNonEmptyString,
+  /** A `#view=` link's camera position and target, in Blender's scene coordinates. */
+  view: Schema.Struct({
+    position: PreviewAnnotationVectorSchema,
+    target: PreviewAnnotationVectorSchema,
+  }),
+});
+export type HostedBlenderSetViewInput = typeof HostedBlenderSetViewInput.Type;
+
 export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()(
   "HostedBlenderError",
   {
@@ -178,6 +241,10 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "otherFileOpen",
       "openInAnotherThread",
       "saveFailed",
+      "notRunning",
+      "noReply",
+      "noViewport",
+      "noScreenshot",
     ]),
   },
 ) {
@@ -201,6 +268,14 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "This file is already open in another thread's hosted Blender.";
       case "saveFailed":
         return "Blender could not save the file.";
+      case "notRunning":
+        return "This thread has no hosted Blender running.";
+      case "noReply":
+        return "The hosted Blender didn't answer.";
+      case "noViewport":
+        return "The hosted Blender has no viewport window open.";
+      case "noScreenshot":
+        return "The hosted Blender couldn't take a picture of its viewport.";
     }
   }
 }

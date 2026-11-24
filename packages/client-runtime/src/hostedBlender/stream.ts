@@ -65,6 +65,110 @@ const decodeServerMessage = Schema.decodeUnknownOption(
   Schema.fromJsonString(HostedBlenderStreamServerMessage),
 );
 
+/** The SPS NAL alone: `scanAccessUnit` returns it with the rest of the access unit after it. */
+const spsNal = (sps: Uint8Array) => {
+  for (let i = 0; i + 2 < sps.length; i++) {
+    if (sps[i] === 0 && sps[i + 1] === 0 && (sps[i + 2] === 1 || sps[i + 2] === 0)) {
+      return sps.subarray(0, i);
+    }
+  }
+  return sps;
+};
+const sameBytes = (a: Uint8Array, b: Uint8Array) =>
+  a.length === b.length && a.every((byte, index) => byte === b[index]);
+
+// Profiles whose SPS carries chroma format, bit depths and scaling lists (H.264 7.3.2.1.1).
+const HIGH_PROFILES = new Set([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135]);
+
+/**
+ * The displayed (cropped) frame size an H.264 SPS NAL unit, header byte first, describes;
+ * null when it can't be read.
+ */
+export function avcFrameSize(
+  nal: Uint8Array,
+): { readonly width: number; readonly height: number } | null {
+  // The RBSP: the payload after the header, without emulation-prevention bytes (00 00 03).
+  const rbsp: number[] = [];
+  for (let i = 1; i < nal.length; i++) {
+    if (i >= 3 && nal[i] === 3 && nal[i - 1] === 0 && nal[i - 2] === 0 && rbsp.length >= 2) {
+      const [a, b] = rbsp.slice(-2);
+      if (a === 0 && b === 0) continue;
+    }
+    rbsp.push(nal[i]!);
+  }
+  let bit = 0;
+  const u = (count: number) => {
+    let value = 0;
+    for (let i = 0; i < count; i++, bit++) {
+      const byte = rbsp[bit >> 3];
+      if (byte === undefined) throw new RangeError("SPS ended early");
+      value = value * 2 + ((byte >> (7 - (bit & 7))) & 1);
+    }
+    return value;
+  };
+  const ue = () => {
+    let zeros = 0;
+    while (u(1) === 0) if (++zeros > 31) throw new RangeError("bad exp-Golomb code");
+    return 2 ** zeros - 1 + u(zeros);
+  };
+  const se = () => {
+    const code = ue();
+    return code % 2 === 1 ? (code + 1) / 2 : -code / 2;
+  };
+  try {
+    const profile = u(8);
+    u(16); // constraint flags and level
+    ue(); // seq_parameter_set_id
+    let chromaFormat = 1;
+    let separateColourPlanes = false;
+    if (HIGH_PROFILES.has(profile)) {
+      chromaFormat = ue();
+      if (chromaFormat === 3) separateColourPlanes = u(1) === 1;
+      ue(); // bit depths
+      ue();
+      u(1); // qpprime_y_zero_transform_bypass_flag
+      if (u(1) === 1) {
+        for (let list = 0; list < (chromaFormat === 3 ? 12 : 8); list++) {
+          if (u(1) === 0) continue;
+          let last = 8;
+          let next = 8;
+          for (let j = 0; j < (list < 6 ? 16 : 64) && next !== 0; j++) {
+            next = (last + se() + 256) % 256;
+            last = next === 0 ? last : next;
+          }
+        }
+      }
+    }
+    ue(); // log2_max_frame_num_minus4
+    const pocType = ue();
+    if (pocType === 0) ue();
+    else if (pocType === 1) {
+      u(1);
+      se();
+      se();
+      const cycle = ue();
+      for (let i = 0; i < cycle; i++) se();
+    }
+    ue(); // max_num_ref_frames
+    u(1); // gaps_in_frame_num_value_allowed_flag
+    const widthInMbs = ue() + 1;
+    const heightInMapUnits = ue() + 1;
+    const frameMbsOnly = u(1);
+    if (frameMbsOnly === 0) u(1);
+    u(1); // direct_8x8_inference_flag
+    let [left, right, top, bottom] = [0, 0, 0, 0];
+    if (u(1) === 1) [left, right, top, bottom] = [ue(), ue(), ue(), ue()];
+    const chromaArrayType = separateColourPlanes ? 0 : chromaFormat;
+    const cropX = chromaArrayType === 0 || chromaArrayType === 3 ? 1 : 2;
+    const cropY = (chromaArrayType === 1 ? 2 : 1) * (2 - frameMbsOnly);
+    const width = widthInMbs * 16 - cropX * (left + right);
+    const height = (2 - frameMbsOnly) * heightInMapUnits * 16 - cropY * (top + bottom);
+    return width > 0 && height > 0 ? { width, height } : null;
+  } catch {
+    return null;
+  }
+}
+
 const webCodecsAvailable = () => "VideoDecoder" in globalThis && "EncodedVideoChunk" in globalThis;
 
 /**
@@ -85,11 +189,15 @@ export function createHostedBlenderStreamClient(
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let failures = 0;
   let decoder: VideoDecoder | null = null;
+  // The SPS the decoder was configured with; a keyframe with another one is a new frame size.
+  let decoderSps: Uint8Array | null = null;
   let configuring = false;
   let size: { readonly width: number; readonly height: number } | null = null;
   // Every connection starts visible on the server.
   let visible = true;
   let live = false;
+  // Whether the server last said this viewer controls Blender, on the current socket.
+  let controlling = false;
   // The server sends the next frame only after an ack, so holding it while the decoder is
   // configured or behind keeps every delta's reference frame and bounds the decode queue.
   let ackOwed = false;
@@ -100,6 +208,7 @@ export function createHostedBlenderStreamClient(
       decoder?.close();
     } catch {}
     decoder = null;
+    decoderSps = null;
     configuring = false;
     ackOwed = false;
   };
@@ -137,7 +246,14 @@ export function createHostedBlenderStreamClient(
 
   const configure = async (ws: WebSocket, sps: Uint8Array, data: Uint8Array, pts: number) => {
     configuring = true;
-    const config: VideoDecoderConfig = { codec: avcCodecString(sps), optimizeForLatency: true };
+    // Without the size, Android's WebView decoder keeps every frame at its default 1280×720,
+    // cropping or padding the real picture into it.
+    const size = avcFrameSize(spsNal(sps));
+    const config: VideoDecoderConfig = {
+      codec: avcCodecString(sps),
+      optimizeForLatency: true,
+      ...(size ? { codedWidth: size.width, codedHeight: size.height } : {}),
+    };
     const support = await VideoDecoder.isConfigSupported(config).catch(() => ({
       supported: false,
     }));
@@ -169,6 +285,7 @@ export function createHostedBlenderStreamClient(
     next.addEventListener("dequeue", sendAck);
     next.configure(config);
     decoder = next;
+    decoderSps = spsNal(sps).slice();
     configuring = false;
     decode(data, true, pts);
     sendAck();
@@ -179,11 +296,25 @@ export function createHostedBlenderStreamClient(
     const timestamp = packet.timestamp ?? 0;
     countFrame(raw.byteLength);
     ackOwed = true;
-    if (decoder?.state === "configured") {
-      decode(packet.data, packet.isKey ?? false, timestamp);
-      return sendAck();
-    }
     const scanned = packet.isKey === false ? null : scanAccessUnit(packet.data);
+    if (decoder?.state === "configured") {
+      const resized =
+        scanned?.isKey === true &&
+        scanned.sps !== null &&
+        decoderSps !== null &&
+        !sameBytes(spsNal(scanned.sps), decoderSps);
+      if (!resized) {
+        decode(packet.data, packet.isKey ?? false, timestamp);
+        return sendAck();
+      }
+      // The display resized. Some decoders (Android's WebView) keep the first frame size across
+      // an in-band SPS change, so the new size starts a decoder of its own.
+      try {
+        decoder.close();
+      } catch {}
+      decoder = null;
+      decoderSps = null;
+    }
     // Without a decoder only a keyframe with its SPS can start one.
     if (configuring || !scanned?.isKey || scanned.sps === null) return sendAck();
     void configure(ws, scanned.sps, packet.data, timestamp);
@@ -231,11 +362,16 @@ export function createHostedBlenderStreamClient(
       switch (message.value.type) {
         case "stats":
           return events.onStats(message.value);
-        case "control":
+        case "control": {
+          const granted = !controlling && message.value.controller === "you";
+          controlling = message.value.controller === "you";
+          // The display follows the viewer in control; repeat the size in case it never landed.
+          if (granted) sendSize();
           return events.onControl?.({
             canOperate: message.value.canOperate,
             controller: message.value.controller,
           });
+        }
         case "cursor":
           return events.onCursor?.(message.value.captured);
         case "viewport":
@@ -246,6 +382,7 @@ export function createHostedBlenderStreamClient(
       if (socket !== ws) return;
       socket = null;
       closeDecoder();
+      controlling = false;
       events.onControl?.(VIEW_ONLY);
       events.onCursor?.(false);
       if (stopped) return;
@@ -275,6 +412,7 @@ export function createHostedBlenderStreamClient(
     const ws = socket;
     socket = null;
     closeDecoder();
+    controlling = false;
     events.onControl?.(VIEW_ONLY);
     events.onCursor?.(false);
     ws?.close();

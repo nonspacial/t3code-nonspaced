@@ -62,4 +62,80 @@ describe("openBlendLink", () => {
     expect(surfaces(threadRef)).not.toContain("blender");
     expect(openFile).not.toHaveBeenCalled();
   });
+
+  it("moves the person's viewport window to a view link's camera", async () => {
+    const threadRef = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-blend-3"));
+    const setView = vi.fn(async () => "moved" as const);
+    const view = { position: [6, -6, 5], target: [0, 0, 1] } as const;
+    await openBlendLink({
+      threadRef,
+      path: "models/hero.blend",
+      workspaceRoot: "/work",
+      view,
+      openFile: vi.fn(),
+      readState: async () => running,
+      setView,
+    });
+    expect(surfaces(threadRef)).toContain("blender");
+    expect(setView).toHaveBeenCalledWith(threadRef, "models/hero.blend", view);
+  });
+
+  it("leaves a view link on another file to the 3D preview", async () => {
+    const threadRef = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-blend-4"));
+    const setView = vi.fn(async () => "moved" as const);
+    const openFile = vi.fn();
+    await openBlendLink({
+      threadRef,
+      path: "models/other.blend",
+      workspaceRoot: "/work",
+      view: { position: [6, -6, 5], target: [0, 0, 1] },
+      openFile,
+      readState: async () => running,
+      setView,
+    });
+    expect(openFile).toHaveBeenCalled();
+    expect(setView).not.toHaveBeenCalled();
+  });
+
+  it("opens the file preview when the Blender has since moved on to another file", async () => {
+    const threadRef = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-blend-5"));
+    const openFile = vi.fn();
+    await openBlendLink({
+      threadRef,
+      path: "models/hero.blend",
+      workspaceRoot: "/work",
+      view: { position: [6, -6, 5], target: [0, 0, 1] },
+      openFile,
+      // The cached state still names the file; the server knows it's no longer open.
+      readState: async () => running,
+      setView: async () => "otherFile",
+    });
+    expect(openFile).toHaveBeenCalled();
+    expect(surfaces(threadRef)).not.toContain("blender");
+  });
+
+  it("gives way to whatever the user opened in the panel while the view was moving", async () => {
+    const threadRef = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-blend-6"));
+    const moving = Promise.withResolvers<"moved" | "otherFile" | "failed">();
+    const asked = Promise.withResolvers<void>();
+    const openFile = vi.fn();
+    const opening = openBlendLink({
+      threadRef,
+      path: "models/hero.blend",
+      workspaceRoot: "/work",
+      view: { position: [6, -6, 5], target: [0, 0, 1] },
+      openFile,
+      readState: async () => running,
+      setView: () => {
+        asked.resolve();
+        return moving.promise;
+      },
+    });
+    await asked.promise;
+    useRightPanelStore.getState().openFile(threadRef, "notes.md");
+    moving.resolve("otherFile");
+    await opening;
+    expect(surfaces(threadRef)).not.toContain("blender");
+    expect(openFile).not.toHaveBeenCalled();
+  });
 });
