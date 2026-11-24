@@ -165,7 +165,8 @@ export function createHostedBlenderTouch(options: {
           if (!both) return;
           const centre = centreOf(...both);
           const kind = pairKind(gesture, both, slop());
-          if (kind === null) return;
+          // The gap went back under a notch: nothing to wait for any more.
+          if (kind === null) return clearTimer();
           if (kind === "anchored") {
             if (timer === null) timer = setTimeout(startAnchoredPinch, ANCHOR_MS);
             return;
@@ -247,6 +248,7 @@ export function createHostedBlenderTouch(options: {
     timer = null;
     const both = pair();
     if (gesture.kind !== "pair" || !both || gesture.distance <= 0) return;
+    if (pairKind(gesture, both, slop()) !== "anchored") return;
     pointer(gesture.centre);
     gesture = { kind: "pinch", base: Math.log(gesture.distance) };
     zoom(both);

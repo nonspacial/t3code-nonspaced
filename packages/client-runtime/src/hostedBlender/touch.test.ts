@@ -165,6 +165,22 @@ describe("hosted Blender touch gestures", () => {
     ]);
   });
 
+  it("forgets a one-finger pinch that returns to its starting gap before the wait ends", () => {
+    using fixture = gestures();
+    const { sent, touch } = fixture;
+    touch.down(1, { x: 100, y: 100 });
+    touch.down(2, { x: 200, y: 100 });
+    touch.move(2, { x: 180, y: 100 });
+    touch.move(2, { x: 200, y: 100 });
+    vi.advanceTimersByTime(100);
+    for (let step = 1; step <= 3; step++) {
+      touch.move(1, { x: 100 + step * 16, y: 100 });
+      touch.move(2, { x: 200 + step * 16, y: 100 });
+    }
+    expect(sent.some((message) => message.type === "scroll")).toBe(false);
+    expect(sent).toContainEqual({ type: "key", code: SHIFT, pressed: true });
+  });
+
   it("zooms in on a pinch apart and out on a pinch together, one wheel notch at a time", () => {
     using fixture = gestures();
     const { sent, touch } = fixture;
