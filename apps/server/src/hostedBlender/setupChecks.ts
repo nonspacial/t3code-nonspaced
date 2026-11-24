@@ -27,6 +27,8 @@ export interface OsRelease {
   readonly idLike: ReadonlyArray<string>;
   readonly versionId: string | null;
   readonly prettyName: string | null;
+  /** Set by Ubuntu and the distros built on it, such as Mint and Pop!_OS. */
+  readonly ubuntuCodename: string | null;
 }
 
 /** Everything the setup check found on the host, before it is judged. */
@@ -73,6 +75,7 @@ export const parseOsRelease = (text: string): OsRelease => {
     idLike: (fields.get("ID_LIKE") ?? "").split(/\s+/).filter(Boolean),
     versionId: fields.get("VERSION_ID") ?? null,
     prettyName: fields.get("PRETTY_NAME") ?? null,
+    ubuntuCodename: fields.get("UBUNTU_CODENAME") ?? null,
   };
 };
 
@@ -97,11 +100,20 @@ const packageManagerFor = (release: OsRelease | null): HostedBlenderPackageManag
   return null;
 };
 
-/** Ubuntu 22.04 and Debian 12 ship a labwc and GStreamer too old to run a hosted Blender. */
+// Ubuntu releases before 24.04 (noble), which their derivatives name in UBUNTU_CODENAME.
+const OLD_UBUNTU = new Set(["bionic", "focal", "jammy", "kinetic", "lunar", "mantic"]);
+
+/**
+ * Ubuntu 22.04, Debian 12 and Fedora before 43 ship a labwc and GStreamer too old to run a
+ * hosted Blender.
+ */
 const tooOldDistro = (release: OsRelease | null) => {
-  if (release?.versionId == null) return false;
+  if (release === null) return false;
+  if (release.ubuntuCodename !== null) return OLD_UBUNTU.has(release.ubuntuCodename);
+  if (release.versionId === null) return false;
   if (release.id === "ubuntu") return !atLeast(release.versionId, "24.04");
   if (release.id === "debian") return !atLeast(release.versionId, "13");
+  if (release.id === "fedora") return !atLeast(release.versionId, "43");
   return false;
 };
 
@@ -310,7 +322,7 @@ export const installPrompt = (result: Omit<CheckedSetup, "checkedAt">): string =
         ]
       : ["T3 Code has no package commands for this distro; find the right packages for it.", ""]),
     "Rules:",
-    '- When a command needs sudo, ask for the password with T3 Code\'s private secret card (the `request_secret` tool, with `delivery: "file"`), then run `sudo -S -p \'\' <command> < "$file"`. Never ask for a password in chat.',
+    "- When a command needs sudo, ask for the password with T3 Code's private secret card (the `request_secret` tool, with `delivery: \"file\"`), then run `sudo -S -p '' <command> < \"$file\"`. Never ask for a password in chat. If you don't have `request_secret`, don't run sudo: give the user the commands to run in their own terminal.",
     "- Install only what is listed. Do not edit any provider's MCP configuration: T3 Code adds the Blender MCP to each thread itself.",
     "- Do not touch a desktop Blender the user is running, its settings, or anything on port 9876.",
     "- Explain any step you could not finish. T3 Code checks the setup again when you are done.",

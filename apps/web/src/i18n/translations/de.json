@@ -3365,6 +3365,7 @@
   "81f3ce1d88ecf7bb": "Watching",
   "3906097eebf88153": "Showing the whole display",
   "27ea83219396f796": "No GPU: Blender will be slow",
+  "156c7543e861dda6": "No GPU access: Blender will be slow",
   "907a0f7ed16a709d": "Couldn't open in hosted Blender",
   "7b0cb06d256e6b28": "Open in hosted Blender",
   "49cc06e79f21f85a": "{seconds} s",

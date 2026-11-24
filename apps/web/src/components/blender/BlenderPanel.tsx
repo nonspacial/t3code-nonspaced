@@ -692,9 +692,10 @@ function BlenderStatusStrip(
   },
 ) {
   const setup = useHostedBlenderSetupState(props.environmentId)?.result;
-  const noGpu =
-    setup?.status === "checked" &&
-    setup.checks.some((check) => check.item === "gpu" && check.status !== "ok");
+  const gpu =
+    setup?.status === "checked"
+      ? setup.checks.find((check) => check.item === "gpu")?.status
+      : undefined;
   const parts = [
     props.frameSize ? `${props.frameSize.width}×${props.frameSize.height}` : null,
     props.rate ? `${props.rate.framesPerSecond} fps` : null,
@@ -717,9 +718,13 @@ function BlenderStatusStrip(
           <T>Showing the whole display</T>
         </span>
       ) : null}
-      {noGpu ? (
+      {gpu === "warning" ? (
         <span className="min-w-0 truncate text-warning-foreground">
           <T>No GPU: Blender will be slow</T>
+        </span>
+      ) : gpu === "missing" ? (
+        <span className="min-w-0 truncate text-warning-foreground">
+          <T>No GPU access: Blender will be slow</T>
         </span>
       ) : null}
       {/* Who's in control comes first; in a narrow pane the stats shorten instead of wrapping. */}

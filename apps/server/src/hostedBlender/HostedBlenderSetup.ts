@@ -26,6 +26,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
@@ -166,6 +167,7 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
     return null;
   });
 
+  // Both run inside the check's span.
   const versionOf = Effect.fnUntraced(function* (
     command: string,
     parse: (stdout: string) => string | null,
@@ -325,15 +327,17 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
   );
 
   let pending: Deferred.Deferred<void> | null = null;
+  const installLock = yield* Semaphore.make(1);
   const check: HostedBlenderSetup["Service"]["check"] = Effect.suspend(() => {
     if (pending !== null) return Deferred.await(pending);
     const done = Deferred.makeUnsafe<void>();
     pending = done;
+    // Joiners get the check's own outcome, so a check that dies doesn't read as done.
     return runCheck.pipe(
-      Effect.ensuring(
+      Effect.onExit((exit) =>
         Effect.suspend(() => {
           pending = null;
-          return Deferred.succeed(done, undefined);
+          return Deferred.done(done, exit);
         }),
       ),
       Effect.forkIn(serviceScope),
@@ -360,16 +364,17 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
   const enabledChanges = Stream.unwrap(
     Effect.gen(function* () {
       const changes = yield* settings.subscribeChanges;
-      const current = yield* settings.getSettings.pipe(Effect.option);
+      // Unreadable settings count as switched off, so `open` answers instead of waiting.
+      const current = yield* settings.getSettings.pipe(
+        Effect.map((value) => value.hostedBlenderEnabled),
+        Effect.orElseSucceed(() => false),
+      );
       return Stream.concat(
-        Option.isSome(current) ? Stream.succeed(current.value) : Stream.empty,
-        changes,
+        Stream.succeed(current),
+        changes.pipe(Stream.map((value: ServerSettingsValue) => value.hostedBlenderEnabled)),
       );
     }),
-  ).pipe(
-    Stream.map((current: ServerSettingsValue) => current.hostedBlenderEnabled),
-    Stream.changes,
-  );
+  ).pipe(Stream.changes);
 
   const readiness: HostedBlenderSetup["Service"]["readiness"] =
     platform !== "linux"
@@ -452,7 +457,7 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
   });
 
   // When the install agent's turn ends, however it ends, T3 checks again.
-  const checkAfterInstall = Effect.fnUntraced(function* (input: {
+  const checkAfterInstall = Effect.fn("HostedBlenderSetup.checkAfterInstall")(function* (input: {
     readonly projectId: ProjectId;
     readonly threadId: ThreadId;
   }) {
@@ -475,14 +480,22 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
   const installWithAgent: HostedBlenderSetup["Service"]["installWithAgent"] = Effect.gen(
     function* () {
       yield* ensureChecked;
-      const result = (yield* SubscriptionRef.get(ref)).state.result;
+      const { state: current } = yield* SubscriptionRef.get(ref);
+      // One install thread at a time: a second request, from any device, gets the running one.
+      if (current.installThreadId !== null) return { threadId: current.installThreadId };
+      const result = current.result;
       if (result === null || result.status === "unavailable") {
         return yield* new HostedBlenderSetupError({ reason: "unavailable" });
       }
       if (!needsInstall(result)) {
         return yield* new HostedBlenderSetupError({ reason: "nothingToInstall" });
       }
-      const launched = yield* launch(result);
+      // The browser gets only the reason; the cause stays in the server log.
+      const launched = yield* launch(result).pipe(
+        Effect.tapCause((cause) =>
+          Effect.logWarning("Could not start the hosted Blender setup thread", { cause }),
+        ),
+      );
       yield* update((internal) => ({
         ...internal,
         state: { ...internal.state, installThreadId: launched.threadId },
@@ -491,6 +504,7 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
       return { threadId: launched.threadId };
     },
   ).pipe(
+    installLock.withPermits(1),
     Effect.provideContext(launchContext),
     Effect.withSpan("HostedBlenderSetup.installWithAgent"),
   );

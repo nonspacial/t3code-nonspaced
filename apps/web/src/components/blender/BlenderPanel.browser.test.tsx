@@ -240,24 +240,30 @@ it("shows Setup needed, saying what is missing, with a way into Settings › Ble
 
 it("warns in the status strip when the server has no usable GPU", async () => {
   using _app = startup();
-  stream.setup = {
-    result: {
-      status: "checked",
-      ready: true,
-      checks: [{ item: "gpu", status: "warning" }],
-      distro: null,
-      packageManager: null,
-      capture: null,
-      commands: [],
-      checkedAt: 0,
-    },
-    checking: false,
-    installThreadId: null,
-  };
-  try {
-    await using screen = await render(<BlenderPanel threadRef={threadRef} visible />);
-    await expect.element(screen.getByText("No GPU: Blender will be slow")).toBeInTheDocument();
-  } finally {
-    stream.setup = null;
+  // A GPU T3 can't open is named as such, not as a missing GPU.
+  for (const [status, warning] of [
+    ["warning", "No GPU: Blender will be slow"],
+    ["missing", "No GPU access: Blender will be slow"],
+  ] as const) {
+    stream.setup = {
+      result: {
+        status: "checked",
+        ready: true,
+        checks: [{ item: "gpu", status }],
+        distro: null,
+        packageManager: null,
+        capture: null,
+        commands: [],
+        checkedAt: 0,
+      },
+      checking: false,
+      installThreadId: null,
+    };
+    try {
+      await using screen = await render(<BlenderPanel threadRef={threadRef} visible />);
+      await expect.element(screen.getByText(warning)).toBeInTheDocument();
+    } finally {
+      stream.setup = null;
+    }
   }
 });

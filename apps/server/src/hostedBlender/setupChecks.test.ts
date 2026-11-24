@@ -57,6 +57,7 @@ describe("parsers", () => {
       idLike: ["debian"],
       versionId: "24.04",
       prettyName: "Ubuntu 24.04.1 LTS",
+      ubuntuCodename: null,
     });
   });
 });
@@ -106,6 +107,20 @@ describe("evaluateSetup", () => {
     );
     expect(checked(release('ID=debian\nVERSION_ID="13"')).ready).toBe(true);
     expect(checked(release('ID=fedora\nVERSION_ID="43"')).packageManager).toBe("dnf");
+    expect(evaluateSetup(release('ID=fedora\nVERSION_ID="42"'))).toMatchObject({
+      status: "unavailable",
+      reason: "distro",
+    });
+    // Derivatives name the Ubuntu release they're built on.
+    expect(
+      evaluateSetup(
+        release('ID=linuxmint\nID_LIKE="ubuntu debian"\nVERSION_ID="21.3"\nUBUNTU_CODENAME=jammy'),
+      ),
+    ).toMatchObject({ status: "unavailable", reason: "distro" });
+    expect(
+      checked(release('ID=pop\nID_LIKE="ubuntu debian"\nVERSION_ID="24.04"\nUBUNTU_CODENAME=noble'))
+        .packageManager,
+    ).toBe("apt");
     // A derivative follows the family it names.
     expect(checked(release("ID=endeavouros\nID_LIKE=arch")).packageManager).toBe("pacman");
   });
@@ -227,5 +242,7 @@ describe("installPrompt", () => {
     // T3 adds the Blender MCP to each thread itself.
     expect(prompt).toMatch(/do not edit .*provider/i);
     expect(prompt).toContain("9876");
+    // A provider without T3's secret card never gets a password through chat.
+    expect(prompt).toContain("If you don't have `request_secret`, don't run sudo");
   });
 });

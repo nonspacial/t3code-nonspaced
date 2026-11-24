@@ -268,6 +268,9 @@ describe("HostedBlenderSetup", () => {
       expect(input.initialMessage?.text).toContain("request_secret");
       yield* next((state) => state.installThreadId === threadId);
       expect(host.probeCount()).toBe(1);
+      // Asking again, from any device, gets the same thread rather than a second agent.
+      expect((yield* service.installWithAgent).threadId).toBe(threadId);
+      expect(yield* Queue.size(launched)).toBe(0);
 
       // The agent installed labwc; T3 checks again once its turn ends.
       script(NodePath.join(host.bin, "labwc"), 'echo "labwc 0.9.2"');
