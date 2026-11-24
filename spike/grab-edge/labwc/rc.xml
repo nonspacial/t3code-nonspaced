@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<!-- Hidden-display labwc config for a hosted Blender. One inert keybind stops labwc
+     loading its defaults (Alt+F4, Alt+Tab, Super+arrows...), which would steal Blender keys.
+     Default mousebinds only use Super, which Blender does not, so they stay. -->
+<labwc_config>
+  <core><decoration>server</decoration></core>
+  <theme><maximizedDecoration>none</maximizedDecoration></theme>
+  <keyboard>
+    <keybind key="W-F24"><action name="None"/></keybind>
+  </keyboard>
+  <mouse><default/></mouse>
+</labwc_config>
