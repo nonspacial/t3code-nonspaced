@@ -440,6 +440,14 @@ export function previewAnnotationContextRecord(
     const element = normalizeElementContextSelection(target.element);
     return element ? [{ id: target.id, element }] : [];
   });
+  const hits = [
+    ...annotation.regions.flatMap((region, index) =>
+      region.hit ? [{ mark: "region" as const, index: index + 1, ...region.hit }] : [],
+    ),
+    ...annotation.strokes.flatMap((stroke, index) =>
+      stroke.hit ? [{ mark: "drawing" as const, index: index + 1, ...stroke.hit }] : [],
+    ),
+  ];
   return {
     version: 1,
     contextId: previewAnnotationContextId(annotation.id),
@@ -468,6 +476,8 @@ export function previewAnnotationContextRecord(
     styleChangeDetails: annotation.styleChanges.map((change) => ({ ...change })),
     ...(annotation.regions.length > 0 ? { regionCount: annotation.regions.length } : {}),
     ...(annotation.strokes.length > 0 ? { strokeCount: annotation.strokes.length } : {}),
+    ...(annotation.cameraView ? { cameraView: annotation.cameraView } : {}),
+    ...(hits.length > 0 ? { hits } : {}),
     ...(options?.screenshotContextId !== undefined
       ? { screenshotContextId: toKindScopedComposerContextId("image", options.screenshotContextId) }
       : {}),
@@ -672,6 +682,10 @@ export function reviewCommentFromRecord(record: ReviewCommentContextRecord): Rev
 export function previewAnnotationFromRecord(
   record: PreviewAnnotationContextRecord,
 ): PreviewAnnotationPayload {
+  const hitFor = (mark: "region" | "drawing", index: number) => {
+    const hit = record.hits?.find((entry) => entry.mark === mark && entry.index === index + 1);
+    return hit ? { hit: { object: hit.object, point: hit.point } } : {};
+  };
   return {
     id:
       record.annotationId ||
@@ -687,6 +701,7 @@ export function previewAnnotationFromRecord(
     regions: Array.from({ length: record.regionCount ?? 0 }, (_unused, index) => ({
       id: `${record.contextId}-region-${index + 1}`,
       rect: { x: 0, y: 0, width: 0, height: 0 },
+      ...hitFor("region", index),
     })),
     strokes: Array.from({ length: record.strokeCount ?? 0 }, (_unused, index) => ({
       id: `${record.contextId}-stroke-${index + 1}`,
@@ -694,6 +709,7 @@ export function previewAnnotationFromRecord(
       width: 0,
       points: [],
       bounds: { x: 0, y: 0, width: 0, height: 0 },
+      ...hitFor("drawing", index),
     })),
     styleChanges:
       record.styleChangeDetails ??
@@ -711,6 +727,7 @@ export function previewAnnotationFromRecord(
         ];
       }),
     screenshot: null,
+    ...(record.cameraView ? { cameraView: record.cameraView } : {}),
     createdAt: new Date().toISOString(),
   };
 }

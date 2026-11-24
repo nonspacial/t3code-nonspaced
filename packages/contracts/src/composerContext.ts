@@ -150,6 +150,8 @@ export const ElementContextRecord = Schema.Struct({
 });
 export type ElementContextRecord = typeof ElementContextRecord.Type;
 
+const ModelVector = Schema.Tuple([Schema.Finite, Schema.Finite, Schema.Finite]);
+
 // `optionalKey` rejects explicit undefined within one record, so only that record is dropped.
 export const PreviewAnnotationContextRecord = Schema.Struct({
   ...recordBase,
@@ -176,6 +178,25 @@ export const PreviewAnnotationContextRecord = Schema.Struct({
     ).check(Schema.isMaxLength(200)),
   ),
   screenshotContextId: Schema.optionalKey(ComposerContextId),
+  /** A 3D view's camera, in the file's coordinates. */
+  cameraView: Schema.optionalKey(
+    Schema.Struct({
+      position: ModelVector,
+      target: ModelVector,
+      upAxis: Schema.Literals(["y", "z"]),
+    }),
+  ),
+  /** The surface under each mark on a 3D view; `index` counts from 1 within its kind. */
+  hits: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        mark: Schema.Literals(["region", "drawing"]),
+        index: PositiveInt,
+        object: NullableShortString,
+        point: ModelVector,
+      }),
+    ).check(Schema.isMaxLength(200)),
+  ),
 });
 export type PreviewAnnotationContextRecord = typeof PreviewAnnotationContextRecord.Type;
 

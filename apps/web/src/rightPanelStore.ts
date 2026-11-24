@@ -5,6 +5,7 @@ import {
 } from "@t3tools/client-runtime/environment";
 import { EnvironmentId, RunId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
 import { msg } from "gt-react";
+import type { ModelView } from "@t3tools/shared/modelView";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
@@ -69,6 +70,8 @@ export type RightPanelSurface =
       relativePath: string;
       revealLine: number | null;
       revealRequestId: number;
+      /** A 3D view link's camera, held for the click that opened it. */
+      revealView?: ModelView;
       attachment?: ChatFileAttachment;
       /** Deepest workspace path retained for navigating back down after moving up. */
       folderTrail?: string;
@@ -198,7 +201,7 @@ interface RightPanelStoreState {
   openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget, automatic?: boolean) => void;
   renameDevice: (ref: ScopedThreadRef, surfaceId: string, title: string) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
-  openFile: (ref: ScopedThreadRef, relativePath: string, line?: number) => void;
+  openFile: (ref: ScopedThreadRef, relativePath: string, line?: number, view?: ModelView) => void;
   /** Moves in place; "" opens the root explorer. folderTrail keeps the return path; keepSource opens beside the source. */
   navigateFolder: (
     ref: ScopedThreadRef,
@@ -311,12 +314,14 @@ const fileSurface = (
   relativePath: string,
   revealLine: number | null,
   revealRequestId: number,
+  revealView?: ModelView,
 ): RightPanelSurface => ({
   id: `file:${relativePath}`,
   kind: "file",
   relativePath,
   revealLine,
   revealRequestId,
+  ...(revealView ? { revealView } : {}),
 });
 
 const attachmentSurface = (attachment: ChatFileAttachment): RightPanelSurface => ({
@@ -408,6 +413,10 @@ export function pullRequestSurface(target: {
 
 /** A pending link belongs to the click that made it, not to a reload or a reopen. */
 const withoutReveal = (surface: RightPanelSurface): RightPanelSurface => {
+  if (surface.kind === "file" && surface.revealView !== undefined) {
+    const { revealView: _pending, ...rest } = surface;
+    return rest;
+  }
   if (surface.kind !== "pull-request" || surface.revealUrl === undefined) return surface;
   const { revealUrl: _pending, ...rest } = surface;
   return rest;
@@ -1003,7 +1012,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             ),
           }));
         }),
-      openFile: (ref, requestedPath, line) =>
+      openFile: (ref, requestedPath, line, view) =>
         set((state) =>
           userAction(state, scopedThreadKey(ref), (current) => {
             if (requestedPath === ".") {
@@ -1025,6 +1034,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               relativePath,
               normalizeRevealLine(line),
               (existing?.revealRequestId ?? 0) + 1,
+              view,
             );
             return {
               ...current,

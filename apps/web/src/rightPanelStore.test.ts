@@ -1128,6 +1128,27 @@ describe("rightPanelStore", () => {
     expect(state.surfaces[0]).not.toHaveProperty("revealUrl");
   });
 
+  it("holds a 3D view link's camera for that click only", async () => {
+    const view = { position: [1, 2, 3], target: [0, 0, 0] } as const;
+    const surface = () =>
+      selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA);
+    useRightPanelStore.getState().openFile(refA, "out/bracket.stl", undefined, view);
+    expect(surface()).toMatchObject({
+      relativePath: "out/bracket.stl",
+      revealView: view,
+      revealRequestId: 1,
+    });
+    // The same link clicked again is a new request, so the camera moves back.
+    useRightPanelStore.getState().openFile(refA, "out/bracket.stl", undefined, view);
+    expect(surface()).toMatchObject({ revealView: view, revealRequestId: 2 });
+    await reloadRightPanelStore();
+    expect(surface()).toMatchObject({ relativePath: "out/bracket.stl" });
+    expect(surface()).not.toHaveProperty("revealView");
+    useRightPanelStore.getState().openFile(refA, "out/bracket.stl", undefined, view);
+    useRightPanelStore.getState().openFile(refA, "out/bracket.stl");
+    expect(surface()).not.toHaveProperty("revealView");
+  });
+
   it("holds a clicked link until the panel settles it, and a later link replaces it", async () => {
     const pr = { projectId: "project-a", repository: "pingdotgg/t3code", number: 4909 };
     const id = pullRequestSurfaceId(pr);

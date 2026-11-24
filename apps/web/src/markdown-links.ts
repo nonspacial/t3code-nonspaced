@@ -7,6 +7,7 @@ import {
   resolveMarkdownFileLink,
 } from "@t3tools/shared/markdownLinks";
 import { parseFileUrlHref, splitFilePathPosition } from "@t3tools/shared/fileLinks";
+import { modelViewFromHref, type ModelView } from "@t3tools/shared/modelView";
 
 import { formatWorkspaceRelativePath } from "./filePathDisplay";
 import { isTerminalLinkActivation } from "./terminal-links";
@@ -21,6 +22,8 @@ export interface MarkdownFileLinkMeta {
   line?: number;
   column?: number;
   endLine?: number;
+  /** The camera a 3D model link opens its preview at (`#view=`). */
+  view?: ModelView;
 }
 
 export function shouldOpenMarkdownFileLinkInEditor(
@@ -121,6 +124,7 @@ function resolveMarkdownFileLinkMetaUncached(
     targetPath,
     position: { path, ...lines },
   } = resolved;
+  const view = href === undefined ? null : modelViewFromHref(href);
   return {
     filePath: path,
     targetPath,
@@ -128,6 +132,7 @@ function resolveMarkdownFileLinkMetaUncached(
     workspaceRelativePath: workspaceRelativeFilePath(path, cwd),
     basename: fileBasename(path),
     ...lines,
+    ...(view ? { view } : {}),
     workspaceLookupPath:
       !isAbsolutePath(sourcePath) &&
       baseDir !== undefined &&

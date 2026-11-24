@@ -856,15 +856,51 @@ export const PreviewAnnotationElementTargetSchema: Schema.Codec<PreviewAnnotatio
     rect: PreviewAnnotationRectSchema,
   });
 
+export type PreviewAnnotationVector = readonly [x: number, y: number, z: number];
+
+export const PreviewAnnotationVectorSchema: Schema.Codec<PreviewAnnotationVector> = Schema.Tuple([
+  Schema.Finite,
+  Schema.Finite,
+  Schema.Finite,
+]);
+
+/** A 3D view's camera, in the coordinates of the file it shows (Blender's Z-up for `.blend`). */
+export interface PreviewAnnotationCameraView {
+  position: PreviewAnnotationVector;
+  target: PreviewAnnotationVector;
+  upAxis: "y" | "z";
+}
+
+export const PreviewAnnotationCameraViewSchema: Schema.Codec<PreviewAnnotationCameraView> =
+  Schema.Struct({
+    position: PreviewAnnotationVectorSchema,
+    target: PreviewAnnotationVectorSchema,
+    upAxis: Schema.Literals(["y", "z"]),
+  });
+
+/** What a mark on a 3D view covers: the first surface under it, in the camera's coordinates. */
+export interface PreviewAnnotationHit {
+  /** The object or mesh name; null when the file names none. */
+  object: string | null;
+  point: PreviewAnnotationVector;
+}
+
+export const PreviewAnnotationHitSchema: Schema.Codec<PreviewAnnotationHit> = Schema.Struct({
+  object: Schema.NullOr(Schema.String),
+  point: PreviewAnnotationVectorSchema,
+});
+
 export interface PreviewAnnotationRegionTarget {
   id: string;
   rect: PreviewAnnotationRect;
+  hit?: PreviewAnnotationHit;
 }
 
 export const PreviewAnnotationRegionTargetSchema: Schema.Codec<PreviewAnnotationRegionTarget> =
   Schema.Struct({
     id: Schema.String,
     rect: PreviewAnnotationRectSchema,
+    hit: Schema.optionalKey(PreviewAnnotationHitSchema),
   });
 
 export interface PreviewAnnotationStrokeTarget {
@@ -873,6 +909,7 @@ export interface PreviewAnnotationStrokeTarget {
   width: number;
   points: ReadonlyArray<PreviewAnnotationPoint>;
   bounds: PreviewAnnotationRect;
+  hit?: PreviewAnnotationHit;
 }
 
 export const PreviewAnnotationStrokeTargetSchema: Schema.Codec<PreviewAnnotationStrokeTarget> =
@@ -882,6 +919,7 @@ export const PreviewAnnotationStrokeTargetSchema: Schema.Codec<PreviewAnnotation
     width: Schema.Number,
     points: Schema.Array(PreviewAnnotationPointSchema),
     bounds: PreviewAnnotationRectSchema,
+    hit: Schema.optionalKey(PreviewAnnotationHitSchema),
   });
 
 export interface PreviewAnnotationStyleChange {
@@ -926,6 +964,8 @@ export interface PreviewAnnotationPayload {
   strokes: ReadonlyArray<PreviewAnnotationStrokeTarget>;
   styleChanges: ReadonlyArray<PreviewAnnotationStyleChange>;
   screenshot: PreviewAnnotationScreenshot | null;
+  /** Set when the annotation was drawn on a 3D view. */
+  cameraView?: PreviewAnnotationCameraView;
   createdAt: string;
 }
 
@@ -940,6 +980,7 @@ export const PreviewAnnotationPayloadSchema: Schema.Codec<PreviewAnnotationPaylo
     strokes: Schema.Array(PreviewAnnotationStrokeTargetSchema),
     styleChanges: Schema.Array(PreviewAnnotationStyleChangeSchema),
     screenshot: Schema.NullOr(PreviewAnnotationScreenshotSchema),
+    cameraView: Schema.optionalKey(PreviewAnnotationCameraViewSchema),
     createdAt: Schema.String,
   },
 );

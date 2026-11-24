@@ -69,6 +69,22 @@ describe("relative links inside a rendered host file", () => {
   });
 });
 
+describe("3D view links", () => {
+  it("keep the camera a model link carries, and only that", () => {
+    const meta = resolveMarkdownFileLinkMeta(
+      "out/hinge%20%28v3%29.stl#view=120,80.5,-40,0,0.25,0",
+      "/repo",
+    );
+    expect(meta).toMatchObject({
+      filePath: "/repo/out/hinge (v3).stl",
+      workspaceRelativePath: "out/hinge (v3).stl",
+      view: { position: [120, 80.5, -40], target: [0, 0.25, 0] },
+    });
+    expect(resolveMarkdownFileLinkMeta("src/main.ts#L4", "/repo")).not.toHaveProperty("view");
+    expect(resolveMarkdownFileLinkMeta("out/a.stl#view=1,2", "/repo")).not.toHaveProperty("view");
+  });
+});
+
 describe("resolveInlineCodeFileLinkMeta", () => {
   it("links bare filenames only when a line suffix marks them as file references", () => {
     expect(resolveInlineCodeFileLinkMeta("script.ts:10", "/Users/julius/project")).toMatchObject({

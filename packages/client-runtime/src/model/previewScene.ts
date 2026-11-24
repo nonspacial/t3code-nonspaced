@@ -13,12 +13,15 @@ import {
 } from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import type { PreviewAnnotationCameraView, PreviewAnnotationHit } from "@t3tools/contracts";
 import type { ModelPreviewFormat } from "@t3tools/shared/filePreview";
+import type { ModelView } from "@t3tools/shared/modelView";
 
 import { createRenderScheduler } from "../device/renderScheduler.ts";
 import { disposeModel, frameDistance, type ModelPreviewFacts } from "./modelGeometry.ts";
 import { loadModel, type ModelCompanions } from "./modelLoaders.ts";
 import { ModelPreviewError } from "./modelPreviewError.ts";
+import { hitUnderMark, modelSpace, type ModelSpace } from "./modelSpace.ts";
 
 export {
   isModelPreviewError,
@@ -28,6 +31,20 @@ export {
 export type { ModelCompanions } from "./modelLoaders.ts";
 export type { ModelPreviewFacts } from "./modelGeometry.ts";
 
+/** The view as it was when captured, for annotating it after the camera moves on. */
+export interface ModelSnapshot {
+  /** The rendered frame on `background`, at device pixels. */
+  readonly image: HTMLCanvasElement;
+  /** The view's size in CSS pixels, which marks on the snapshot are measured in. */
+  readonly width: number;
+  readonly height: number;
+  readonly cameraView: PreviewAnnotationCameraView;
+  /** What the captured camera saw first under `samples`, fractions of the view from its top left. */
+  readonly hitAt: (
+    samples: ReadonlyArray<{ readonly x: number; readonly y: number }>,
+  ) => PreviewAnnotationHit | null;
+}
+
 export interface ModelViewer {
   /** Parses one model and frames it. Resolves with the facts shown beside it. */
   readonly load: (input: {
@@ -35,9 +52,15 @@ export interface ModelViewer {
     readonly data: ArrayBuffer;
     readonly companions: ModelCompanions | null;
     readonly signal: AbortSignal;
+    /** A GLB converted from a `.blend` reports views and hits in Blender's Z-up coordinates. */
+    readonly blenderSource?: boolean;
   }) => Promise<{ readonly facts: ModelPreviewFacts; readonly missing: ReadonlyArray<string> }>;
   readonly resize: (width: number, height: number, pixelRatio: number) => void;
   readonly resetView: () => void;
+  /** Moves the camera to a view given in the file's coordinates. */
+  readonly setView: (view: ModelView) => void;
+  /** Renders the current view now; null until a model has loaded. */
+  readonly snapshot: (background: string) => ModelSnapshot | null;
   readonly dispose: () => void;
 }
 
@@ -92,6 +115,8 @@ export function createModelViewer(options: {
     fitted = false;
   });
   let model: Object3D | null = null;
+  let space: ModelSpace | null = null;
+  let viewSize = { width: 0, height: 0 };
   let radius = 1;
   let disposed = false;
   const contextLost = (event: Event) => {
@@ -126,6 +151,10 @@ export function createModelViewer(options: {
       }
       model = loaded.root;
       scene.add(model);
+      space = modelSpace(model, {
+        format: input.format,
+        blenderSource: input.blenderSource === true,
+      });
       radius = new Box3().setFromObject(model).getBoundingSphere(new Sphere()).radius || 1;
       resetView();
       return { facts: loaded.facts, missing: loaded.missing };
@@ -134,12 +163,54 @@ export function createModelViewer(options: {
       if (width <= 0 || height <= 0) return;
       renderer.setPixelRatio(Math.min(pixelRatio, 2));
       renderer.setSize(width, height, false);
+      viewSize = { width, height };
       camera.aspect = width / height;
       if (fitted) resetView();
       else camera.updateProjectionMatrix();
       scheduler.invalidate();
     },
     resetView,
+    setView(view) {
+      if (!space) return;
+      camera.position.copy(space.fromFile(view.position));
+      controls.target.copy(space.fromFile(view.target));
+      const distance = camera.position.distanceTo(controls.target);
+      camera.near = distance / 100;
+      camera.far = (distance + 2 * radius) * 100;
+      camera.updateProjectionMatrix();
+      controls.update();
+      fitted = false;
+      scheduler.invalidate();
+    },
+    snapshot(background) {
+      if (!model || !space || viewSize.width <= 0) return null;
+      // The drawing buffer is only readable in the task that rendered it.
+      renderer.render(scene, camera);
+      const image = document.createElement("canvas");
+      image.width = canvas.width;
+      image.height = canvas.height;
+      const context = image.getContext("2d");
+      if (!context) return null;
+      context.fillStyle = background;
+      context.fillRect(0, 0, image.width, image.height);
+      context.drawImage(canvas, 0, 0);
+      const frozenCamera = camera.clone(false);
+      frozenCamera.updateMatrixWorld(true);
+      const root = model;
+      const frozenSpace = space;
+      return {
+        image,
+        width: viewSize.width,
+        height: viewSize.height,
+        cameraView: {
+          position: frozenSpace.toFile(camera.position),
+          target: frozenSpace.toFile(controls.target),
+          upAxis: frozenSpace.upAxis,
+        },
+        hitAt: (samples) =>
+          hitUnderMark({ root, camera: frozenCamera, space: frozenSpace, samples }),
+      };
+    },
     dispose() {
       disposed = true;
       scheduler.dispose();
@@ -147,6 +218,7 @@ export function createModelViewer(options: {
       canvas.removeEventListener("webglcontextlost", contextLost);
       if (model) disposeModel(model);
       model = null;
+      space = null;
       environment.dispose();
       renderer.dispose();
       renderer.forceContextLoss();
