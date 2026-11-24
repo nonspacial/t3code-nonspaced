@@ -38,6 +38,7 @@ import { useClientSettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 
 import { BinaryFilePreview } from "./BinaryFilePreview";
+import type { ModelAnnotationTarget, ModelViewRequest } from "./ModelFilePreview";
 import { PreviewImage } from "./PreviewImage";
 import { AudioPreview } from "./AudioPreview";
 import { BrowserDocumentFrame } from "./BrowserDocumentFrame";
@@ -117,6 +118,10 @@ export function AttachmentFilePreview(props: {
   threadRef?: ScopedThreadRef;
   /** Lets a workspace 3D model load the files it references from its folder. */
   workspaceRoot?: string;
+  /** A 3D model opens at this camera. */
+  modelView?: ModelViewRequest | null;
+  /** Where a 3D model's Screenshot & annotate goes; without it the button is hidden. */
+  modelAnnotation?: ModelAnnotationTarget | null;
   origin?: string;
   onRemove?: () => void;
   onClose?: () => void;
@@ -363,6 +368,8 @@ export function AttachmentFilePreview(props: {
             : null
         }
         onRefresh={() => setRevision((value) => value + 1)}
+        view={props.modelView ?? null}
+        annotation={props.modelAnnotation ?? null}
       />
     </Suspense>
   ) : officeKind ? (

@@ -224,6 +224,7 @@ function filePreview(relativePath: string, workspaceMutationId: string | null = 
       openInShortcutEnabled={false}
       revealLine={null}
       revealRequestId={0}
+      revealView={null}
       onOpenFile={vi.fn()}
       onNavigateFolder={vi.fn()}
       folderTrail={undefined}

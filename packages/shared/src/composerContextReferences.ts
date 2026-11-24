@@ -322,6 +322,17 @@ function formatComposerContextProviderPayload(record: KnownComposerContextRecord
         );
       }
       if (record.screenshotContextId) lines.push(`screenshot: ref=${record.screenshotContextId}`);
+      if (record.cameraView) {
+        const { position, target, upAxis } = record.cameraView;
+        lines.push(
+          `camera: position ${position.join(", ")}; target ${target.join(", ")} (file coordinates, ${upAxis.toUpperCase()} up)`,
+        );
+      }
+      for (const hit of record.hits ?? []) {
+        lines.push(
+          `${hit.mark} ${hit.index}: ${hit.object ?? "an unnamed object"} at ${hit.point.join(", ")}`,
+        );
+      }
       for (const [index, element] of (record.elements ?? []).entries()) {
         lines.push(`element ${index + 1}:`, indent(formatElementDetails(element).join("\n")));
       }
