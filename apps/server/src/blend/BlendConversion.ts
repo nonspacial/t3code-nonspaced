@@ -15,6 +15,7 @@ import * as Stream from "effect/Stream";
 
 import { issueBlendGlbUrl } from "../assets/AssetAccess.ts";
 import * as AssetSigner from "../assets/AssetSigner.ts";
+import { makeIsServerInternalPath } from "../auth/serverInternalPaths.ts";
 import { readFileRevision } from "../assets/MediaFile.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -126,6 +127,7 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
   const environment = yield* HostProcess.Environment;
   const signer = yield* AssetSigner.AssetSigner;
   const watcher = yield* BlendFileWatcher.BlendFileWatcher;
+  const isServerInternalPath = yield* makeIsServerInternalPath;
   const cacheDir = blendCacheDir(path, config.providerStatusCacheDir);
 
   const lock = yield* Semaphore.make(1);
@@ -366,10 +368,14 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
       if (savedByNewerBlender(facts.blenderVersion, blender.version)) {
         return unavailable({ reason: "newerBlender", blenderVersion: blender.version });
       }
-      const libraries = yield* Effect.forEach(facts.libraries, (saved) => {
-        const file = libraryPath(target.realPath, saved);
-        return Effect.map(readFileRevision(file), (revision) => ({ file, revision }));
-      });
+      // The server's own files are never watched, so no change notice can tell of them.
+      const watchable = yield* Effect.filter(
+        facts.libraries.map((saved) => libraryPath(target.realPath, saved)),
+        (file) => Effect.map(isServerInternalPath(file), (internal) => !internal),
+      );
+      const libraries = yield* Effect.forEach(watchable, (file) =>
+        Effect.map(readFileRevision(file), (revision) => ({ file, revision })),
+      );
       const source: Source = {
         blendPath: target.realPath,
         libraries: facts.libraries,
@@ -443,25 +449,21 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
       .pipe(Effect.onInterrupt(() => leave));
   });
 
-  /** The same files, as they are now. */
-  const reread = (source: Source): Effect.Effect<Source> =>
-    Effect.map(
-      Effect.forEach(source.revisions, ({ file }) =>
-        Effect.map(readFileRevision(file), (revision) => ({ file, revision })),
-      ),
-      (revisions) => ({ ...source, revisions }),
-    );
-
-  /** The first file that differs from when it was checked, once one does. */
+  /** The first file that differs from when it was checked, and every file as it was then. */
   const nextChange = (source: Source) =>
     watcher.changes(source.revisions.map(({ file }) => file)).pipe(
       Stream.mapEffect(() =>
-        Effect.forEach(source.revisions, ({ file, revision }) =>
-          Effect.map(readFileRevision(file), (now) => (now === revision ? null : file)),
+        Effect.forEach(source.revisions, ({ file }) =>
+          Effect.map(readFileRevision(file), (revision) => ({ file, revision })),
         ),
       ),
-      Stream.map((files) => files.find((file) => file !== null)),
-      Stream.filter((file) => file !== undefined),
+      Stream.map((revisions) => ({
+        changed: revisions.find(
+          ({ revision }, index) => revision !== source.revisions[index]?.revision,
+        ),
+        revisions,
+      })),
+      Stream.filter(({ changed }) => changed !== undefined),
       Stream.runHead,
     );
 
@@ -482,18 +484,17 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
       let source = yield* convertOnce(request, withChange);
       while (true) {
         if (source === null || seen.last?.status === "unavailable") return;
-        const file = yield* nextChange(source);
-        if (file._tag === "None") return;
-        changed = path.basename(file.value);
+        const change = yield* nextChange(source);
+        if (change._tag === "None" || change.value.changed === undefined) return;
+        changed = path.basename(change.value.changed.file);
         // A change makes a new cache key, so later rounds may use the cache again.
         request = { ...input, refresh: false };
-        const previous = source;
-        // A file caught mid-save (deleted, then written) fails this round, not the watch.
+        // A file caught mid-save fails this round, not the watch, which then waits for a version
+        // other than the one that failed, even one saved before it watches again.
+        const failedOn: Source = { ...source, revisions: change.value.revisions };
         source = yield* convertOnce(request, withChange).pipe(
           Effect.catch((error) =>
-            withChange({ status: "failed", log: error.message }).pipe(
-              Effect.andThen(reread(previous)),
-            ),
+            withChange({ status: "failed", log: error.message }).pipe(Effect.as(failedOn)),
           ),
         );
       }

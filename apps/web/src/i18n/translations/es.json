@@ -5811,6 +5811,7 @@
   "c85eef9dc05fa21b": "{files} could not be found next to {model}.",
   "411a4c0012fbdc78": "This model is over {size}. Loading it can slow this window down for a while.",
   "7a4197b6468d9219": "This model is {size}. Loading it can slow this window down for a while.",
+  "7805e0174e665cd4": "No se pudo cargar la nueva versión",
   "5ec36ad4005866e2": "{files} not found next to {model}",
   "d6fcf229c9306851": "Capturar y anotar",
   "164dcb32e690fb3b": "Reset view",

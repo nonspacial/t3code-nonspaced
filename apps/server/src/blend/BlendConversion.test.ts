@@ -485,6 +485,59 @@ describe("BlendConversion", () => {
     }),
   );
 
+  it.effect(
+    "converts again when the save that failed a round finishes before the watch reopens",
+    () =>
+      Effect.gen(function* () {
+        const { watcher, opened, signal } = yield* makeWatcher;
+        yield* Effect.gen(function* () {
+          const { root, path, fileSystem } = yield* workspace;
+          const bracket = path.join(root, "bracket.blend");
+          const saved = yield* fileSystem.readFile(bracket);
+          const conversion = yield* BlendConversion.BlendConversion;
+          const progress = yield* Queue.unbounded<BlendConversionStatus>();
+          const live = yield* conversion
+            .watch({ cwd: root, relativePath: "bracket.blend" }, (status) =>
+              // The save lands while the failed round reports, before anything is watched again.
+              (status.status === "failed"
+                ? fileSystem.writeFile(bracket, saved).pipe(Effect.orDie)
+                : Effect.void
+              ).pipe(Effect.andThen(Queue.offer(progress, status)), Effect.asVoid),
+            )
+            .pipe(Effect.forkChild);
+          yield* Queue.take(progress);
+          expect((yield* Queue.take(progress)).status).toBe("ready");
+          yield* Queue.take(opened);
+
+          yield* fileSystem.remove(bracket);
+          yield* signal;
+          expect((yield* Queue.take(progress)).status).toBe("failed");
+          expect(yield* Queue.take(progress)).toEqual(
+            expect.objectContaining({ status: "converting", changed: "bracket.blend" }),
+          );
+          yield* Fiber.interrupt(live);
+        }).pipe(Effect.provide(layerFor({ run: writeGlb, watcher })));
+      }),
+  );
+
+  it.effect("never watches a linked library among the server's own files", () =>
+    Effect.gen(function* () {
+      const { watcher, opened } = yield* makeWatcher;
+      yield* Effect.gen(function* () {
+        const { root, path, fileSystem } = yield* workspace;
+        const config = yield* ServerConfig.ServerConfig;
+        yield* fileSystem.makeDirectory(config.secretsDir, { recursive: true });
+        const secret = path.join(config.secretsDir, "parts-5.blend");
+        yield* fileSystem.rename(path.join(root, "parts-5.blend"), secret);
+        yield* fileSystem.symlink(secret, path.join(root, "parts-5.blend"));
+        const assembly = yield* fileSystem.realPath(path.join(root, "assembly.blend"));
+        const live = yield* startConversion({ cwd: root, relativePath: "assembly.blend" }, "watch");
+        expect(yield* Queue.take(opened)).toEqual([assembly]);
+        yield* Fiber.interrupt(live.fiber);
+      }).pipe(Effect.provide(layerFor({ run: writeGlb, watcher })));
+    }),
+  );
+
   it.effect("stops watching a file it cannot convert", () =>
     Effect.gen(function* () {
       const { root } = yield* workspace;

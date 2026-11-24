@@ -45,7 +45,7 @@ function pane() {
 }
 
 // A binary STL with two facets whose normals are all zero, as many exporters write them.
-function stl() {
+function stl(scale = 1) {
   const view = new DataView(new ArrayBuffer(84 + 2 * 50));
   view.setUint32(80, 2, true);
   const facets = [
@@ -54,7 +54,7 @@ function stl() {
   ];
   facets.forEach((vertices, facet) =>
     vertices.forEach((value, index) =>
-      view.setFloat32(84 + facet * 50 + 12 + index * 4, value, true),
+      view.setFloat32(84 + facet * 50 + 12 + index * 4, value * scale, true),
     ),
   );
   return view.buffer;
@@ -114,13 +114,50 @@ it("renders a model in the browser and lists what it measured", async () => {
   await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
   expect(mint).not.toHaveBeenCalled();
 
-  // A viewer forces its WebGL context lost when it goes, so the next one needs its own canvas.
-  await screen.rerender(preview(modelUrl(stl())));
-  await expect.element(screen.getByText("Loading 3D model…")).toBeVisible();
+  // A new version loads into the same viewer, so its WebGL context stays.
+  const canvas = screen.container.querySelector("canvas");
+  await screen.rerender(preview(modelUrl(stl(2))));
+  await expect.element(screen.getByText("20 × 10 × 40 mm")).toBeVisible();
   await expect.element(screen.getByText("STL · rendered in the browser")).toBeVisible();
   const canvases = screen.container.querySelectorAll("canvas");
   expect(canvases).toHaveLength(1);
+  expect(canvases[0]).toBe(canvas);
   expect(canvases[0]?.getContext("webgl2")?.isContextLost()).toBe(false);
+});
+
+it("keeps the shown model while a new version downloads, and after one that fails", async () => {
+  setup();
+  const preview = (src: string) => (
+    <ModelFilePreview
+      src={src}
+      name="bracket.stl"
+      format="stl"
+      sizeBytes={0}
+      companions={null}
+      onRefresh={() => {}}
+      updatingChip={<p>bracket.stl changed · updating…</p>}
+    />
+  );
+  await using screen = await render(preview(modelUrl(stl())), pane());
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+
+  const slow = "https://example.test/slow.stl";
+  const { promise: download, resolve: finishDownload } = Promise.withResolvers<Response>();
+  const realFetch = globalThis.fetch;
+  using _fetch = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation((input, init) => (input === slow ? download : realFetch(input, init)));
+  await screen.rerender(preview(slow));
+  await expect.element(screen.getByText("bracket.stl changed · updating…")).toBeVisible();
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+  finishDownload(new Response(stl(2)));
+  await expect.element(screen.getByText("20 × 10 × 40 mm")).toBeVisible();
+  await expect.element(screen.getByText("STL · rendered in the browser")).toBeVisible();
+
+  await screen.rerender(preview(modelUrl("not a model")));
+  await expect.element(screen.getByText("Couldn't load the new version")).toBeVisible();
+  await expect.element(screen.getByText("20 × 10 × 40 mm")).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Reset view" })).toBeVisible();
 });
 
 it("signs each file a glTF references beside it and names the ones it cannot read", async () => {
