@@ -7,9 +7,9 @@ import type {
   PreviewAnnotationRegionTarget,
   PreviewAnnotationStrokeTarget,
 } from "@t3tools/contracts";
+import type { ViewSample } from "@t3tools/client-runtime/model/preview-scene";
 import { formatModelViewHash } from "@t3tools/shared/modelView";
 
-type Sample = { readonly x: number; readonly y: number };
 type Size = { readonly width: number; readonly height: number };
 
 const REGION_GRID = 5;
@@ -37,7 +37,7 @@ export function markSamples(
   bounds: PreviewAnnotationRect,
   size: Size,
   points?: ReadonlyArray<PreviewAnnotationPoint>,
-): Sample[] {
+): ViewSample[] {
   const toSample = (x: number, y: number) => ({
     x: Math.min(1, Math.max(0, x / size.width)),
     y: Math.min(1, Math.max(0, y / size.height)),
@@ -45,7 +45,7 @@ export function markSamples(
   const centre = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
   if (points) {
     const step = Math.max(1, points.length / STROKE_SAMPLES);
-    const along: Sample[] = [];
+    const along: ViewSample[] = [];
     for (let index = 0; index < points.length; index += step) {
       const point = points[Math.floor(index)]!;
       along.push(toSample(point.x, point.y));
@@ -76,7 +76,7 @@ export function modelAnnotationPayload(input: {
   readonly strokes: ReadonlyArray<PreviewAnnotationStrokeTarget>;
   /** The view's size in CSS pixels, which the marks are measured in. */
   readonly size: Size;
-  readonly hitAt: (samples: ReadonlyArray<Sample>) => PreviewAnnotationHit | null;
+  readonly hitAt: (samples: ReadonlyArray<ViewSample>) => PreviewAnnotationHit | null;
   readonly screenshot: {
     readonly dataUrl: string;
     readonly width: number;
@@ -85,7 +85,7 @@ export function modelAnnotationPayload(input: {
   readonly cameraView: PreviewAnnotationCameraView;
   readonly createdAt: string;
 }): PreviewAnnotationPayload {
-  const withHit = <Mark extends object>(mark: Mark, samples: Sample[]) => {
+  const withHit = <Mark extends object>(mark: Mark, samples: ViewSample[]) => {
     const hit = input.hitAt(samples);
     return hit ? { ...mark, hit } : mark;
   };

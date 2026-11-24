@@ -21,7 +21,7 @@ import { createRenderScheduler } from "../device/renderScheduler.ts";
 import { disposeModel, frameDistance, type ModelPreviewFacts } from "./modelGeometry.ts";
 import { loadModel, type ModelCompanions } from "./modelLoaders.ts";
 import { ModelPreviewError } from "./modelPreviewError.ts";
-import { hitUnderMark, modelSpace, type ModelSpace } from "./modelSpace.ts";
+import { hitUnderMark, modelSpace, type ModelSpace, type ViewSample } from "./modelSpace.ts";
 
 export {
   isModelPreviewError,
@@ -29,6 +29,7 @@ export {
   type ModelPreviewErrorCode,
 } from "./modelPreviewError.ts";
 export type { ModelCompanions } from "./modelLoaders.ts";
+export type { ViewSample } from "./modelSpace.ts";
 export type { ModelPreviewFacts } from "./modelGeometry.ts";
 
 /** The view as it was when captured, for annotating it after the camera moves on. */
@@ -40,9 +41,7 @@ export interface ModelSnapshot {
   readonly height: number;
   readonly cameraView: PreviewAnnotationCameraView;
   /** What the captured camera saw first under `samples`, fractions of the view from its top left. */
-  readonly hitAt: (
-    samples: ReadonlyArray<{ readonly x: number; readonly y: number }>,
-  ) => PreviewAnnotationHit | null;
+  readonly hitAt: (samples: ReadonlyArray<ViewSample>) => PreviewAnnotationHit | null;
 }
 
 export interface ModelViewer {

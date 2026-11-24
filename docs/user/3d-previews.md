@@ -8,7 +8,7 @@ A glTF can keep its buffers and textures in separate files, and an OBJ its mater
 
 ## Point the agent at part of a model
 
-Screenshot & annotate (the camera button) freezes the view so you can draw on it, mark regions and write or dictate a comment. Add to chat (or Enter) puts it in the composer with the screenshot, like an annotation from the browser preview. The agent also gets the camera position and, for each mark, the name of the object under it and the 3D point it covers. Esc puts the view back without adding anything.
+Screenshot & annotate freezes the view so you can draw on it, mark regions, erase marks, and write or dictate a comment. Add to chat (or Enter) puts it in the composer with the screenshot, like an annotation from the browser preview. The agent also gets the camera position and, for each mark, the name of the object under it and the 3D point it covers. Esc puts the view back without adding anything.
 
 ## View links
 

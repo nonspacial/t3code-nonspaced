@@ -256,6 +256,11 @@ it("freezes the view to annotate and attaches its camera and what each mark cove
   drag(surface.element(), [0.45, 0.45], [0.55, 0.55]);
   await userEvent.click(screen.getByRole("button", { name: "Draw" }));
   drag(surface.element(), [0.02, 0.02], [0.06, 0.04]);
+  // A stray line in the middle is erased; the marks around it stay.
+  drag(surface.element(), [0.2, 0.8], [0.3, 0.8]);
+  drag(surface.element(), [0.9, 0.9], [0.95, 0.95]);
+  await userEvent.click(screen.getByRole("button", { name: "Erase a mark" }));
+  drag(surface.element(), [0.25, 0.8], [0.25, 0.8]);
   await userEvent.fill(screen.getByRole("textbox", { name: "Annotation comment" }), "Thicken");
   await userEvent.click(screen.getByRole("button", { name: "Add to chat" }));
 
@@ -272,7 +277,8 @@ it("freezes the view to annotate and attaches its camera and what each mark cove
   const hit = annotation.regions[0]?.hit;
   expect(hit?.object).toBeNull();
   expect(hit?.point[2]).toBeCloseTo((hit?.point[1] ?? Number.NaN) / 4, 2);
-  // The drawing in the empty corner covers nothing.
+  // The drawings in the empty corners cover nothing.
+  expect(annotation.strokes).toHaveLength(2);
   expect(annotation.strokes[0]).not.toHaveProperty("hit");
   expect(model.draft()?.images.map((image) => image.id)).toEqual([annotation.id]);
 });

@@ -18,7 +18,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { useAssetUrlMinter } from "~/assets/assetUrls";
 import { readComposerImageBytes } from "~/components/chat/composerAttachmentFiles";
-import { toastManager } from "~/components/ui/toast";
+import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { useComposerDraftStore, type ComposerThreadTarget } from "~/composerDraftStore";
 import { capturePreviewAnnotationScreenshot } from "~/lib/previewAnnotation";
 import { randomUUID } from "~/lib/utils";
@@ -298,11 +298,13 @@ export function ModelFilePreview(props: {
     if (capture.status === "captured") await readComposerImageBytes(capture.file);
     addPreviewAnnotation(target.composerTarget, annotation);
     if (capture.status === "failed") {
-      toastManager.add({
-        type: "error",
-        title: gt("Could not capture the 3D view"),
-        description: gt("The annotation was kept without the screenshot."),
-      });
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: gt("Could not capture the 3D view"),
+          description: gt("The annotation was kept without the screenshot."),
+        }),
+      );
       return;
     }
     if (capture.status === "captured" && annotation.screenshot) {

@@ -15,6 +15,7 @@ import {
   TurnItemId,
 } from "./baseSchemas.ts";
 import { GUEST_MESSAGE_MAX_LENGTH, GUEST_NAME_MAX_LENGTH } from "./guestShare.ts";
+import { PreviewAnnotationCameraViewSchema, PreviewAnnotationVectorSchema } from "./ipc.ts";
 
 /** Image and file records reference `ChatAttachment` ids, never bytes. */
 
@@ -150,8 +151,6 @@ export const ElementContextRecord = Schema.Struct({
 });
 export type ElementContextRecord = typeof ElementContextRecord.Type;
 
-const ModelVector = Schema.Tuple([Schema.Finite, Schema.Finite, Schema.Finite]);
-
 // `optionalKey` rejects explicit undefined within one record, so only that record is dropped.
 export const PreviewAnnotationContextRecord = Schema.Struct({
   ...recordBase,
@@ -179,13 +178,7 @@ export const PreviewAnnotationContextRecord = Schema.Struct({
   ),
   screenshotContextId: Schema.optionalKey(ComposerContextId),
   /** A 3D view's camera, in the file's coordinates. */
-  cameraView: Schema.optionalKey(
-    Schema.Struct({
-      position: ModelVector,
-      target: ModelVector,
-      upAxis: Schema.Literals(["y", "z"]),
-    }),
-  ),
+  cameraView: Schema.optionalKey(PreviewAnnotationCameraViewSchema),
   /** The surface under each mark on a 3D view; `index` counts from 1 within its kind. */
   hits: Schema.optionalKey(
     Schema.Array(
@@ -193,7 +186,7 @@ export const PreviewAnnotationContextRecord = Schema.Struct({
         mark: Schema.Literals(["region", "drawing"]),
         index: PositiveInt,
         object: NullableShortString,
-        point: ModelVector,
+        point: PreviewAnnotationVectorSchema,
       }),
     ).check(Schema.isMaxLength(200)),
   ),

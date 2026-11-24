@@ -5,6 +5,8 @@ import {
   Mesh,
   MeshBasicMaterial,
   PerspectiveCamera,
+  Points,
+  PointsMaterial,
   Vector3,
   type Object3D,
 } from "three";
@@ -96,6 +98,12 @@ describe("hitUnderMark", () => {
       "Bracket",
     );
     expect(hitUnderMark({ ...scene(box()), samples: [{ x: 0.5, y: 0.5 }] })?.object).toBeNull();
+  });
+
+  it("lands on a point cloud, which has no faces to hit", () => {
+    const cloud = new Points(new BoxGeometry(1, 1, 1, 8, 8, 8), new PointsMaterial());
+    cloud.name = "Scan";
+    expect(hitUnderMark({ ...scene(cloud), samples: [{ x: 0.5, y: 0.5 }] })?.object).toBe("Scan");
   });
 
   it("returns nothing when every sample misses", () => {

@@ -7,7 +7,7 @@ import type {
   ProjectId,
 } from "@t3tools/contracts";
 import { T, useGT } from "gt-react";
-import { PencilIcon, SquareDashedIcon, Undo2Icon, XIcon } from "lucide-react";
+import { EraserIcon, PencilIcon, SquareDashedIcon, Undo2Icon, XIcon } from "lucide-react";
 import { useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 
 import { Button } from "~/components/ui/button";
@@ -29,7 +29,10 @@ export interface ModelAnnotationResult {
   readonly screenshot: string;
 }
 
-type Tool = "draw" | "region";
+type Tool = "draw" | "region" | "erase";
+type Mark =
+  | { readonly kind: "region"; readonly target: PreviewAnnotationRegionTarget }
+  | { readonly kind: "stroke"; readonly target: PreviewAnnotationStrokeTarget };
 type Draft =
   | { readonly tool: "draw"; readonly points: ReadonlyArray<PreviewAnnotationPoint> }
   | {
@@ -52,6 +55,25 @@ function strokePath(points: ReadonlyArray<PreviewAnnotationPoint>): string {
     previous = point;
   }
   return `${path} L ${previous.x} ${previous.y}`;
+}
+
+/** The topmost mark under a point, for the eraser. */
+function markAt(marks: ReadonlyArray<Mark>, point: PreviewAnnotationPoint): Mark | null {
+  const reach = STROKE_WIDTH + 4;
+  for (const mark of marks.toReversed()) {
+    if (mark.kind === "region") {
+      const { x, y, width, height } = mark.target.rect;
+      if (point.x >= x && point.x <= x + width && point.y >= y && point.y <= y + height)
+        return mark;
+    } else if (
+      mark.target.points.some(
+        (candidate) => Math.hypot(candidate.x - point.x, candidate.y - point.y) <= reach,
+      )
+    ) {
+      return mark;
+    }
+  }
+  return null;
 }
 
 function regionRect(
@@ -134,9 +156,8 @@ export function ModelAnnotationEditor(props: {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [imageUrl] = useState(() => props.image.toDataURL("image/png"));
   const [tool, setTool] = useState<Tool>("draw");
-  const [regions, setRegions] = useState<ReadonlyArray<PreviewAnnotationRegionTarget>>([]);
-  const [strokes, setStrokes] = useState<ReadonlyArray<PreviewAnnotationStrokeTarget>>([]);
-  const [order, setOrder] = useState<ReadonlyArray<"region" | "stroke">>([]);
+  const [marks, setMarks] = useState<ReadonlyArray<Mark>>([]);
+  const markCount = useRef(0);
   // Pointer events can outrun renders, so the mark being drawn is read from a ref.
   const draftRef = useRef<Draft | null>(null);
   const [draft, setDraftState] = useState<Draft | null>(null);
@@ -146,7 +167,14 @@ export function ModelAnnotationEditor(props: {
   };
   const [comment, setComment] = useState("");
   const { width, height } = props;
-  const hasMarks = order.length > 0;
+  const hasMarks = marks.length > 0;
+  const regions = marks.flatMap((mark) => (mark.kind === "region" ? [mark.target] : []));
+  const strokes = marks.flatMap((mark) => (mark.kind === "stroke" ? [mark.target] : []));
+  const addMark = (mark: Mark) => setMarks((current) => [...current, mark]);
+  const nextId = (kind: Mark["kind"]) => {
+    markCount.current += 1;
+    return `${kind}_${markCount.current}`;
+  };
 
   const markColor = () =>
     (surfaceRef.current && getComputedStyle(surfaceRef.current).color) || "#2563eb";
@@ -166,10 +194,15 @@ export function ModelAnnotationEditor(props: {
     const point = pointAt(event);
     if (!point) return;
     event.preventDefault();
+    if (tool === "erase") {
+      const erased = markAt(marks, point);
+      if (erased) setMarks((current) => current.filter((mark) => mark !== erased));
+      return;
+    }
     try {
       event.currentTarget.setPointerCapture(event.pointerId);
     } catch {
-      // A synthetic pointer has nothing to capture; the drag still works inside the surface.
+      // The pointer may already be gone; the drag still works while it stays on the surface.
     }
     setDraft(tool === "draw" ? { tool, points: [point] } : { tool, start: point, end: point });
   };
@@ -191,31 +224,24 @@ export function ModelAnnotationEditor(props: {
     if (!draft) return;
     setDraft(null);
     if (draft.tool === "draw") {
-      setStrokes([
-        ...strokes,
-        {
-          id: `stroke_${strokes.length + 1}`,
+      addMark({
+        kind: "stroke",
+        target: {
+          id: nextId("stroke"),
           color: markColor(),
           width: STROKE_WIDTH,
           points: draft.points,
           bounds: strokeBounds(draft.points),
         },
-      ]);
-      setOrder([...order, "stroke"]);
+      });
       return;
     }
     const rect = regionRect(draft.start, draft.end);
     if (rect.width < MIN_REGION_SIZE || rect.height < MIN_REGION_SIZE) return;
-    setRegions([...regions, { id: `region_${regions.length + 1}`, rect }]);
-    setOrder([...order, "region"]);
+    addMark({ kind: "region", target: { id: nextId("region"), rect } });
   };
 
-  const undo = () => {
-    const last = order.at(-1);
-    if (last === "region") setRegions(regions.slice(0, -1));
-    if (last === "stroke") setStrokes(strokes.slice(0, -1));
-    setOrder(order.slice(0, -1));
-  };
+  const undo = () => setMarks((current) => current.slice(0, -1));
 
   const finish = (text: string) => {
     if (!hasMarks && !text.trim()) return;
@@ -333,7 +359,7 @@ export function ModelAnnotationEditor(props: {
             value={[tool]}
             onValueChange={(value) => {
               const next = value[0];
-              if (next === "draw" || next === "region") setTool(next);
+              if (next === "draw" || next === "region" || next === "erase") setTool(next);
             }}
           >
             <Toggle
@@ -344,6 +370,9 @@ export function ModelAnnotationEditor(props: {
             </Toggle>
             <Toggle aria-label={gt("Mark a region")} value="region">
               <SquareDashedIcon className="size-3.5" />
+            </Toggle>
+            <Toggle aria-label={gt("Erase a mark")} value="erase">
+              <EraserIcon className="size-3.5" />
             </Toggle>
           </ToggleGroup>
           <EditorAction label={gt("Undo")} disabled={!hasMarks} onPress={undo}>
