@@ -127,6 +127,7 @@ it("signs each file a glTF references beside it and names the ones it cannot rea
     pane(),
   );
   await expect.element(screen.getByText("2 textures not found")).toBeVisible();
+  await screen.getByText("2 textures not found").click();
   await expect
     .element(screen.getByText(/not found next to crate\.gltf$/))
     .toMatchTextContent("textures/crate diffuse.png");

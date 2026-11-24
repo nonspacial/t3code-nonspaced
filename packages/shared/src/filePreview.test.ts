@@ -89,6 +89,8 @@ describe("workspace file previews", () => {
       "model",
     );
     expect(filePreviewKind({ name: "scene.gltf", mimeType: "application/json" })).toBe("model");
+    expect(filePreviewKind({ name: "part.3mf", mimeType: "application/zip" })).toBe("model");
+    expect(filePreviewKind({ name: "statue.glb", mimeType: "application/zip" })).toBe("archive");
     expect(filePreviewKind({ name: "scene.json", mimeType: "application/json" })).toBe("text");
     expect(filePreviewKind({ name: "chair.obj", mimeType: "image/png" })).toBe("image");
   });

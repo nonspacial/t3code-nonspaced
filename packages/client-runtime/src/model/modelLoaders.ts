@@ -109,8 +109,9 @@ class CompanionTextureLoader extends Loader<Texture> {
     onError?: (error: unknown) => void,
   ): Texture {
     const texture = new Texture();
-    // FBX clears the path for embedded images.
-    const reference = this.path ? `${this.path}${url}` : url;
+    // FBX clears the path for embedded images; MTLLoader prefixes its folder even to `data:` URLs.
+    const joined = this.path ? `${this.path}${url}` : url;
+    const reference = /(?:^|\/)((?:data|blob):.*)$/i.exec(joined)?.[1] ?? joined;
     this.pending.push(
       this.#files.image(reference).then((image) => {
         // FBX makes object URLs for embedded images and never revokes them.
@@ -205,11 +206,28 @@ async function parseModel(
       const libraries = [...text.matchAll(/^[ \t]*mtllib[ \t]+(.+?)[ \t\r]*$/gm)].flatMap(
         (match) => (match[1] ? [match[1]] : []),
       );
-      const materials = (await Promise.all(libraries.map(files.text))).filter(
-        (library) => library !== null,
+      const texts = await Promise.all(libraries.map(files.text));
+      const loaded = libraries.flatMap((library, index) => {
+        const material = texts[index];
+        return material == null ? [] : [{ library, material }];
+      });
+      // Textures resolve beside their MTL; libraries in several folders fall back to the model's.
+      const folders = new Set(
+        loaded.map(({ library }) =>
+          library
+            .replaceAll("\\", "/")
+            .split("/")
+            .slice(0, -1)
+            .filter((segment) => segment !== "" && segment !== ".")
+            .map((segment) => `${segment}/`)
+            .join(""),
+        ),
       );
-      if (materials.length > 0)
-        loader.setMaterials(new MTLLoader(manager).parse(materials.join("\n"), ""));
+      const folder = folders.size === 1 ? ([...folders][0] ?? "") : "";
+      if (loaded.length > 0)
+        loader.setMaterials(
+          new MTLLoader(manager).parse(loaded.map(({ material }) => material).join("\n"), folder),
+        );
       return loader.parse(text);
     }
   }
@@ -251,7 +269,15 @@ export async function loadModel(input: {
   readonly signal: AbortSignal;
 }): Promise<LoadedModel> {
   const files = companionFiles(input.companions, input.signal);
-  const manager = new LoadingManager();
+  let loading = false;
+  let whenIdle = () => {};
+  const manager = new LoadingManager(() => {
+    loading = false;
+    whenIdle();
+  });
+  manager.onStart = () => {
+    loading = true;
+  };
   manager.setURLModifier((url) => (/^(?:data|blob):/i.test(url) ? url : BLOCKED_URL));
   const textures = new CompanionTextureLoader(manager, files);
   manager.addHandler(/^(?!data:|blob:)/i, textures);
@@ -259,6 +285,8 @@ export async function loadModel(input: {
   try {
     model = await parseModel(input.format, input.data, manager, files);
     await Promise.all(textures.pending);
+    // Some loaders (3MF, FBX) read embedded images on their own; wait before dropping unloaded maps.
+    if (loading) await new Promise<void>((resolve) => (whenIdle = resolve));
   } catch (cause) {
     await Promise.allSettled(textures.pending);
     throw new ModelPreviewError({
@@ -275,9 +303,12 @@ export async function loadModel(input: {
   }
   stripUnloadedTextures(root);
   if (input.format !== "glb" && input.format !== "gltf") {
-    // glTF leaves out normals on purpose: viewers must shade those meshes flat.
+    // glTF leaves out normals on purpose: viewers must shade those meshes flat. STL and 3MF
+    // exporters often write zero or flipped facet normals, so those are always recomputed.
     root.traverse((object) => {
-      if (object instanceof Mesh) ensureVertexNormals(object.geometry);
+      if (!(object instanceof Mesh)) return;
+      if (input.format === "stl" || input.format === "3mf") object.geometry.computeVertexNormals();
+      else ensureVertexNormals(object.geometry);
     });
   }
   orientToYUp(root, input.format);

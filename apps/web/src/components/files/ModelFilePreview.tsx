@@ -17,6 +17,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAssetUrlMinter } from "~/assets/assetUrls";
 import { Button } from "~/components/ui/button";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "~/components/ui/collapsible";
+import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
@@ -226,6 +227,38 @@ export function ModelFilePreview(props: {
     /\.(?:png|jpe?g|webp|gif|bmp|tga|tiff?|ktx2|dds|exr|hdr)$/i.test(file),
   );
 
+  const statusChip = (
+    <StatusChip
+      tone={
+        shown.phase === "failed"
+          ? "error"
+          : shown.phase === "confirm" || missing.length > 0
+            ? "warning"
+            : shown.phase === "loading"
+              ? "info"
+              : "success"
+      }
+    >
+      {shown.phase === "loading"
+        ? gt("Loading 3D model…")
+        : shown.phase === "confirm"
+          ? gt("Large model")
+          : shown.phase === "failed"
+            ? gt("Preview failed")
+            : missing.length === 0
+              ? gt("{format} · rendered in the browser", { format: FORMAT_LABELS[format] })
+              : texturesOnly
+                ? gt(
+                    "{count, plural, one {{count} texture not found} other {{count} textures not found}}",
+                    { count: missing.length },
+                  )
+                : gt(
+                    "{count, plural, one {{count} file not found} other {{count} files not found}}",
+                    { count: missing.length },
+                  )}
+    </StatusChip>
+  );
+
   return (
     <div className="relative min-h-0 flex-1 overflow-hidden bg-radial from-background to-muted to-90%">
       <div
@@ -275,35 +308,21 @@ export function ModelFilePreview(props: {
         </div>
       ) : null}
       <div className="absolute start-2 top-2 flex max-w-[calc(100%-6rem)]">
-        <StatusChip
-          tone={
-            shown.phase === "failed"
-              ? "error"
-              : shown.phase === "confirm" || missing.length > 0
-                ? "warning"
-                : shown.phase === "loading"
-                  ? "info"
-                  : "success"
-          }
-        >
-          {shown.phase === "loading"
-            ? gt("Loading 3D model…")
-            : shown.phase === "confirm"
-              ? gt("Large model")
-              : shown.phase === "failed"
-                ? gt("Preview failed")
-                : missing.length === 0
-                  ? gt("{format} · rendered in the browser", { format: FORMAT_LABELS[format] })
-                  : texturesOnly
-                    ? gt(
-                        "{count, plural, one {{count} texture not found} other {{count} textures not found}}",
-                        { count: missing.length },
-                      )
-                    : gt(
-                        "{count, plural, one {{count} file not found} other {{count} files not found}}",
-                        { count: missing.length },
-                      )}
-        </StatusChip>
+        {missing.length > 0 ? (
+          <Popover>
+            <PopoverTrigger
+              openOnHover
+              render={<button type="button" className="flex min-w-0 rounded-full" />}
+            >
+              {statusChip}
+            </PopoverTrigger>
+            <PopoverPopup side="bottom" align="start" padding="compact" tooltipStyle>
+              {gt("{files} not found next to {model}", { files: missingList, model: props.name })}
+            </PopoverPopup>
+          </Popover>
+        ) : (
+          statusChip
+        )}
       </div>
       <div className="absolute end-2 top-2 flex gap-1">
         {shown.phase === "ready" ? (
@@ -315,18 +334,6 @@ export function ModelFilePreview(props: {
           <RefreshIcon />
         </ViewerAction>
       </div>
-      {shown.phase === "ready" && missing.length > 0 ? (
-        <Tooltip>
-          <TooltipTrigger
-            render={<div className="absolute start-2 bottom-2 flex max-w-[calc(100%-13rem)]" />}
-          >
-            <StatusChip tone="warning">
-              {gt("{files} not found next to {model}", { files: missingList, model: props.name })}
-            </StatusChip>
-          </TooltipTrigger>
-          <TooltipPopup side="top">{missingList}</TooltipPopup>
-        </Tooltip>
-      ) : null}
       {shown.phase === "ready" ? (
         <div className="surface-glass absolute end-2 bottom-2 w-48 rounded-lg border border-border/60 text-2xs shadow-sm">
           <Collapsible open={factsOpen} onOpenChange={setFactsOpen}>

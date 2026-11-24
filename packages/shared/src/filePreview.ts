@@ -47,6 +47,8 @@ export function filePreviewKind(
   const richDocuments = options?.richDocuments !== false;
   const office = richDocuments ? officePreviewKind(file) : null;
   if (office) return office;
+  // A 3MF file is a zip, and some systems label it as one.
+  if (richDocuments && modelPreviewFormat(file) !== null) return "model";
   const binary = binaryPreviewKind(file);
   if (binary) return binary;
   if (mime === "application/pdf") return "pdf";
@@ -62,7 +64,6 @@ export function filePreviewKind(
     mime === "application/vnd.oasis.opendocument.formula-template"
   )
     return "font";
-  if (richDocuments && modelPreviewFormat(file) !== null) return "model";
   if (mime.startsWith("image/")) return "image";
   if (mime.startsWith("video/") && !generic) return "video";
   if (mime.startsWith("audio/")) return "audio";
@@ -254,7 +255,9 @@ export function modelPreviewFormat(file: {
       mime === "text/plain" ||
       byMime !== undefined ||
       MODEL_MIME_ALIASES.has(mime) ||
-      (byExtension === "gltf" && mime === "application/json"))
+      (byExtension === "gltf" && mime === "application/json") ||
+      (byExtension === "3mf" &&
+        (mime === "application/zip" || mime === "application/x-zip-compressed")))
   )
     return byExtension;
   return byMime ?? null;
