@@ -12,22 +12,23 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { HostedBlenderToolkit } from "./tools.ts";
 
-const refuse = (reason: string) => new HostedBlenderToolError({ reason });
-
 // The session's capability is fixed when it starts; the switch is read on every call.
 const requireHostedBlender = Effect.gen(function* () {
   const scope = yield* McpInvocationContext.requireThreadMcpCapability("hosted-blender").pipe(
-    Effect.mapError(() =>
-      refuse(
-        'Hosted Blender is not available to this agent. T3 adds it to Claude and Codex threads while Hosted Blender and "Allow agents to start hosted Blenders" are on in Settings → Blender; other providers are not supported yet. It applies when the agent session next starts.',
-      ),
+    Effect.mapError(
+      () =>
+        new HostedBlenderToolError({
+          reason:
+            'Hosted Blender is not available to this agent. T3 adds it to Claude and Codex threads while Hosted Blender and "Allow agents to start hosted Blenders" are on in Settings → Blender; other providers are not supported yet. It applies when the agent session next starts.',
+        }),
     ),
   );
   const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
   if (!(yield* agents.agentsAllowed)) {
-    return yield* refuse(
-      'The user switched off "Allow agents to start hosted Blenders" in Settings → Blender.',
-    );
+    return yield* new HostedBlenderToolError({
+      reason:
+        'The user switched off "Allow agents to start hosted Blenders" in Settings → Blender.',
+    });
   }
   return scope.thread.threadId;
 });
@@ -71,7 +72,7 @@ const handlers = {
       const hostedBlender = yield* HostedBlender.HostedBlender;
       yield* hostedBlender
         .quit({ threadId, save: input.save })
-        .pipe(Effect.mapError((error) => refuse(error.message)));
+        .pipe(Effect.mapError((error) => new HostedBlenderToolError({ reason: error.message })));
       return {};
     }),
   ),

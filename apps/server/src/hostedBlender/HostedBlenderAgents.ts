@@ -148,7 +148,7 @@ const make = Effect.gen(function* () {
   return HostedBlenderAgents.of({
     sessionLaunch,
     listenerPort,
-    listening: Effect.fnUntraced(function* (threadId) {
+    listening: Effect.fn("HostedBlenderAgents.listening")(function* (threadId) {
       return listeners.get(threadId) === true;
     }),
     agentsAllowed,
@@ -158,11 +158,16 @@ const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(HostedBlenderAgents, make);
 
-/** Feeds setup's readiness to the agents service; built beside the hosted Blender service. */
+/**
+ * Feeds setup's readiness to the agents service; built beside the hosted Blender service. With
+ * agents allowed, the user has opted in to T3 starting Blender, so a restart checks setup again
+ * rather than leaving every session without the MCP until someone opens Settings.
+ */
 export const layerFollowSetup = Layer.effectDiscard(
   Effect.gen(function* () {
     const agents = yield* HostedBlenderAgents;
     const setup = yield* HostedBlenderSetup.HostedBlenderSetup;
     yield* agents.followSetup(setup.readiness);
+    if (yield* agents.agentsAllowed) yield* setup.ensureChecked.pipe(Effect.forkScoped);
   }),
 );

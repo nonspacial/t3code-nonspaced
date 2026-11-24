@@ -33,6 +33,7 @@ const layerFor = (input: {
   readonly enabled?: boolean;
   readonly allowAgents?: boolean;
   readonly readiness?: HostedBlenderSetup.HostedBlenderReadiness;
+  readonly checks?: Array<"check">;
 }) =>
   HostedBlenderAgents.layerFollowSetup.pipe(
     Layer.provideMerge(HostedBlenderAgents.layer),
@@ -47,7 +48,9 @@ const layerFor = (input: {
           HostedBlenderSetup.HostedBlenderSetup.of({
             state: Stream.never,
             check: Effect.void,
-            ensureChecked: Effect.void,
+            ensureChecked: Effect.sync(() => {
+              input.checks?.push("check");
+            }),
             installWithAgent: Effect.die("not used"),
             readiness: Stream.concat(Stream.succeed(input.readiness ?? READY), Stream.never),
           }),
@@ -147,5 +150,22 @@ describe("HostedBlenderAgents.listenerPort", () => {
       assert.isNull(yield* agents.listenerPort(threadId));
       assert.isFalse(yield* agents.listening(threadId));
     }).pipe(Effect.provide(layerFor({}))),
+  );
+});
+
+describe("HostedBlenderAgents.layerFollowSetup", () => {
+  it.effect.each([
+    { allowAgents: true, checks: ["check"] },
+    { allowAgents: false, checks: [] },
+  ])(
+    "checks setup after a restart only with agents allowed ($allowAgents)",
+    ({ allowAgents, checks: expected }) => {
+      const checks: Array<"check"> = [];
+      return Effect.gen(function* () {
+        yield* HostedBlenderAgents.HostedBlenderAgents;
+        yield* Effect.yieldNow;
+        assert.deepEqual(checks, expected);
+      }).pipe(Effect.provide(layerFor({ allowAgents, checks })));
+    },
   );
 });

@@ -26,8 +26,6 @@ const threadTag = (threadId: string) =>
 export const workingCopyName = (masterName: string, threadId: string) =>
   `${masterName.replace(/\.blend$/i, "")}.wip-${threadTag(threadId)}.blend`;
 
-const refuse = (reason: string) => new HostedBlenderToolError({ reason });
-
 /**
  * `blender_start`: copies the master to the thread's working copy unless one exists, and opens
  * the copy in the thread's working Blender. A copy that is already open is answered as it is.
@@ -41,28 +39,49 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
 
     const root = yield* threadWorkspaceRoot(input.threadId);
     if (root === undefined)
-      return yield* refuse("This thread has no workspace to open files from.");
+      return yield* new HostedBlenderToolError({
+        reason: "This thread has no workspace to open files from.",
+      });
     const realRoot = yield* fileSystem
       .realPath(root)
-      .pipe(Effect.mapError(() => refuse("This thread's workspace was not found.")));
+      .pipe(
+        Effect.mapError(
+          () => new HostedBlenderToolError({ reason: "This thread's workspace was not found." }),
+        ),
+      );
     const requested = path.resolve(root, input.path);
     if (!isWithinRoot(path, requested, root) && !isWithinRoot(path, requested, realRoot)) {
-      return yield* refuse(`T3 opens only files in this thread's workspace, ${root}.`);
+      return yield* new HostedBlenderToolError({
+        reason: `T3 opens only files in this thread's workspace, ${root}.`,
+      });
     }
     if (!requested.toLowerCase().endsWith(".blend")) {
-      return yield* refuse("Only .blend files can be opened in a hosted Blender.");
+      return yield* new HostedBlenderToolError({
+        reason: "Only .blend files can be opened in a hosted Blender.",
+      });
     }
     // A symlink inside the workspace must not reach a master outside it.
     const master = yield* fileSystem
       .realPath(requested)
-      .pipe(Effect.mapError(() => refuse(`${input.path} was not found.`)));
+      .pipe(
+        Effect.mapError(
+          () => new HostedBlenderToolError({ reason: `${input.path} was not found.` }),
+        ),
+      );
     if (!isWithinRoot(path, master, realRoot)) {
-      return yield* refuse(`T3 opens only files in this thread's workspace, ${root}.`);
+      return yield* new HostedBlenderToolError({
+        reason: `T3 opens only files in this thread's workspace, ${root}.`,
+      });
     }
     const info = yield* fileSystem
       .stat(master)
-      .pipe(Effect.mapError(() => refuse(`${input.path} was not found.`)));
-    if (info.type !== "File") return yield* refuse(`${input.path} was not found.`);
+      .pipe(
+        Effect.mapError(
+          () => new HostedBlenderToolError({ reason: `${input.path} was not found.` }),
+        ),
+      );
+    if (info.type !== "File")
+      return yield* new HostedBlenderToolError({ reason: `${input.path} was not found.` });
 
     const name = workingCopyName(path.basename(master), input.threadId);
     // Named directly, the working copy is opened as it is.
@@ -70,9 +89,14 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
     const workingCopy = isCopy ? master : path.join(path.dirname(master), name);
     const exists = yield* fileSystem.exists(workingCopy).pipe(Effect.orElseSucceed(() => false));
     if (!exists) {
-      yield* fileSystem
-        .copyFile(master, workingCopy)
-        .pipe(Effect.mapError(() => refuse(`T3 could not copy ${input.path} to ${workingCopy}.`)));
+      yield* fileSystem.copyFile(master, workingCopy).pipe(
+        Effect.mapError(
+          () =>
+            new HostedBlenderToolError({
+              reason: `T3 could not copy ${input.path} to ${workingCopy}.`,
+            }),
+        ),
+      );
     }
     const result = {
       workingCopy,
@@ -90,15 +114,15 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
       state.relativePath === relativePath
     ) {
       if (!(yield* agents.listening(input.threadId))) {
-        return yield* refuse(
-          `${name} is open in this thread's hosted Blender, but it started before your session could reach it. Call blender_quit with save: true, then blender_start again.`,
-        );
+        return yield* new HostedBlenderToolError({
+          reason: `${name} is open in this thread's hosted Blender, but it started before your session could reach it. Call blender_quit with save: true, then blender_start again.`,
+        });
       }
       return { ...result, status: state.status } satisfies HostedBlenderToolStartResult;
     }
     yield* hostedBlender
       .open({ threadId: input.threadId, relativePath })
-      .pipe(Effect.mapError((error) => refuse(error.message)));
+      .pipe(Effect.mapError((error) => new HostedBlenderToolError({ reason: error.message })));
     return { ...result, status: "starting" } satisfies HostedBlenderToolStartResult;
   },
 );
