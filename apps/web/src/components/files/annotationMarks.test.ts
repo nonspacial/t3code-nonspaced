@@ -152,6 +152,24 @@ describe("markTargets", () => {
     expect(box.y).toBeLessThan(150 - 18 * 0.6);
     expect(box.y + box.height).toBeGreaterThan(150 + 18 * 0.6);
   });
+
+  it("starts a short arrow's samples at its tip, not at the middle of its box", () => {
+    const { strokes } = markTargets([
+      {
+        id: "stroke_1",
+        drawing: {
+          kind: "arrow",
+          points: [
+            { x: 100, y: 100 },
+            { x: 104, y: 100 },
+          ],
+          color: "#d946ef",
+        },
+      },
+    ]);
+    const samples = markSamples(strokes[0]!.bounds, size, strokes[0]!.points);
+    expect(samples[0]).toEqual({ x: 104 / 400, y: 100 / 300 });
+  });
 });
 
 describe("touchesMark", () => {
@@ -166,5 +184,27 @@ describe("touchesMark", () => {
     };
     expect(touchesMark(line, { x: 100, y: 5 })).toBe(true);
     expect(touchesMark(line, { x: 100, y: 20 })).toBe(false);
+  });
+
+  it("erases an unfilled region by its outline, so marks inside it stay reachable", () => {
+    const rect = { x: 100, y: 100, width: 100, height: 100 };
+    const outlined = { kind: "region" as const, rect, color: "#ef4444", filled: false };
+    expect(touchesMark(outlined, { x: 150, y: 150 })).toBe(false);
+    expect(touchesMark(outlined, { x: 103, y: 150 })).toBe(true);
+    expect(touchesMark({ ...outlined, filled: true }, { x: 150, y: 150 })).toBe(true);
+  });
+
+  it("erases an arrow from the corners of its head", () => {
+    const arrow = {
+      kind: "arrow" as const,
+      points: [
+        { x: 0, y: 100 },
+        { x: 200, y: 100 },
+      ],
+      color: "#ef4444",
+    };
+    const { left } = arrowHead(arrow.points[0]!, arrow.points[1]!);
+    expect(touchesMark(arrow, left)).toBe(true);
+    expect(touchesMark(arrow, { x: 186, y: 100 - 9.5 })).toBe(true);
   });
 });

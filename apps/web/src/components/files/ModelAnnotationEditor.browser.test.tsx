@@ -3,6 +3,8 @@ import "~/index.css";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
+import { isMacPlatform } from "~/lib/utils";
+
 import { render } from "../../../test/render";
 import { ModelAnnotationEditor, type ModelAnnotationResult } from "./ModelAnnotationEditor";
 
@@ -13,7 +15,10 @@ const RED = [0xef, 0x44, 0x44];
 
 type At = [number, number];
 
-function setup() {
+/** The platform's command key, as the editor reads it. */
+const MOD = isMacPlatform(navigator.platform) ? "Meta" : "Control";
+
+function setup(pane = "relative h-[300px] w-[400px]") {
   const image = document.createElement("canvas");
   image.width = WIDTH;
   image.height = HEIGHT;
@@ -24,7 +29,7 @@ function setup() {
   const outside = vi.fn();
   const container = document.createElement("div");
   // The size of the snapshot, so a point on the surface is the same point on the snapshot.
-  container.className = "relative h-[300px] w-[400px]";
+  container.className = pane;
   const element = (
     <div onKeyDown={(event) => outside(event.key)}>
       <ModelAnnotationEditor
@@ -185,9 +190,9 @@ it("undoes and redoes marks, erasing included, from the keyboard and the toolbar
   await vi.waitFor(() => expect(marks()).toBe(2));
 
   await userEvent.click(comment);
-  await userEvent.keyboard("{Control>}z{/Control}");
+  await userEvent.keyboard(`{${MOD}>}z{/${MOD}}`);
   expect(marks()).toBe(1);
-  await userEvent.keyboard("{Control>}{Shift>}z{/Shift}{/Control}");
+  await userEvent.keyboard(`{${MOD}>}{Shift>}z{/Shift}{/${MOD}}`);
   expect(marks()).toBe(2);
 
   await pickTool(screen, "Erase a mark");
@@ -196,9 +201,9 @@ it("undoes and redoes marks, erasing included, from the keyboard and the toolbar
     [200, 102],
   ]);
   await vi.waitFor(() => expect(marks()).toBe(1));
-  await userEvent.keyboard("{Control>}z{/Control}");
+  await userEvent.keyboard(`{${MOD}>}z{/${MOD}}`);
   expect(marks()).toBe(2);
-  await userEvent.keyboard("{Control>}y{/Control}");
+  await userEvent.keyboard(`{${MOD}>}y{/${MOD}}`);
   expect(marks()).toBe(1);
   await userEvent.click(screen.getByRole("button", { name: "Undo", exact: true }));
   expect(marks()).toBe(2);
@@ -212,13 +217,61 @@ it("undoes and redoes marks, erasing included, from the keyboard and the toolbar
   // With text of its own, the comment box keeps Ctrl+Z for its text.
   await userEvent.click(comment);
   await userEvent.keyboard("Bevel");
-  await userEvent.keyboard("{Control>}z{/Control}");
+  await userEvent.keyboard(`{${MOD}>}z{/${MOD}}`);
   expect(marks()).toBe(2);
   expect(outside).not.toHaveBeenCalledWith("z");
 
   const result = await submit(screen, onSubmit);
   expect(result.strokes).toHaveLength(1);
   expect(result.regions).toHaveLength(1);
+});
+
+it("keeps the history keys working after a toolbar button runs out, and ends a drag where it is let go", async () => {
+  const { element, container } = setup();
+  await using screen = await render(element, { container });
+  const surface = surfaceOf(screen);
+  const marks = () => paths(screen).length;
+  await pickTool(screen, "Line");
+  pointer(surface, "pointerdown", [40, 40]);
+  pointer(surface, "pointermove", [100, 40]);
+  pointer(surface, "pointerup", [160, 70]);
+  await vi.waitFor(() => expect(marks()).toBe(1));
+  expect(numbers(paths(screen)[0]!)).toEqual([40, 40, 160, 70]);
+
+  await userEvent.click(screen.getByRole("button", { name: "Undo", exact: true }));
+  expect(marks()).toBe(0);
+  await userEvent.keyboard(`{${MOD}>}{Shift>}z{/Shift}{/${MOD}}`);
+  expect(marks()).toBe(1);
+  await userEvent.keyboard(`{${MOD}>}z{/${MOD}}`);
+  expect(marks()).toBe(0);
+  await userEvent.click(screen.getByRole("button", { name: "Redo", exact: true }));
+  expect(marks()).toBe(1);
+  await userEvent.keyboard(`{${MOD}>}z{/${MOD}}`);
+  expect(marks()).toBe(0);
+});
+
+it("keeps marks inside the snapshot when the pane letterboxes it", async () => {
+  await page.viewport(1280, 800);
+  const { element, container } = setup("relative h-[300px] w-[600px]");
+  await using screen = await render(element, { container });
+  const surface = surfaceOf(screen);
+  const box = surface.getBoundingClientRect();
+  // The snapshot is centred: its right edge is 100 px from the pane's.
+  const at = (x: number, y: number) => ({
+    clientX: box.left + 100 + x,
+    clientY: box.top + y,
+    pointerId: 1,
+    button: 0,
+    bubbles: true,
+  });
+  await pickTool(screen, "Line");
+  surface.dispatchEvent(new PointerEvent("pointerdown", at(300, 150)));
+  surface.dispatchEvent(new PointerEvent("pointermove", at(420, 150)));
+  surface.dispatchEvent(new PointerEvent("pointerup", at(420, 150)));
+  await vi.waitFor(() => expect(paths(screen)).toHaveLength(1));
+  // The line's round end reaches past the snapshot's edge, where the screenshot cuts it off.
+  expect(document.elementFromPoint(box.left + 100 + 399, box.top + 150)).toBe(paths(screen)[0]);
+  expect(document.elementFromPoint(box.left + 100 + 401, box.top + 150)).not.toBe(paths(screen)[0]);
 });
 
 it("draws new marks in the picked color and fill; earlier marks keep theirs", async () => {

@@ -225,14 +225,8 @@ function distanceToSegment(point: Point, from: Point, to: Point): number {
   return Math.hypot(point.x - (from.x + dx * t), point.y - (from.y + dy * t));
 }
 
-/** Whether the eraser at `point` touches the mark: inside a region, or near a stroke's line. */
-export function touchesMark(mark: MarkDrawing, point: Point): boolean {
-  if (mark.kind === "region") {
-    const { x, y, width, height } = mark.rect;
-    return point.x >= x && point.x <= x + width && point.y >= y && point.y <= y + height;
-  }
-  const reach = STROKE_WIDTH + 4;
-  const [first, ...rest] = mark.points;
+function nearPath(point: Point, path: ReadonlyArray<Point>, reach: number): boolean {
+  const [first, ...rest] = path;
   if (!first) return false;
   if (rest.length === 0) return Math.hypot(first.x - point.x, first.y - point.y) <= reach;
   let previous = first;
@@ -241,6 +235,40 @@ export function touchesMark(mark: MarkDrawing, point: Point): boolean {
     previous = next;
   }
   return false;
+}
+
+function insideTriangle(point: Point, a: Point, b: Point, c: Point): boolean {
+  const side = (from: Point, to: Point) =>
+    (to.x - from.x) * (point.y - from.y) - (to.y - from.y) * (point.x - from.x);
+  const sides = [side(a, b), side(b, c), side(c, a)];
+  return sides.every((value) => value >= 0) || sides.every((value) => value <= 0);
+}
+
+/**
+ * Whether the eraser at `point` touches the mark: a filled region anywhere inside, an outlined
+ * one by its outline, a stroke along its line, and an arrow's head anywhere on it.
+ */
+export function touchesMark(mark: MarkDrawing, point: Point): boolean {
+  const reach = STROKE_WIDTH + 4;
+  if (mark.kind === "region") {
+    const { x, y, width, height } = mark.rect;
+    const inside = point.x >= x && point.x <= x + width && point.y >= y && point.y <= y + height;
+    if (mark.filled) return inside;
+    const outline = [
+      { x, y },
+      { x: x + width, y },
+      { x: x + width, y: y + height },
+      { x, y: y + height },
+      { x, y },
+    ];
+    return nearPath(point, outline, reach);
+  }
+  if (nearPath(point, mark.points, reach)) return true;
+  const tail = mark.points[0];
+  const tip = mark.points.at(-1);
+  if (mark.kind !== "arrow" || !tail || !tip) return false;
+  const { left, right } = arrowHead(tail, tip);
+  return insideTriangle(point, tip, left, right) || nearPath(point, [tip, left, right, tip], reach);
 }
 
 export type DrawTool = "draw" | "line" | "arrow" | "region";

@@ -137,6 +137,7 @@ export function ModelAnnotationEditor(props: {
 }) {
   const gt = useGT();
   const m = useMessages();
+  const rootRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<SVGSVGElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [imageUrl] = useState(() => props.image.toDataURL("image/png"));
@@ -174,6 +175,10 @@ export function ModelAnnotationEditor(props: {
       ...current,
       at: Math.min(current.lists.length - 1, current.at + 1),
     }));
+  // A button that disables itself drops focus out of the editor, and its keys with it.
+  const keepFocus = (runsOut: boolean) => {
+    if (runsOut) rootRef.current?.focus();
+  };
 
   const markColor = () => {
     const chosen = MARK_COLORS.find((color) => color.id === colorId)?.value;
@@ -228,7 +233,15 @@ export function ModelAnnotationEditor(props: {
     const draft = draftRef.current;
     if (!draft) return;
     setDraft(null);
-    const drawing = dragDrawing({ ...draft, straight: event.shiftKey }, props);
+    const end = pointAt(event);
+    const last = draft.points.at(-1);
+    const points =
+      !end || (last && last.x === end.x && last.y === end.y)
+        ? draft.points
+        : draft.tool === "draw"
+          ? [...draft.points, end]
+          : [draft.points[0] ?? end, end];
+    const drawing = dragDrawing({ ...draft, points, straight: event.shiftKey }, props);
     if (isTooSmall(drawing)) return;
     markCount.current += 1;
     const id = `${drawing.kind === "region" ? "region" : "stroke"}_${markCount.current}`;
@@ -356,7 +369,14 @@ export function ModelAnnotationEditor(props: {
   );
 
   return (
-    <div className="absolute inset-0 z-10 bg-background" onKeyDown={onKeyDown} onKeyUp={onShift}>
+    <div
+      ref={rootRef}
+      tabIndex={-1}
+      data-own-undo=""
+      className="absolute inset-0 z-10 bg-background outline-none"
+      onKeyDown={onKeyDown}
+      onKeyUp={onShift}
+    >
       <svg
         ref={surfaceRef}
         role="img"
@@ -370,18 +390,21 @@ export function ModelAnnotationEditor(props: {
         onPointerCancel={() => setDraft(null)}
       >
         <image href={imageUrl} width={width} height={height} />
-        {shown.map(({ key, paint }) => (
-          <path
-            key={key}
-            d={paint.path}
-            fill={paint.fill > 0 ? paint.color : "none"}
-            fillOpacity={paint.fill > 0 ? paint.fill : undefined}
-            stroke={paint.line > 0 ? paint.color : "none"}
-            strokeWidth={paint.line > 0 ? paint.line : undefined}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        ))}
+        {/* Clipped to the snapshot, as the screenshot is, so a letterboxed pane shows no more. */}
+        <svg width={width} height={height} overflow="hidden">
+          {shown.map(({ key, paint }) => (
+            <path
+              key={key}
+              d={paint.path}
+              fill={paint.fill > 0 ? paint.color : "none"}
+              fillOpacity={paint.fill > 0 ? paint.fill : undefined}
+              stroke={paint.line > 0 ? paint.color : "none"}
+              strokeWidth={paint.line > 0 ? paint.line : undefined}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          ))}
+        </svg>
       </svg>
       <div className="pointer-events-none absolute inset-x-2 top-2 flex justify-center">
         <div className="pointer-events-auto flex max-w-full flex-wrap items-center justify-center gap-1 rounded-lg border bg-popover/95 p-1 text-popover-foreground shadow-lg backdrop-blur-xl">
@@ -451,7 +474,10 @@ export function ModelAnnotationEditor(props: {
               label={gt("Undo")}
               tooltip={gt("Undo ({keys})", { keys: undoKeys })}
               disabled={!canUndo}
-              onPress={undo}
+              onPress={() => {
+                keepFocus(history.at <= 1);
+                undo();
+              }}
             >
               <Undo2Icon className="size-3.5" />
             </EditorAction>
@@ -459,7 +485,10 @@ export function ModelAnnotationEditor(props: {
               label={gt("Redo")}
               tooltip={gt("Redo ({keys})", { keys: redoKeys })}
               disabled={!canRedo}
-              onPress={redo}
+              onPress={() => {
+                keepFocus(history.at >= history.lists.length - 2);
+                redo();
+              }}
             >
               <Redo2Icon className="size-3.5" />
             </EditorAction>
