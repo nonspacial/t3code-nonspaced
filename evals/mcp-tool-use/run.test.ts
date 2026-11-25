@@ -562,6 +562,17 @@ it("grades the copy-back case's guard and clash check on the traces review found
     "print(bpy.data.filepath); area.tag_redraw()",
   );
   assert.isNotEmpty(failed(caseExpect, bad));
+  // The marker only read before the clash check, and taken after it.
+  const readOnly = code(
+    'assert bpy.data.filepath == master; held = bpy.data.scenes[0].get("t3_copy_back")',
+    'assert bpy.data.filepath == master; changed = bpy.data.objects["Cape"].matrix_world != saved',
+    'assert bpy.data.filepath == master; bpy.data.scenes[0]["t3_copy_back"] = "hero 12:00"',
+    'assert bpy.data.filepath == master; bpy.data.objects.remove(bpy.data.objects["Cape"]); bpy.data.libraries.load(copy)',
+    'assert bpy.data.filepath == master; bpy.ops.ed.undo_push(message="copy back")',
+    'assert bpy.data.filepath == master; del bpy.data.scenes[0]["t3_copy_back"]; bpy.ops.wm.save_mainfile()',
+    "assert bpy.data.filepath == master; area.tag_redraw()",
+  );
+  assert.isNotEmpty(failed(caseExpect, readOnly));
   const good = code(
     'assert bpy.data.filepath == master; bpy.data.scenes[0]["t3_copy_back"] = "hero 12:00"',
     'assert bpy.data.filepath == master; changed = bpy.data.objects["Cape"].matrix_world != saved',

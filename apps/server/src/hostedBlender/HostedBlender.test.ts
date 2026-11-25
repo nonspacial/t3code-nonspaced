@@ -1703,8 +1703,9 @@ def control():
                 with open(os.environ["STANDIN_ARGS"] + ".exits", "a") as log:
                     log.write("exit\n")
                 os._exit(0)
+            asked = json.loads(line).get("id")
             def refuse():
-                connection.sendall(b'{"type": "quitRefused"}\n')
+                connection.sendall((json.dumps({"type": "quitRefused", "id": asked}) + "\n").encode())
             # STANDIN_UNSAVED: edits made after the last state T3 heard, so Blender won't quit.
             answer = refuse if os.environ.get("STANDIN_UNSAVED") == "1" else exit_now
             if os.environ.get("STANDIN_SLOW_QUIT") == "1":
@@ -3230,6 +3231,30 @@ describe("A quit still unresolved in a busy Blender", () => {
         ).toEqual({ _tag: "hosted", desktopUnchecked: false });
         expect(host.exits()).toBe(0);
       }).pipe(Effect.scoped),
+  );
+
+  it.live("reuses an unresolved quit for a second leave, asking Blender only once", () =>
+    Effect.gen(function* () {
+      const host = yield* masterHost({ dirty: true, quitSilent: true, cancelGate: true });
+      yield* host.service.openMaster({ threadId, relativePath: "cube.blend" });
+      yield* host.service.masterState(threadId).pipe(
+        Stream.filter((state) => state.status === "running" && state.dirty),
+        Stream.runHead,
+      );
+      // Archived, then deleted, before Blender acknowledges the first quit's cancel.
+      yield* host.service.releaseMaster(threadId);
+      yield* host.service.releaseMaster(threadId);
+      expect(host.controlLog().match(/"quitIfClean"/g)).toHaveLength(1);
+      host.answerCancel();
+      yield* host.service.masterState(threadId).pipe(
+        Stream.filter((state) => state.status === "running"),
+        Stream.runHead,
+      );
+      expect(
+        yield* host.service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" }),
+      ).toEqual({ _tag: "hosted", desktopUnchecked: false });
+      expect(host.exits()).toBe(0);
+    }).pipe(Effect.scoped),
   );
 
   it.live("treats Blender exiting while the quit is unresolved as the quit going through", () =>

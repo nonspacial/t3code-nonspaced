@@ -329,9 +329,11 @@ def _handle(command):
         if command.get("id") in _State.cancelled_quits:
             return
         # Decided here, at the moment of quitting, with no dialog nobody could answer: T3's last
-        # word on unsaved changes may be stale. A departed agent's pending deferred writes count.
+        # word on unsaved changes may be stale. Pending agent work that can write keeps it open,
+        # whether or not its undo step manages to mark the file unsaved.
+        pending_writes = any(record["writes"] for record in _Guard.deferred)
         _record_pending_deferred()
-        if not _session_is_clean():
+        if pending_writes or not _session_is_clean():
             _send({"type": "quitRefused", "id": command.get("id")})
             return
         with bpy.context.temp_override(window=_main_window()):
@@ -380,14 +382,13 @@ def _catalog_state():
 
 def _watch_catalogs():
     # Asked every tick, so an edit is remembered after its asset browser is gone or switched.
+    # One-way: only a save clears it, since an unavailable or read-only library also polls False.
     try:
         state = _catalog_state()
     except Exception:  # noqa: BLE001 - a failed look leaves the last answer standing
         return
     if state is True:
         _State.catalogs_unsaved = True
-    elif state is False:
-        _State.catalogs_unsaved = False
 
 
 def _session_is_clean():

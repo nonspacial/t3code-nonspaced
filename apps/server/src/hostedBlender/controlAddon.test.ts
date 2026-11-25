@@ -118,7 +118,8 @@ def _catalogs_poll():
     import bpy
     # Blender's own unsaved-catalog state, read through an asset browser; on a library whose
     # catalogs can't be edited, as All, it answers False whatever is unsaved.
-    return bpy.world["unsaved"] and bpy._assets.params.asset_library_reference not in ("ALL", "ESSENTIALS")
+    # An unavailable or read-only library (here "missing") answers False too.
+    return bpy.world["unsaved"] and bpy._assets.params.asset_library_reference not in ("ALL", "ESSENTIALS", "missing")
 import json as _json, os as _os
 state = _json.loads(_os.environ["STUB_STATE"])
 asset = types.SimpleNamespace(catalogs_save=types.SimpleNamespace(poll=_catalogs_poll))
@@ -940,6 +941,15 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       expect(result.received).toContain("quitRefused");
     });
 
+    it("refuses after a catalog edit whose asset browser moved to an unavailable library", () => {
+      expect(
+        quitAfter([
+          { browser: "shown", unsaved: true },
+          { browser: "shown", library: "missing" },
+        ]),
+      ).toEqual({ quit: false, refused: true });
+    });
+
     it("quits once the edit is saved", () => {
       expect(
         quitAfter([
@@ -1131,16 +1141,23 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       },
     );
 
-    it("records pending deferred writes before deciding a quit, so the master is kept", () => {
-      // A departed agent's deferred part has written since the user saved, and still waits.
-      const result = runAddon({
-        ...granted,
-        call: { code: writesThenWaits, savedBetween: true },
-        sendAfterCall: ["quitIfClean"],
-      });
-      expect(result.calls.some((call: Array<unknown>) => call[0] === "quit_blender")).toBe(false);
-      expect(result.received).toContain("quitRefused");
-    });
+    it.each([
+      ["its undo step marks the file unsaved", false],
+      ["its undo step fails to mark the file unsaved", true],
+    ] as const)(
+      "records pending deferred writes before deciding a quit, so the master is kept, when %s",
+      (_name, undoPushLeavesClean) => {
+        // A departed agent's deferred part has written since the user saved, and still waits.
+        const result = runAddon({
+          ...granted,
+          undoPushLeavesClean,
+          call: { code: writesThenWaits, savedBetween: true },
+          sendAfterCall: ["quitIfClean"],
+        });
+        expect(result.calls.some((call: Array<unknown>) => call[0] === "quit_blender")).toBe(false);
+        expect(result.received).toContain("quitRefused");
+      },
+    );
 
     it("pushes nothing into another file opened while deferred work was pending", () => {
       const result = runAddon({

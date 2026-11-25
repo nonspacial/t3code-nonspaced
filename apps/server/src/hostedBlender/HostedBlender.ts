@@ -379,7 +379,7 @@ interface Instance {
   /** A desktop Blender T3 couldn't ask was running when this master started. */
   desktopUnchecked: boolean;
   /** Answered when the add-on won't quit a master with unsaved changes. */
-  quitRefused: Deferred.Deferred<void> | null;
+  quitRefused: { readonly id: number; readonly done: Deferred.Deferred<void> } | null;
   /** A working copy's agent session, whose end ends its listener. */
   agentSession: string | undefined;
   /** Answered when the add-on has dropped the quit T3 gave up on. */
@@ -889,7 +889,9 @@ const make = Effect.gen(function* () {
         return yield* publishNow();
       }
       case "quitRefused":
-        if (instance.quitRefused) yield* Deferred.succeed(instance.quitRefused, undefined);
+        if (instance.quitRefused !== null && instance.quitRefused.id === message.value.id) {
+          yield* Deferred.succeed(instance.quitRefused.done, undefined);
+        }
         return;
       case "quitCancelled":
         if (instance.quitCancelled?.id === message.value.id) {
@@ -2064,11 +2066,12 @@ const make = Effect.gen(function* () {
   // Runs inside the master's queue.
   const quitIfClean = Effect.fnUntraced(function* (instance: Instance) {
     const control = instance.control;
-    if (control === null) return "uncertain" as QuitOutcome;
+    // An earlier quit still unresolved in Blender stands for this one too: it isn't asked twice.
+    if (control === null || instance.quitCancelled != null) return "uncertain" as QuitOutcome;
     instance.lastRequestId += 1;
     const id = instance.lastRequestId;
     const refused = yield* Deferred.make<void>();
-    instance.quitRefused = refused;
+    instance.quitRefused = { id, done: refused };
     instance.quitting = true;
     const ended = Deferred.await(instance.ended).pipe(Effect.as<QuitOutcome>("quit"));
     // The write is part of the attempt: a stalled socket counts against its deadline.

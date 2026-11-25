@@ -3,6 +3,7 @@ import "~/index.css";
 import {
   EnvironmentId,
   HostedBlenderError,
+  type HostedBlenderMasterState,
   type HostedBlenderThreadState,
   ThreadId,
 } from "@t3tools/contracts";
@@ -15,6 +16,7 @@ import { render } from "../../../test/render";
 
 const state = vi.hoisted(() => ({
   thread: null as HostedBlenderThreadState | null,
+  master: { status: "none" } as HostedBlenderMasterState | null,
   open: vi.fn(async (): Promise<unknown> => ({ _tag: "Success", value: undefined })),
 }));
 
@@ -23,9 +25,14 @@ vi.mock(import("~/state/hostedBlender"), async (original) => {
   return {
     ...actual,
     useHostedBlenderState: (() => state.thread) as never,
+    useHostedBlenderMasterState: (() => state.master) as never,
     hostedBlenderEnvironment: {
       ...actual.hostedBlenderEnvironment,
       open: { ...actual.hostedBlenderEnvironment.open, permissionAtom: () => Atom.make(true) },
+      openMaster: {
+        ...actual.hostedBlenderEnvironment.openMaster,
+        permissionAtom: () => Atom.make(true),
+      },
     } as never,
   };
 });
@@ -35,6 +42,7 @@ vi.mock(import("~/state/use-atom-command"), async (original) => ({
 }));
 
 import { useRightPanelStore } from "~/rightPanelStore";
+import { blenderRoleFor, useBlenderRoleStore } from "./blenderRole";
 import { OpenInHostedBlender } from "./OpenInHostedBlender";
 
 const threadRef = {
@@ -77,4 +85,53 @@ it("shows the pane with the fresh result when opening finds setup incomplete", a
   await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
   await vi.waitFor(() => expect(showPane).toHaveBeenCalledWith(threadRef, "blender"));
   showPane.mockRestore();
+});
+
+const workingOnCopy: HostedBlenderThreadState = {
+  status: "running",
+  relativePath: "models/hero.wip-1a2b3c4d.blend",
+  dirty: false,
+};
+
+it("shows the master's own Blender for the thread's running master, opening nothing", async () => {
+  state.open.mockClear();
+  state.thread = workingOnCopy;
+  state.master = { status: "running", relativePath: "models/hero.blend", dirty: false };
+  useBlenderRoleStore.getState().setRole(threadRef, "working");
+  const showPane = vi.spyOn(useRightPanelStore.getState(), "open");
+  await using _screen = await render(
+    <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
+  );
+  await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
+  await vi.waitFor(() => expect(showPane).toHaveBeenCalledWith(threadRef, "blender"));
+  expect(blenderRoleFor(threadRef)).toBe("master");
+  expect(state.open).not.toHaveBeenCalled();
+  showPane.mockRestore();
+  state.master = { status: "none" };
+});
+
+it("opens the thread's known master in its master Blender when none has it open", async () => {
+  state.open.mockClear();
+  state.thread = workingOnCopy;
+  state.master = {
+    status: "notOpen",
+    relativePath: "models/hero.blend",
+    desktop: null,
+    desktopDirty: false,
+  };
+  useBlenderRoleStore.getState().setRole(threadRef, "working");
+  const showPane = vi.spyOn(useRightPanelStore.getState(), "open");
+  await using _screen = await render(
+    <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
+  );
+  await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
+  await vi.waitFor(() => expect(showPane).toHaveBeenCalledWith(threadRef, "blender"));
+  // As the Master side's Open in T3 Code: the thread's master, not a working open of it.
+  expect(state.open).toHaveBeenCalledWith({
+    environmentId: threadRef.environmentId,
+    input: { threadId: threadRef.threadId },
+  });
+  expect(blenderRoleFor(threadRef)).toBe("master");
+  showPane.mockRestore();
+  state.master = { status: "none" };
 });
