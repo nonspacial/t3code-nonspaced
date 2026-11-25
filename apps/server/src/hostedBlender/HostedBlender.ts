@@ -183,6 +183,8 @@ const RecoveryRecord = Schema.Struct({
   relativePath: TrimmedNonEmptyString,
   /** Its session file (`session.blend` beside the record) holds a copy to restore. */
   recovery: Schema.Boolean,
+  /** The file Blender had open, when it was outside the workspace. */
+  fileName: Schema.optional(TrimmedNonEmptyString),
 });
 type RecoveryRecord = typeof RecoveryRecord.Type;
 const RecoveryRecordJson = Schema.fromJsonString(RecoveryRecord);
@@ -212,6 +214,8 @@ const RunFacts = Schema.fromJsonString(
     changed: Schema.Boolean,
     /** The workspace file Blender has open, when the person opened another one there. */
     relativePath: Schema.optional(TrimmedNonEmptyString),
+    /** The file Blender has open, when it is outside the workspace. */
+    fileName: Schema.optional(TrimmedNonEmptyString),
   }),
 );
 const decodeRunFacts = Schema.decodeUnknownOption(RunFacts);
@@ -407,6 +411,8 @@ interface Instance {
   /** T3 lost its control connection: nothing can save through it any more. */
   controlLost: boolean;
   openFile: string | null | undefined;
+  /** The real path of the file Blender has open now, which no other hosted Blender may open. */
+  openRealPath: string | null;
   /** The workspace's real path, which the open file is named under. */
   readonly workspaceRoot: string;
   /**
@@ -433,6 +439,7 @@ type PublishedState =
       readonly status: "closed" | "crashed";
       readonly relativePath: string;
       readonly recovery: boolean;
+      readonly fileName?: string;
       readonly restoreFailed?: boolean;
     };
 
@@ -514,6 +521,7 @@ const make = Effect.gen(function* () {
               status: record.kind,
               relativePath: record.relativePath,
               recovery: record.recovery,
+              ...(record.fileName === undefined ? {} : { fileName: record.fileName }),
               ...(failedRestores.has(record.threadId) ? { restoreFailed: true } : {}),
             },
           ]),
@@ -539,14 +547,17 @@ const make = Effect.gen(function* () {
   /**
    * Keeps the newest session Blender left in `tmpDir` as the thread's recovery copy. With none,
    * or when the run changed nothing (`unchanged`), an earlier copy of the same file stays: it is
-   * still the newest unsaved work T3 has.
+   * still the newest unsaved work T3 has. A run that never restored that copy and changed
+   * nothing (`untouched`) keeps it whatever file it ended on.
    */
   const keepRecord = Effect.fn("HostedBlender.keepRecord")(function* (input: {
     readonly threadId: ThreadId;
     readonly relativePath: string;
+    readonly fileName: string | undefined;
     readonly kind: RecoveryRecord["kind"];
     readonly tmpDir: string;
     readonly unchanged: boolean;
+    readonly untouched: boolean;
   }) {
     const dir = recoveryDir(input.threadId);
     yield* fileSystem.makeDirectory(dir, { recursive: true });
@@ -567,7 +578,12 @@ const make = Effect.gen(function* () {
     );
     const previous = records.get(input.threadId);
     const keepsPrevious =
-      previous?.recovery === true && previous.relativePath === input.relativePath;
+      previous?.recovery === true &&
+      (input.untouched || previous.relativePath === input.relativePath);
+    const file =
+      keepsPrevious && input.unchanged
+        ? { relativePath: previous.relativePath, fileName: previous.fileName }
+        : input;
     const newest =
       keepsPrevious && input.unchanged
         ? undefined
@@ -586,8 +602,9 @@ const make = Effect.gen(function* () {
     const record: RecoveryRecord = {
       threadId: input.threadId,
       kind: input.kind,
-      relativePath: input.relativePath,
+      relativePath: file.relativePath,
       recovery,
+      ...(file.fileName === undefined ? {} : { fileName: file.fileName }),
     };
     yield* writeAtomically(path.join(dir, "record.json"), (to) =>
       fileSystem.writeFileString(to, encodeRecoveryRecord(record)),
@@ -611,15 +628,18 @@ const make = Effect.gen(function* () {
   /**
    * The file a Blender's session is of, under its workspace: the one Blender has open, which a
    * person may have changed from its File menu. Its quit copy restores that file's path. One
-   * outside the workspace (or no file yet) leaves the file it was opened with.
+   * outside the workspace (or no file yet) leaves the file it was opened with, naming the open
+   * one in `fileName`.
    */
-  const openRelativePath = (instance: Instance) => {
+  const openFileOf = (instance: Instance): { relativePath: string; fileName?: string } => {
     const open = instance.openFile;
-    if (typeof open !== "string" || open === instance.blendPath) return instance.relativePath;
+    if (typeof open !== "string" || open === instance.blendPath) {
+      return { relativePath: instance.relativePath };
+    }
     const relative = path.relative(instance.workspaceRoot, open);
     return relative === "" || relative.startsWith("..") || path.isAbsolute(relative)
-      ? instance.relativePath
-      : relative;
+      ? { relativePath: instance.relativePath, fileName: path.basename(open) }
+      : { relativePath: relative };
   };
 
   /** Saved beside the launch as they change, so salvage can apply the same cleanup. */
@@ -633,18 +653,29 @@ const make = Effect.gen(function* () {
               restore: instance.restore,
               saved: instance.saved,
               changed: instance.changed,
-              relativePath: openRelativePath(instance),
+              ...openFileOf(instance),
             }),
           ),
         ).pipe(Effect.ignore);
 
   /** Applies a run's cleanup, its end or salvaged; a failure leaves the launch for later. */
   const applyCleanup = Effect.fnUntraced(function* (
-    run: { readonly threadId: ThreadId; readonly relativePath: string; readonly tmpDir: string },
+    run: {
+      readonly threadId: ThreadId;
+      readonly relativePath: string;
+      readonly fileName?: string | undefined;
+      readonly tmpDir: string;
+    },
     cleanup: ReturnType<typeof cleanupOf>,
   ) {
     if (cleanup.action === "keep") {
-      yield* keepRecord({ ...run, kind: cleanup.kind, unchanged: cleanup.unchanged });
+      yield* keepRecord({
+        ...run,
+        fileName: run.fileName,
+        kind: cleanup.kind,
+        unchanged: cleanup.unchanged,
+        untouched: cleanup.untouched,
+      });
     } else if (cleanup.action === "forget") {
       yield* forgetRecord(run.threadId);
     }
@@ -746,6 +777,7 @@ const make = Effect.gen(function* () {
           {
             threadId,
             relativePath: facts.relativePath ?? relativePath,
+            fileName: facts.fileName,
             tmpDir: path.join(launchDir, "tmp"),
           },
           cleanupOf({ ...facts, ending }),
@@ -1118,6 +1150,10 @@ const make = Effect.gen(function* () {
         const openFile = message.value.filepath === "" ? null : message.value.filepath;
         if (openFile !== instance.openFile) {
           instance.openFile = openFile;
+          instance.openRealPath =
+            openFile === null
+              ? null
+              : yield* fileSystem.realPath(openFile).pipe(Effect.orElseSucceed(() => openFile));
           yield* writeRunFacts(instance);
         }
         // Only the working copy T3 opened may reach the agent, so the file is checked before
@@ -1291,7 +1327,7 @@ const make = Effect.gen(function* () {
           yield* applyCleanup(
             {
               threadId: instance.threadId,
-              relativePath: openRelativePath(instance),
+              ...openFileOf(instance),
               tmpDir: path.join(stateDir, "tmp"),
             },
             cleanupOf({
@@ -1533,8 +1569,9 @@ const make = Effect.gen(function* () {
     if (!allowPendingRecovery && records.get(threadId)?.recovery === true) {
       return yield* new HostedBlenderError({ reason: "recoveryPending" });
     }
-    // One file is open in at most one hosted Blender, whichever thread opened it.
-    if ([...instances.values()].some((other) => other.blendPath === real[1])) {
+    // One file is open in at most one hosted Blender, whichever thread opened it: the file each
+    // has open now, which a person may have changed from Blender's File menu.
+    if ([...instances.values()].some((other) => other.openRealPath === real[1])) {
       return yield* new HostedBlenderError({ reason: "openInAnotherThread" });
     }
     const instance: Instance = {
@@ -1583,6 +1620,7 @@ const make = Effect.gen(function* () {
       agentListenerGrantSent: false,
       controlLost: false,
       openFile: undefined,
+      openRealPath: real[1],
       workspaceRoot: real[0],
       session: new SessionControl(null),
       held: new HeldInput(),
@@ -1820,6 +1858,9 @@ const make = Effect.gen(function* () {
   const saveThenQuit = Effect.fn("HostedBlender.saveThenQuit")(
     function* (instance: Instance, connection: ControlConnection) {
       const replies = yield* Queue.unbounded<SaveReply>();
+      // Until T3 has confirmed a restore, saving could write the copy somewhere else, or write
+      // the file as saved over the copy's changes: checked right before the save goes out.
+      if (instance.restore === "pending" || instance.restore === "failed") return false;
       instance.saveReplies = replies;
       return yield* requestSave({
         connection,

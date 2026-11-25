@@ -244,14 +244,14 @@ function BlenderStateCard(props: { readonly state: HostedBlenderThreadState }) {
           gt("Blender was closed"),
           gt(
             "T3 Code closed {name} when this thread settled or T3 Code stopped. Reopen it from T3 Code on the web or desktop.",
-            { name: fileName(props.state.relativePath) },
+            { name: props.state.fileName ?? fileName(props.state.relativePath) },
           ),
         ];
       case "crashed":
         return [
           gt("Blender crashed"),
           gt("{name} stopped unexpectedly. Restart it from T3 Code on the web or desktop.", {
-            name: fileName(props.state.relativePath),
+            name: props.state.fileName ?? fileName(props.state.relativePath),
           }),
         ];
       case "starting":

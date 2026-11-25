@@ -290,6 +290,27 @@ it("shows a closed or crashed Blender's card in the pane, never in the float", a
   }
 });
 
+it("names the file Blender had open outside the workspace on its card", async () => {
+  using _app = startup();
+  const running = stream.state;
+  try {
+    stream.state = {
+      status: "closed",
+      relativePath: "models/hero.blend",
+      recovery: true,
+      fileName: "outside.blend",
+    };
+    await using pane = await render(
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+    );
+    await expect
+      .element(pane.getByText("T3 Code closed outside.blend", { exact: false }))
+      .toBeInTheDocument();
+  } finally {
+    stream.state = running;
+  }
+});
+
 it("warns in the status strip when the server has no usable GPU", async () => {
   using _app = startup();
   // A GPU T3 can't open is named as such, not as a missing GPU.

@@ -72,11 +72,22 @@ describe("cleanupOf", () => {
   const run = { restore: "none", saved: false, changed: true, ending: "closed" } as const;
 
   it("keeps a closed or crashed run's copy, or the waiting one if the run changed nothing", () => {
-    expect(cleanupOf(run)).toEqual({ action: "keep", kind: "closed", unchanged: false });
+    expect(cleanupOf(run)).toEqual({
+      action: "keep",
+      kind: "closed",
+      unchanged: false,
+      untouched: false,
+    });
     expect(cleanupOf({ ...run, ending: "crashed", changed: false })).toEqual({
       action: "keep",
       kind: "crashed",
       unchanged: true,
+      untouched: true,
+    });
+    // A restored copy left unchanged is the restored file's, not the waiting one's.
+    expect(cleanupOf({ ...run, restore: "ok", changed: false })).toMatchObject({
+      unchanged: true,
+      untouched: false,
     });
   });
 

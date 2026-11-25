@@ -263,7 +263,7 @@ function ReopenCard(props: {
   const dismiss = useAtomCommand(hostedBlenderEnvironment.dismiss, { reportFailure: false });
   const [pending, setPending] = useState(false);
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
-  const name = fileName(props.state.relativePath);
+  const name = props.state.fileName ?? fileName(props.state.relativePath);
   const crashed = props.state.status === "crashed";
   const run = async (action: "restore" | "fresh" | "dismiss") => {
     setPending(true);

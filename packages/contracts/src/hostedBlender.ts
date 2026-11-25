@@ -157,6 +157,8 @@ export const HostedBlenderThreadState = Schema.Union([
     status: Schema.Literal("closed"),
     relativePath: TrimmedNonEmptyString,
     recovery: Schema.Boolean,
+    /** The file Blender had open, when the person opened one outside the workspace. */
+    fileName: Schema.optional(TrimmedNonEmptyString),
     /** The last try to restore `recovery` failed; the copy is kept. */
     restoreFailed: Schema.optional(Schema.Boolean),
   }),
@@ -165,6 +167,7 @@ export const HostedBlenderThreadState = Schema.Union([
     status: Schema.Literal("crashed"),
     relativePath: TrimmedNonEmptyString,
     recovery: Schema.Boolean,
+    fileName: Schema.optional(TrimmedNonEmptyString),
     restoreFailed: Schema.optional(Schema.Boolean),
   }),
   HostedBlenderRunningState,

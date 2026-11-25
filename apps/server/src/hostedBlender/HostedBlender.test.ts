@@ -247,8 +247,9 @@ def control():
     send(connection, {"type": "hello", "pid": os.getpid()})
     # Blender reports the file it has open by its full path, as it was given.
     opened = next(arg for arg in rest if arg.endswith(".blend"))
-    first = {"type": "state", "filepath": opened, "dirty": scenario != "clean"}
-    if "--t3-recover" in t3:
+    first = {"type": "state", "filepath": opened,
+             "dirty": scenario not in ("clean", "clean-opens-other", "switches")}
+    if "--t3-recover" in t3 and scenario != "restore-silent":
         first["restore"] = "failed" if scenario == "restore-fails" else "ok"
         if scenario == "restored-elsewhere":
             # The copy brings back the path it was saved from, which isn't where it reopened.
@@ -256,6 +257,16 @@ def control():
     send(connection, first)
     if scenario == "opens-other" and "--t3-recover" not in t3:
         # The person opens another file of the workspace from Blender's own File menu.
+        send(connection, dict(first, filepath=os.path.join(os.path.dirname(opened), "other.blend")))
+    if scenario == "opens-outside":
+        # The person opens a file from outside the workspace and edits it.
+        send(connection, dict(first, filepath="/elsewhere/outside.blend"))
+    if scenario == "switches":
+        # Opens another file and edits it: once T3 sees it dirty, it has seen the switch.
+        other = os.path.join(os.path.dirname(opened), "other.blend")
+        send(connection, dict(first, filepath=other, dirty=True))
+    if scenario == "clean-opens-other" and os.path.exists(os.environ["STANDIN_BIND"]):
+        # Once the test creates STANDIN_BIND, the person switches files without editing either.
         send(connection, dict(first, filepath=os.path.join(os.path.dirname(opened), "other.blend")))
     saves = 0
     view = {"position": [7, -7, 5], "target": [0, 0, 1]}
@@ -584,6 +595,7 @@ const leftover = (
       readonly restore: string;
       readonly saved: boolean;
       readonly changed: boolean;
+      readonly relativePath?: string;
     };
     readonly waiting?: string;
     readonly helperPid?: number;
@@ -830,6 +842,24 @@ describe("Salvaging what a stopped server left", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect(
+    "keeps the waiting copy of a run that never restored it, whatever file it ended on",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tempDir("salvage-switched");
+        const { hostedDir } = leftover(dir, {
+          facts: { restore: "none", saved: false, changed: false, relativePath: "other.blend" },
+          waiting: "waiting copy",
+        });
+        expect(yield* firstState(yield* idleService(dir))).toEqual({
+          status: "closed",
+          relativePath: "cube.blend",
+          recovery: true,
+        });
+        expect(recoveryOf(hostedDir)?.contents).toBe("waiting copy");
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("keeps the waiting copy after a restore that failed or never finished", () =>
     Effect.gen(function* () {
       for (const restore of ["failed", "pending"]) {
@@ -944,6 +974,20 @@ describe("Endings and recovery", () => {
       yield* service.reopen({ threadId, restore: true });
       yield* awaitStatus("running");
       expect(launches().at(-1)).toContain(NodeFS.realpathSync(NodePath.join(dir, "other.blend")));
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("names a file Blender had open outside the workspace", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus } = yield* standIn("opens-outside", "opens-outside");
+      yield* openReady;
+      yield* service.closeOnSettle({ threadId });
+      expect(yield* awaitStatus("closed")).toEqual({
+        status: "closed",
+        relativePath: "cube.blend",
+        recovery: true,
+        fileName: "outside.blend",
+      });
     }).pipe(Effect.scoped),
   );
 
@@ -1277,6 +1321,31 @@ describe("Endings and recovery", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("never saves a reopened Blender before its restore is confirmed", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, saveCommands, hostedDir } = yield* standIn(
+        "restore-silent",
+        "restore-silent",
+      );
+      yield* openReady;
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      const kept = recoveryOf(hostedDir)?.contents;
+      yield* service.reopen({ threadId, restore: true });
+      // The add-on is connected and reporting, but hasn't said whether the copy came back.
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "starting" && state.dirty),
+        Stream.runHead,
+      );
+      const refused = yield* service.quit({ threadId, save: true }).pipe(Effect.flip);
+      expect(refused.reason).toBe("saveFailed");
+      expect(saveCommands()).toBe(0);
+      yield* service.quit({ threadId, save: false });
+      yield* awaitStatus("closed");
+      expect(recoveryOf(hostedDir)?.contents).toBe(kept);
+    }).pipe(Effect.scoped),
+  );
+
   it.live("a Quit with nothing running never removes a kept copy", () =>
     Effect.gen(function* () {
       const { service, openReady, awaitStatus, hostedDir } = yield* standIn("stale-quit", "");
@@ -1301,6 +1370,31 @@ describe("Endings and recovery", () => {
       yield* awaitStatus("running");
       yield* service.closeOnSettle({ threadId });
       yield* awaitStatus("closed");
+      expect(recoveryOf(hostedDir)?.contents).toBe(kept);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a file opened as last saved keeps the waiting copy, though another file was open", () =>
+    Effect.gen(function* () {
+      const { dir, service, awaitStatus, hostedDir, bind } = yield* standIn(
+        "unchanged-switched",
+        "clean-opens-other",
+      );
+      NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitStatus("running");
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      const kept = recoveryOf(hostedDir)?.contents;
+      bind();
+      yield* service.reopen({ threadId, restore: false });
+      yield* awaitStatus("running");
+      yield* service.closeOnSettle({ threadId });
+      expect(yield* awaitStatus("closed")).toEqual({
+        status: "closed",
+        relativePath: "cube.blend",
+        recovery: true,
+      });
       expect(recoveryOf(hostedDir)?.contents).toBe(kept);
     }).pipe(Effect.scoped),
   );
@@ -2113,6 +2207,20 @@ describe("HostedBlender.open", () => {
       yield* awaitStatus("failed");
       yield* service.dismiss({ threadId });
       yield* awaitStatus("stopped");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("counts a file as open where Blender has it open now, not where it started", () =>
+    Effect.gen(function* () {
+      const { dir, service, awaitDirty } = yield* standIn("switched-open", "switches");
+      NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitDirty(true);
+      const elsewhere = yield* service
+        .open({ threadId: otherThreadId, relativePath: "other.blend" })
+        .pipe(Effect.flip);
+      expect(elsewhere.reason).toBe("openInAnotherThread");
+      yield* service.open({ threadId: otherThreadId, relativePath: "cube.blend" });
     }).pipe(Effect.scoped),
   );
 

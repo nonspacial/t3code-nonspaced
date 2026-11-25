@@ -40,7 +40,13 @@ export type RestoreState = "none" | "pending" | "ok" | "failed";
 
 /** What a run leaves to reopen; the same for a run's own end and for salvaging it later. */
 export type Cleanup =
-  | { readonly action: "keep"; readonly kind: "closed" | "crashed"; readonly unchanged: boolean }
+  | {
+      readonly action: "keep";
+      readonly kind: "closed" | "crashed";
+      readonly unchanged: boolean;
+      /** Never restored the waiting copy and changed nothing, whatever file it ended on. */
+      readonly untouched: boolean;
+    }
   | { readonly action: "forget" }
   | { readonly action: "leave" };
 
@@ -54,5 +60,10 @@ export const cleanupOf = (run: {
   if (run.restore === "pending" || run.restore === "failed") return { action: "leave" };
   if (run.saved || run.ending === "stopped") return { action: "forget" };
   if (run.ending === "failed") return { action: "leave" };
-  return { action: "keep", kind: run.ending, unchanged: !run.changed };
+  return {
+    action: "keep",
+    kind: run.ending,
+    unchanged: !run.changed,
+    untouched: run.restore === "none" && !run.changed,
+  };
 };
