@@ -42,6 +42,8 @@ class _State:
     sent = None
     # Quit requests T3 gave up on; one still waiting here is never carried out.
     cancelled_quits = set()
+    # Seen with unsaved asset catalogs, until a save or an askable asset browser says otherwise.
+    catalogs_unsaved = False
 
 
 def _listen():
@@ -337,10 +339,15 @@ def _handle(command):
             bpy.ops.wm.quit_blender()
 
 
-def _unsaved_catalogs():
+# Libraries whose catalogs can't be edited, so an asset browser on one can't tell.
+READ_ONLY_LIBRARIES = {"ALL", "ESSENTIALS"}
+
+
+def _catalog_state():
     # Blender's own quit check also covers asset catalogs, which Python can read only through
-    # catalogs_save's poll in an asset browser. Catalogs are edited only in one, so with none
-    # there is nothing unsaved; one that can't be asked, out of view, can't be ruled out.
+    # catalogs_save's poll, in an asset browser on an editable library. True or False from one
+    # that can be asked; "unknown" when browsers exist but none can be; "none" without any.
+    unknown = False
     for screen in bpy.data.screens:
         for area in screen.areas:
             for space in area.spaces:
@@ -350,12 +357,26 @@ def _unsaved_catalogs():
                     (window for window in bpy.context.window_manager.windows if window.screen == screen),
                     None,
                 )
-                if window is None or space != area.spaces.active:
-                    return True
+                params = getattr(space, "params", None)
+                library = getattr(params, "asset_library_reference", None)
+                if window is None or space != area.spaces.active or library in READ_ONLY_LIBRARIES or library is None:
+                    unknown = True
+                    continue
                 with bpy.context.temp_override(window=window, area=area, space_data=space):
-                    if bpy.ops.asset.catalogs_save.poll():
-                        return True
-    return False
+                    return bool(bpy.ops.asset.catalogs_save.poll())
+    return "unknown" if unknown else "none"
+
+
+def _watch_catalogs():
+    # Asked every tick, so an edit is remembered after its asset browser is gone or switched.
+    try:
+        state = _catalog_state()
+    except Exception:  # noqa: BLE001 - a failed look leaves the last answer standing
+        return
+    if state is True:
+        _State.catalogs_unsaved = True
+    elif state is False:
+        _State.catalogs_unsaved = False
 
 
 def _session_is_clean():
@@ -363,7 +384,11 @@ def _session_is_clean():
     try:
         if bpy.data.is_dirty or any(image.is_dirty for image in bpy.data.images):
             return False
-        return not _unsaved_catalogs()
+        _watch_catalogs()
+        if _State.catalogs_unsaved:
+            return False
+        # Seen clean, or never edited: no browser to ask. One that can't be asked can't tell.
+        return _catalog_state() != "unknown"
     except Exception as error:  # noqa: BLE001 - can't tell is not clean
         print("T3 control add-on: could not check for unsaved catalogs:", error, file=sys.stderr)
         return False
@@ -372,6 +397,7 @@ def _session_is_clean():
 def _tick():
     if _State.server is None:
         return None
+    _watch_catalogs()
     try:
         connection, _address = _State.server.accept()
         if _same_user(connection):
@@ -575,6 +601,8 @@ def _open_viewport_window():
 @persistent
 def _on_save_post(*_args):
     _check_authorized_file()
+    # Saving the .blend saves its asset catalogs too.
+    _State.catalogs_unsaved = False
 
 
 @persistent

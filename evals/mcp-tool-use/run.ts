@@ -246,6 +246,8 @@ const McpToolUseExpect = Schema.Struct({
   codeOrder: Schema.optional(Schema.Array(Schema.String)),
   /** Regexes every `execute_blender_code` request must match, as a check repeated in each. */
   codeEvery: Schema.optional(Schema.Array(Schema.String)),
+  /** In each request that matches `mutation`, `guard` must match first, before the change. */
+  codeGuard: Schema.optional(Schema.Struct({ guard: Schema.String, mutation: Schema.String })),
   /**
    * One `args`-style value per new top-level thread the agent asks for, by `t3_thread_launch` or a
    * `create_threads` entry. Each matches a different thread's request; no other thread is asked for.
@@ -2664,6 +2666,16 @@ export const gradeSample = (
       after = at;
     }
     add(`codeOrder ${expect.codeOrder.join(" > ")}`, inOrder);
+  }
+  if (expect.codeGuard !== undefined) {
+    const { guard, mutation } = expect.codeGuard;
+    const guarded = codes.every((code) => {
+      const changes = code.search(new RegExp(mutation));
+      if (changes < 0) return true;
+      const checks = code.search(new RegExp(guard));
+      return checks >= 0 && checks < changes;
+    });
+    add(`codeGuard /${guard}/ before /${mutation}/`, guarded);
   }
   for (const pattern of expect.codeEvery ?? []) {
     add(

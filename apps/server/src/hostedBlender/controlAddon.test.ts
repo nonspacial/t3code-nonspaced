@@ -29,7 +29,9 @@ import contextlib
 class _Spaces(list):
     active = None
 _view3d = types.SimpleNamespace(type="VIEW_3D")
-_assets = types.SimpleNamespace(type="FILE_BROWSER", browse_mode="ASSETS")
+_assets = types.SimpleNamespace(type="FILE_BROWSER", browse_mode="ASSETS", params=types.SimpleNamespace(asset_library_reference="lib"))
+# Blender's unsaved-catalog state, which only catalogs_save's poll reads.
+world = {"unsaved": state.get("unsavedCatalogs", False)}
 _spaces = _Spaces([_view3d] + ([_assets] if state.get("assetBrowser") else []))
 _spaces.active = _assets if state.get("assetBrowser") == "shown" else _view3d
 _area = types.SimpleNamespace(width=800, height=600, spaces=_spaces)
@@ -90,8 +92,10 @@ def _quit(*args):
     return {"FINISHED"}
 wm = types.SimpleNamespace(quit_blender=_quit)
 def _catalogs_poll():
-    # Blender's own unsaved-catalog state, read through an asset browser.
-    return state.get("unsavedCatalogs", False)
+    import bpy
+    # Blender's own unsaved-catalog state, read through an asset browser; on a library whose
+    # catalogs can't be edited, as All, it answers False whatever is unsaved.
+    return bpy.world["unsaved"] and bpy._assets.params.asset_library_reference not in ("ALL", "ESSENTIALS")
 import json as _json, os as _os
 state = _json.loads(_os.environ["STUB_STATE"])
 asset = types.SimpleNamespace(catalogs_save=types.SimpleNamespace(poll=_catalogs_poll))
@@ -206,6 +210,19 @@ if _scenario.get("connect", True):
     if _scenario.get("fileBeforeGrant"):
         bpy.data.filepath = "/work/other.blend"
     bpy.data.is_dirty = bool(_scenario.get("dirty"))
+    # What a person does in Blender before T3 asks, a tick after each step.
+    for _step in _scenario.get("catalogSteps", []):
+        _browser = _step.get("browser")
+        bpy._spaces[:] = [bpy._view3d] + ([bpy._assets] if _browser else [])
+        bpy._assets.browse_mode = "FILES" if _browser == "files" else "ASSETS"
+        bpy._assets.params.asset_library_reference = _step.get("library", "lib")
+        bpy._spaces.active = bpy._assets if _browser in ("shown", "files") else bpy._view3d
+        if "unsaved" in _step:
+            bpy.world["unsaved"] = _step["unsaved"]
+        if _step.get("save"):
+            bpy.world["unsaved"] = False
+            _on_save_post()
+        _tick()
     _t3.sendall("".join(json.dumps({"type": kind}) + "\n" for kind in _scenario.get("send", ["grantAgentListener"])).encode())
     _tick()
     _steps.append(_report())
@@ -277,6 +294,13 @@ const runAddon = (input: {
   readonly noWindow?: boolean;
   /** An asset browser in the main window, as its area's editor or out of view behind another. */
   readonly assetBrowser?: "shown" | "hidden";
+  /** Steps a person takes before T3 asks, each followed by the add-on's tick. */
+  readonly catalogSteps?: ReadonlyArray<{
+    readonly browser?: "shown" | "files" | "hidden";
+    readonly library?: string;
+    readonly unsaved?: boolean;
+    readonly save?: boolean;
+  }>;
   /** Blender has unsaved changes when T3's commands arrive. */
   readonly dirty?: boolean;
   /** Images edited and not saved, which saving the .blend leaves behind. */
@@ -509,5 +533,46 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     });
     expect(shown.calls).toContainEqual(["quit_blender"]);
     expect(clean.received).not.toContain("quitRefused");
+  });
+
+  describe("unsaved asset catalogs, remembered past their asset browser", () => {
+    const quitAfter = (steps: NonNullable<Parameters<typeof runAddon>[0]["catalogSteps"]>) => {
+      const result = runAddon({
+        installed: [],
+        enabled: [],
+        listen: false,
+        send: ["quitIfClean"],
+        catalogSteps: steps,
+      });
+      return {
+        quit: result.calls.some((call: Array<unknown>) => call[0] === "quit_blender"),
+        refused: result.received.includes("quitRefused"),
+      };
+    };
+
+    it("refuses after a catalog edit whose asset browser became a File Browser", () => {
+      expect(quitAfter([{ browser: "shown", unsaved: true }, { browser: "files" }])).toEqual({
+        quit: false,
+        refused: true,
+      });
+    });
+
+    it("refuses after a catalog edit whose asset browser moved to the All library", () => {
+      expect(
+        quitAfter([
+          { browser: "shown", unsaved: true },
+          { browser: "shown", library: "ALL" },
+        ]),
+      ).toEqual({ quit: false, refused: true });
+    });
+
+    it("quits once the edit is saved", () => {
+      expect(
+        quitAfter([
+          { browser: "shown", unsaved: true },
+          { browser: "files", save: true },
+        ]),
+      ).toEqual({ quit: true, refused: false });
+    });
   });
 });

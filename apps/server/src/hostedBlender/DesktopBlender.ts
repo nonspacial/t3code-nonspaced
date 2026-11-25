@@ -109,12 +109,16 @@ const PROBE_CODE = `import bpy
 result = {"filepath": bpy.data.filepath, "dirty": bool(bpy.data.is_dirty)}`;
 
 // Checked as the request arrives and again in the timer just before saving, so a Save As in
-// between is refused. Quitting waits for that timer, so the add-on still answers first;
+// between is refused. `filepath` is the entry Blender will write: the master's own name. Quitting waits for that timer, so the add-on still answers first;
 // save_mainfile(exit=True) quits only once it has saved. The state says what the timer did.
-const saveAndQuitCode = (filepath: string, token: string) => `import bpy, os
+export const saveAndQuitCode = (filepath: string, token: string) => `import bpy, os
 expected = ${JSON.stringify(filepath)}
 def _t3_current():
-    return os.path.realpath(bpy.data.filepath) if bpy.data.filepath else ""
+    # The directory entry a save replaces: a symlink's own name, not the file it points at.
+    path = bpy.data.filepath
+    if not path:
+        return ""
+    return os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
 if _t3_current() != expected:
     result = {"moved": False, "filepath": bpy.data.filepath}
 else:

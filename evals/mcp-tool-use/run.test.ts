@@ -527,6 +527,52 @@ it("grades the order of the code an agent sends Blender", () => {
   ]);
 });
 
+it("grades the copy-back case's guard and clash check on the traces review found", () => {
+  const caseExpect = NodeFS.readFileSync(
+    new URL("./cases/hosted-blender.ndjson", import.meta.url),
+    "utf8",
+  )
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .find((entry: { id: string }) => entry.id === "hosted-blender-copy-back-in-order").expect;
+  const code = (...codes: Array<string>): SampleRun => ({
+    calls: [
+      {
+        step: 0,
+        tool: "blender_master_open",
+        input: { path: "/home/user/acme/app/models/hero.blend" },
+      },
+      ...codes.map((value, i) => ({
+        step: i + 1,
+        tool: "mcp__blender-master__execute_blender_code",
+        input: { code: value },
+      })),
+    ],
+    text: "",
+    stopReason: "end_turn",
+  });
+  // Clash check before the marker; the path only printed after the objects were replaced.
+  const bad = code(
+    'assert bpy.data.filepath == master; changed = bpy.data.objects["Cape"].matrix_world != saved',
+    'bpy.data.scenes[0]["t3_copy_back"] = "hero 12:00"; print(bpy.data.filepath)',
+    'bpy.data.objects.remove(bpy.data.objects["Cape"]); bpy.data.libraries.load(copy); print(bpy.data.filepath)',
+    'print(bpy.data.filepath); bpy.ops.ed.undo_push(message="copy back")',
+    'print(bpy.data.filepath); del bpy.data.scenes[0]["t3_copy_back"]; bpy.ops.wm.save_mainfile()',
+    "print(bpy.data.filepath); area.tag_redraw()",
+  );
+  assert.isNotEmpty(failed(caseExpect, bad));
+  const good = code(
+    'assert bpy.data.filepath == master; bpy.data.scenes[0]["t3_copy_back"] = "hero 12:00"',
+    'assert bpy.data.filepath == master; changed = bpy.data.objects["Cape"].matrix_world != saved',
+    'assert bpy.data.filepath == master; bpy.data.objects.remove(bpy.data.objects["Cape"]); bpy.data.libraries.load(copy)',
+    'assert bpy.data.filepath == master; bpy.ops.ed.undo_push(message="copy back")',
+    'assert bpy.data.filepath == master; del bpy.data.scenes[0]["t3_copy_back"]; bpy.ops.wm.save_mainfile()',
+    "assert bpy.data.filepath == master; area.tag_redraw()",
+  );
+  assert.deepEqual(failed(caseExpect, good), []);
+});
+
 it("grades a page passed by path on the file the agent last wrote there", () => {
   const expect = {
     calls: [{ tool: "html_render", args: { path: "/tmp/v.html", page: "~var(--" } }],

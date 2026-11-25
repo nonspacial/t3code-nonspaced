@@ -1,5 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off - a stand-in for Blender Lab's add-on listens on a real loopback port.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
 import * as NodeNet from "node:net";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import { describe, expect, it } from "@effect/vitest";
 import * as NetService from "@t3tools/shared/Net";
@@ -215,4 +219,63 @@ describe("the user's desktop Blender", () => {
       expect(String(exit)).toContain("never reach the desktop Blender");
     }),
   );
+});
+
+describe("the save request, as Blender runs it", () => {
+  // Runs the request's code under python3 with a stand-in bpy, its timer run at once.
+  const runInBlender = (code: string, filepath: string) => {
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-move-code-"));
+    try {
+      NodeFS.writeFileSync(
+        NodePath.join(dir, "bpy.py"),
+        [
+          "import types",
+          `data = types.SimpleNamespace(filepath=${JSON.stringify(filepath)})`,
+          "saved = []",
+          "def _save(exit=False):",
+          "    saved.append(exit)",
+          "    return {'FINISHED'}",
+          "ops = types.SimpleNamespace(wm=types.SimpleNamespace(save_mainfile=_save))",
+          "class _Override:",
+          "    def __enter__(self): return self",
+          "    def __exit__(self, *a): return False",
+          "context = types.SimpleNamespace(window_manager=types.SimpleNamespace(windows=[None]), temp_override=lambda **k: _Override())",
+          "app = types.SimpleNamespace(driver_namespace={}, timers=types.SimpleNamespace(register=lambda f, first_interval=0: f()))",
+        ].join("\n"),
+      );
+      const script = `${code}\nimport json\nprint(json.dumps({"result": result, "saved": bpy.saved, "state": bpy.app.driver_namespace.get("t3_move_state")}))`;
+      NodeFS.writeFileSync(NodePath.join(dir, "run.py"), script);
+      return JSON.parse(
+        NodeChildProcess.execFileSync("python3", [NodePath.join(dir, "run.py")], {
+          env: { ...process.env, PYTHONPATH: dir },
+          encoding: "utf8",
+        }),
+      );
+    } finally {
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it("refuses a symlink to the master, whose entry Blender would replace instead of it", () => {
+    const dir = NodeFS.realpathSync(
+      NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-move-link-")),
+    );
+    try {
+      const master = NodePath.join(dir, "master.blend");
+      NodeFS.writeFileSync(master, "");
+      NodeFS.symlinkSync(master, NodePath.join(dir, "alias.blend"));
+      const code = DesktopBlender.saveAndQuitCode(master, NodePath.join(dir, "token"));
+      const viaLink = runInBlender(code, NodePath.join(dir, "alias.blend"));
+      expect(viaLink.result).toMatchObject({ moved: false });
+      expect(viaLink.saved).toEqual([]);
+      // Through a linked folder the entry is still the master's own: that one saves.
+      NodeFS.symlinkSync(dir, `${dir}-folder`);
+      const viaFolder = runInBlender(code, NodePath.join(`${dir}-folder`, "master.blend"));
+      expect(viaFolder.result).toMatchObject({ moved: true });
+      expect(viaFolder.saved).toEqual([true]);
+    } finally {
+      NodeFS.rmSync(`${dir}-folder`, { force: true });
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

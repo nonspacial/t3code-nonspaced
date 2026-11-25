@@ -312,7 +312,10 @@ interface Instance {
   readonly masterThreads: Set<ThreadId>;
   readonly agentThreads: Set<ThreadId>;
   /** Each agent thread's `blender-master` port, relayed to this master's listener. */
-  readonly forwards: Map<ThreadId, Scope.Closeable>;
+  readonly forwards: Map<
+    ThreadId,
+    { readonly scope: Scope.Closeable; readonly session: string | null }
+  >;
   readonly relativePath: string;
   /** The checked real path `open` resolved; `run` never resolves it again. */
   readonly blendPath: string;
@@ -456,7 +459,8 @@ const make = Effect.gen(function* () {
     const instance = instances.get(masterKey(known.blendPath));
     if (instance?.masterThreads.has(threadId)) {
       return {
-        status: instance.status,
+        // Unavailable while a quit it may still carry out is unsettled.
+        status: instance.quitCancelled != null ? "starting" : instance.status,
         relativePath: known.relativePath,
         dirty: instance.dirty,
         ...(instance.desktopUnchecked ? { desktopUnchecked: true } : {}),
@@ -763,10 +767,12 @@ const make = Effect.gen(function* () {
           if (!(yield* sessionCurrent(threadId))) instance.agentThreads.delete(threadId);
         }
         const ready = instance.agentListener === "ready" && !instance.agentListenerRevoked;
-        for (const [threadId, scope] of instance.forwards) {
-          if (ready && instance.agentThreads.has(threadId)) continue;
+        // A relay serves the session it was opened for; a newer one gets a fresh relay.
+        for (const [threadId, relay] of instance.forwards) {
+          const session = threadMasters.get(threadId)?.agentSession ?? null;
+          if (ready && instance.agentThreads.has(threadId) && relay.session === session) continue;
           instance.forwards.delete(threadId);
-          yield* Scope.close(scope, Exit.void);
+          yield* Scope.close(relay.scope, Exit.void);
         }
         if (!ready || Option.isNone(agents) || instance.mcpPort === null) return;
         for (const threadId of instance.agentThreads) {
@@ -778,7 +784,8 @@ const make = Effect.gen(function* () {
             listenPort,
             targetPort: instance.mcpPort,
           }).pipe(Scope.provide(scope), Effect.isSuccess);
-          if (opened) instance.forwards.set(threadId, scope);
+          const session = threadMasters.get(threadId)?.agentSession ?? null;
+          if (opened) instance.forwards.set(threadId, { scope, session });
           else yield* Scope.close(scope, Exit.void);
         }
       }),
@@ -1473,7 +1480,9 @@ const make = Effect.gen(function* () {
   )(function* (threadId, { canOperate, role }) {
     yield* Effect.annotateCurrentSpan({ threadId, canOperate, role });
     const instance = instanceFor(threadId, role);
-    if (instance === undefined) return { _tag: "stopped" as const };
+    // Nor a viewer: the master may still quit under it.
+    if (instance === undefined || instance.quitCancelled != null)
+      return { _tag: "stopped" as const };
     if (instance.viewers.length >= MAX_VIEWERS) return { _tag: "full" as const };
     const entry: ViewerEntry = {
       id: `viewer-${nextViewerId++}`,
@@ -1734,11 +1743,16 @@ const make = Effect.gen(function* () {
                   : Effect.void;
               }
               // One thread's access to a shared master ends, its relay at once; others keep theirs.
+              // A relay opened for the ended session closes even when a newer grant is recorded;
+              // the sync then opens a fresh one for that grant.
               const known = threadMasters.get(revocation.threadId);
-              if (known?.agentSession != null) return Effect.void;
-              return instance.agentThreads.delete(revocation.threadId)
-                ? syncForwards(instance)
-                : Effect.void;
+              const relay = instance.forwards.get(revocation.threadId);
+              const stale = relay !== undefined && ended(relay.session);
+              if (known?.agentSession == null) instance.agentThreads.delete(revocation.threadId);
+              if (stale) instance.forwards.delete(revocation.threadId);
+              return (stale ? Scope.close(relay.scope, Exit.void) : Effect.void).pipe(
+                Effect.andThen(syncForwards(instance)),
+              );
             },
             { discard: true },
           );
@@ -1812,6 +1826,10 @@ const make = Effect.gen(function* () {
     file: Effect.Success<ReturnType<typeof checkedBlend>>,
   ) {
     const existing = instances.get(masterKey(file.blendPath));
+    // A quit it may still carry out: nobody is handed this master until that is settled.
+    if (existing?.quitCancelled != null) {
+      return yield* new HostedBlenderError({ reason: "masterBusy" });
+    }
     // Copy back writes into a master; no other Blender may have its file, by any name. The file
     // is held while the desktop Blender is asked, outside the lock other opens wait on.
     yield* claimLock.withPermits(1)(
@@ -1913,27 +1931,30 @@ const make = Effect.gen(function* () {
       if (outcome.value !== "quit") instance.quitting = false;
       return outcome.value;
     }
-    // No answer in time: the request may still be waiting in Blender. It stays unavailable
-    // until Blender drops it, exits, or its connection closes, so a late quit can't close it
-    // under a thread that joins next.
+    // No answer in time: the request may still be waiting in a busy Blender. The leave ends
+    // here; the master stays unavailable until Blender drops the quit, exits, or its connection
+    // closes, so a late quit can't close it under a thread that joins meanwhile.
     const cancelled = yield* Deferred.make<void>();
     instance.quitCancelled = { id, done: cancelled };
-    const resolved = yield* control
+    yield* publishNow();
+    // A stalled write must not hold the race up.
+    yield* control
       .write(`${encodeQuitRequest({ type: "cancelQuit", id })}\n`)
-      .pipe(
-        Effect.andThen(
-          Effect.raceFirst(
-            ended,
-            Effect.raceFirst(
-              Deferred.await(cancelled).pipe(Effect.as<QuitOutcome>("uncertain")),
-              Deferred.await(control.closed).pipe(Effect.as<QuitOutcome>("uncertain")),
-            ),
-          ),
-        ),
-      );
-    instance.quitCancelled = null;
-    if (resolved !== "quit") instance.quitting = false;
-    return resolved;
+      .pipe(Effect.forkIn(serviceScope));
+    yield* Effect.raceFirst(
+      Deferred.await(instance.ended),
+      Effect.raceFirst(Deferred.await(cancelled), Deferred.await(control.closed)),
+    ).pipe(
+      Effect.andThen(
+        Effect.suspend(() => {
+          if (instance.quitCancelled?.done === cancelled) instance.quitCancelled = null;
+          instance.quitting = false;
+          return publishNow();
+        }),
+      ),
+      Effect.forkIn(serviceScope),
+    );
+    return "uncertain" as QuitOutcome;
   });
 
   /**
@@ -2063,8 +2084,12 @@ const make = Effect.gen(function* () {
             });
           }
           // Blender saves by replacing the entry it opened, so under another name for the
-          // master its save would land beside the master rather than in it.
-          const target = yield* realPathOr(open.filepath);
+          // master, a symlink included, its save would land beside the master rather than in
+          // it. The entry is its folder, resolved, and its own name, not resolved.
+          const target = path.join(
+            yield* realPathOr(path.dirname(open.filepath)),
+            path.basename(open.filepath),
+          );
           if (target !== blendPath) {
             return yield* new HostedBlenderError({ reason: "desktopAlias" });
           }

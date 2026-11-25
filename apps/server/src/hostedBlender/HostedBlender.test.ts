@@ -55,6 +55,8 @@ interface Host {
   readonly agentsAllowed?: boolean;
   /** Threads whose agent session has ended since it asked. */
   readonly endedSessions?: ReadonlySet<ThreadId>;
+  /** Each thread's current agent session; "session-1" when unnamed. */
+  readonly sessions?: ReadonlyMap<ThreadId, string>;
   /** The master's own listener port, from the shared registry. */
   readonly privatePort?: number;
   /** The user's desktop Blender, as T3 reaches it; none by default. */
@@ -109,7 +111,9 @@ const layerFor = (host: Host) =>
           masterListenerPort: (id) => Effect.succeed(host.masterPorts?.get(id) ?? null),
           // Every thread's agent session is the one that asked, unless a test ends it.
           currentSession: (id) =>
-            Effect.succeed(host.endedSessions?.has(id) === true ? null : "session-1"),
+            Effect.sync(() =>
+              host.endedSessions?.has(id) === true ? null : (host.sessions?.get(id) ?? "session-1"),
+            ),
           reservePrivatePort: Effect.suspend(() =>
             host.privatePort === undefined
               ? Effect.flatMap(NetService.NetService, (net) => net.reserveLoopbackPort())
@@ -1638,11 +1642,13 @@ def control():
             mcp.bind(("127.0.0.1", int(t3[t3.index("--t3-mcp-port") + 1])))
             mcp.listen(8)
             def answer():
+                def serve(client):
+                    if client.recv(64):
+                        client.sendall(b"pong")
+                    client.close()
                 while True:
                     client, _ = mcp.accept()
-                    client.recv(64)
-                    client.sendall(b"pong")
-                    client.close()
+                    threading.Thread(target=serve, args=(client,), daemon=True).start()
             threading.Thread(target=answer, daemon=True).start()
             listener[0] = "ready"
             state(blend)
@@ -1653,7 +1659,19 @@ def control():
             # Gone once it has heard the stop, so a test can wait for the stopped state.
             os._exit(0)
         if kind == "cancelQuit":
-            connection.sendall((json.dumps({"type": "quitCancelled", "id": json.loads(line).get("id")}) + "\n").encode())
+            cancelled = json.loads(line).get("id")
+            def acknowledge():
+                # STANDIN_CANCEL_GATE: busy until the test creates this file.
+                gate = os.environ.get("STANDIN_CANCEL_GATE")
+                while gate and not os.path.exists(gate):
+                    threading.Event().wait(0.05)
+                if os.environ.get("STANDIN_EXIT_ON_CANCEL") == "1":
+                    # The quit it was busy with goes through after all.
+                    with open(os.environ["STANDIN_ARGS"] + ".exits", "a") as log:
+                        log.write("exit\n")
+                    os._exit(0)
+                connection.sendall((json.dumps({"type": "quitCancelled", "id": cancelled}) + "\n").encode())
+            threading.Thread(target=acknowledge, daemon=True).start()
         if kind == "quitIfClean" and os.environ.get("STANDIN_QUIT_SILENT") == "1":
             # Busy: the quit waits in Blender, unanswered, until T3 cancels it.
             continue
@@ -1831,7 +1849,13 @@ const ping = (port: number) =>
 const masterHost = Effect.fn(function* (
   host: Pick<
     Host,
-    "masterPorts" | "revocations" | "agentsAllowed" | "desktop" | "endedSessions" | "privatePort"
+    | "masterPorts"
+    | "revocations"
+    | "agentsAllowed"
+    | "desktop"
+    | "endedSessions"
+    | "privatePort"
+    | "sessions"
   > & {
     /** Blender reports `other.blend` open, beside `cube.blend`, from its first word. */
     readonly otherFileFirst?: boolean;
@@ -1845,6 +1869,10 @@ const masterHost = Effect.fn(function* (
     readonly controlGate?: boolean;
     /** A quit waits in Blender unanswered, until T3 cancels it. */
     readonly quitSilent?: boolean;
+    /** Blender acknowledges T3's cancel only once `answerCancel` is called. */
+    readonly cancelGate?: boolean;
+    /** Blender exits once it hears the cancel, as if the quit it was busy with went through. */
+    readonly exitOnCancel?: boolean;
   } = {},
 ) {
   const dir = yield* tempDir("master");
@@ -1873,6 +1901,8 @@ const masterHost = Effect.fn(function* (
         ...(host.unsaved ? { STANDIN_UNSAVED: "1" } : {}),
         ...(host.slowQuit ? { STANDIN_SLOW_QUIT: "1" } : {}),
         ...(host.quitSilent ? { STANDIN_QUIT_SILENT: "1" } : {}),
+        ...(host.cancelGate ? { STANDIN_CANCEL_GATE: NodePath.join(dir, "cancel-gate") } : {}),
+        ...(host.exitOnCancel ? { STANDIN_EXIT_ON_CANCEL: "1" } : {}),
         ...(host.controlGate ? { STANDIN_CONTROL_GATE: NodePath.join(dir, "control-gate") } : {}),
       },
       helper: NodePath.join(bin, "helper"),
@@ -1896,6 +1926,7 @@ const masterHost = Effect.fn(function* (
     dir,
     masterStatus,
     openControl: () => NodeFS.writeFileSync(NodePath.join(dir, "control-gate"), ""),
+    answerCancel: () => NodeFS.writeFileSync(NodePath.join(dir, "cancel-gate"), ""),
     exits: () => read(".exits").split("\n").length - 1,
     blendPath: NodeFS.realpathSync(NodePath.join(dir, "cube.blend")),
     launches: () => read(".launches").split("\n").length - 1,
@@ -2142,6 +2173,8 @@ const desktopHost = Effect.fn(function* (
   NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
   // Another name for cube.blend, as a desktop Blender may have it open under.
   NodeFS.linkSync(NodePath.join(dir, "cube.blend"), NodePath.join(dir, "alias.blend"));
+  // And a symlink to it, whose own entry is what Blender replaces when it saves.
+  NodeFS.symlinkSync(NodePath.join(dir, "cube.blend"), NodePath.join(dir, "linked.blend"));
   const argsLog = NodePath.join(dir, "args.log");
   const desktop = desktopFor(NodeFS.realpathSync(NodePath.join(dir, "cube.blend")));
   const service = yield* serviceFor(
@@ -2659,6 +2692,53 @@ describe("A master's lifecycle", () => {
   );
 });
 
+describe("A relay outliving its agent session", () => {
+  /** Connects through a relay and stays connected, saying nothing, until the far end closes. */
+  const hold = (port: number) =>
+    Effect.callback<{ readonly closed: Promise<void> }>((resume) => {
+      const socket = NodeNet.connect(port, "127.0.0.1");
+      const closed = new Promise<void>((done) => socket.on("close", () => done()));
+      socket.on("error", () => undefined);
+      socket.on("connect", () => resume(Effect.succeed({ closed })));
+    });
+
+  it.live(
+    "closes the old session's connection once its revocation arrives after the new grant",
+    () =>
+      Effect.gen(function* () {
+        const net = yield* NetService.NetService;
+        const ports = new Map([[threadId, yield* net.reserveLoopbackPort()]]);
+        const sessions = new Map([[threadId, "session-1"]]);
+        const revoked =
+          yield* Queue.unbounded<HostedBlenderAgents.HostedBlenderRevocation | null>();
+        const host = yield* masterHost({
+          masterPorts: ports,
+          sessions,
+          revocations: Stream.fromQueue(revoked),
+        });
+        yield* host.service.openMaster(
+          { threadId, relativePath: "cube.blend" },
+          { agentSession: "session-1" },
+        );
+        expect((yield* host.service.agentListener(threadId, { role: "master" }))?.state).toBe(
+          "ready",
+        );
+        const old = yield* hold(ports.get(threadId)!);
+        // The credential is replaced: the new session's grant is recorded before the old
+        // session's revocation is handled.
+        sessions.set(threadId, "session-2");
+        yield* host.service.openMaster(
+          { threadId, relativePath: "cube.blend" },
+          { agentSession: "session-2" },
+        );
+        yield* Queue.offer(revoked, { threadId, session: "session-1" });
+        yield* Effect.promise(() => old.closed);
+        expect(yield* ping(ports.get(threadId)!)).toBe("pong");
+        yield* host.service.quit({ threadId, save: false, role: "master" });
+      }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
+  );
+});
+
 describe("Move into T3, round three", () => {
   it.live("refuses a Move whose thread left the master while it waited its turn", () =>
     Effect.gen(function* () {
@@ -2740,6 +2820,102 @@ describe("Move into T3, round three", () => {
   );
 });
 
+describe("Move into T3, round four", () => {
+  it.live("refuses a Move when the desktop Blender has the master open through a symlink", () =>
+    Effect.gen(function* () {
+      const seen: Array<string> = [];
+      const host = yield* desktopHost((file) => {
+        const desktop = fakeDesktop({
+          _tag: "open",
+          filepath: NodePath.join(NodePath.dirname(file), "linked.blend"),
+          dirty: false,
+        });
+        return {
+          ...desktop,
+          service: {
+            ...desktop.service,
+            saveAndQuit: (target: string) =>
+              Effect.sync(() => seen.push(target)).pipe(
+                Effect.andThen(desktop.service.saveAndQuit(target)),
+              ),
+          },
+        };
+      });
+      expect(yield* host.service.openMaster({ threadId, relativePath: "cube.blend" })).toEqual({
+        _tag: "desktop",
+      });
+      const refused = yield* host.service
+        .moveIntoT3({ threadId, relativePath: "cube.blend" })
+        .pipe(Effect.flip);
+      expect(refused.reason).toBe("desktopAlias");
+      expect(seen).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+describe("A quit still unresolved in a busy Blender", () => {
+  it.live(
+    "ends the leave, keeps the master unavailable, and lets joins in once Blender drops it",
+    () =>
+      Effect.gen(function* () {
+        const host = yield* masterHost({ dirty: true, quitSilent: true, cancelGate: true });
+        const other = yield* masterHost({ dirty: true });
+        yield* host.service.openMaster({ threadId, relativePath: "cube.blend" });
+        yield* other.service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" });
+        for (const [service, id] of [
+          [host.service, threadId],
+          [other.service, otherThreadId],
+        ] as const) {
+          yield* service.masterState(id).pipe(
+            Stream.filter((state) => state.status === "running" && state.dirty),
+            Stream.runHead,
+          );
+        }
+        // Busy, it never answers the quit or the cancel; the leave still ends on its deadline.
+        yield* host.service.releaseMaster(threadId);
+        // An unrelated master settles at once meanwhile.
+        yield* other.service.releaseMaster(otherThreadId);
+        expect(other.exits()).toBe(1);
+        // Until Blender drops the quit, the master isn't handed to anyone.
+        const busy = yield* host.service
+          .openMaster({ threadId: otherThreadId, relativePath: "cube.blend" })
+          .pipe(Effect.flip);
+        expect(busy.reason).toBe("masterBusy");
+        expect(
+          (yield* host.service.attachViewer(threadId, { canOperate: false, role: "master" }))._tag,
+        ).toBe("stopped");
+        host.answerCancel();
+        yield* host.service.masterState(threadId).pipe(
+          Stream.filter((state) => state.status === "running"),
+          Stream.runHead,
+        );
+        expect(
+          yield* host.service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" }),
+        ).toEqual({ _tag: "hosted", desktopUnchecked: false });
+        expect(host.exits()).toBe(0);
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("treats Blender exiting while the quit is unresolved as the quit going through", () =>
+    Effect.gen(function* () {
+      const host = yield* masterHost({ dirty: true, quitSilent: true, exitOnCancel: true });
+      yield* host.service.openMaster({ threadId, relativePath: "cube.blend" });
+      yield* host.service.masterState(threadId).pipe(
+        Stream.filter((state) => state.status === "running" && state.dirty),
+        Stream.runHead,
+      );
+      const stopped = yield* watchMaster(host.service, threadId);
+      yield* host.service.releaseMaster(threadId);
+      yield* stopped;
+      expect(host.exits()).toBe(1);
+      // Gone: the next open starts a Blender of its own.
+      yield* host.service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" });
+      yield* host.masterStatus(otherThreadId, "running");
+      expect(host.launches()).toBe(2);
+    }).pipe(Effect.scoped),
+  );
+});
+
 describe("A quit Blender never answered", () => {
   it.live("is cancelled before anyone joins the master again, so a late quit can't close it", () =>
     Effect.gen(function* () {
@@ -2749,13 +2925,15 @@ describe("A quit Blender never answered", () => {
         Stream.filter((state) => state.status === "running" && state.dirty),
         Stream.runHead,
       );
-      const leaving = yield* host.service
-        .releaseMaster(threadId)
-        .pipe(Effect.forkScoped({ startImmediately: true }));
+      yield* host.service.releaseMaster(threadId);
+      // Available again once Blender has dropped the quit.
+      yield* host.service.masterState(threadId).pipe(
+        Stream.filter((state) => state.status === "running"),
+        Stream.runHead,
+      );
       expect(
         yield* host.service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" }),
       ).toEqual({ _tag: "hosted", desktopUnchecked: false });
-      yield* Fiber.join(leaving);
       const sent = host
         .controlLog()
         .split("\n")
