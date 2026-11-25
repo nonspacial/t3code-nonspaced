@@ -9,13 +9,26 @@ adapters and the Blender process, and are easy to undo by accident.
 A working Blender belongs to one thread: it quits when that thread settles or is archived, when T3
 shuts down, or when the user or agent quits it. A master Blender is the one exception, shared by
 the threads that chose its master file and kept until the last of them leaves (and then only if
-it has nothing unsaved). Every other ending (T3 stopping, Hosted Blender switched off, a crash)
+it has nothing unsaved). `blender_start` only makes the thread's master known, so the pane can offer it: a
+known master is not a member of, moved with, or relayed to any master Blender until an open
+chooses it, so it never keeps one running or counts at settle. Every other ending (T3 stopping, Hosted Blender switched off, a crash)
 ends it like a working one, and its recovery copy belongs to the master, not a thread: one copy,
 under the master file's real path, that any thread whose master is that file reopens or discards.
 Only the person's own Quit without saving, which the quit request marks as a discard, ends a run
 without keeping its unsaved work; every other quit without saving (an agent's, or a one-click quit
 of a file the client last saw clean) ends as a settle does, so what Blender reports as it quits
-decides what is kept. Deleting a thread ends its Blender, then removes the copies it kept, which
+decides what is kept. No agent tool can reopen or discard a copy, so the agent's next
+`blender_start` of a working copy with a waiting copy restores it rather than refusing. A discard
+carries the file its dialog named, and the add-on refuses it if Blender has another open by then,
+so a file opened from Blender's own menu is never discarded under another's name. It runs beside
+the client's per-thread command lane, so a Save and quit stuck in a busy Blender can't hold it,
+and it stops Blender at its deadline even mid-save. A settle waits on a Save and quit only once
+Blender has begun it; one still queued by the deadline is stopped like any unanswered quit.
+At shutdown, a Blender that has said it is saving or quitting is released, never killed while
+it writes what may be the only copy of its latest work: the helper is told to `detach` (Blender
+dies with the helper, so the helper stays until Blender exits, whatever T3 does), its handle is
+unref'd so the server's exit signals nothing in its process group, and its launch folder stays
+for the next start's salvage, which waits for it before stopping anything. Deleting a thread ends its Blender, then removes the copies it kept, which
 nothing could show again; a master's copy is never the thread's. Agent access is narrower still: it lasts only while T3 holds the control
 connection, Allow agents is on, and the launch file (the working copy, or the master) is still the
 open file; a working Blender also needs its thread's session alive. Once any of those ends, access
@@ -26,6 +39,15 @@ A master's grant lasts for its launch, since later sessions and threads copy bac
 its agents reach Blender Lab only through relays, one per agent thread and session, opened for a
 current session and closed when that session's access ends. With no agent thread, nothing listens
 for them.
+
+## The stream's window and acks change together
+
+The server keeps a few frames per viewer unacked and sends nothing after a keyframe until that
+keyframe is acked ([`ViewerFlow.ts`](../../apps/server/src/hostedBlender/ViewerFlow.ts)); the
+client, web and mobile alike, acks every frame it receives once its decoder can take more
+([`stream.ts`](../../packages/client-runtime/src/hostedBlender/stream.ts)). Change one only with
+the other: an ack the client folds into another takes a slot out of the window for good, and a
+delta it drops smears the picture until the next keyframe, which the encoders send only on request.
 
 ## Agents use only the official Blender Lab MCP
 

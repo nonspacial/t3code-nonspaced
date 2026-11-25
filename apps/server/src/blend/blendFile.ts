@@ -513,6 +513,12 @@ export async function readBlendFile(
 ): Promise<BlendFileFacts> {
   signal?.throwIfAborted();
   const source = await openSource(filePath);
+  // An abort mid-block (a compressed skip inflates as it goes) closes the source at once, which
+  // destroys the file stream and the inflater.
+  let closing: Promise<void> | undefined;
+  const close = () => (closing ??= source.close());
+  const closeOnAbort = () => void close().catch(() => undefined);
+  signal?.addEventListener("abort", closeOnAbort, { once: true });
   try {
     const header = await readHeader(source);
     const resolved = { ...DEFAULT_LIMITS, ...limits };
@@ -584,8 +590,13 @@ export async function readBlendFile(
         )
         .filter((path) => path.length > 0),
     };
+  } catch (cause) {
+    // What the closed source made of the walk says nothing; the abort is the reason.
+    signal?.throwIfAborted();
+    throw cause;
   } finally {
-    await source.close();
+    signal?.removeEventListener("abort", closeOnAbort);
+    await close();
   }
 }
 

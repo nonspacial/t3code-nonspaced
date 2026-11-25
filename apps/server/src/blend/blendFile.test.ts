@@ -5,7 +5,7 @@ import * as NodePath from "node:path";
 import * as NodeStream from "node:stream";
 import * as NodeZlib from "node:zlib";
 
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   fileSource,
@@ -14,6 +14,25 @@ import {
   readBlendFileFacts,
   streamSource,
 } from "./blendFile.ts";
+
+// What gunzip has inflated, and a hook once it passes `abortAt` bytes.
+const inflation = vi.hoisted(() => ({ produced: 0, abortAt: Infinity, onPast: () => {} }));
+vi.mock("node:zlib", async (original) => {
+  const actual = await original<typeof import("node:zlib")>();
+  return {
+    ...actual,
+    createGunzip: (options?: import("node:zlib").ZlibOptions) => {
+      const gunzip = actual.createGunzip(options);
+      const push = gunzip.push.bind(gunzip);
+      gunzip.push = (chunk: Buffer | null, encoding?: BufferEncoding) => {
+        inflation.produced += chunk?.byteLength ?? 0;
+        if (inflation.produced > inflation.abortAt) inflation.onPast();
+        return push(chunk, encoding);
+      };
+      return gunzip;
+    },
+  };
+});
 
 // Made by fixtures/make-fixtures.sh with Blender 4.5 and 5.3; each version names its own.
 const fixture = (name: string) => NodePath.join(import.meta.dirname, "fixtures", name);
@@ -250,6 +269,40 @@ describe("P1: reading a large .blend", () => {
     );
     setImmediate(() => controller.abort());
     await expect(reading).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("N4: an abort stops a compressed skip at once, not once the skip is done", async () => {
+    // One 512 MiB block of zeros, which gzip packs into well under a megabyte, for the walk to skip.
+    const blockBytes = 512 * 1024 * 1024;
+    const head = new Uint8Array(12 + 24);
+    head.set(new TextEncoder().encode("BLENDER-v405"));
+    head.set(new TextEncoder().encode("DATA"), 12);
+    new DataView(head.buffer).setInt32(16, blockBytes, true);
+    const zeros = Buffer.alloc(16 * 1024 * 1024);
+    const compressed = Buffer.concat(
+      await NodeStream.Readable.from(
+        (function* () {
+          yield Buffer.from(head);
+          for (let sent = 0; sent < blockBytes; sent += zeros.byteLength) yield zeros;
+        })(),
+      )
+        .pipe(NodeZlib.createGzip({ level: 1 }))
+        .toArray(),
+    );
+    const controller = new AbortController();
+    inflation.produced = 0;
+    inflation.abortAt = 32 * 1024 * 1024;
+    inflation.onPast = () => controller.abort();
+    try {
+      await withTempFile(compressed, (path) =>
+        expect(readBlendFile(path, {}, controller.signal)).rejects.toMatchObject({
+          name: "AbortError",
+        }),
+      );
+      expect(inflation.produced).toBeLessThan(128 * 1024 * 1024);
+    } finally {
+      inflation.abortAt = Infinity;
+    }
   });
 
   it("walks a file once while its revision stays the same", async () => {

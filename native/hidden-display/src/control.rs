@@ -85,6 +85,9 @@ pub enum Command {
         options: String,
     },
     Quit,
+    /// T3 is stopping while Blender writes its quit copy: capture stops, and the helper lets
+    /// Blender finish and exit on its own, ignoring a later quit and T3 going away.
+    Detach,
 }
 
 impl Command {
@@ -258,6 +261,7 @@ mod tests {
                 Command::Bitrate { kbps: 4000 },
             ),
             (r#"{"type":"pause"}"#, Command::Pause),
+            (r#"{"type":"detach"}"#, Command::Detach),
             (r#"{"type":"resume"}"#, Command::Resume),
             (
                 r#"{"type":"resize","width":1280,"height":720}"#,

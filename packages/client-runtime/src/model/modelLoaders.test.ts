@@ -1,5 +1,5 @@
 import { Mesh } from "three";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 
 import { loadModel, readResponseBytes } from "./modelLoaders.ts";
 import { isModelPreviewError } from "./modelPreviewError.ts";
@@ -112,6 +112,74 @@ describe("P6: the preview's byte limit", () => {
     expect(isModelPreviewError(refused) && refused.code).toBe("model-too-large");
   });
 
+  it("N5: reads at once share it, so a buffer past it is never read into memory", async () => {
+    onTestFinished(() => {
+      vi.unstubAllGlobals();
+    });
+    // Two 80-byte external buffers, each under the limit alone.
+    const twoBuffers = JSON.stringify({
+      ...JSON.parse(gltf),
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }, { attributes: { POSITION: 1 } }] }],
+      accessors: [0, 1].map((bufferView) => ({
+        bufferView,
+        componentType: 5126,
+        count: 3,
+        type: "VEC3",
+        min: [0, 0, 0],
+        max: [1, 1, 0],
+      })),
+      bufferViews: [0, 1].map((buffer) => ({ buffer, byteLength: 36 })),
+      buffers: ["a.bin", "b.bin"].map((uri) => ({ uri, byteLength: 80 })),
+    });
+    let read = 0;
+    vi.stubGlobal("fetch", async () => {
+      const body = new Uint8Array(80);
+      body.set(positions);
+      return new Response(
+        new ReadableStream<Uint8Array>(
+          {
+            pull(controller) {
+              read += body.byteLength;
+              controller.enqueue(body);
+              controller.close();
+            },
+          },
+          { highWaterMark: 0 },
+        ),
+        { headers: { "content-length": "80" } },
+      );
+    });
+    const refused = await loadModel({
+      format: "gltf",
+      data: new TextEncoder().encode(twoBuffers).buffer,
+      companions: {
+        modelPath: "/work/triangle.gltf",
+        workspaceRoot: "/work",
+        mint: async (path) => `https://t3/companion${path}`,
+      },
+      signal: new AbortController().signal,
+      maxBytes: 100,
+    }).catch((error: unknown) => error);
+    expect(isModelPreviewError(refused) && refused.code).toBe("model-too-large");
+    expect(read).toBeLessThanOrEqual(100);
+  });
+
+  it("N5: counts an OBJ's materials against it too", async () => {
+    const refused = await loadModel({
+      format: "obj",
+      data: new TextEncoder().encode("mtllib big.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n").buffer,
+      companions: {
+        modelPath: "/work/stool.obj",
+        workspaceRoot: "/work",
+        mint: async () =>
+          `data:text/plain,${encodeURIComponent(`newmtl big\n#${"x".repeat(200)}\n`)}`,
+      },
+      signal: new AbortController().signal,
+      maxBytes: 100,
+    }).catch((error: unknown) => error);
+    expect(isModelPreviewError(refused) && refused.code).toBe("model-too-large");
+  });
+
   it("reads a body of known length into one buffer, and stops at the limit", async () => {
     const chunked = (sizes: ReadonlyArray<number>, length: number | null) =>
       new Response(
@@ -134,5 +202,62 @@ describe("P6: the preview's byte limit", () => {
     );
     expect(await readResponseBytes(chunked([4, 6], 10), 9)).toBeNull();
     expect(await readResponseBytes(chunked([4, 6], null), 9)).toBeNull();
+  });
+});
+
+describe("N6: a glTF's KTX2 texture", () => {
+  it("is read through the companion files, and named when it can't be", async () => {
+    // One triangle whose material's texture is a sibling .ktx2.
+    const positions = new Uint8Array(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]).buffer);
+    const gltf = JSON.stringify({
+      asset: { version: "2.0" },
+      extensionsUsed: ["KHR_texture_basisu"],
+      extensionsRequired: ["KHR_texture_basisu"],
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 } } }],
+      textures: [{ extensions: { KHR_texture_basisu: { source: 0 } } }],
+      images: [{ uri: "wood.ktx2" }],
+      accessors: [
+        {
+          bufferView: 0,
+          componentType: 5126,
+          count: 3,
+          type: "VEC3",
+          min: [0, 0, 0],
+          max: [1, 1, 0],
+        },
+      ],
+      bufferViews: [{ buffer: 0, byteLength: 36 }],
+      buffers: [{ uri: "crate.bin", byteLength: 36 }],
+    });
+    // KTX2Loader's worker pool looks for `self`, which Node lacks; no worker starts here.
+    vi.stubGlobal("self", globalThis);
+    onTestFinished(() => {
+      vi.unstubAllGlobals();
+    });
+    const asked: string[] = [];
+    const { missing } = await loadModel({
+      format: "gltf",
+      data: new TextEncoder().encode(gltf).buffer,
+      companions: {
+        modelPath: "/work/crate.gltf",
+        workspaceRoot: "/work",
+        mint: async (path) => {
+          asked.push(path);
+          return path.endsWith(".bin") ? URL.createObjectURL(new Blob([positions])) : null;
+        },
+      },
+      signal: new AbortController().signal,
+      decoders: {
+        files: {},
+        // Enough of a WebGL renderer for KTX2Loader to pick a transcode target.
+        renderer: { extensions: { has: () => false }, capabilities: {} } as never,
+      },
+    });
+    expect(asked).toContain("/work/wood.ktx2");
+    expect(missing).toEqual(["wood.ktx2"]);
   });
 });

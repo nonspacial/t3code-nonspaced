@@ -708,7 +708,11 @@ function BlenderToolbar(props: {
   );
   const name = fileName(props.state.relativePath);
   const { canOperate, controller } = props.control;
-  const quit = useQuitHostedBlender(props.threadRef, name, props.master ? { role: "master" } : {});
+  const quit = useQuitHostedBlender(
+    props.threadRef,
+    props.state,
+    props.master ? { role: "master" } : {},
+  );
   return (
     <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
       {props.switcher}
@@ -1066,15 +1070,15 @@ function BlenderStream(props: {
             : "m-2 min-h-0 flex-1 rounded-md outline-none data-[in-control]:ring-2 data-[in-control]:ring-primary",
         )}
         onPointerDown={(event) => {
-          // Its release comes back here even outside the pane, where it would paste or navigate.
-          if (
-            BROWSER_BUTTONS.has(event.button) &&
-            !event.currentTarget.hasPointerCapture(event.pointerId)
-          ) {
+          const target = event.currentTarget;
+          const capture = () => {
+            if (target.hasPointerCapture(event.pointerId)) return;
             try {
-              event.currentTarget.setPointerCapture(event.pointerId);
+              target.setPointerCapture(event.pointerId);
             } catch {}
-          }
+          };
+          // Its release comes back here even outside the pane, where it would paste or navigate.
+          if (BROWSER_BUTTONS.has(event.button)) capture();
           if (inControl || !canOperate || control.controller !== "unclaimed") return;
           if (event.button > 2 || clientRef.current === null) return;
           // A left press that takes control stays out of Blender, so it selects nothing there; a
@@ -1088,9 +1092,18 @@ function BlenderStream(props: {
                   clientY: event.clientY,
                   released: false,
                 };
+          // A press Blender gets once control arrives: its release must come back here too.
+          if (takePressRef.current !== null) capture();
           takingRef.current = true;
           clientRef.current.send({ type: "takeControl", takeOver: false });
           event.currentTarget.focus();
+        }}
+        onPointerCancel={() => {
+          if (takePressRef.current?.released === false) takePressRef.current = null;
+        }}
+        onLostPointerCapture={() => {
+          // Its release can no longer be seen, so Blender never gets a press it can't let go.
+          if (takePressRef.current?.released === false) takePressRef.current = null;
         }}
         onPointerUp={(event) => {
           const take = takePressRef.current;

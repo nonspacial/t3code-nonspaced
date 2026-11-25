@@ -204,10 +204,33 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
     const running =
       (state?.status === "starting" || state?.status === "running") &&
       state.relativePath === relativePath;
+    // The agent's own quit without saving keeps its unsaved work, which only it can get back.
+    const waiting = running
+      ? undefined
+      : (yield* hostedBlender.keptCopies(input.threadId)).find(
+          (copy) =>
+            copy.recovery &&
+            copy.file.kind === "workspace" &&
+            copy.file.relativePath === relativePath,
+        );
     if (!running) {
+      yield* (
+        waiting === undefined
+          ? hostedBlender.open(
+              { threadId: input.threadId, relativePath },
+              { agentWorkingCopy: true },
+            )
+          : hostedBlender.reopen(
+              { threadId: input.threadId, key: waiting.key, restore: true },
+              { agentWorkingCopy: true },
+            )
+      ).pipe(Effect.mapError((error) => new HostedBlenderToolError({ reason: error.message })));
+    }
+    // The copy was made from it, so the pane's Master side can offer it; nothing opens.
+    if (!isCopy) {
       yield* hostedBlender
-        .open({ threadId: input.threadId, relativePath }, { agentWorkingCopy: true })
-        .pipe(Effect.mapError((error) => new HostedBlenderToolError({ reason: error.message })));
+        .knowMaster({ threadId: input.threadId, relativePath: path.relative(realRoot, master) })
+        .pipe(Effect.ignore);
     }
     // Answered only once Blender Lab's listener has come up on the thread's port.
     const listener = yield* hostedBlender.agentListener(input.threadId);
@@ -229,6 +252,7 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
     )?.status;
     return {
       ...result,
+      ...(waiting === undefined ? {} : { restoredUnsavedChanges: true }),
       status: status === "running" ? "running" : "starting",
     } satisfies HostedBlenderToolStartResult;
   },

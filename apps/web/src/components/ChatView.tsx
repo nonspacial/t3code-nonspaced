@@ -2873,7 +2873,11 @@ export default function ChatView(props: ChatViewProps) {
       freshSessionPending && activePendingApproval === null
         ? [freshSessionBannerItem(() => disarmFreshSession(routeThreadKey), messages)]
         : [];
-    const workingInBlenderItems = agentWorkingInBlender(timelineEntries, activeRunningTurnId)
+    // Without Hosted Blender on, no turn can be working in one: the timeline isn't scanned.
+    const workingInBlenderItems = agentWorkingInBlender(
+      timelineEntries,
+      chatHostedBlenderThread(serverConfig, activeRunningTurnId),
+    )
       ? [
           workingInBlenderBannerItem(
             { onStop: canInterruptRunningThread ? () => void onInterruptStable() : null },

@@ -119,7 +119,9 @@ export type HelperCommand =
     }
   | { readonly type: "key"; readonly code: number; readonly pressed: boolean }
   | { readonly type: "keymap"; readonly layout: string; readonly variant: string }
-  | { readonly type: "quit" };
+  | { readonly type: "quit" }
+  /** T3 is stopping while Blender writes its quit copy: the helper lets Blender finish. */
+  | { readonly type: "detach" };
 
 export const helperCommandForInput = (input: HostedBlenderInputMessage): HelperCommand => {
   switch (input.type) {
