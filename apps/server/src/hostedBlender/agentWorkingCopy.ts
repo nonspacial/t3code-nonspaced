@@ -15,7 +15,7 @@ import { isWithinRoot } from "../workspace/KnownWorkspaces.ts";
 import * as HostedBlender from "./HostedBlender.ts";
 
 // The end of the thread id: fixed prefixes such as `thread-` would make every tag alike.
-const threadTag = (threadId: string) =>
+export const threadTag = (threadId: string) =>
   threadId
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "")

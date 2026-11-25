@@ -55,7 +55,12 @@ export const T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH = deviceToolInstr
   ` Load them with ToolSearch \`select:${T3_CODE_DEVICE_TOOLS.map((tool) => `mcp__t3-code__${tool}`).join(",")}\`.`,
 );
 
-const T3_CODE_HOSTED_BLENDER_TOOLS = ["blender_start", "blender_status", "blender_quit"];
+const T3_CODE_HOSTED_BLENDER_TOOLS = [
+  "blender_start",
+  "blender_master_open",
+  "blender_status",
+  "blender_quit",
+];
 
 const hostedBlenderToolInstructions = (loadTools: string) => `## T3 Code hosted Blender
 
@@ -63,6 +68,13 @@ To change a \`.blend\` file, work in a hosted working copy unless the user says 
 1. Call \`blender_start\` with the path of the file the user wants changed, the master. T3 copies it to \`<name>.wip-<id>.blend\` beside it and opens the copy in this thread's hosted Blender. Call it again after a crash.
 2. Edit the copy with the \`blender-hosted\` MCP tools. \`blender_status\` shows what is running; \`blender_quit\` quits it, with \`save: true\` to save first.
 3. When you finish, or the user asks to watch, post the working copy as a file link; it opens the Blender pane. To point at something, add \`#view=x,y,z,tx,ty,tz\` (camera position, then target, in scene coordinates), as in \`[hero](/abs/models/hero.wip-1a2b3c4d.blend#view=4,-6,3,0,0,1)\`.
+
+To copy proven changes back, call \`blender_master_open\` with the master's path and work through the MCP server it names (\`blender\` or \`blender-master\`):
+1. Replace only the objects you changed. If any of them changed in the master since your copy was made, stop and ask the user.
+2. First set \`bpy.data.scenes[0]["t3_copy_back"]\` to your copy's name and the time, only if it is unset or over 10 minutes old; otherwise wait.
+3. Copy, clear the marker, \`bpy.ops.ed.undo_push(message="…")\`, then save the master.
+4. Redraw every window, and reload the library in any open Blender that links the master.
+5. Say what you copied back.
 
 After you edit a file open in the user's desktop Blender, run \`bpy.ops.ed.undo_push(message="…")\` so the change can be undone and counts as unsaved.`;
 

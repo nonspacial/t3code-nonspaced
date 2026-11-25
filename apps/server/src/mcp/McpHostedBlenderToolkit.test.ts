@@ -7,6 +7,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  type HostedBlenderMasterState,
+  type HostedBlenderOpenInput,
   type HostedBlenderQuitInput,
   type HostedBlenderThreadState,
   ProviderInstanceId,
@@ -77,6 +79,11 @@ const layerFor = (input: {
   readonly ended?: HostedBlender.AgentAccessEnded;
   readonly openFile?: string | null;
   readonly workspace?: string;
+  readonly master?: HostedBlenderMasterState;
+  readonly opened?:
+    | { readonly _tag: "desktop" }
+    | { readonly _tag: "hosted"; readonly desktopUnchecked: boolean };
+  readonly opens?: Array<readonly [HostedBlenderOpenInput, unknown]>;
 }) =>
   McpHttpServer.layerHostedBlenderToolkit.pipe(
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
@@ -84,6 +91,12 @@ const layerFor = (input: {
       Layer.mergeAll(
         Layer.mock(HostedBlender.HostedBlender)({
           threadState: () => Stream.succeed(input.state),
+          masterState: () => Stream.succeed(input.master ?? { status: "none" }),
+          openMaster: (open, options) =>
+            Effect.sync(() => {
+              input.opens?.push([open, options]);
+              return input.opened ?? { _tag: "hosted", desktopUnchecked: false };
+            }),
           agentListener: () =>
             Effect.succeed({
               state: input.listener ?? "ready",
@@ -138,10 +151,11 @@ const running: HostedBlenderThreadState = {
 };
 
 describe("hosted Blender MCP tools", () => {
-  it.effect("registers blender_start, blender_status and blender_quit", () =>
+  it.effect("registers blender_start, blender_master_open, blender_status and blender_quit", () =>
     Effect.gen(function* () {
       const server = yield* McpServer.McpServer;
       expect(server.tools.map(({ tool }) => tool.name).toSorted()).toEqual([
+        "blender_master_open",
         "blender_quit",
         "blender_start",
         "blender_status",
@@ -176,12 +190,12 @@ describe("hosted Blender MCP tools", () => {
     }).pipe(Effect.provide(layerFor({ state: running, quits })));
   });
 
-  it.effect.each(["blender_start", "blender_status", "blender_quit"])(
+  it.effect.each(["blender_start", "blender_master_open", "blender_status", "blender_quit"])(
     "refuses %s to an MCP client from outside a thread, and to a thread without the MCP",
     (name) => {
       const quits: Array<HostedBlenderQuitInput> = [];
       const args =
-        name === "blender_start"
+        name === "blender_start" || name === "blender_master_open"
           ? { path: "hero.blend" }
           : name === "blender_quit"
             ? { save: false }
@@ -209,7 +223,7 @@ describe("hosted Blender MCP tools", () => {
             })
             .map(({ tool }) => tool.name),
         ).pipe(Effect.provideService(McpInvocationContext.McpInvocationContext, scope));
-      expect(yield* visibleTo(threadCaller(["hosted-blender"]))).toHaveLength(3);
+      expect(yield* visibleTo(threadCaller(["hosted-blender"]))).toHaveLength(4);
       expect(yield* visibleTo(threadCaller(["orchestration"]))).toEqual([]);
       expect(yield* visibleTo(outsideClient)).toEqual([]);
     }).pipe(Effect.provide(layerFor({ state: running }))),
@@ -230,22 +244,26 @@ describe("hosted Blender MCP tools", () => {
     }).pipe(Effect.provide(layerFor({ state: running, listener: "starting" }))),
   );
 
-  it.effect("keeps Plan mode read-only: status works, start and quit are refused", () => {
-    const quits: Array<HostedBlenderQuitInput> = [];
-    return Effect.gen(function* () {
-      const scope = threadCaller(["hosted-blender"]);
-      expect((yield* call("blender_status", {}, scope)).isError).toBe(false);
-      for (const [name, args] of [
-        ["blender_start", { path: "hero.blend" }],
-        ["blender_quit", { save: true }],
-      ] as const) {
-        const refused = yield* call(name, args, scope);
-        expect(refused.isError).toBe(true);
-        expect(JSON.stringify(refused.content)).toContain("Plan mode is read-only");
-      }
-      expect(quits).toEqual([]);
-    }).pipe(Effect.provide(layerFor({ state: running, quits, plan: true })));
-  });
+  it.effect(
+    "keeps Plan mode read-only: status works; start, master open and quit are refused",
+    () => {
+      const quits: Array<HostedBlenderQuitInput> = [];
+      return Effect.gen(function* () {
+        const scope = threadCaller(["hosted-blender"]);
+        expect((yield* call("blender_status", {}, scope)).isError).toBe(false);
+        for (const [name, args] of [
+          ["blender_start", { path: "hero.blend" }],
+          ["blender_master_open", { path: "hero.blend" }],
+          ["blender_quit", { save: true }],
+        ] as const) {
+          const refused = yield* call(name, args, scope);
+          expect(refused.isError).toBe(true);
+          expect(JSON.stringify(refused.content)).toContain("Plan mode is read-only");
+        }
+        expect(quits).toEqual([]);
+      }).pipe(Effect.provide(layerFor({ state: running, quits, plan: true })));
+    },
+  );
 
   it.effect("refuses start and quit when the thread's mode can't be read", () => {
     const quits: Array<HostedBlenderQuitInput> = [];
@@ -324,5 +342,102 @@ describe("hosted Blender MCP tools", () => {
           blenders: [{ file: NodePath.join(linked, "models", "hero.wip-41cbc0de.blend") }],
         });
       }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "copies back through the desktop Blender's own entry when it has the master open",
+    () => {
+      const opens: Array<readonly [HostedBlenderOpenInput, unknown]> = [];
+      return Effect.gen(function* () {
+        const opened = yield* call(
+          "blender_master_open",
+          { path: `${workspace}/models/hero.blend` },
+          threadCaller(["hosted-blender"]),
+        );
+        expect(opened.structuredContent).toEqual({
+          master: `${workspace}/models/hero.blend`,
+          status: "desktop",
+          mcpServer: "blender",
+        });
+        expect(opens).toEqual([[{ threadId, relativePath: "models/hero.blend" }, { agent: true }]]);
+      }).pipe(Effect.provide(layerFor({ state: running, opens, opened: { _tag: "desktop" } })));
+    },
+  );
+
+  it.effect(
+    "names blender-master for a master Blender, and a desktop Blender it couldn't ask",
+    () =>
+      Effect.gen(function* () {
+        const opened = yield* call(
+          "blender_master_open",
+          { path: "models/hero.blend" },
+          threadCaller(["hosted-blender"]),
+        );
+        expect(opened.structuredContent).toEqual({
+          master: `${workspace}/models/hero.blend`,
+          status: "running",
+          mcpServer: "blender-master",
+          desktopUnchecked: true,
+        });
+      }).pipe(
+        Effect.provide(
+          layerFor({
+            state: running,
+            opened: { _tag: "hosted", desktopUnchecked: true },
+            master: { status: "running", relativePath: "models/hero.blend", dirty: false },
+          }),
+        ),
+      ),
+  );
+
+  it.effect("refuses to open the agent's working copy as a master", () => {
+    const opens: Array<readonly [HostedBlenderOpenInput, unknown]> = [];
+    return Effect.gen(function* () {
+      const refused = yield* call(
+        "blender_master_open",
+        { path: "models/hero.wip-ndertest.blend" },
+        threadCaller(["hosted-blender"]),
+      );
+      expect(refused.isError).toBe(true);
+      expect(JSON.stringify(refused.content)).toContain("working copy");
+      expect(opens).toEqual([]);
+    }).pipe(Effect.provide(layerFor({ state: running, opens })));
+  });
+
+  it.effect("tells the agent when the master Blender doesn't take its calls", () =>
+    Effect.gen(function* () {
+      const refused = yield* call(
+        "blender_master_open",
+        { path: "models/hero.blend" },
+        threadCaller(["hosted-blender"]),
+      );
+      expect(refused.isError).toBe(true);
+      expect(JSON.stringify(refused.content)).toContain("quit it from the Blender pane");
+    }).pipe(Effect.provide(layerFor({ state: running, listener: "off" }))),
+  );
+
+  it.effect("lists the master Blender beside the working one", () =>
+    Effect.gen(function* () {
+      const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
+      expect(status.structuredContent).toMatchObject({
+        blenders: [
+          { role: "working", status: "running" },
+          {
+            role: "master",
+            status: "running",
+            file: `${workspace}/models/hero.blend`,
+            unsavedChanges: true,
+            agentAccess: true,
+          },
+        ],
+      });
+    }).pipe(
+      Effect.provide(
+        layerFor({
+          state: running,
+          master: { status: "running", relativePath: "models/hero.blend", dirty: true },
+        }),
+      ),
+    ),
   );
 });
