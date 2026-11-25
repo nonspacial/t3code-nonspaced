@@ -543,3 +543,49 @@ fn quits_cleanly_after_a_resize_on_nvenc() {
     let status = helper.child.wait().unwrap();
     assert!(status.success(), "{status}");
 }
+
+/// Blender replaces its windows when it loads a file, and one it restores may map fullscreen
+/// already; the stream goes on, filling the display at every size, with no error.
+fn survive_a_replaced_window(mut helper: Helper) {
+    helper.event("ready");
+    helper.frame_size(640, 480);
+    helper.video();
+    helper.mark();
+    // F9: the test client replaces its window, which labwc then takes out of fullscreen.
+    helper.key(67, true);
+    helper.key(67, false);
+    helper.client_logs("replaced");
+    helper.event("windowCaptured");
+    helper.mark();
+    helper.video();
+    // Still streaming, and still filling the display as the pane's size changes: a window that
+    // maps fullscreen must not be toggled out of it.
+    helper.send(json!({"type": "resize", "width": 800, "height": 600}));
+    helper.frame_size(800, 600);
+    helper.video();
+    helper.send(json!({"type": "quit"}));
+    let status = helper.child.wait().unwrap();
+    assert!(status.success(), "{status}");
+}
+
+#[test]
+fn streams_on_when_its_window_is_replaced() {
+    if skip_without_labwc_and_x264() {
+        return;
+    }
+    survive_a_replaced_window(Helper::start("auto"));
+}
+
+#[test]
+fn streams_on_when_its_window_is_replaced_on_nvenc() {
+    if skip_without_labwc_and_x264() {
+        return;
+    }
+    if !std::path::Path::new("/dev/dri").exists()
+        || gstreamer::ElementFactory::find("nvh264enc").is_none()
+    {
+        eprintln!("skipping: needs an NVIDIA GPU with nvh264enc");
+        return;
+    }
+    survive_a_replaced_window(Helper::start_with("auto", "nvh264enc", true));
+}

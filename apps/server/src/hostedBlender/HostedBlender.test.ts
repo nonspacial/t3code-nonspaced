@@ -3555,6 +3555,83 @@ describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
   );
 
   it.live(
+    "a master's Reopen of its copy fills the pane, the viewer attached from its first frame",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tempDir("real-master-reopen");
+        const workspace = NodePath.join(dir, "work");
+        NodeFS.mkdirSync(workspace, { recursive: true });
+        NodeChildProcess.execFileSync("blender", [
+          "--background",
+          "--factory-startup",
+          "--python-expr",
+          `import bpy; bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(NodePath.join(workspace, "cube.blend"))})`,
+        ]);
+        const configHome = NodePath.join(dir, "config");
+        const startup = NodePath.join(configHome, "blender", "5.3", "scripts", "startup");
+        NodeFS.mkdirSync(startup, { recursive: true });
+        NodeFS.writeFileSync(NodePath.join(startup, "t3_test_edit.py"), EDITING_STARTUP_SCRIPT);
+        const switches = yield* Queue.unbounded<HostedBlenderSetup.HostedBlenderReadiness>();
+        const host = {
+          env: {
+            PATH: hostEnvironment.PATH,
+            XDG_RUNTIME_DIR: hostEnvironment.XDG_RUNTIME_DIR,
+            XDG_CONFIG_HOME: configHome,
+            HB_TEST_DIR: dir,
+          },
+          helper: helperBuild,
+          workspaceRoot: workspace,
+          baseDir: dir,
+          readinessChanges: Stream.fromQueue(switches),
+        };
+        const service = yield* serviceFor(layerFor(host));
+        const masterState = (status: string) =>
+          service.masterState(threadId).pipe(
+            Stream.filter((state) => state.status === status),
+            Stream.runHead,
+            Effect.map(Option.getOrThrow),
+          );
+        // The size the master's stream settles at, asked for 1046x1336 from its first frame.
+        const settledSize = Effect.gen(function* () {
+          const attached = yield* service.attachViewer(threadId, {
+            canOperate: false,
+            role: "master",
+          });
+          if (attached._tag !== "attached") return attached._tag;
+          yield* attached.viewer.resize(1046, 1336);
+          const sizes = Queue.take(attached.viewer.output).pipe(
+            Effect.repeat({
+              until: (output) => output._tag === "message" && output.message.type === "viewport",
+            }),
+            Effect.map((output) =>
+              output._tag === "message" && output.message.type === "viewport"
+                ? `${output.message.width}x${output.message.height}`
+                : "",
+            ),
+          );
+          let settled = yield* sizes.pipe(Effect.timeoutOption("30 seconds"));
+          while (Option.isSome(settled)) {
+            const next = yield* sizes.pipe(Effect.timeoutOption("6 seconds"));
+            if (Option.isNone(next)) break;
+            settled = next;
+          }
+          return Option.getOrElse(settled, () => "no frames");
+        }).pipe(Effect.scoped);
+
+        yield* service.openMaster({ threadId, relativePath: "cube.blend" });
+        yield* masterState("running");
+        expect(NodeFS.existsSync(NodePath.join(dir, "edited"))).toBe(true);
+        // Switched off, the master closes into its copy; switched on again, Reopen restores it.
+        yield* Queue.offer(switches, { status: "notSetUp", missing: ["enabled"] });
+        const closed = yield* masterState("closed");
+        yield* Queue.offer(switches, readinessFor(host));
+        const key = "copies" in closed ? closed.copies[0].key : "";
+        yield* service.reopen({ threadId, key, restore: true, role: "master" });
+        expect(yield* settledSize).toBe("1046x1336");
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
     "settles into a recovery copy that Reopen restores and saves to the user's file, and crashes into Restart",
     () =>
       Effect.gen(function* () {
