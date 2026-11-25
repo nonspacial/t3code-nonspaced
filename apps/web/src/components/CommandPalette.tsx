@@ -61,6 +61,7 @@ import {
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeftIcon,
+  BoxIcon,
   BugIcon,
   ChartNoAxesColumnIcon,
   CheckIcon,
@@ -74,6 +75,7 @@ import {
   LinkIcon,
   MessageSquareIcon,
   PaletteIcon,
+  PowerIcon,
   RotateCcwIcon,
   SettingsIcon,
   MonitorIcon,
@@ -100,6 +102,7 @@ import {
 } from "react";
 import type { LegendListRef } from "@legendapp/list/react";
 import { useAtomValue } from "@effect/atom-react";
+import { chatHostedBlenderThread } from "@t3tools/client-runtime/state/hosted-blender";
 
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
@@ -256,6 +259,9 @@ import {
   sourceControlHostIcon,
 } from "./CommandPaletteAddProject";
 import { useCommandPaletteThreadActions } from "./CommandPaletteThreadActions";
+import { HostedBlenderQuitRequests, requestHostedBlenderQuit } from "./blender/paletteQuit";
+import { hostedBlenderEnvironment, useHostedBlenderState } from "~/state/hostedBlender";
+import { fileName } from "./blender/useQuitHostedBlender";
 import { useCommandPaletteThreadItems } from "./CommandPaletteThreadItems";
 import { useCommandPaletteThemeItems } from "./CommandPaletteThemeItems";
 import {
@@ -368,6 +374,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
           initialContext={state.restoredSearch}
         />
       </CommandDialog>
+      <HostedBlenderQuitRequests />
     </ComposerHandleContext>
   );
 }
@@ -527,6 +534,22 @@ function OpenCommandPaletteDialog(props: {
   );
   const canShareActiveThreadWithGuest = useAtomValue(
     canShareWithGuestAtom(activeThread?.environmentId ?? ("" as EnvironmentId)),
+  );
+  // As the Blender pane's own actions: watched only where Hosted Blender is on.
+  const blenderThreadRef = chatHostedBlenderThread(
+    activeThreadServerConfig,
+    activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null,
+  );
+  const blenderState = useHostedBlenderState(blenderThreadRef);
+  const canOpenBlender = useAtomValue(
+    hostedBlenderEnvironment.open.permissionAtom(
+      activeThread?.environmentId ?? ("" as EnvironmentId),
+    ),
+  );
+  const canQuitBlender = useAtomValue(
+    hostedBlenderEnvironment.quit.permissionAtom(
+      activeThread?.environmentId ?? ("" as EnvironmentId),
+    ),
   );
   const activeThreadReferenceCopyTarget =
     referenceThreadRef === null || (pathname === "/pull-requests" && !openPanelPullRequestUrl)
@@ -1542,6 +1565,44 @@ function OpenCommandPaletteDialog(props: {
       icon: <PullRequestGlyph.link className={ITEM_ICON_CLASS} />,
       run: async () => {
         useRightPanelStore.getState().open(threadRef, "pull-requests");
+      },
+    });
+  }
+
+  if (
+    blenderThreadRef !== null &&
+    canOpenBlender &&
+    blenderState !== null &&
+    blenderState.status !== "unavailable"
+  ) {
+    const threadRef = blenderThreadRef;
+    actionItems.push({
+      kind: "action",
+      value: "action:open-hosted-blender",
+      searchTerms: ["blender", "hosted", "3d", "viewport", "pane"],
+      title: gt("Open hosted Blender"),
+      icon: <BoxIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        useRightPanelStore.getState().open(threadRef, "blender");
+      },
+    });
+  }
+  if (
+    blenderThreadRef !== null &&
+    canQuitBlender &&
+    (blenderState?.status === "running" || blenderState?.status === "starting")
+  ) {
+    const threadRef = blenderThreadRef;
+    const { relativePath, dirty } = blenderState;
+    actionItems.push({
+      kind: "action",
+      value: "action:quit-hosted-blender",
+      searchTerms: ["blender", "hosted", "quit", "close", "stop"],
+      title: gt("Quit hosted Blender"),
+      description: fileName(relativePath),
+      icon: <PowerIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        requestHostedBlenderQuit(threadRef, fileName(relativePath), dirty);
       },
     });
   }

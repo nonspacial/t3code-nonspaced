@@ -607,6 +607,10 @@
       "types": "./src/model/previewScene.ts",
       "default": "./src/model/previewScene.ts"
     },
+    "./model/decoders": {
+      "types": "./src/model/modelDecoders.ts",
+      "default": "./src/model/modelDecoders.ts"
+    },
     "./diff-count": {
       "types": "./src/diffCount.ts",
       "default": "./src/diffCount.ts"

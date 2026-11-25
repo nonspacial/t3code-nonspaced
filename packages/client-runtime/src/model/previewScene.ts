@@ -28,7 +28,7 @@ export {
   ModelPreviewError,
   type ModelPreviewErrorCode,
 } from "./modelPreviewError.ts";
-export type { ModelCompanions } from "./modelLoaders.ts";
+export type { ModelCompanions, ModelDecoders } from "./modelLoaders.ts";
 export { readResponseBytes } from "./modelLoaders.ts";
 export type { ViewSample } from "./modelSpace.ts";
 export type { ModelPreviewFacts } from "./modelGeometry.ts";
@@ -54,6 +54,8 @@ export interface ModelViewer {
     readonly signal: AbortSignal;
     /** The bytes the files it references may add. */
     readonly maxBytes?: number;
+    /** Where the Draco and KTX2 decoders are served, by file name. */
+    readonly decoderFiles?: Readonly<Record<string, string>>;
     /** A GLB converted from a `.blend` reports views and hits in Blender's Z-up coordinates. */
     readonly blenderSource?: boolean;
   }) => Promise<{ readonly facts: ModelPreviewFacts; readonly missing: ReadonlyArray<string> }>;
@@ -141,7 +143,11 @@ export function createModelViewer(options: {
 
   return {
     async load(input) {
-      const loaded = await loadModel(input);
+      const { decoderFiles, ...rest } = input;
+      const loaded = await loadModel({
+        ...rest,
+        decoders: decoderFiles === undefined ? null : { files: decoderFiles, renderer },
+      });
       if (disposed) {
         disposeModel(loaded.root);
         input.signal.throwIfAborted();

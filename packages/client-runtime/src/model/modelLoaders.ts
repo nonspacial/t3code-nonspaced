@@ -15,6 +15,7 @@ import {
   type BufferGeometry,
   type Material,
   type Object3D,
+  type WebGLRenderer,
 } from "three";
 import { ThreeMFLoader } from "three/addons/loaders/3MFLoader.js";
 import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
@@ -28,6 +29,31 @@ import type { ModelPreviewFormat } from "@t3tools/shared/filePreview";
 import { resolveModelCompanionPath } from "./companionPath.ts";
 import { disposeModel, ensureVertexNormals, modelFacts, orientToYUp } from "./modelGeometry.ts";
 import { ModelPreviewError } from "./modelPreviewError.ts";
+
+/**
+ * Where the Draco and KTX2 decoders are served, by their file names in three's `libs`. Each loads
+ * only when a glTF needs it; `renderer` says which compressed textures KTX2 may transcode to.
+ */
+export interface ModelDecoders {
+  readonly files: Readonly<Record<string, string>>;
+  readonly renderer: WebGLRenderer | null;
+}
+
+/** The extensions a glTF or GLB says it uses, read from its JSON without parsing the model. */
+function gltfExtensionsUsed(data: ArrayBuffer): ReadonlySet<string> {
+  try {
+    const bytes = new Uint8Array(data);
+    const view = new DataView(data);
+    const binary = bytes.byteLength >= 20 && view.getUint32(0, true) === 0x46546c67;
+    const text = new TextDecoder().decode(
+      binary ? bytes.subarray(20, 20 + view.getUint32(12, true)) : bytes,
+    );
+    const used: unknown = JSON.parse(text).extensionsUsed;
+    return new Set(Array.isArray(used) ? used.filter((name) => typeof name === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
 
 export interface ModelCompanions {
   /** Absolute host path of the model; the files it references resolve against its folder. */
@@ -236,18 +262,54 @@ function defaultMaterial(geometry: BufferGeometry) {
   });
 }
 
+async function parseGltf(
+  data: ArrayBuffer,
+  manager: LoadingManager,
+  files: CompanionFiles,
+  decoders: ModelDecoders | null,
+): Promise<Object3D> {
+  const loader = new GLTFLoader(manager).register((parser) => companionBuffers(parser, files));
+  const used = gltfExtensionsUsed(data);
+  const disposers: Array<() => void> = [];
+  if (decoders !== null) {
+    // The decoders' own requests reach only their files; anything else stays blocked.
+    const decoderManager = new LoadingManager();
+    decoderManager.setURLModifier(
+      (url) =>
+        decoders.files[url.slice(url.lastIndexOf("/") + 1)] ??
+        (/^(?:data|blob):/i.test(url) ? url : BLOCKED_URL),
+    );
+    if (used.has("KHR_draco_mesh_compression")) {
+      const { DRACOLoader } = await import("three/addons/loaders/DRACOLoader.js");
+      const draco = new DRACOLoader(decoderManager);
+      loader.setDRACOLoader(draco);
+      disposers.push(() => draco.dispose());
+    }
+    if (used.has("KHR_texture_basisu") && decoders.renderer !== null) {
+      const { KTX2Loader } = await import("three/addons/loaders/KTX2Loader.js");
+      const ktx2 = new KTX2Loader(decoderManager).detectSupport(decoders.renderer);
+      loader.setKTX2Loader(ktx2);
+      disposers.push(() => ktx2.dispose());
+    }
+  }
+  try {
+    return (await loader.parseAsync(data, "")).scene;
+  } finally {
+    for (const dispose of disposers) dispose();
+  }
+}
+
 async function parseModel(
   format: ModelPreviewFormat,
   data: ArrayBuffer,
   manager: LoadingManager,
   files: CompanionFiles,
+  decoders: ModelDecoders | null,
 ): Promise<Object3D> {
   switch (format) {
     case "glb":
-    case "gltf": {
-      const loader = new GLTFLoader(manager).register((parser) => companionBuffers(parser, files));
-      return (await loader.parseAsync(data, "")).scene;
-    }
+    case "gltf":
+      return parseGltf(data, manager, files, decoders);
     case "stl":
       return new Mesh(...withDefaultMaterial(new STLLoader(manager).parse(data)));
     case "ply": {
@@ -336,6 +398,7 @@ export async function loadModel(input: {
   readonly signal: AbortSignal;
   /** The bytes the files it references may add, read before any reaches three.js. */
   readonly maxBytes?: number;
+  readonly decoders?: ModelDecoders | null;
 }): Promise<LoadedModel> {
   const files = companionFiles(
     input.companions,
@@ -356,7 +419,7 @@ export async function loadModel(input: {
   manager.addHandler(/^(?!data:|blob:)/i, textures);
   let model: Object3D;
   try {
-    model = await parseModel(input.format, input.data, manager, files);
+    model = await parseModel(input.format, input.data, manager, files, input.decoders ?? null);
     await Promise.all(textures.pending);
     // Some loaders (3MF, FBX) read embedded images on their own; wait before dropping unloaded maps.
     if (loading) await new Promise<void>((resolve) => (whenIdle = resolve));

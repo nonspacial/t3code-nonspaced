@@ -11,7 +11,12 @@ shuts down, or when the user or agent quits it. A master Blender is the one exce
 the threads that chose its master file and kept until the last of them leaves (and then only if
 it has nothing unsaved). Every other ending (T3 stopping, Hosted Blender switched off, a crash)
 ends it like a working one, and its recovery copy belongs to the master, not a thread: one copy,
-under the master file's real path, that any thread whose master is that file reopens or discards. Agent access is narrower still: it lasts only while T3 holds the control
+under the master file's real path, that any thread whose master is that file reopens or discards.
+Only the person's own Quit without saving, which the quit request marks as a discard, ends a run
+without keeping its unsaved work; every other quit without saving (an agent's, or a one-click quit
+of a file the client last saw clean) ends as a settle does, so what Blender reports as it quits
+decides what is kept. Deleting a thread ends its Blender, then removes the copies it kept, which
+nothing could show again; a master's copy is never the thread's. Agent access is narrower still: it lasts only while T3 holds the control
 connection, Allow agents is on, and the launch file (the working copy, or the master) is still the
 open file; a working Blender also needs its thread's session alive. Once any of those ends, access
 stays ended until that Blender restarts

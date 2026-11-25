@@ -102,27 +102,53 @@ const utf8 = (bytes: Uint8Array) => {
   return new TextDecoder().decode(end === -1 ? bytes : bytes.subarray(0, end));
 };
 
-async function fileSource(handle: NodeFSP.FileHandle, start: number): Promise<ByteSource> {
+// A file is walked block header by block header; one read per header took a minute on a 264 MB
+// scene of 1.5 million blocks. Reads come from a window instead, refilled from disk.
+const READ_WINDOW_BYTES = 1024 * 1024;
+
+/** The part of `handle` a reader needs: positional reads, its size, and closing. */
+export type BlendFileHandle = Pick<NodeFSP.FileHandle, "read" | "stat" | "close">;
+
+export async function fileSource(handle: BlendFileHandle, start: number): Promise<ByteSource> {
   const size = (await handle.stat()).size;
   let position = start;
+  let window = new Uint8Array(0);
+  let windowStart = 0;
+  const readAt = async (buffer: Uint8Array, at: number) => {
+    let offset = 0;
+    while (offset < buffer.byteLength) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        offset,
+        buffer.byteLength - offset,
+        at + offset,
+      );
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    return offset;
+  };
   return {
     byteLength: size,
     compressed: false,
     read: async (length) => {
-      const buffer = new Uint8Array(Math.max(0, Math.min(length, size - position)));
-      let offset = 0;
-      while (offset < buffer.byteLength) {
-        const { bytesRead } = await handle.read(
-          buffer,
-          offset,
-          buffer.byteLength - offset,
-          position + offset,
-        );
-        if (bytesRead === 0) break;
-        offset += bytesRead;
+      const wanted = Math.max(0, Math.min(length, size - position));
+      // Longer than the window: straight from disk.
+      if (wanted > READ_WINDOW_BYTES) {
+        const buffer = new Uint8Array(wanted);
+        const read = await readAt(buffer, position);
+        position += read;
+        return buffer.subarray(0, read);
       }
-      position += offset;
-      return buffer.subarray(0, offset);
+      if (position < windowStart || position + wanted > windowStart + window.byteLength) {
+        const buffer = new Uint8Array(Math.min(READ_WINDOW_BYTES, size - position));
+        window = buffer.subarray(0, await readAt(buffer, position));
+        windowStart = position;
+      }
+      // A copy, so what the reader keeps does not pin the window.
+      const out = window.slice(position - windowStart, position - windowStart + wanted);
+      position += out.byteLength;
+      return out;
     },
     skip: async (length) => {
       position += length;
@@ -407,7 +433,12 @@ function parseSdna(data: Uint8Array, header: Header, maxEntries: number): Sdna {
   };
 }
 
-async function readBlocks(source: ByteSource, header: Header, limits: BlendReadLimits) {
+async function readBlocks(
+  source: ByteSource,
+  header: Header,
+  limits: BlendReadLimits,
+  signal: AbortSignal | undefined,
+) {
   const headerSize = header.largeBlocks ? 32 : header.pointerSize === 8 ? 24 : 20;
   const kept: Block[] = [];
   const counts = new Map<string, number>();
@@ -416,6 +447,8 @@ async function readBlocks(source: ByteSource, header: Header, limits: BlendReadL
   let keptBytes = 0;
   const tooLarge = () => new BlendFileFormatError({ problem: "too_large" });
   for (;;) {
+    // A closed preview or a newer request stops the walk; the source closes on the way out.
+    signal?.throwIfAborted();
     blocks += 1;
     if (blocks > limits.maxBlocks) throw tooLarge();
     const bytes = await source.read(headerSize);
@@ -476,12 +509,14 @@ function readThumbnail(block: Block | undefined, header: Header): BlendFileFacts
 export async function readBlendFile(
   filePath: string,
   limits: Partial<BlendReadLimits> = {},
+  signal?: AbortSignal,
 ): Promise<BlendFileFacts> {
+  signal?.throwIfAborted();
   const source = await openSource(filePath);
   try {
     const header = await readHeader(source);
     const resolved = { ...DEFAULT_LIMITS, ...limits };
-    const { kept, counts } = await readBlocks(source, header, resolved);
+    const { kept, counts } = await readBlocks(source, header, resolved, signal);
     const dna = kept.find((block) => block.code === "DNA1");
     if (!dna) throw new BlendFileFormatError({ problem: "damaged" });
     const sdna = parseSdna(dna.data, header, resolved.maxSdnaEntries);
@@ -552,4 +587,30 @@ export async function readBlendFile(
   } finally {
     await source.close();
   }
+}
+
+// A cold preview reads a file's facts, then its conversion checks the same file twice; a file
+// whose revision hasn't changed is walked once.
+const FACTS_CACHE_ENTRIES = 16;
+const factsCache = new Map<string, BlendFileFacts>();
+
+/** `readBlendFile` of a file by its real path, reused while its revision stays the same. */
+export async function readBlendFileFacts(
+  realPath: string,
+  revision: string | null,
+  signal?: AbortSignal,
+): Promise<BlendFileFacts> {
+  const key = revision === null ? null : `${realPath}\n${revision}`;
+  const hit = key === null ? undefined : factsCache.get(key);
+  if (key !== null && hit !== undefined) {
+    factsCache.delete(key);
+    factsCache.set(key, hit);
+    return hit;
+  }
+  const facts = await readBlendFile(realPath, {}, signal);
+  if (key !== null) {
+    factsCache.set(key, facts);
+    if (factsCache.size > FACTS_CACHE_ENTRIES) factsCache.delete(factsCache.keys().next().value!);
+  }
+  return facts;
 }

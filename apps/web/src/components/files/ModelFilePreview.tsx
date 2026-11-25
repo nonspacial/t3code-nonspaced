@@ -8,6 +8,7 @@ import {
   type ModelViewer,
   readResponseBytes,
 } from "@t3tools/client-runtime/model/preview-scene";
+import { MODEL_DECODER_FILES } from "@t3tools/client-runtime/model/decoders";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import type { AssetResource, EnvironmentId, ProjectId } from "@t3tools/contracts";
 import type { ModelPreviewFormat } from "@t3tools/shared/filePreview";
@@ -270,6 +271,7 @@ export function ModelFilePreview(props: {
         companions: modelPath === null ? null : { modelPath, workspaceRoot, mint: mintCompanion },
         signal: controller.signal,
         maxBytes: bytes.companionBytes,
+        decoderFiles: MODEL_DECODER_FILES,
         blenderSource,
       });
       if (controller.signal.aborted) return;

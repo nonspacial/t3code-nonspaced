@@ -27,6 +27,7 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as NetService from "@t3tools/shared/Net";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -1060,8 +1061,10 @@ const make = Effect.gen(function* () {
           }
         }
       }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("skipped a hosted Blender recovery folder", { threadDir, cause }),
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterruptsOnly(cause),
+          (cause) =>
+            Effect.logWarning("skipped a hosted Blender recovery folder", { threadDir, cause }),
         ),
       );
     }

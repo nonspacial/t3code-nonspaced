@@ -26,11 +26,18 @@ import * as BlenderDetection from "./BlenderDetection.ts";
 import { blendCacheDir, isBlendCacheFileName } from "./blendCache.ts";
 import * as BlendFileWatcher from "./BlendFileWatcher.ts";
 import { BLEND_EXPORT_SCRIPT } from "./blendExportScript.ts";
-import { type BlendFileFormatError, isBlendFileFormatError, readBlendFile } from "./blendFile.ts";
+import {
+  type BlendFileFormatError,
+  isBlendFileFormatError,
+  readBlendFileFacts,
+} from "./blendFile.ts";
 
 /** A first conversion stops here and offers Keep trying, which has no limit. */
 export const CONVERSION_TIME_LIMIT = Duration.seconds(60);
 const CACHE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+/** The 3D viewer's own limit: a larger GLB is never shown, so it never enters the cache. */
+const VIEWER_MAX_BYTES = 1024 * 1024 * 1024;
+const megabytes = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 const LOG_MAX_CHARACTERS = 32 * 1024;
 
 type ConversionError =
@@ -304,6 +311,15 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
           log: log.length > LOG_MAX_CHARACTERS ? log.slice(-LOG_MAX_CHARACTERS) : log,
         });
       }
+      // Admitting it would evict every other entry for a model no viewer opens; the scoped
+      // work folder removes it instead.
+      const admissible = Math.min(options.cacheMaxBytes, VIEWER_MAX_BYTES);
+      if (written.size > admissible) {
+        return yield* input.emit({
+          status: "failed",
+          log: `The converted model is ${megabytes(written.size)}, over the ${megabytes(admissible)} a 3D preview can hold.`,
+        });
+      }
       const target = path.join(cacheDir, input.cacheFileName);
       yield* fileSystem.rename(outputPath, target);
       yield* evict(input.cacheFileName);
@@ -350,7 +366,7 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
         });
       }
       const facts = yield* Effect.tryPromise({
-        try: () => readBlendFile(target.realPath),
+        try: (signal) => readBlendFileFacts(target.realPath, revision, signal),
         catch: (cause) =>
           isBlendFileFormatError(cause)
             ? cause

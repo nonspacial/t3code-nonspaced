@@ -7,7 +7,13 @@ import * as NodeZlib from "node:zlib";
 
 import { describe, expect, it } from "vite-plus/test";
 
-import { parseSdnaFieldName, readBlendFile, streamSource } from "./blendFile.ts";
+import {
+  fileSource,
+  parseSdnaFieldName,
+  readBlendFile,
+  readBlendFileFacts,
+  streamSource,
+} from "./blendFile.ts";
 
 // Made by fixtures/make-fixtures.sh with Blender 4.5 and 5.3; each version names its own.
 const fixture = (name: string) => NodePath.join(import.meta.dirname, "fixtures", name);
@@ -198,5 +204,63 @@ describe("readBlendFile", () => {
     ]) {
       expect(() => parseSdnaFieldName(name)).toThrow("damaged");
     }
+  });
+});
+
+describe("P1: reading a large .blend", () => {
+  // An uncompressed header, then `blocks` empty DATA blocks with 8-byte pointers, and no end.
+  const manyBlocks = (blocks: number) => {
+    const bytes = new Uint8Array(12 + blocks * 24);
+    bytes.set(new TextEncoder().encode("BLENDER-v405"));
+    for (let block = 0; block < blocks; block += 1) {
+      bytes.set(new TextEncoder().encode("DATA"), 12 + block * 24);
+    }
+    return bytes;
+  };
+
+  it("walks a million block headers in a few disk reads, not one each", async () => {
+    const bytes = manyBlocks(1_000_000);
+    let reads = 0;
+    const source = await fileSource(
+      {
+        stat: async () => ({ size: bytes.byteLength }),
+        read: async (buffer: Uint8Array, offset: number, length: number, position: number) => {
+          reads += 1;
+          const chunk = bytes.subarray(position, position + length);
+          buffer.set(chunk, offset);
+          return { bytesRead: chunk.byteLength, buffer };
+        },
+        close: async () => undefined,
+      } as never,
+      12,
+    );
+    for (let block = 0; block < 1_000_000; block += 1) {
+      const header = await source.read(16);
+      if (header[0] !== 0x44) throw new Error(`block ${block} misread`);
+      await source.skip(8);
+    }
+    // 24 MB through a 1 MiB window.
+    expect(reads).toBeLessThanOrEqual(Math.ceil(bytes.byteLength / (1024 * 1024)) + 1);
+  });
+
+  it("stops a walk when its reader gives up", async () => {
+    const controller = new AbortController();
+    const reading = withTempFile(manyBlocks(500_000), (path) =>
+      readBlendFile(path, {}, controller.signal),
+    );
+    setImmediate(() => controller.abort());
+    await expect(reading).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("walks a file once while its revision stays the same", async () => {
+    await withTempFile(await NodeFSP.readFile(fixture("bracket-5.blend")), async (path) => {
+      const first = await readBlendFileFacts(path, "revision-1");
+      // Whatever is on disk now, the same revision answers from what was read.
+      await NodeFSP.writeFile(path, "not a blend file");
+      expect(await readBlendFileFacts(path, "revision-1")).toBe(first);
+      await expect(readBlendFileFacts(path, "revision-2")).rejects.toMatchObject({
+        problem: "not_blend",
+      });
+    });
   });
 });

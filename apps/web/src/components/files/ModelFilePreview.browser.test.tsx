@@ -190,6 +190,46 @@ it("keeps the shown model while a new version downloads, and after one that fail
   await expect.element(screen.getByText("Couldn't load the new version")).not.toBeInTheDocument();
 });
 
+// A cube Blender 5.3 exported with Draco mesh compression.
+const DRACO_CUBE = Uint8Array.from(
+  atob(
+    "Z2xURgIAAABcBAAAOAMAAEpTT057ImFzc2V0Ijp7ImdlbmVyYXRvciI6Iktocm9ub3MgZ2xURiBCbGVuZGVyIEkvTy" +
+      "B2NS4zLjQzIiwidmVyc2lvbiI6IjIuMCJ9LCJleHRlbnNpb25zVXNlZCI6WyJLSFJfZHJhY29fbWVzaF9jb21wcmVz" +
+      "c2lvbiJdLCJleHRlbnNpb25zUmVxdWlyZWQiOlsiS0hSX2RyYWNvX21lc2hfY29tcHJlc3Npb24iXSwic2NlbmUiOj" +
+      "AsInNjZW5lcyI6W3sibmFtZSI6IlNjZW5lIiwibm9kZXMiOlswXX1dLCJub2RlcyI6W3sibWVzaCI6MCwibmFtZSI6" +
+      "IkN1YmUifV0sIm1lc2hlcyI6W3sibmFtZSI6IkN1YmUiLCJwcmltaXRpdmVzIjpbeyJhdHRyaWJ1dGVzIjp7IlBPU0" +
+      "lUSU9OIjowLCJOT1JNQUwiOjEsIlRFWENPT1JEXzAiOjJ9LCJleHRlbnNpb25zIjp7IktIUl9kcmFjb19tZXNoX2Nv" +
+      "bXByZXNzaW9uIjp7ImJ1ZmZlclZpZXciOjAsImF0dHJpYnV0ZXMiOnsiUE9TSVRJT04iOjAsIk5PUk1BTCI6MSwiVE" +
+      "VYQ09PUkRfMCI6Mn19fSwiaW5kaWNlcyI6MywibW9kZSI6NH1dfV0sImFjY2Vzc29ycyI6W3siY29tcG9uZW50VHlw" +
+      "ZSI6NTEyNiwiY291bnQiOjI0LCJtYXgiOlsxLDEsMV0sIm1pbiI6Wy0xLC0xLC0xXSwidHlwZSI6IlZFQzMifSx7Im" +
+      "NvbXBvbmVudFR5cGUiOjUxMjYsImNvdW50IjoyNCwidHlwZSI6IlZFQzMifSx7ImNvbXBvbmVudFR5cGUiOjUxMjYs" +
+      "ImNvdW50IjoyNCwidHlwZSI6IlZFQzIifSx7ImNvbXBvbmVudFR5cGUiOjUxMjMsImNvdW50IjozNiwidHlwZSI6Il" +
+      "NDQUxBUiJ9XSwiYnVmZmVyVmlld3MiOlt7ImJ1ZmZlciI6MCwiYnl0ZUxlbmd0aCI6MjY0LCJieXRlT2Zmc2V0Ijow" +
+      "fV0sImJ1ZmZlcnMiOlt7ImJ5dGVMZW5ndGgiOjI2NH1dfQgBAABCSU4ARFJBQ08CAgEBAAAAGAwCDAAABd/3fd8H/w" +
+      "JmQP8CZkD/AmZAA/8AAAAAAAEAAAEACQMAAAIBAQkDAAEDAQMJAgACAgEBAQECAyEncQxxDA980e3sb88W91pJDKA0" +
+      "i4AAAAAA/z8AAAAAgL8AAIC/AACAvwAAAEAOAAMBAAsDATAbAQgBCAYACvFzbYD/AQD+AwD8/w/8BwAAACDgP4AA/w" +
+      "MAAP8BAAAKAQEBAA0DARAjARgBGAcA/Fbqf1qJ/////v9//wGAAAIAAP7f/wEAAP4PgP/3fwDwfwAIgP/3fwDwf/8D" +
+      "YP/9HwD8HwAC4P/9HwAAAAAAAP8PAAAAAAA+AAAAAAAAgD8M",
+  ),
+  (char) => char.charCodeAt(0),
+);
+
+it("S2: decodes a Draco-compressed glTF", async () => {
+  setup();
+  await using screen = await render(
+    <ModelFilePreview
+      src={modelUrl(DRACO_CUBE)}
+      name="cube.glb"
+      format="glb"
+      sizeBytes={DRACO_CUBE.byteLength}
+      companions={null}
+      onRefresh={() => {}}
+    />,
+    pane(),
+  );
+  await expect.element(screen.getByText("2 × 2 × 2 m")).toBeVisible();
+});
+
 it("signs each file a glTF references beside it and names the ones it cannot read", async () => {
   setup({ "/work/project/models/crate/crate.bin": crateBin });
   await using screen = await render(

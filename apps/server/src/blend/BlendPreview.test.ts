@@ -101,7 +101,11 @@ describe("BlendPreview", () => {
           const error = yield* blendPreview
             .readAttachment({ attachmentId: missing })
             .pipe(Effect.flip);
-          expect(error._tag).toBe("BlendAttachmentNotFoundError");
+          expect(error).toMatchObject({
+            _tag: "BlendPreviewError",
+            relativePath: missing,
+            failure: "attachment_not_found",
+          });
         }
       }),
     );
