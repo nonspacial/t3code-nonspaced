@@ -33,6 +33,7 @@ import * as Schema from "effect/Schema";
 import { CameraIcon, MoreVertical } from "lucide-react";
 import { msg, T, useGT, useMessages, Var } from "gt-react";
 import {
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type RefObject,
   use,
@@ -101,7 +102,7 @@ import { HiddenThreadContext } from "../chat/backgroundThread";
 import { useBlenderAnnotation } from "./BlenderAnnotationEditor";
 import { BlenderRoleSwitch, DesktopUncheckedNotice, MasterCard } from "./BlenderMaster";
 import { useBlenderRoleStore } from "./blenderRole";
-import { attachBlenderInput, type BlenderInput } from "./blenderInput";
+import { attachBlenderInput, type BlenderInput, type TakePress } from "./blenderInput";
 import { useKeptCopySelection } from "./keptCopies";
 import { fileName, useQuitHostedBlender } from "./useQuitHostedBlender";
 
@@ -903,6 +904,8 @@ function BlenderStream(props: {
   const controllerRef = useRef<HostedBlenderControl["controller"]>("unclaimed");
   // A take sent but not yet answered; leaving before the grant arrives must still undo it.
   const takingRef = useRef(false);
+  // The middle or right press that took control: Blender gets it once control arrives.
+  const takePressRef = useRef<TakePress | null>(null);
   // Settings and Usage keep the thread mounted under them while the window stays visible.
   const hiddenThread = use(HiddenThreadContext);
   const onScreen = useEffectEvent(() => document.visibilityState === "visible" && !hiddenThread);
@@ -918,6 +921,8 @@ function BlenderStream(props: {
     const granted = controllerRef.current !== "you" && next.controller === "you";
     controllerRef.current = next.controller;
     takingRef.current = false;
+    // A take that didn't land leaves no press for a later grant.
+    if (next.controller !== "you") takePressRef.current = null;
     // A grant that lands after the user moved on in T3 would leave an unfocused pane holding
     // the keyboard; give it straight back. Leaving the window altogether keeps it.
     const boundary = boundaryRef.current;
@@ -954,6 +959,7 @@ function BlenderStream(props: {
     clientRef.current = client;
     handleRef.current = {
       takeControl: (takeOver) => {
+        takePressRef.current = null;
         takingRef.current = true;
         client.send({ type: "takeControl", takeOver });
         container.focus();
@@ -1008,7 +1014,9 @@ function BlenderStream(props: {
       keymap: currentKeymap,
       scrollPreference: () => readSetting(SCROLLING_KEY, ScrollingSetting, "auto"),
       passThrough: leavesBlender,
+      ...(takePressRef.current === null ? {} : { takePress: takePressRef.current }),
     });
+    takePressRef.current = null;
     input.setCaptured(capturedRef.current);
     inputRef.current = input;
     void window.desktopBridge?.setMenuShortcutsIgnored?.(true).catch(() => undefined);
@@ -1058,12 +1066,45 @@ function BlenderStream(props: {
             : "m-2 min-h-0 flex-1 rounded-md outline-none data-[in-control]:ring-2 data-[in-control]:ring-primary",
         )}
         onPointerDown={(event) => {
-          // The click that takes control stays out of Blender, so it selects nothing there.
+          // Its release comes back here even outside the pane, where it would paste or navigate.
+          if (
+            BROWSER_BUTTONS.has(event.button) &&
+            !event.currentTarget.hasPointerCapture(event.pointerId)
+          ) {
+            try {
+              event.currentTarget.setPointerCapture(event.pointerId);
+            } catch {}
+          }
           if (inControl || !canOperate || control.controller !== "unclaimed") return;
-          if (event.button !== 0 || clientRef.current === null) return;
+          if (event.button > 2 || clientRef.current === null) return;
+          // A left press that takes control stays out of Blender, so it selects nothing there; a
+          // middle or right one reaches it once control arrives, so a drag navigates at once.
+          takePressRef.current =
+            event.button === 0
+              ? null
+              : {
+                  bit: event.button === 1 ? MIDDLE_BIT : RIGHT_BIT,
+                  clientX: event.clientX,
+                  clientY: event.clientY,
+                  released: false,
+                };
           takingRef.current = true;
           clientRef.current.send({ type: "takeControl", takeOver: false });
           event.currentTarget.focus();
+        }}
+        onPointerUp={(event) => {
+          const take = takePressRef.current;
+          if (take !== null && event.button === (take.bit === MIDDLE_BIT ? 1 : 2)) {
+            takePressRef.current = { ...take, released: true };
+          }
+          if (BROWSER_BUTTONS.has(event.button)) event.preventDefault();
+        }}
+        onMouseDown={swallowBrowserButton}
+        onMouseUp={swallowBrowserButton}
+        onAuxClick={swallowBrowserButton}
+        onContextMenu={(event) => {
+          // A right press here takes control; in control, the input swallows it.
+          if (canOperate) event.preventDefault();
         }}
       >
         <canvas
@@ -1076,6 +1117,15 @@ function BlenderStream(props: {
     </div>
   );
 }
+
+// The middle button (autoscroll, and on Linux pasting the primary selection on release) and the
+// thumb buttons (history) mean something to the browser everywhere on the pane, in control or not.
+const BROWSER_BUTTONS = new Set([1, 3, 4]);
+const MIDDLE_BIT = 4;
+const RIGHT_BIT = 2;
+const swallowBrowserButton = (event: ReactMouseEvent) => {
+  if (BROWSER_BUTTONS.has(event.button)) event.preventDefault();
+};
 
 function StreamStatus(props: { readonly status: Exclude<HostedBlenderStreamStatus, "live"> }) {
   switch (props.status) {

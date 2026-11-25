@@ -150,11 +150,15 @@ const browserTestProject = {
           await page.mouse.move(-1, -1);
         },
         // A press held across a render: userEvent only offers whole clicks.
-        pointerDown: async ({ page }) => {
-          await page.mouse.down();
+        pointerDown: async ({ page }, button: "left" | "middle" | "right" = "left") => {
+          await page.mouse.down({ button });
         },
-        pointerUp: async ({ page }) => {
-          await page.mouse.up();
+        pointerUp: async ({ page }, button: "left" | "middle" | "right" = "left") => {
+          await page.mouse.up({ button });
+        },
+        // In CSS pixels of the page, as real input moves it.
+        pointerMove: async ({ page }, x: number, y: number) => {
+          await page.mouse.move(x, y);
         },
       },
     },

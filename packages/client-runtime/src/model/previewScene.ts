@@ -29,6 +29,7 @@ export {
   type ModelPreviewErrorCode,
 } from "./modelPreviewError.ts";
 export type { ModelCompanions } from "./modelLoaders.ts";
+export { readResponseBytes } from "./modelLoaders.ts";
 export type { ViewSample } from "./modelSpace.ts";
 export type { ModelPreviewFacts } from "./modelGeometry.ts";
 
@@ -51,6 +52,8 @@ export interface ModelViewer {
     readonly data: ArrayBuffer;
     readonly companions: ModelCompanions | null;
     readonly signal: AbortSignal;
+    /** The bytes the files it references may add. */
+    readonly maxBytes?: number;
     /** A GLB converted from a `.blend` reports views and hits in Blender's Z-up coordinates. */
     readonly blenderSource?: boolean;
   }) => Promise<{ readonly facts: ModelPreviewFacts; readonly missing: ReadonlyArray<string> }>;

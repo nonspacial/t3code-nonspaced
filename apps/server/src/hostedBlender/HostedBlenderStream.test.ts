@@ -37,6 +37,7 @@ const serve = (
       dismiss: () => Effect.void,
       keptCopies: () => Effect.succeed([]),
       closeOnSettle: () => Effect.void,
+      forgetThread: () => Effect.void,
       agentListener: () => Effect.succeed(null),
       threadState: () => Stream.empty,
       runningBlenders: Stream.empty,

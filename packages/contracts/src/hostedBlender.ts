@@ -237,6 +237,11 @@ export const HostedBlenderQuitInput = Schema.Struct({
   threadId: ThreadId,
   /** Save the file before quitting. */
   save: Schema.Boolean,
+  /**
+   * The person chose Quit without saving in the save/discard dialog: only this discards what
+   * Blender has unsaved. Any other quit without saving keeps it, as a settle does.
+   */
+  discard: Schema.optionalKey(Schema.Boolean),
   /** Quitting the master Blender quits it for every thread sharing it. */
   role: Schema.optionalKey(HostedBlenderRole),
   /** A master Blender by its key from the Running Blenders list, which may have no thread. */

@@ -41,7 +41,59 @@ export interface ModelCompanions {
 // every referenced file is read through `companionFiles`, which applies the folder policy.
 const BLOCKED_URL = "about:blank#blocked";
 
-function companionFiles(companions: ModelCompanions | null, signal: AbortSignal) {
+/**
+ * A response's body, or null once it is over `limit` bytes. With a known length it reads into
+ * one buffer of that size, so a large model is never held twice.
+ */
+export async function readResponseBytes(
+  response: Response,
+  limit: number,
+): Promise<ArrayBuffer | null> {
+  if (!response.body) return response.arrayBuffer();
+  const length = Number(response.headers.get("content-length")) || null;
+  if (length !== null && length > limit) {
+    await response.body.cancel();
+    return null;
+  }
+  const reader = response.body.getReader();
+  try {
+    if (length !== null) {
+      const bytes = new Uint8Array(length);
+      let offset = 0;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (offset + value.byteLength > length) throw new Error("More bytes than declared");
+        bytes.set(value, offset);
+        offset += value.byteLength;
+      }
+      return offset === length ? bytes.buffer : bytes.buffer.slice(0, offset);
+    }
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > limit) return null;
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return bytes.buffer;
+  } finally {
+    await reader.cancel();
+  }
+}
+
+function companionFiles(companions: ModelCompanions | null, signal: AbortSignal, maxBytes: number) {
+  // What the files read so far may still take, with the model's own bytes already counted.
+  let budget = maxBytes;
+  let overBudget = false;
   const missing = new Set<string>();
   /** Missing files the model cannot render without, such as a glTF buffer. */
   const required = new Set<string>();
@@ -79,8 +131,23 @@ function companionFiles(companions: ModelCompanions | null, signal: AbortSignal)
   return {
     missing,
     required,
+    get overBudget() {
+      return overBudget;
+    },
     bytes: (reference: string, needed?: boolean) =>
-      read(reference, async (url) => (await fetchOk(url)).arrayBuffer(), needed),
+      read(
+        reference,
+        async (url) => {
+          const bytes = await readResponseBytes(await fetchOk(url), budget);
+          if (bytes === null || bytes.byteLength > budget) {
+            overBudget = true;
+            throw new Error(`Companion over the preview's size limit: ${reference}`);
+          }
+          budget -= bytes.byteLength;
+          return bytes;
+        },
+        needed,
+      ),
     text: (reference: string) => read(reference, async (url) => (await fetchOk(url)).text()),
     image: (reference: string) => read(reference, (url) => images.loadAsync(url)),
   };
@@ -203,8 +270,8 @@ async function parseModel(
     case "obj": {
       const text = new TextDecoder().decode(data);
       const loader = new OBJLoader(manager);
-      const libraries = [...text.matchAll(/^[ \t]*mtllib[ \t]+(.+?)[ \t\r]*$/gm)].flatMap(
-        (match) => (match[1] ? [match[1]] : []),
+      const libraries = [...text.matchAll(/^[ \t]*mtllib[ \t]+(.+?)[ \t\r]*$/gm)].flatMap((match) =>
+        match[1] ? [match[1]] : [],
       );
       const texts = await Promise.all(libraries.map(files.text));
       const loaded = libraries.flatMap((library, index) => {
@@ -267,8 +334,14 @@ export async function loadModel(input: {
   readonly data: ArrayBuffer;
   readonly companions: ModelCompanions | null;
   readonly signal: AbortSignal;
+  /** The bytes the files it references may add, read before any reaches three.js. */
+  readonly maxBytes?: number;
 }): Promise<LoadedModel> {
-  const files = companionFiles(input.companions, input.signal);
+  const files = companionFiles(
+    input.companions,
+    input.signal,
+    input.maxBytes ?? Number.POSITIVE_INFINITY,
+  );
   let loading = false;
   let whenIdle = () => {};
   const manager = new LoadingManager(() => {
@@ -289,6 +362,9 @@ export async function loadModel(input: {
     if (loading) await new Promise<void>((resolve) => (whenIdle = resolve));
   } catch (cause) {
     await Promise.allSettled(textures.pending);
+    if (files.overBudget) {
+      throw new ModelPreviewError({ code: "model-too-large", missing: [], cause });
+    }
     throw new ModelPreviewError({
       code: files.required.size > 0 ? "companion-missing" : "model-unreadable",
       missing: [...(files.required.size > 0 ? files.required : files.missing)],

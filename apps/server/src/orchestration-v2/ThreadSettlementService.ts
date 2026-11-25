@@ -869,11 +869,14 @@ export const make = Effect.gen(function* () {
     switch (event.type) {
       case "thread.settled":
         return cleanUpSettledThread(event.threadId).pipe(Effect.andThen(enqueueFullSweep()));
+      // An archived thread comes back, with what its Blender kept; a deleted one never does.
       case "thread.archived":
       case "thread.deleted":
-        return hostedBlender
-          .closeOnSettle({ threadId: event.threadId })
-          .pipe(Effect.andThen(releaseMaster(event.threadId)), Effect.andThen(enqueueFullSweep()));
+        return (
+          event.type === "thread.deleted"
+            ? hostedBlender.forgetThread({ threadId: event.threadId })
+            : hostedBlender.closeOnSettle({ threadId: event.threadId })
+        ).pipe(Effect.andThen(releaseMaster(event.threadId)), Effect.andThen(enqueueFullSweep()));
       case "thread.pull-request-link-updated":
       case "thread.pull-request-synced":
       case "thread.issue-synced":

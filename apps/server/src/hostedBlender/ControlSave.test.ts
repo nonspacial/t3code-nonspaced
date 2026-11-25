@@ -16,7 +16,7 @@ const setup = Effect.fn(function* (write: (line: string) => Effect.Effect<void>)
     replies,
     ended: Deferred.await(ended),
     command: '{"type":"quit","save":true}\n',
-    replyTimeout: "5 seconds",
+    writeTimeout: "5 seconds",
   });
   return { closed, ended, replies, request };
 });
@@ -32,12 +32,23 @@ describe("requestSave", () => {
     }),
   );
 
-  it.effect("times the write together with the first answer", () =>
+  it.effect("times the write", () =>
     Effect.gen(function* () {
       const { request } = yield* setup(() => Effect.never);
       const fiber = yield* Effect.forkChild(request);
       yield* TestClock.adjust("5 seconds");
       expect(yield* Fiber.join(fiber)).toBe(false);
+    }),
+  );
+
+  it.effect("B2: once the command is written, waits for a busy Blender's late answer", () =>
+    Effect.gen(function* () {
+      // Blender's main thread is busy: the command waits there, and Blender will still act on it.
+      const { replies, request } = yield* setup(() => Effect.void);
+      const fiber = yield* Effect.forkChild(request);
+      yield* TestClock.adjust("1 minute");
+      yield* Queue.offerAll(replies, ["saving", "saved"]);
+      expect(yield* Fiber.join(fiber)).toBe(true);
     }),
   );
 

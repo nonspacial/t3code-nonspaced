@@ -98,11 +98,12 @@ function BlenderScreen(props: {
   const canQuit = useAtomValue(hostedBlenderEnvironment.quit.permissionAtom(props.environmentId));
   const quit = useAtomCommand(hostedBlenderEnvironment.quit, { reportFailure: false });
   const [quitting, setQuitting] = useState(false);
-  const quitBlender = async (save: boolean) => {
+  // `discard` only from the dialog's Quit without saving; see useQuitHostedBlender on web.
+  const quitBlender = async (save: boolean, discard = false) => {
     setQuitting(true);
     const result = await quit({
       environmentId: props.environmentId,
-      input: { threadId: props.threadId, save },
+      input: { threadId: props.threadId, save, ...(discard ? { discard } : {}) },
     }).finally(() => setQuitting(false));
     if (result._tag === "Failure") {
       Dialog.alert(m(msg("Couldn't quit Blender")), formatEnvironmentQueryError(result.cause));
@@ -119,7 +120,7 @@ function BlenderScreen(props: {
         {
           text: gt("Quit without saving"),
           style: "destructive",
-          onPress: () => void quitBlender(false),
+          onPress: () => void quitBlender(false, true),
         },
         { text: gt("Save and quit"), onPress: () => void quitBlender(true) },
       ],

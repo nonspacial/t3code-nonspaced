@@ -207,6 +207,7 @@ import {
 } from "../previewMiniPlayerStore";
 import { decideFloatingBlender } from "./blender/floatingBlender";
 import { agentWorkingInBlender, workingInBlenderBannerItem } from "./blender/workingInBlender";
+import { chatHostedBlenderThread } from "@t3tools/client-runtime/state/hosted-blender";
 import { useHostedBlenderState } from "../state/hostedBlender";
 import { threadPullRequestPanelTarget } from "./pullRequest/pullRequestDetail.logic";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
@@ -2165,8 +2166,10 @@ export default function ChatView(props: ChatViewProps) {
     : linkedThreadPullRequestKey;
   const activeRunningTurnId = activeRuntime?.activeRunId ?? null;
   // The thread's hosted Blender is only watched while a turn runs or its pane floats.
-  const floatingBlenderThreadRef =
-    isServerThread && !embedded && !shouldUsePlanSidebarSheet ? activeThreadRef : null;
+  const floatingBlenderThreadRef = chatHostedBlenderThread(
+    serverConfig,
+    isServerThread && !embedded && !shouldUsePlanSidebarSheet ? activeThreadRef : null,
+  );
   const floatingSource = activePreviewMiniPlayer?.source ?? null;
   const floatingBlenderState = useHostedBlenderState(
     floatingBlenderThreadRef && (activeRunningTurnId !== null || floatingSource?.kind === "blender")

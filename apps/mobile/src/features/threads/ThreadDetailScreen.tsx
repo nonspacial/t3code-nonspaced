@@ -148,6 +148,7 @@ import {
 import { editPendingThreadMessage } from "../../state/edit-pending-thread-message";
 import { environmentCatalog } from "../../connection/catalog";
 import { deviceEnvironment } from "../../state/device";
+import { chatHostedBlenderThread } from "@t3tools/client-runtime/state/hosted-blender";
 import { useHostedBlenderState } from "../../state/hostedBlender";
 import { watchableHostedBlender } from "../blender/watchableHostedBlender";
 import { useEnvironmentQuery } from "../../state/query";
@@ -471,9 +472,12 @@ function ThreadDetailBody(
   };
   const watchableBlender = watchableHostedBlender(
     useHostedBlenderState(
-      props.draftMode
-        ? null
-        : { environmentId: props.environmentId, threadId: props.selectedThread.id },
+      chatHostedBlenderThread(
+        props.serverConfig,
+        props.draftMode
+          ? null
+          : { environmentId: props.environmentId, threadId: props.selectedThread.id },
+      ),
     ).data,
   );
   const openBlender = () => {

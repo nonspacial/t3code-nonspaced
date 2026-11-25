@@ -7,6 +7,7 @@ import type {
 } from "@t3tools/client-runtime/hosted-blender/stream";
 import { EnvironmentId, type HostedBlenderViewerMessage, ThreadId } from "@t3tools/contracts";
 import { expect, it, vi } from "vite-plus/test";
+import { commands } from "vite-plus/test/browser";
 
 import { toastManager } from "~/components/ui/toast";
 import { installKeyboardCapture } from "~/lib/keyboardCapture";
@@ -144,6 +145,144 @@ it("takes control on a click, sends keys to Blender, and gives control back on a
   expect(stream.sent).toEqual([
     { type: "key", code: 64, pressed: false },
     { type: "releaseControl" },
+  ]);
+});
+
+/** What each mouse event left the browser to do, read on the window after every handler ran. */
+const watchDefaults = () => {
+  const log: string[] = [];
+  const types = ["pointerup", "mousedown", "mouseup", "auxclick", "contextmenu", "paste"];
+  const listener = (event: Event) => {
+    const button = event instanceof MouseEvent ? `:${event.button}` : "";
+    log.push(`${event.type}${button}${event.defaultPrevented ? " prevented" : ""}`);
+  };
+  for (const type of types) window.addEventListener(type, listener);
+  return {
+    log,
+    [Symbol.dispose]: () => {
+      for (const type of types) window.removeEventListener(type, listener);
+    },
+  };
+};
+
+/** A composer holding the document's selection, and the pane beside it, both real targets. */
+const paneBesideComposer = async () => {
+  const screen = await render(
+    <div>
+      <div contentEditable suppressContentEditableWarning aria-label="Composer">
+        draft
+      </div>
+      <div style={{ height: 400, width: 600 }}>
+        <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+      </div>
+    </div>,
+  );
+  const composer = screen.getByLabelText("Composer").element() as HTMLElement;
+  // The person typed in the composer before going to the pane.
+  composer.focus();
+  window.getSelection()?.selectAllChildren(composer);
+  window.getSelection()?.collapseToEnd();
+  const viewport = screen.getByLabelText("Blender viewport").element() as HTMLElement;
+  const at = (element: Element) => {
+    const rect = element.getBoundingClientRect();
+    return [rect.left + rect.width / 2, rect.top + rect.height / 2] as const;
+  };
+  return { screen, composer, viewport, inside: at(viewport), outside: at(composer) };
+};
+
+it("B6: a middle press takes control and focus, is swallowed, and its drag navigates once granted", async () => {
+  using _app = startup();
+  const pane = await paneBesideComposer();
+  await using _screen = pane.screen;
+  await control({ canOperate: true, controller: "unclaimed" });
+  using defaults = watchDefaults();
+  await commands.pointerMove(...pane.inside);
+  await commands.pointerDown("middle");
+  expect(stream.sent).toEqual([{ type: "takeControl", takeOver: false }]);
+  expect(document.activeElement).toBe(pane.viewport);
+  await control({ canOperate: true, controller: "you" });
+  // Still held once control arrives, so the drag goes on to orbit, then ends outside the pane.
+  await commands.pointerMove(pane.inside[0] + 5, pane.inside[1] + 5);
+  await commands.pointerMove(...pane.outside);
+  await commands.pointerUp("middle");
+  // And a plain middle click once in control.
+  await commands.pointerMove(...pane.inside);
+  await commands.pointerDown("middle");
+  await commands.pointerUp("middle");
+  await vi.waitFor(() =>
+    expect(stream.sent.filter((message) => message.type !== "pointer")).toEqual([
+      { type: "takeControl", takeOver: false },
+      { type: "button", button: 274, pressed: true },
+      { type: "button", button: 274, pressed: false },
+      { type: "button", button: 274, pressed: true },
+      { type: "button", button: 274, pressed: false },
+    ]),
+  );
+  expect(document.activeElement).toBe(pane.viewport);
+  expect(pane.composer.textContent).toBe("draft");
+  // Nothing was left for Chromium to act on: no autoscroll, no primary-selection paste.
+  expect(defaults.log).toEqual([
+    "mousedown:1 prevented",
+    "pointerup:1 prevented",
+    "mouseup:1 prevented",
+    "auxclick:1 prevented",
+    "mousedown:1 prevented",
+    "pointerup:1 prevented",
+    "mouseup:1 prevented",
+    "auxclick:1 prevented",
+  ]);
+});
+
+it("B6: a right click takes control and focus, and Blender gets that click, without a menu", async () => {
+  using _app = startup();
+  const pane = await paneBesideComposer();
+  await using _screen = pane.screen;
+  await control({ canOperate: true, controller: "unclaimed" });
+  using defaults = watchDefaults();
+  await commands.pointerMove(...pane.inside);
+  await commands.pointerDown("right");
+  await commands.pointerUp("right");
+  expect(stream.sent).toEqual([{ type: "takeControl", takeOver: false }]);
+  expect(document.activeElement).toBe(pane.viewport);
+  // Released before the grant: Blender gets the whole click where it was made, once.
+  await control({ canOperate: true, controller: "you" });
+  expect(stream.sent.slice(1)).toEqual([
+    { type: "pointer", x: expect.any(Number), y: expect.any(Number) },
+    { type: "button", button: 273, pressed: true },
+    { type: "button", button: 273, pressed: false },
+  ]);
+  expect(document.activeElement).toBe(pane.viewport);
+  expect(defaults.log.filter((entry) => entry.startsWith("contextmenu"))).toEqual([
+    "contextmenu:2 prevented",
+  ]);
+});
+
+it("B6: a view-only pane swallows the middle and thumb buttons", async () => {
+  using _app = startup();
+  const pane = await paneBesideComposer();
+  await using _screen = pane.screen;
+  await control({ canOperate: false, controller: "unclaimed" });
+  using defaults = watchDefaults();
+  await commands.pointerMove(...pane.inside);
+  await commands.pointerDown("middle");
+  await commands.pointerUp("middle");
+  // Back and Forward, which Playwright's mouse can't press.
+  const canvas = pane.viewport.querySelector("canvas")!;
+  for (const button of [3, 4]) {
+    for (const type of ["mousedown", "mouseup", "auxclick"]) {
+      canvas.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button }));
+    }
+  }
+  expect(stream.sent).toEqual([]);
+  expect(pane.composer.textContent).toBe("draft");
+  expect(defaults.log).toEqual([
+    "mousedown:1 prevented",
+    "pointerup:1 prevented",
+    "mouseup:1 prevented",
+    "auxclick:1 prevented",
+    ...[3, 4].flatMap((button) =>
+      ["mousedown", "mouseup", "auxclick"].map((type) => `${type}:${button} prevented`),
+    ),
   ]);
 });
 
