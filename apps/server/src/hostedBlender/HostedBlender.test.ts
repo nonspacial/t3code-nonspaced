@@ -491,7 +491,8 @@ for line in sys.stdin:
     # F1: a burst of deltas, then Blender "captures" the cursor to mark the end of it.
     if command.get("type") == "key" and command.get("code") == 59:
         if command["pressed"]:
-            for _ in range(12):
+            # More than a viewer's frames in flight and waiting together.
+            for _ in range(24):
                 video(False)
         event({"type": "cursorLeave"} if command["pressed"] else {"type": "cursorEnter", "x": 1, "y": 2})
     # A middle-drag orbit: Blender hides its cursor while the button is down.
@@ -2730,6 +2731,9 @@ const hasFrame = (viewer: Viewer) =>
     Effect.map((outputs) => outputs.some((output) => output._tag === "frame")),
   );
 const isKey = (frame: Uint8Array) => (frame[5]! & 1) === 1;
+/** The next keyframe, past the deltas already on the wire before it. */
+const nextKeyframe = (viewer: Viewer): Effect.Effect<Uint8Array> =>
+  nextFrame(viewer).pipe(Effect.filterOrElse(isKey, () => nextKeyframe(viewer)));
 const ofType = <Command extends { readonly type: string }>(
   commands: ReadonlyArray<Command>,
   ...types: ReadonlyArray<string>
@@ -2823,9 +2827,9 @@ describe("The stream", () => {
       // Falling behind is a slow viewer, not a congested link: it skips to a keyframe, and only
       // ack delay moves the bitrate.
       expect(ofType(helperCommands(), "bitrate")).toEqual([]);
-      // Acking the frame it was stuck on lets the keyframe out.
+      // Acking a frame it was stuck on lets the keyframe out, behind those already sent.
       yield* operator.ack;
-      expect(isKey(yield* nextFrame(operator))).toBe(true);
+      expect(isKey(yield* nextKeyframe(operator))).toBe(true);
     }).pipe(Effect.scoped),
   );
 });
@@ -2845,7 +2849,7 @@ it.effect(
             message.captured === captured ? Effect.void : cursor(captured),
           ),
         );
-      // F1 overflows the operator's queue while its first frame is unacked; nothing more comes.
+      // F1 overflows the operator's queue while its first frames are unacked; nothing more comes.
       yield* operator.input({ type: "key", code: 59, pressed: true });
       yield* cursor(true);
       yield* operator.input({ type: "key", code: 59, pressed: false });
@@ -2855,7 +2859,7 @@ it.effect(
       yield* syncPoint(operator);
       expect(ofType(helperCommands(), "keyframe")).toHaveLength(1);
       yield* TestClock.adjust("250 millis");
-      expect(isKey(yield* nextFrame(operator))).toBe(true);
+      expect(isKey(yield* nextKeyframe(operator))).toBe(true);
       expect(ofType(helperCommands(), "keyframe")).toHaveLength(2);
     }).pipe(Effect.scoped),
 );
