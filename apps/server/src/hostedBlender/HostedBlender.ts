@@ -117,6 +117,7 @@ export const CONTROL_CONNECT_ATTEMPTS = Math.ceil(
 );
 const HELPER_QUIT_TIMEOUT = Duration.seconds(10);
 const CONTROL_REPLY_TIMEOUT = Duration.seconds(5);
+const CONTROL_DRAIN_TIMEOUT = Duration.seconds(1);
 
 // T3's control add-on speaks JSON lines on its private socket; see controlAddon.ts.
 const ControlMessage = Schema.Union([
@@ -1495,6 +1496,12 @@ const make = Effect.gen(function* () {
       );
       if (exitCode !== 0) {
         yield* Effect.logWarning("hosted Blender's hidden display exited", { exitCode });
+      }
+      // The add-on's last lines (the file it had open, a save) can still be unread when the
+      // helper exits; its connection closes once they are, and the cleanup needs them.
+      const control = instance.control;
+      if (control !== null) {
+        yield* Deferred.await(control.closed).pipe(Effect.timeoutOption(CONTROL_DRAIN_TIMEOUT));
       }
     },
     Effect.scoped,
