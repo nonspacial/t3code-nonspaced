@@ -18,7 +18,7 @@ import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as HostedBlenderSetup from "./HostedBlenderSetup.ts";
 
-class HostedBlenderPortError extends Schema.TaggedError<HostedBlenderPortError>()(
+export class HostedBlenderPortError extends Schema.TaggedError<HostedBlenderPortError>()(
   "HostedBlenderPortError",
   {},
 ) {}
@@ -49,6 +49,16 @@ export class HostedBlenderAgents extends Context.Service<
      * connections, any local process could reach this port.
      */
     readonly listenerPort: (threadId: ThreadId) => Effect.Effect<number | null>;
+    /**
+     * A loopback port for a master Blender's own listener, from the same registry as the threads'
+     * ports, so no relay's port is ever also a listener's.
+     */
+    readonly reservePrivatePort: Effect.Effect<
+      number,
+      HostedBlenderPortError | NetService.NetError
+    >;
+    /** The provider session holding the thread's Blender MCP while agents are allowed, or null. */
+    readonly currentSession: (threadId: ThreadId) => Effect.Effect<string | null>;
     /** The port the thread's `blender-master` entry dials, on the same terms as `listenerPort`. */
     readonly masterListenerPort: (threadId: ThreadId) => Effect.Effect<number | null>;
     /**
@@ -186,6 +196,13 @@ const make = Effect.gen(function* () {
   );
 
   return HostedBlenderAgents.of({
+    reservePrivatePort: portLock.withPermits(1)(freshPort),
+    currentSession: Effect.fn("HostedBlenderAgents.currentSession")(function* (threadId) {
+      const session = yield* mcpSessions.read(threadId);
+      return session?.hostedBlender !== undefined && (yield* agentsAllowed)
+        ? session.providerSessionId
+        : null;
+    }),
     sessionLaunch,
     listenerPort,
     masterListenerPort,

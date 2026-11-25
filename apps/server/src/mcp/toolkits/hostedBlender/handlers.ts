@@ -41,6 +41,11 @@ const requireHostedBlender = Effect.gen(function* () {
   return scope.thread.threadId;
 });
 
+/** The provider session calling, which an agent's access to a master is tied to. */
+const callerSession = McpInvocationContext.requireThreadMcpCapability("hosted-blender").pipe(
+  Effect.map((scope) => scope.thread.providerSessionId),
+);
+
 const underConfiguredRoot = Effect.fnUntraced(function* (file: string, root: string | undefined) {
   if (root === undefined) return file;
   const path = yield* Path.Path;
@@ -110,7 +115,11 @@ const handlers = {
     Effect.gen(function* () {
       const threadId = yield* requireHostedBlender;
       yield* refuseInPlanMode(threadId, "blender_master_open");
-      return yield* openAgentMaster({ threadId, path: input.path });
+      return yield* openAgentMaster({
+        threadId,
+        path: input.path,
+        agentSession: yield* callerSession,
+      });
     }),
   ),
   blender_status: McpToolAccess.readsAsCaller(() =>

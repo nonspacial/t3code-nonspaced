@@ -244,3 +244,33 @@ describe("HostedBlenderAgents.layerFollowSetup", () => {
     },
   );
 });
+
+describe("HostedBlenderAgents private ports", () => {
+  it.effect("never hands a master's private port out as a thread's, or a thread's as one", () =>
+    Effect.gen(function* () {
+      const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
+      const launch = yield* agents.sessionLaunch({ threadId, driver: claude });
+      // The probe keeps offering the thread's ports, idle since the session took them.
+      const own = yield* agents.reservePrivatePort;
+      assert.notInclude([launch?.hostedPort, launch?.masterPort], own);
+      assert.equal(own, 41002);
+    }).pipe(Effect.provide(layerFor({ probes: [41000, 41001, 41000, 41001, 41002] }))),
+  );
+});
+
+describe("HostedBlenderAgents.currentSession", () => {
+  it.effect(
+    "names the agent session holding the thread's Blender MCP, while agents are allowed",
+    () =>
+      Effect.gen(function* () {
+        const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
+        assert.isNull(yield* agents.currentSession(threadId));
+        yield* startSession(yield* agents.sessionLaunch({ threadId, driver: claude }));
+        assert.equal(yield* agents.currentSession(threadId), "provider-session-hosted-blender");
+        yield* (yield* ServerSettings.ServerSettingsService).updateSettings({
+          hostedBlenderAllowAgents: false,
+        });
+        assert.isNull(yield* agents.currentSession(threadId));
+      }).pipe(Effect.provide(layerFor({}))),
+  );
+});

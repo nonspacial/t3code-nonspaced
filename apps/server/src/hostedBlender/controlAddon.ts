@@ -303,6 +303,14 @@ def _handle(command):
     if kind == "grantAgentListener":
         _grant_agent_listener()
         return
+    if kind == "quitIfClean":
+        # Checked here, at the moment of quitting: T3's last word on unsaved changes may be stale.
+        if bpy.data.is_dirty:
+            _send({"type": "quitRefused"})
+            return
+        with bpy.context.temp_override(window=_main_window()):
+            bpy.ops.wm.quit_blender()
+        return
     if kind == "quit":
         if command.get("save"):
             # Answered before the save, which blocks Blender for as long as a big file takes.

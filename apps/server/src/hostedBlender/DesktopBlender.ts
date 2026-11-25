@@ -41,7 +41,9 @@ const AddonReply = Schema.Struct({
 });
 const decodeAddonReply = Schema.decodeUnknownOption(Schema.fromJsonString(AddonReply));
 const ProbeResult = Schema.Struct({ filepath: Schema.String, dirty: Schema.Boolean });
-const SaveResult = Schema.Struct({ moved: Schema.Boolean });
+const SaveResult = Schema.Struct({ moved: Schema.Boolean, pid: Schema.optional(Schema.Int) });
+const MoveState = Schema.Struct({ state: Schema.NullOr(Schema.String) });
+const decodeMoveState = Schema.decodeUnknownEffect(MoveState);
 const decodeProbeResult = Schema.decodeUnknownEffect(ProbeResult);
 const decodeSaveResult = Schema.decodeUnknownEffect(SaveResult);
 
@@ -63,21 +65,6 @@ const refuseDesktopPortInTests = (port: number) =>
   port === DESKTOP_BLENDER_MCP_PORT && globalThis.process?.env.VITEST !== undefined
     ? Effect.die(new Error("Tests must never reach the desktop Blender on its add-on's port."))
     : undefined;
-
-/** Whether anything accepts connections on loopback `port`; nothing is sent. */
-const portOpen = (port: number) =>
-  refuseDesktopPortInTests(port) ??
-  Effect.callback<boolean>((resume) => {
-    const socket = NodeNet.connect(port, "127.0.0.1");
-    const settle = (open: boolean) => {
-      socket.destroy();
-      resume(Effect.succeed(open));
-    };
-    socket.setTimeout(Duration.toMillis(PROBE_TIMEOUT), () => settle(true));
-    socket.once("connect", () => settle(true));
-    socket.once("error", () => settle(false));
-    return Effect.sync(() => socket.destroy());
-  });
 
 /**
  * Runs `code` in the Blender whose add-on listens on loopback `port`; its `result` dict is the
@@ -120,24 +107,44 @@ export const executeOnAddon = (port: number, code: string, timeout: Duration.Inp
 const PROBE_CODE = `import bpy
 result = {"filepath": bpy.data.filepath, "dirty": bool(bpy.data.is_dirty)}`;
 
-// Checked and scheduled in one request, so the file can't change in between. Quitting waits for
-// a timer, so the add-on still answers; save_mainfile(exit=True) quits only once it has saved.
+// Checked as the request arrives and again in the timer just before saving, so a Save As in
+// between is refused. Quitting waits for that timer, so the add-on still answers first;
+// save_mainfile(exit=True) quits only once it has saved. The state says what the timer did.
 const saveAndQuitCode = (filepath: string) => `import bpy, os
-current = os.path.realpath(bpy.data.filepath) if bpy.data.filepath else ""
-if current != ${JSON.stringify(filepath)}:
+expected = ${JSON.stringify(filepath)}
+def _t3_current():
+    return os.path.realpath(bpy.data.filepath) if bpy.data.filepath else ""
+if _t3_current() != expected:
     result = {"moved": False, "filepath": bpy.data.filepath}
 else:
     def _t3_save_and_quit():
-        with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
-            bpy.ops.wm.save_mainfile(exit=True)
+        if _t3_current() != expected:
+            bpy.app.driver_namespace["t3_move_state"] = "otherFile"
+            return None
+        bpy.app.driver_namespace["t3_move_state"] = "saving"
+        try:
+            with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+                bpy.ops.wm.save_mainfile(exit=True)
+        except Exception:
+            pass
+        # Still here: the save failed or was cancelled, so Blender stays open.
+        bpy.app.driver_namespace["t3_move_state"] = "failed"
         return None
+    bpy.app.driver_namespace["t3_move_state"] = "scheduled"
     bpy.app.timers.register(_t3_save_and_quit, first_interval=0.1)
-    result = {"moved": True}`;
+    result = {"moved": True, "pid": os.getpid()}`;
+
+const MOVE_STATE_CODE = `import bpy
+result = {"state": bpy.app.driver_namespace.get("t3_move_state")}`;
 
 export const make = (options: {
   readonly port: number;
   /** Whether any desktop Blender is running, add-on or not. */
   readonly desktopBlenderRunning: Effect.Effect<boolean>;
+  /** Whether the process with this pid still runs. */
+  readonly processAlive: (pid: number) => Effect.Effect<boolean>;
+  /** When the file on disk last changed, or null if it can't be read. */
+  readonly modifiedAt: (path: string) => Effect.Effect<number | null>;
   readonly quitTimeout?: Duration.Input;
 }): DesktopBlender["Service"] => {
   const probe: DesktopBlender["Service"]["probe"] = executeOnAddon(
@@ -157,15 +164,32 @@ export const make = (options: {
     Effect.withSpan("DesktopBlender.probe"),
   );
 
-  // Blender closes the add-on's port as it exits, which it does only after saving.
-  const quitObserved = portOpen(options.port).pipe(
-    Effect.repeat({ schedule: Schedule.spaced(QUIT_POLL), until: (open) => !open }),
-    Effect.timeoutOption(options.quitTimeout ?? QUIT_TIMEOUT),
-  );
+  /**
+   * Waits for the save to finish and Blender to exit: the add-on stops answering, and the process
+   * that took the request is gone. A refusal or failure the timer recorded answers sooner.
+   */
+  const awaitQuit = (pid: number) =>
+    executeOnAddon(options.port, MOVE_STATE_CODE, PROBE_TIMEOUT).pipe(
+      Effect.flatMap(decodeMoveState),
+      Effect.map(({ state }) => state),
+      Effect.catchTags({ AddonUnreachable: () => Effect.succeed("gone" as const) }),
+      Effect.orElseSucceed(() => null),
+      Effect.flatMap((state) =>
+        state === "gone"
+          ? options.processAlive(pid).pipe(Effect.map((alive) => (alive ? null : "gone")))
+          : Effect.succeed(state),
+      ),
+      Effect.repeat({
+        schedule: Schedule.spaced(QUIT_POLL),
+        until: (state) => state === "gone" || state === "otherFile" || state === "failed",
+      }),
+      Effect.timeoutOption(options.quitTimeout ?? QUIT_TIMEOUT),
+    );
 
   const saveAndQuit: DesktopBlender["Service"]["saveAndQuit"] = Effect.fn(
     "DesktopBlender.saveAndQuit",
   )(function* (filepath) {
+    const before = yield* options.modifiedAt(filepath);
     const result = yield* executeOnAddon(
       options.port,
       saveAndQuitCode(filepath),
@@ -181,7 +205,14 @@ export const make = (options: {
       ),
     );
     if (!result.moved) return yield* new DesktopBlenderError({ reason: "otherFile" });
-    if (Option.isNone(yield* quitObserved)) {
+    if (result.pid === undefined) return yield* new DesktopBlenderError({ reason: "badReply" });
+    const ended = yield* awaitQuit(result.pid);
+    if (Option.isSome(ended) && ended.value === "otherFile") {
+      return yield* new DesktopBlenderError({ reason: "otherFile" });
+    }
+    // A closed port alone proves nothing: the process must be gone and the file written.
+    const after = yield* options.modifiedAt(filepath);
+    if (Option.isNone(ended) || ended.value !== "gone" || after === null || after === before) {
       return yield* new DesktopBlenderError({ reason: "didNotQuit" });
     }
   });
@@ -218,6 +249,13 @@ export const layer = Layer.effect(
     const fileSystem = yield* FileSystem.FileSystem;
     return make({
       port: DESKTOP_BLENDER_MCP_PORT,
+      processAlive: (pid) =>
+        fileSystem.exists(`/proc/${pid}`).pipe(Effect.orElseSucceed(() => false)),
+      modifiedAt: (path) =>
+        fileSystem.stat(path).pipe(
+          Effect.map((info) => Option.getOrNull(Option.map(info.mtime, (date) => date.getTime()))),
+          Effect.orElseSucceed(() => null),
+        ),
       desktopBlenderRunning: desktopBlenderRunning.pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
       ),

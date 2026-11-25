@@ -3549,7 +3549,7 @@ export const layerWsRpc = (
         [WS_METHODS.hostedBlenderSubscribeMaster]: (input) =>
           hostedBlender.masterState(input.threadId),
         [WS_METHODS.hostedBlenderOpenMaster]: (input) => hostedBlender.reopenMaster(input.threadId),
-        [WS_METHODS.hostedBlenderMoveIntoT3]: (input) => hostedBlender.moveIntoT3(input.threadId),
+        [WS_METHODS.hostedBlenderMoveIntoT3]: (input) => hostedBlender.moveIntoT3(input),
         [WS_METHODS.hostedBlenderSubscribeSetup]: (_input) => hostedBlenderSetup.state,
         [WS_METHODS.hostedBlenderCheckSetup]: (_input) => hostedBlenderSetup.check,
         [WS_METHODS.hostedBlenderInstallWithAgent]: (_input) => hostedBlenderSetup.installWithAgent,

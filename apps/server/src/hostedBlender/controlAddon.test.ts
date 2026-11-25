@@ -24,9 +24,11 @@ class Addon:
 class Addons(dict):
     def keys(self): return list(super().keys())
 addons = Addons({name: Addon() for name in state["enabled"]})
+import contextlib
 context = types.SimpleNamespace(
     preferences=types.SimpleNamespace(addons=addons, is_dirty=True),
     window_manager=types.SimpleNamespace(windows=[]),
+    temp_override=lambda **_kwargs: contextlib.nullcontext(),
 )
 data = types.SimpleNamespace(filepath=state.get("filepath", "/work/hero.wip-1a2b3c4d.blend"), is_dirty=False)
 from . import app, ops
@@ -71,6 +73,11 @@ def _stop():
     sys.modules[NAME + ".mcp_to_blender_server"].stop()
     return {"FINISHED"}
 blmcp = types.SimpleNamespace(server_start=_operator(_start), server_stop=_operator(_stop))
+def _quit():
+    import addon_utils
+    addon_utils.log("quit_blender")
+    return {"FINISHED"}
+wm = types.SimpleNamespace(quit_blender=_quit)
 `,
   // Imported at the top for the capture and hit tests, which register() never runs.
   "gpu.py": "",
@@ -181,6 +188,7 @@ if _scenario.get("connect", True):
         _steps.append(_report())
     if _scenario.get("fileBeforeGrant"):
         bpy.data.filepath = "/work/other.blend"
+    bpy.data.is_dirty = bool(_scenario.get("dirty"))
     _t3.sendall("".join(json.dumps({"type": kind}) + "\n" for kind in _scenario.get("send", ["grantAgentListener"])).encode())
     _tick()
     _steps.append(_report())
@@ -203,7 +211,15 @@ if _then is not None:
     _steps.append(_report())
     _press_start()
     _steps.append(_report())
+_received = []
+if _t3 is not None:
+    try:
+        _t3.settimeout(0.2)
+        _received = [_j.loads(line) for line in _t3.recv(65536).decode().splitlines()]
+    except OSError:
+        pass
 print(_j.dumps({
+    "received": [message["type"] for message in _received],
     "steps": _steps,
     "inPrefs": "${MCP}" in bpy.context.preferences.addons,
     "autostart": any(getattr(f, "__name__", "") == "_autostart_timer" for f in bpy.app.registered),
@@ -235,7 +251,9 @@ const runAddon = (input: {
   readonly portTaken?: boolean;
   readonly connect?: boolean;
   /** What T3 sends once connected; a grant by default. */
-  readonly send?: ReadonlyArray<"grantAgentListener" | "stopAgentListener">;
+  readonly send?: ReadonlyArray<"grantAgentListener" | "stopAgentListener" | "quitIfClean">;
+  /** Blender has unsaved changes when T3's commands arrive. */
+  readonly dirty?: boolean;
   readonly pressStartBeforeGrant?: boolean;
   /** Another file is open by the time T3's grant arrives. */
   readonly fileBeforeGrant?: boolean;
@@ -397,5 +415,20 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     });
     expect(after(result)).toEqual(off);
     expect(bound(result)).toBe(false);
+  });
+
+  it("quits on quitIfClean only without unsaved changes, and says so when it won't", () => {
+    const dirty = runAddon({
+      installed: [],
+      enabled: [],
+      listen: false,
+      send: ["quitIfClean"],
+      dirty: true,
+    });
+    expect(dirty.calls).not.toContainEqual(["quit_blender"]);
+    expect(dirty.received).toContain("quitRefused");
+    const clean = runAddon({ installed: [], enabled: [], listen: false, send: ["quitIfClean"] });
+    expect(clean.calls).toContainEqual(["quit_blender"]);
+    expect(clean.received).not.toContain("quitRefused");
   });
 });

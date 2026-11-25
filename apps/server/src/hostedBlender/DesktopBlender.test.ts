@@ -22,7 +22,7 @@ interface FakeAddon {
  */
 const fakeAddon = (
   answer: (code: string) => Record<string, unknown>,
-  options: { readonly quitAfterSave?: boolean } = {},
+  options: { readonly quitAfterSave?: boolean; readonly onQuit?: () => void } = {},
 ) =>
   Effect.acquireRelease(
     Effect.callback<FakeAddon>((resume) => {
@@ -39,10 +39,11 @@ const fakeAddon = (
           requests.push(request.code);
           socket.end(`${JSON.stringify({ status: "ok", result: answer(request.code) })}\0`);
           if (options.quitAfterSave && request.code.includes("save_mainfile(exit=True)")) {
-            setTimeout(() => {
+            setImmediate(() => {
+              options.onQuit?.();
               server.close();
               for (const open of sockets) open.destroy();
-            }, 50);
+            });
           }
         });
       });
@@ -63,12 +64,33 @@ const fakeAddon = (
     (addon) => Effect.sync(addon.close),
   );
 
-const clientFor = (port: number, running = false) =>
+/** The desktop Blender's process and the master on disk, as T3 sees them from outside. */
+const world = () => ({ alive: true, modified: 1 });
+
+const clientFor = (port: number, running = false, seen = world()) =>
   DesktopBlender.make({
     port,
     desktopBlenderRunning: Effect.succeed(running),
-    quitTimeout: Duration.seconds(2),
+    processAlive: () => Effect.sync(() => seen.alive),
+    modifiedAt: () => Effect.sync(() => seen.modified),
+    quitTimeout: Duration.millis(500),
   });
+
+/** What the add-on answers: a scheduled save from this pid, and the save's state when asked. */
+const savingAddon =
+  (state: string | null = null) =>
+  (code: string) =>
+    code.includes("save_mainfile")
+      ? { moved: true, pid: 4242 }
+      : code.includes("t3_move_state")
+        ? { state }
+        : {};
+
+/** Blender saving the file and exiting, as the add-on's port closes. */
+const exits = (seen: ReturnType<typeof world>) => () => {
+  seen.alive = false;
+  seen.modified += 1;
+};
 
 const master = "/home/user/acme/app/models/hero.blend";
 
@@ -97,12 +119,12 @@ describe("DesktopBlender.probe", () => {
 describe("DesktopBlender.saveAndQuit", () => {
   it.live("saves and quits only while the desktop Blender still has the master open", () =>
     Effect.gen(function* () {
-      const addon = yield* fakeAddon(() => ({ moved: true }), { quitAfterSave: true });
-      const desktop = clientFor(addon.port);
-      yield* desktop.saveAndQuit(master);
-      // The file is checked inside Blender, in the same request that saves it.
-      expect(addon.requests).toHaveLength(1);
+      const seen = world();
+      const addon = yield* fakeAddon(savingAddon(), { quitAfterSave: true, onQuit: exits(seen) });
+      yield* clientFor(addon.port, false, seen).saveAndQuit(master);
+      // The file is checked inside Blender, as the request arrives and again just before saving.
       expect(addon.requests[0]).toContain(JSON.stringify(master));
+      expect(addon.requests[0]?.match(/_t3_current\(\) != expected/g)).toHaveLength(2);
       expect(addon.requests[0]).toContain("save_mainfile(exit=True)");
     }).pipe(Effect.scoped),
   );
@@ -115,11 +137,52 @@ describe("DesktopBlender.saveAndQuit", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("fails when the desktop Blender never quits, as when its save fails", () =>
+  it.live("refuses when the file changed before the save ran, as after a Save As", () =>
     Effect.gen(function* () {
-      const addon = yield* fakeAddon(() => ({ moved: true }));
+      const addon = yield* fakeAddon(savingAddon("otherFile"));
+      const error = yield* clientFor(addon.port).saveAndQuit(master).pipe(Effect.flip);
+      expect(error.reason).toBe("otherFile");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("fails when the desktop Blender's save fails", () =>
+    Effect.gen(function* () {
+      const addon = yield* fakeAddon(savingAddon("failed"));
       const error = yield* clientFor(addon.port).saveAndQuit(master).pipe(Effect.flip);
       expect(error.reason).toBe("didNotQuit");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("fails when the desktop Blender never quits", () =>
+    Effect.gen(function* () {
+      const addon = yield* fakeAddon(savingAddon());
+      const error = yield* clientFor(addon.port).saveAndQuit(master).pipe(Effect.flip);
+      expect(error.reason).toBe("didNotQuit");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("doesn't take a closed add-on port as proof Blender saved and quit", () =>
+    Effect.gen(function* () {
+      // The add-on stopped, but the process that took the save is still running.
+      const running = world();
+      const stopped = yield* fakeAddon(savingAddon(), { quitAfterSave: true });
+      const still = yield* clientFor(stopped.port, false, running)
+        .saveAndQuit(master)
+        .pipe(Effect.flip);
+      expect(still.reason).toBe("didNotQuit");
+
+      // The process is gone, but the file on disk never changed.
+      const unsaved = world();
+      const gone = yield* fakeAddon(savingAddon(), {
+        quitAfterSave: true,
+        onQuit: () => {
+          unsaved.alive = false;
+        },
+      });
+      const lost = yield* clientFor(gone.port, false, unsaved)
+        .saveAndQuit(master)
+        .pipe(Effect.flip);
+      expect(lost.reason).toBe("didNotQuit");
     }).pipe(Effect.scoped),
   );
 

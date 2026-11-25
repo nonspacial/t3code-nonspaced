@@ -2214,7 +2214,8 @@ const WsHostedBlenderOpenMasterRpc = Rpc.make(WS_METHODS.hostedBlenderOpenMaster
 
 /** Has the desktop Blender save and quit, then opens the master in a master Blender. */
 const WsHostedBlenderMoveIntoT3Rpc = Rpc.make(WS_METHODS.hostedBlenderMoveIntoT3, {
-  payload: HostedBlenderSubscribeInput,
+  /** `relativePath` is the master the user saw; a different master since is refused. */
+  payload: HostedBlenderOpenInput,
   error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
 });
 

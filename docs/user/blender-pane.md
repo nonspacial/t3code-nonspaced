@@ -47,7 +47,7 @@ Only the working copy the agent started takes its calls. A file you opened from 
 The file you asked the agent to change is the master. Once the agent's change is proven in its working copy, it copies the change back into the master itself, through whichever Blender has the master open:
 
 - your desktop Blender, if it has the master open and runs Blender Lab's MCP add-on, through your own `blender` MCP setup;
-- otherwise a master Blender: a hosted Blender T3 Code starts for the master. Threads working on the same master share it, and it quits when the last of them settles or is archived. If it has unsaved changes then, it stays open until you quit it.
+- otherwise a master Blender: a hosted Blender T3 Code starts for the master. Threads working on the same master share it, and it quits when the last of them settles or is archived. If it has unsaved changes then, it stays open in that thread's **Master** view until you save or quit it, and that thread can't switch to another master meanwhile.
 
 The agent replaces only the objects it changed, and stops to ask you if any of them changed in the master meanwhile, such as when another agent copied back first. Agents take turns: each marks the master while it copies back, so a second agent waits. Each copy back can be undone in that Blender, and is saved; a desktop Blender shows it straight away. The agent tells you what it copied back.
 
@@ -55,7 +55,7 @@ Once a thread has a master, the pane's toolbar has a **Working copy** / **Master
 
 ### Move into T3 Code
 
-If your desktop Blender has the master open, the pane's **Master** side offers **Move into T3 Code**. T3 Code has your desktop Blender save the file, with any unsaved changes, and quit, then opens the file in a master Blender. Undo history from your desktop Blender is lost. This needs Blender Lab's MCP add-on running in your desktop Blender on its usual port; without it, T3 Code can't tell what your Blender has open, so it only warns you to save and close the file there first. A desktop Blender with a different file open is left alone.
+If your desktop Blender has the master open, the pane's **Master** side offers **Move into T3 Code**. T3 Code has your desktop Blender save the file, with any unsaved changes, and quit, then opens the file in a master Blender. Undo history from your desktop Blender is lost. T3 Code opens the file only once your desktop Blender has saved it and quit; if you save it under another name first, nothing moves. Every thread that chose that master moves with it. This needs Blender Lab's MCP add-on running in your desktop Blender on its usual port; without it, T3 Code can't tell what your Blender has open, so it only warns you, before opening the file and above a master Blender it opened that way. A desktop Blender with a different file open is left alone.
 
 ## Watching
 

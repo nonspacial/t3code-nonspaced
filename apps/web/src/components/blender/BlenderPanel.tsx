@@ -95,7 +95,7 @@ import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { HiddenThreadContext } from "../chat/backgroundThread";
 
 import { useBlenderAnnotation } from "./BlenderAnnotationEditor";
-import { BlenderRoleSwitch, MasterCard } from "./BlenderMaster";
+import { BlenderRoleSwitch, DesktopUncheckedNotice, MasterCard } from "./BlenderMaster";
 import { attachBlenderInput, type BlenderInput } from "./blenderInput";
 
 interface StreamStats {
@@ -175,7 +175,13 @@ export function BlenderPanel(props: BlenderPanelProps) {
     shown === "working" ? (
       <WorkingBlender {...props} state={working} switcher={switcher} />
     ) : master?.status === "running" || master?.status === "starting" ? (
-      <RunningBlender {...props} state={master} switcher={switcher} master />
+      <RunningBlender
+        {...props}
+        state={master}
+        switcher={switcher}
+        master
+        notice={master.desktopUnchecked === true ? <DesktopUncheckedNotice /> : null}
+      />
     ) : master?.status === "notOpen" || master?.status === "failed" ? (
       <MasterCard threadRef={props.threadRef} state={master} />
     ) : (
@@ -373,6 +379,8 @@ function RunningBlender(
     readonly switcher: ReactNode;
     /** The thread's master Blender rather than its working Blender. */
     readonly master?: boolean;
+    /** Shown under the toolbar. */
+    readonly notice?: ReactNode;
   },
 ) {
   const master = props.master === true;
@@ -399,6 +407,7 @@ function RunningBlender(
         switcher={props.switcher}
         master={master}
       />
+      {props.notice}
       {props.state.status === "starting" ? (
         <StateCard
           title={<T>Starting Blender…</T>}

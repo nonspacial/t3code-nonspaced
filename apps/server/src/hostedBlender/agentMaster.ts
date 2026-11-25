@@ -4,6 +4,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
@@ -23,8 +24,11 @@ const DESKTOP_MCP_SERVER = "blender";
 export const openAgentMaster = Effect.fn("HostedBlender.openAgentMaster")(function* (input: {
   readonly threadId: ThreadId;
   readonly path: string;
+  /** The provider session asking; its access to the master ends with it. */
+  readonly agentSession: string;
 }) {
   const path = yield* Path.Path;
+  const fileSystem = yield* FileSystem.FileSystem;
   const hostedBlender = yield* HostedBlender.HostedBlender;
   const root = yield* threadWorkspaceRoot(input.threadId);
   if (root === undefined) {
@@ -33,7 +37,12 @@ export const openAgentMaster = Effect.fn("HostedBlender.openAgentMaster")(functi
     });
   }
   const requested = path.resolve(root, input.path);
-  if (path.basename(requested).endsWith(`.wip-${threadTag(input.threadId)}.blend`)) {
+  // Checked on the file a link leads to as well, so no link can pass the copy off as a master.
+  const resolved = yield* fileSystem
+    .realPath(requested)
+    .pipe(Effect.orElseSucceed(() => requested));
+  const copySuffix = `.wip-${threadTag(input.threadId)}.blend`;
+  if ([requested, resolved].some((file) => path.basename(file).endsWith(copySuffix))) {
     return yield* new HostedBlenderToolError({
       reason: `${input.path} is your working copy. Pass the master it was copied from.`,
     });
@@ -41,7 +50,7 @@ export const openAgentMaster = Effect.fn("HostedBlender.openAgentMaster")(functi
   // The hosted Blender checks the workspace, the extension and links out of it.
   const relativePath = path.relative(root, requested);
   const opened = yield* hostedBlender
-    .openMaster({ threadId: input.threadId, relativePath }, { agent: true })
+    .openMaster({ threadId: input.threadId, relativePath }, { agentSession: input.agentSession })
     .pipe(Effect.mapError((error) => new HostedBlenderToolError({ reason: error.message })));
   const master = path.join(root, relativePath);
   if (opened._tag === "desktop") {

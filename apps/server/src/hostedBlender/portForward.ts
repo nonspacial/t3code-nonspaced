@@ -14,11 +14,19 @@ export class PortForwardError extends Schema.TaggedError<PortForwardError>()("Po
  * through its own port, and taking one thread's access back closes only that thread's.
  */
 export const forwardLoopbackPort = Effect.fn("HostedBlender.forwardLoopbackPort")(
-  function* (input: { readonly listenPort: number; readonly targetPort: number }) {
+  function* (input: {
+    readonly listenPort: number;
+    readonly targetPort: number;
+    /**
+     * Whether to relay this connection, decided before anything it sent is passed on. B7's
+     * same-account check goes here, as Blender only ever sees T3 connect.
+     */
+    readonly accept?: (socket: NodeNet.Socket) => boolean | Promise<boolean>;
+  }) {
     const sockets = new Set<NodeNet.Socket>();
-    const server = NodeNet.createServer((incoming) => {
+    const relay = (incoming: NodeNet.Socket) => {
       const outgoing = NodeNet.connect(input.targetPort, "127.0.0.1");
-      sockets.add(incoming).add(outgoing);
+      sockets.add(outgoing);
       const end = () => {
         incoming.destroy();
         outgoing.destroy();
@@ -31,6 +39,15 @@ export const forwardLoopbackPort = Effect.fn("HostedBlender.forwardLoopbackPort"
       }
       incoming.pipe(outgoing);
       outgoing.pipe(incoming);
+    };
+    const server = NodeNet.createServer({ pauseOnConnect: true }, (incoming) => {
+      sockets.add(incoming);
+      incoming.on("error", () => incoming.destroy());
+      incoming.on("close", () => sockets.delete(incoming));
+      void Promise.resolve(input.accept?.(incoming) ?? true).then(
+        (accepted) => (accepted && !incoming.destroyed ? relay(incoming) : incoming.destroy()),
+        () => incoming.destroy(),
+      );
     });
     yield* Effect.acquireRelease(
       Effect.callback<void, PortForwardError>((resume) => {

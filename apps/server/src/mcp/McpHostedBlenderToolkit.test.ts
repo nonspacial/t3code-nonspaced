@@ -359,7 +359,13 @@ describe("hosted Blender MCP tools", () => {
           status: "desktop",
           mcpServer: "blender",
         });
-        expect(opens).toEqual([[{ threadId, relativePath: "models/hero.blend" }, { agent: true }]]);
+        // Tied to the session that asked, so its access ends with it.
+        expect(opens).toEqual([
+          [
+            { threadId, relativePath: "models/hero.blend" },
+            { agentSession: "provider-session-hosted-blender-test" },
+          ],
+        ]);
       }).pipe(Effect.provide(layerFor({ state: running, opens, opened: { _tag: "desktop" } })));
     },
   );
@@ -440,4 +446,29 @@ describe("hosted Blender MCP tools", () => {
       ),
     ),
   );
+
+  it.effect("refuses a link that leads to the agent's working copy as a master", () => {
+    const opens: Array<readonly [HostedBlenderOpenInput, unknown]> = [];
+    return Effect.gen(function* () {
+      const root = NodeFS.realpathSync(
+        NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-master-link-")),
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(root, { recursive: true, force: true })),
+      );
+      NodeFS.writeFileSync(NodePath.join(root, "hero.wip-ndertest.blend"), "");
+      NodeFS.symlinkSync(
+        NodePath.join(root, "hero.wip-ndertest.blend"),
+        NodePath.join(root, "master.blend"),
+      );
+      const refused = yield* call(
+        "blender_master_open",
+        { path: "master.blend" },
+        threadCaller(["hosted-blender"]),
+      ).pipe(Effect.provide(layerFor({ state: running, opens, workspace: root })));
+      expect(refused.isError).toBe(true);
+      expect(JSON.stringify(refused.content)).toContain("working copy");
+      expect(opens).toEqual([]);
+    }).pipe(Effect.scoped);
+  });
 });

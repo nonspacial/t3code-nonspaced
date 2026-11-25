@@ -175,7 +175,11 @@ export const HostedBlenderMasterState = Schema.Union([
     desktopDirty: Schema.Boolean,
   }),
   Schema.Struct({ status: Schema.Literal("failed"), relativePath: TrimmedNonEmptyString }),
-  HostedBlenderRunningState,
+  Schema.Struct({
+    ...HostedBlenderRunningState.fields,
+    /** A desktop Blender T3 couldn't ask was running when it opened, and may have it open too. */
+    desktopUnchecked: Schema.optionalKey(Schema.Boolean),
+  }),
 ]);
 export type HostedBlenderMasterState = typeof HostedBlenderMasterState.Type;
 
@@ -281,6 +285,8 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "desktopUnreachable",
       "desktopOtherFile",
       "desktopDidNotQuit",
+      "masterUnsaved",
+      "masterChanged",
     ]),
   },
 ) {
@@ -320,6 +326,10 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "The desktop Blender no longer has this master open.";
       case "desktopDidNotQuit":
         return "The desktop Blender didn't save and quit. Check it for an error, then try again.";
+      case "masterUnsaved":
+        return "This thread's master Blender has unsaved changes. Save or quit it in the Blender pane's Master view first.";
+      case "masterChanged":
+        return "This thread's master changed. Check the Blender pane and try again.";
     }
   }
 }

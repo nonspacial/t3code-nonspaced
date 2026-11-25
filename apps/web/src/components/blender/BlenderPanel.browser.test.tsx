@@ -24,6 +24,7 @@ const stream = vi.hoisted(() => ({
   access: { httpBase: "https://t3", wsBase: "wss://t3/blender", credentials: false, query: {} },
   state: { status: "running", relativePath: "models/hero.blend", dirty: false } as unknown,
   master: { status: "none" } as unknown,
+  commands: [] as Array<{ readonly label: string; readonly value: unknown }>,
   targets: [] as unknown[],
   setup: null as unknown,
 }));
@@ -58,6 +59,12 @@ vi.mock(import("@t3tools/client-runtime/device/frame"), async (original) => ({
     return { present: () => true };
   }) as never,
 }));
+vi.mock(import("~/state/use-atom-command"), () => ({
+  useAtomCommand: ((command: { readonly label: string }) => async (value: unknown) => {
+    stream.commands.push({ label: command.label, value });
+    return { _tag: "Success", value: undefined };
+  }) as never,
+}));
 vi.mock(import("~/state/hostedBlender"), async (original) => ({
   ...(await original()),
   useHostedBlenderState: (() => stream.state) as never,
@@ -82,6 +89,7 @@ const startup = (): Disposable => {
   stream.clients = 0;
   stream.events = null;
   stream.targets = [];
+  stream.commands = [];
   stream.master = { status: "none" };
   stream.state = { status: "running", relativePath: "models/hero.blend", dirty: false };
   return { [Symbol.dispose]: installKeyboardCapture() };
@@ -436,4 +444,43 @@ it("offers Move into T3 Code for a master open in the desktop Blender, and warns
   await screen.getByRole("button", { name: "Master" }).click();
   await expect.element(screen.getByText(/can't reach its MCP add-on/)).toBeInTheDocument();
   expect(stream.clients).toBe(0);
+});
+
+it("moves the master it shows, and warns over a master a desktop Blender may share", async () => {
+  using _app = startup();
+  const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
+  const { Atom } = await import("effect/reactivity");
+  vi.spyOn(hostedBlenderEnvironment.moveIntoT3, "permissionAtom").mockReturnValue(
+    Atom.make(true) as never,
+  );
+  stream.state = { status: "stopped" };
+  stream.master = {
+    status: "notOpen",
+    relativePath: "models/hero.blend",
+    desktop: "open",
+    desktopDirty: false,
+  };
+  const ui = () => (
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>
+  );
+  await using screen = await render(ui());
+  await screen.getByRole("button", { name: "Master" }).click();
+  await screen.getByRole("button", { name: "Move into T3 Code" }).click();
+  expect(stream.commands.at(-1)?.value).toEqual({
+    environmentId: threadRef.environmentId,
+    input: { threadId: threadRef.threadId, relativePath: "models/hero.blend" },
+  });
+
+  stream.master = {
+    status: "running",
+    relativePath: "models/hero.blend",
+    dirty: false,
+    desktopUnchecked: true,
+  };
+  await screen.rerender(ui());
+  await expect
+    .element(screen.getByText(/couldn't check may also have this file open/))
+    .toBeInTheDocument();
 });

@@ -4,20 +4,33 @@ import * as NodeNet from "node:net";
 import { describe, expect, it } from "@effect/vitest";
 import * as NetService from "@t3tools/shared/Net";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
 
 import { forwardLoopbackPort } from "./portForward.ts";
 
 /** A loopback server that answers each line with `echo:<line>`, on a free port. */
 const echoServer = Effect.acquireRelease(
-  Effect.callback<{ readonly server: NodeNet.Server; readonly port: number }>((resume) => {
+  Effect.callback<{
+    readonly server: NodeNet.Server;
+    readonly port: number;
+    readonly connections: { count: number };
+  }>((resume) => {
+    const connections = { count: 0 };
     const server = NodeNet.createServer((socket) => {
+      connections.count += 1;
       socket.on("data", (data) => socket.write(`echo:${data.toString()}`));
       socket.on("error", () => undefined);
     });
     server.listen(0, "127.0.0.1", () => {
       const address = server.address();
-      resume(Effect.succeed({ server, port: typeof address === "object" ? address!.port : 0 }));
+      resume(
+        Effect.succeed({
+          server,
+          port: typeof address === "object" ? address!.port : 0,
+          connections,
+        }),
+      );
     });
   }),
   ({ server }) => Effect.sync(() => server.close()),
@@ -63,7 +76,7 @@ describe("forwardLoopbackPort", () => {
       expect(yield* exchange(listenPort, "hello")).toBe("echo:hello");
       const open = yield* openConnection(listenPort);
 
-      yield* Scope.close(scope, Effect.void);
+      yield* Scope.close(scope, Exit.void);
       yield* Effect.promise(() => open.closed);
       expect(yield* exchange(listenPort, "again")).toBe("error:ECONNREFUSED");
     }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
@@ -75,7 +88,8 @@ describe("forwardLoopbackPort", () => {
       const listenPort = yield* net.reserveLoopbackPort();
       const nobody = yield* net.reserveLoopbackPort();
       yield* forwardLoopbackPort({ listenPort, targetPort: nobody });
-      expect(yield* exchange(listenPort, "hello")).toBe("closed");
+      // Closed with bytes unread, the kernel may reset the connection rather than end it.
+      expect(["closed", "error:ECONNRESET"]).toContain(yield* exchange(listenPort, "hello"));
     }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
   );
 
@@ -88,5 +102,25 @@ describe("forwardLoopbackPort", () => {
       }).pipe(Effect.flip);
       expect(result._tag).toBe("PortForwardError");
     }).pipe(Effect.scoped),
+  );
+
+  it.live("closes a connection its check refuses before anything reaches the target", () =>
+    Effect.gen(function* () {
+      const target = yield* echoServer;
+      const net = yield* NetService.NetService;
+      const listenPort = yield* net.reserveLoopbackPort();
+      const checked: Array<number | undefined> = [];
+      yield* forwardLoopbackPort({
+        listenPort,
+        targetPort: target.port,
+        accept: async (socket) => {
+          checked.push(socket.remotePort);
+          return false;
+        },
+      });
+      expect(["closed", "error:ECONNRESET"]).toContain(yield* exchange(listenPort, "hello"));
+      expect(checked).toHaveLength(1);
+      expect(target.connections.count).toBe(0);
+    }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
   );
 });

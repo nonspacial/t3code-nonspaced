@@ -84,6 +84,18 @@ export function BlenderRoleSwitch(props: {
   );
 }
 
+/** Over a running master: a desktop Blender T3 Code couldn't ask may have the file open too. */
+export function DesktopUncheckedNotice() {
+  return (
+    <div className="shrink-0 border-b border-border bg-warning/8 px-3 py-1.5 text-warning-foreground text-xs">
+      <T>
+        A desktop Blender T3 Code couldn't check may also have this file open. Save and close it
+        there so the two don't overwrite each other.
+      </T>
+    </div>
+  );
+}
+
 const fileName = (relativePath: string) => relativePath.slice(relativePath.lastIndexOf("/") + 1);
 
 /** The Master side while no master Blender shows it: open it, or move it from the desktop. */
@@ -102,8 +114,14 @@ export function MasterCard(props: {
   const name = fileName(props.state.relativePath);
   const run = async (action: "open" | "move") => {
     setBusy(true);
-    const command = action === "open" ? openMaster : moveIntoT3;
-    const result = await command({ environmentId, input: { threadId } });
+    // Move names the master shown, so a stale click can't move a different one.
+    const result =
+      action === "open"
+        ? await openMaster({ environmentId, input: { threadId } })
+        : await moveIntoT3({
+            environmentId,
+            input: { threadId, relativePath: props.state.relativePath },
+          });
     setBusy(false);
     if (result._tag === "Failure") {
       toastManager.add(
