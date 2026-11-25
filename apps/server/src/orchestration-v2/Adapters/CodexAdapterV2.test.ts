@@ -3868,6 +3868,175 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
+  it.effect("loads the thread again when the hosted Blender approvals cross full access", () =>
+    Effect.gen(function* () {
+      // Codex reads MCP config only when it loads a thread, so a turn that leaves or reaches full
+      // access must unload and resume the thread before Blender's write tools ask (or stop asking).
+      const scenario = "codex-hosted-blender-approvals";
+      const nativeThreadId = "hosted-blender-approvals-thread";
+      yield* (yield* McpProviderSessions.McpProviderSessions).set({
+        environmentId: EnvironmentId.make("environment-codex-hosted-blender"),
+        threadId: ThreadId.make(`thread-${scenario}`),
+        providerSessionId: `provider-session-${scenario}`,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        endpoint: "http://127.0.0.1:43123/mcp",
+        authorizationHeader: "Bearer secret-codex-token",
+        browserToolsAvailable: true,
+        hostedBlender: {
+          command: "/home/user/.local/bin/blender-mcp",
+          blenderPath: "/usr/bin/blender",
+          hostedPort: 41001,
+          masterPort: 41002,
+          tmpDir: "/tmp/t3hb-mcp",
+        },
+      });
+      // Approval-required and auto both ask, so only crossing full access reloads.
+      const turnModes = ["full-access", "approval-required", "auto", "full-access"] as const;
+      const turnIds = turnModes.map((_, index) => `hosted-blender-turn-${index + 1}`);
+      const turnParams = yield* Effect.forEach(turnModes, (runtimeMode) =>
+        CodexAdapterV2.buildCodexTurnStartParams({
+          nativeThreadId,
+          codexInput: [{ type: "text", text: "Edit the hero." }],
+          runtimePolicy: { ...CODEX_TEST_RUNTIME_POLICY, runtimeMode },
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          hasT3Mcp: true,
+          agentFeedback: "off",
+          browserToolsAvailable: true,
+          deviceToolsAvailable: false,
+          hostedBlenderToolsAvailable: true,
+          omitServiceTier: false,
+        }),
+      );
+      const turn = (index: number, id: number): Array<CodexReplay.CodexAppServerReplayEntry> => [
+        {
+          type: "expect_outbound",
+          label: `turn ${index + 1} turn/start`,
+          frame: { id, method: "turn/start", params: turnParams[index] },
+        },
+        {
+          type: "emit_inbound",
+          label: `turn ${index + 1} turn/start`,
+          frame: {
+            id,
+            result: { turn: makeCodexReplayTurn({ id: turnIds[index]!, status: "inProgress" }) },
+          },
+        },
+        {
+          type: "emit_inbound",
+          label: `turn ${index + 1} turn/completed`,
+          frame: {
+            method: "turn/completed",
+            params: {
+              threadId: nativeThreadId,
+              turn: makeCodexReplayTurn({ id: turnIds[index]!, status: "completed" }),
+            },
+          },
+        },
+      ];
+      const reload = (id: number): Array<CodexReplay.CodexAppServerReplayEntry> => [
+        {
+          type: "expect_outbound",
+          label: "thread/unsubscribe",
+          frame: { id, method: "thread/unsubscribe", params: { threadId: nativeThreadId } },
+        },
+        {
+          type: "emit_inbound",
+          label: "thread/unsubscribe",
+          frame: { id, result: { status: "unsubscribed" } },
+        },
+        {
+          type: "expect_outbound",
+          label: "thread/resume",
+          frame: {
+            id: id + 1,
+            method: "thread/resume",
+            params: {
+              threadId: nativeThreadId,
+              excludeTurns: true,
+              config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+            },
+          },
+        },
+        {
+          type: "emit_inbound",
+          label: "thread/resume",
+          frame: {
+            id: id + 1,
+            result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } },
+          },
+        },
+      ];
+      const loads: Array<{ readonly method: string; readonly approval: unknown }> = [];
+      const harness = yield* makeCodexReplayHarness(
+        makeCodexReplayTranscript({
+          scenario,
+          entries: [
+            ...codexReplayPreamble({
+              nativeThreadId,
+              nativeTurnId: turnIds[0]!,
+              prompt: "Edit the hero.",
+            }).slice(0, 5),
+            // Started in full access: its first turn needs no reload.
+            ...turn(0, 3),
+            ...reload(4),
+            ...turn(1, 6),
+            ...turn(2, 7),
+            ...reload(8),
+            ...turn(3, 10),
+          ],
+        }),
+        () => Effect.void,
+        (method, params) =>
+          Effect.sync(() => {
+            if (method !== "thread/start" && method !== "thread/resume") return;
+            const config = Predicate.hasProperty(params, "config") ? params.config : undefined;
+            const server = Predicate.hasProperty(config, "mcp_servers.blender-hosted")
+              ? config["mcp_servers.blender-hosted"]
+              : undefined;
+            loads.push({
+              method,
+              approval: Predicate.hasProperty(server, "default_tools_approval_mode")
+                ? server.default_tools_approval_mode
+                : undefined,
+            });
+          }),
+      );
+      for (const [index, runtimeMode] of turnModes.entries()) {
+        yield* harness.runtime.startTurn({
+          ...makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(`hosted-blender-${index + 1}`),
+            text: "Edit the hero.",
+          }),
+          runOrdinal: index + 1,
+          providerTurnOrdinal: index + 1,
+          runtimePolicy: { ...CODEX_TEST_RUNTIME_POLICY, runtimeMode },
+        });
+        yield* harness.awaitTerminal(index + 1);
+      }
+      assert.deepEqual(loads, [
+        { method: "thread/start", approval: "approve" },
+        { method: "thread/resume", approval: "prompt" },
+        { method: "thread/resume", approval: "approve" },
+      ]);
+      assert.deepEqual(
+        harness.terminalEvents().map((event) => event.status),
+        ["completed", "completed", "completed", "completed"],
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
   it.effect("signs a Codex MCP server in only while it isn't connected in the thread", () =>
     Effect.gen(function* () {
       const nativeThreadId = "mcp-sign-in-thread";

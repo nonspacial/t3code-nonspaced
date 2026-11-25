@@ -20,6 +20,23 @@ export interface McpProviderSessionConfig {
   readonly agentDeviceEnvironment?: Readonly<Record<string, string>>;
   /** True while a delegated task this thread started will wake it with its result. */
   readonly hasPendingWake?: Effect.Effect<boolean>;
+  /** The official Blender MCP for this thread's hosted Blenders, when the user allows agents. */
+  readonly hostedBlender?: HostedBlenderMcpLaunch;
+}
+
+/**
+ * How a thread's session runs the official `blender-mcp`, once per hosted Blender role. The ports
+ * are assigned when the session starts, before any Blender exists; the Blender binds them later.
+ */
+export interface HostedBlenderMcpLaunch {
+  readonly command: string;
+  readonly blenderPath: string;
+  /** The thread's working Blender. */
+  readonly hostedPort: number;
+  /** The master Blender the thread copies back into. */
+  readonly masterPort: number;
+  /** A private `TMPDIR` for the MCP server. */
+  readonly tmpDir: string;
 }
 
 export function withAgentDeviceEnvironment(

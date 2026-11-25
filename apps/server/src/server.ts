@@ -116,6 +116,7 @@ import * as DesktopBrowserChannel from "./preview/DesktopBrowserChannel.ts";
 import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
 import * as HiddenDisplayBinary from "./hostedBlender/HiddenDisplayBinary.ts";
 import * as HostedBlender from "./hostedBlender/HostedBlender.ts";
+import * as HostedBlenderAgents from "./hostedBlender/HostedBlenderAgents.ts";
 import * as HostedBlenderSetup from "./hostedBlender/HostedBlenderSetup.ts";
 import * as HostedBlenderStream from "./hostedBlender/HostedBlenderStream.ts";
 import * as PreviewBrowser from "./preview/PreviewBrowser.ts";
@@ -580,6 +581,12 @@ const layerHostedBlender = HostedBlender.layer.pipe(
   Layer.provide(NetService.layer),
 );
 
+// Below provider sessions, which give threads its MCP; setup's readiness is fed in from above.
+const layerHostedBlenderAgents = HostedBlenderAgents.layer.pipe(
+  Layer.provide(layerServerSettings),
+  Layer.provide(NetService.layer),
+);
+
 const layerWorkspaceEntries = WorkspaceEntries.layer.pipe(Layer.provide(WorkspacePaths.layer));
 
 const layerWorkspaceFileSystem = WorkspaceFileSystem.layer.pipe(
@@ -779,6 +786,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   KeepAwake.layer,
   // WebSocket handlers and the stream route share the one instance per server.
   layerHostedBlender,
+  HostedBlenderAgents.layerFollowSetup.pipe(Layer.provide(layerHostedBlenderSetup)),
   DelegatedTaskAnalytics.layer,
   Layer.effectDiscard(
     Effect.gen(function* () {
@@ -857,6 +865,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
 const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   Layer.provideMerge(layerPtyAdapter),
   Layer.provideMerge(AcpRegistrySupport.layerFromHost.pipe(Layer.provide(ProviderHostLive.layer))),
+  Layer.provideMerge(layerHostedBlenderAgents),
   Layer.provideMerge(
     Layer.mergeAll(
       layerProviderEventLoggers,

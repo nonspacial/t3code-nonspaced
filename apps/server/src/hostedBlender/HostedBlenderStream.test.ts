@@ -35,6 +35,7 @@ const serve = (
       reopen: () => Effect.void,
       dismiss: () => Effect.void,
       closeOnSettle: () => Effect.void,
+      agentListener: () => Effect.succeed(null),
       threadState: () => Stream.empty,
       runningBlenders: Stream.empty,
       attachViewer,

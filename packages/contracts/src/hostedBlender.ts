@@ -436,3 +436,63 @@ export type HostedBlenderViewerMessage = Exclude<
   HostedBlenderStreamClientMessage,
   { readonly type: "ack" | "resize" | "visibility" }
 >;
+
+/** `blender_start`: the master file an agent wants changed, from the thread's workspace. */
+export const HostedBlenderToolStartInput = Schema.Struct({
+  path: TrimmedNonEmptyString.annotate({
+    description:
+      "The master `.blend`: the file the user wants changed, absolute or relative to the thread's workspace. T3 opens a working copy of it.",
+  }),
+});
+export type HostedBlenderToolStartInput = typeof HostedBlenderToolStartInput.Type;
+
+export const HostedBlenderToolStartResult = Schema.Struct({
+  /** The working copy's absolute path, beside the master. */
+  workingCopy: Schema.String,
+  master: Schema.String,
+  /** False when the thread's earlier working copy was kept. */
+  created: Schema.Boolean,
+  status: Schema.Literals(["starting", "running"]),
+  /** The MCP server whose tools edit the working copy. */
+  mcpServer: Schema.String,
+});
+export type HostedBlenderToolStartResult = typeof HostedBlenderToolStartResult.Type;
+
+export const HostedBlenderToolStatusResult = Schema.Struct({
+  blenders: Schema.Array(
+    Schema.Struct({
+      role: Schema.Literal("working"),
+      status: Schema.Literals(["starting", "running", "failed"]),
+      /** The open file's absolute path; absent for a start that failed. */
+      file: Schema.optionalKey(Schema.String),
+      unsavedChanges: Schema.optionalKey(Schema.Boolean),
+      /** Whether its Blender MCP takes this thread's `blender-hosted` calls. */
+      agentAccess: Schema.optionalKey(Schema.Boolean),
+      /**
+       * Why that access ended: switched off or the session ended, T3 lost its connection to
+       * Blender, or Blender has another file open.
+       */
+      agentAccessEnded: Schema.optionalKey(
+        Schema.Literals(["revoked", "connectionLost", "otherFile"]),
+      ),
+    }),
+  ),
+});
+export type HostedBlenderToolStatusResult = typeof HostedBlenderToolStatusResult.Type;
+
+export const HostedBlenderToolQuitInput = Schema.Struct({
+  save: Schema.Boolean.annotate({
+    description: "Save the working copy first. Quitting without saving loses unsaved edits.",
+  }),
+});
+export type HostedBlenderToolQuitInput = typeof HostedBlenderToolQuitInput.Type;
+
+/** Why a hosted Blender tool could not act; the reason is written for the agent. */
+export class HostedBlenderToolError extends Schema.TaggedError<HostedBlenderToolError>()(
+  "HostedBlenderToolError",
+  { reason: Schema.String },
+) {
+  override get message(): string {
+    return this.reason;
+  }
+}

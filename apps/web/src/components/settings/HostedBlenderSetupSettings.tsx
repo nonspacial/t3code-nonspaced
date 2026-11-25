@@ -90,7 +90,9 @@ export function HostedBlenderSetupSettings(props: { readonly environmentId: Envi
           settingKeys={["hostedBlenderAllowAgents"]}
           description={
             ready && mcpFound
-              ? gt("Agents in Claude and Codex threads may start this server's hosted Blenders.")
+              ? gt(
+                  "Agents in Claude and Codex threads may start this server's hosted Blenders, from their next session. Other providers are not supported yet.",
+                )
               : gt(
                   "Finish setup first, including the official Blender MCP server. Agents use it to work in hosted Blenders.",
                 )

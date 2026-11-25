@@ -60,9 +60,17 @@ const OFFICIAL_MCP_ENTRY_POINT = /^from blmcp import main$/m;
 // The install agent may wait on the user's password card for a long time.
 const INSTALL_WAIT_MS = 6 * 60 * 60 * 1000;
 
-/** What the pane needs to start a hosted Blender, or why it can't. */
+/**
+ * What the pane needs to start a hosted Blender, or why it can't. `blenderMcp` is Blender Lab's
+ * official MCP server, which agents need and the pane doesn't.
+ */
 export type HostedBlenderReadiness =
-  | { readonly status: "ok"; readonly helper: string; readonly blender: string }
+  | {
+      readonly status: "ok";
+      readonly helper: string;
+      readonly blender: string;
+      readonly blenderMcp: string | null;
+    }
   | Extract<HostedBlenderThreadState, { status: "unavailable" | "notSetUp" }>;
 
 /**
@@ -86,7 +94,11 @@ export class HostedBlenderSetup extends Context.Service<
 
 interface Internal {
   readonly state: HostedBlenderSetupState;
-  readonly tools: { readonly helper: string; readonly blender: string } | null;
+  readonly tools: {
+    readonly helper: string;
+    readonly blender: string;
+    readonly blenderMcp: string | null;
+  } | null;
   /** From the last check, for the install prompt. */
   readonly osRelease: OsRelease | null;
 }
@@ -366,7 +378,13 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
     yield* update((internal) => ({
       state: { ...internal.state, result, checking: false },
       tools:
-        helper !== null && facts.blender !== null ? { helper, blender: facts.blender.path } : null,
+        helper !== null && facts.blender !== null
+          ? {
+              helper,
+              blender: facts.blender.path,
+              blenderMcp: facts.blenderMcp?.official === true ? facts.blenderMcp.path : null,
+            }
+          : null,
       osRelease: facts.osRelease,
     }));
   }).pipe(

@@ -11,7 +11,11 @@ export interface BlenderLaunch {
   readonly controlSocket: string;
   readonly mcpPort: number;
   /** A recovery copy or autosave the control add-on restores over `blendPath`. */
-  readonly recover: string | null;
+  readonly recover?: string | null;
+  /** The official add-on listens on `mcpPort` for the thread's agent; otherwise it stays off. */
+  readonly mcpListen?: boolean;
+  /** Embedded scripts follow the user's "Auto Run Python Scripts"; otherwise they are forced off. */
+  readonly autoRun?: boolean;
   readonly width: number;
   readonly height: number;
 }
@@ -36,8 +40,8 @@ export const helperArguments = (launch: BlenderLaunch): ReadonlyArray<string> =>
   // The official MCP add-on only starts with online access.
   "--online-mode",
   "-noaudio",
-  // Scripts embedded in the file stay off until threads can opt in by permission mode.
-  "--disable-autoexec",
+  // Only full-access threads let scripts embedded in the file follow the user's setting.
+  ...(launch.autoRun === true ? [] : ["--disable-autoexec"]),
   // A file on the command line also keeps the splash screen away.
   launch.blendPath,
   "--python",
@@ -47,7 +51,8 @@ export const helperArguments = (launch: BlenderLaunch): ReadonlyArray<string> =>
   launch.controlSocket,
   "--t3-mcp-port",
   String(launch.mcpPort),
-  ...(launch.recover === null ? [] : ["--t3-recover", launch.recover]),
+  ...(launch.recover ? ["--t3-recover", launch.recover] : []),
+  ...(launch.mcpListen === true ? ["--t3-mcp-listen"] : []),
 ];
 
 /**

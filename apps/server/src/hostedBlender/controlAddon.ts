@@ -23,12 +23,20 @@ def _option(name):
 SOCKET_PATH = _option("--t3-control")
 MCP_PORT = _option("--t3-mcp-port")
 RECOVER_PATH = _option("--t3-recover")
+MCP_LISTEN = "--t3-mcp-listen" in (sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
 TICK = 0.1
 # Casting a mark's samples stops after this long, as the 3D preview's does.
 HIT_BUDGET = 0.1
 
 
 class _State:
+    # "off", "starting", "ready" or "failed": whether Blender Lab's listener takes agent calls.
+    agent_listener = "starting" if MCP_LISTEN else "off"
+    # The agent may use Blender Lab only while T3 holds this connection, for this one file. Once
+    # that ends it stays ended until Blender restarts.
+    grant = "pending" if MCP_LISTEN else "ended"
+    authorized_file = None
+    mcp_name = None
     server = None
     client = None
     buffer = b""
@@ -77,13 +85,20 @@ def _drop_client():
             _State.client.close()
         except OSError:
             pass
+        # Fail closed: without T3 on the other end, nothing may grant the agent Blender.
+        _end_grant()
     _State.client = None
     _State.buffer = b""
     _State.sent = None
 
 
 def _snapshot():
-    snapshot = {"type": "state", "filepath": bpy.data.filepath, "dirty": bool(bpy.data.is_dirty)}
+    snapshot = {
+        "type": "state",
+        "filepath": bpy.data.filepath,
+        "dirty": bool(bpy.data.is_dirty),
+        "agentListener": _State.agent_listener,
+    }
     if _State.restore is not None:
         snapshot["restore"] = _State.restore
     return snapshot
@@ -302,6 +317,12 @@ def _handle(command):
             result = None
         _send({"type": "reply", "id": command.get("id"), "result": result})
         return
+    if kind == "stopAgentListener":
+        _end_grant()
+        return
+    if kind == "grantAgentListener":
+        _grant_agent_listener()
+        return
     if kind == "quit":
         if not command.get("save"):
             # T3 waits on this rather than stopping a Blender still writing its quit copy.
@@ -350,6 +371,14 @@ def _tick():
             pass
         except OSError:
             _drop_client()
+        # A stop already waiting wins over a grant queued before it.
+        for queued in _State.buffer.split(b"\n")[:-1]:
+            try:
+                if json.loads(queued).get("type") == "stopAgentListener":
+                    _end_grant()
+                    break
+            except ValueError:
+                pass
         while b"\n" in _State.buffer:
             line, _State.buffer = _State.buffer.split(b"\n", 1)
             try:
@@ -361,6 +390,7 @@ def _tick():
             # Casting blocks Blender's UI; the next request waits for the next tick.
             if command.get("type") == "hits":
                 break
+        _check_authorized_file()
         snapshot = _snapshot()
         if snapshot != _State.sent:
             _State.sent = snapshot
@@ -368,26 +398,28 @@ def _tick():
     return TICK
 
 
-def _disable_mcp_addon():
-    # The copied settings may enable the official MCP add-on, whose code-execution listener
-    # stays off until T3 can turn away other OS users. Its saved port becomes T3's for this
-    # instance, and disabling it for the session (not in the settings) runs its unregister,
-    # which cancels the autostart timer it registered before this script ran.
+def _is_mcp_addon(name):
+    return name.startswith("bl_ext.") and name.endswith(".mcp")
+
+
+def _setup_mcp_addon():
+    # The official MCP add-on runs agent code. However the copied settings left it, it starts
+    # disabled, with no Start button and no autostart, and comes back only when T3 grants this
+    # Blender's thread its agent (see _grant_agent_listener). Disabling with default_set also
+    # drops it from these settings (T3's own copy), so Reload Scripts can't bring it back.
     import addon_utils
 
     preferences = bpy.context.preferences
-    names = [
-        name
-        for name in preferences.addons.keys()
-        if name.startswith("bl_ext.") and name.endswith(".mcp")
-    ]
-    for name in names:
-        addon = preferences.addons[name]
-        if MCP_PORT is not None and addon.preferences is not None:
-            if hasattr(addon.preferences, "port"):
-                addon.preferences.port = int(MCP_PORT)
-                addon.preferences.host = "localhost"
-        addon_utils.disable(name, default_set=False)
+    for name in [name for name in preferences.addons.keys() if _is_mcp_addon(name)]:
+        addon_utils.disable(name, default_set=True)
+    if MCP_LISTEN:
+        installed = [module.__name__ for module in addon_utils.modules() if _is_mcp_addon(module.__name__)]
+        _State.mcp_name = installed[0] if installed else None
+        _State.authorized_file = os.path.realpath(bpy.data.filepath) if bpy.data.filepath else None
+    try:
+        preferences.is_dirty = False
+    except AttributeError:
+        pass
 
 
 def _keep_recovery_files():
@@ -400,7 +432,8 @@ def _keep_recovery_files():
 
 def _recover():
     # Restores a recovery copy or autosave over the file Blender opened. Blender recovers its
-    # own session files with their original path, so saving still writes the user's file.
+    # own session files with their original path, so saving still writes the user's file, and
+    # an agent's working copy stays the file T3 authorized.
     # Scripts stay off as --disable-autoexec says; left out, recovering reads the preference.
     window = _main_window()
     try:
@@ -411,6 +444,109 @@ def _recover():
         print("T3 control add-on: recovery failed:", error, file=sys.stderr)
     _State.restore = "ok" if _State.restored else "failed"
     return None
+
+
+def _grant_agent_listener():
+    # Only once, and never after the grant ended: a revoke T3 sent first wins.
+    if _State.grant != "pending":
+        return
+    _State.grant = "granted"
+    # Checked again now: the file may have changed since T3 saw it.
+    _check_authorized_file()
+    if _State.grant != "granted":
+        return
+    if _State.mcp_name is not None:
+        import addon_utils
+
+        preferences = bpy.context.preferences
+        try:
+            # Its register() reads its preferences, which Blender creates only with default_set.
+            addon_utils.enable(_State.mcp_name, default_set=True)
+            addon = preferences.addons.get(_State.mcp_name)
+            if addon is not None and addon.preferences is not None:
+                addon.preferences.port = int(MCP_PORT)
+                addon.preferences.host = "localhost"
+                addon.preferences.use_autostart = False
+            _cancel_mcp_autostart()
+        except Exception as error:  # noqa: BLE001 - reported as failed, never a crash
+            print("T3 control add-on: Blender Lab MCP did not enable:", error, file=sys.stderr)
+        try:
+            preferences.is_dirty = False
+        except AttributeError:
+            pass
+    _start_agent_listener()
+
+
+def _mcp_server():
+    return sys.modules.get(_State.mcp_name + ".mcp_to_blender_server") if _State.mcp_name else None
+
+
+def _cancel_mcp_autostart():
+    module = sys.modules.get(_State.mcp_name) if _State.mcp_name else None
+    autostart = getattr(module, "_autostart_timer", None)
+    if autostart is not None and bpy.app.timers.is_registered(autostart):
+        bpy.app.timers.unregister(autostart)
+
+
+def _start_agent_listener():
+    # Fails closed: a port another process holds, or a listener on any other port, is "failed".
+    server = _mcp_server()
+    try:
+        if server is not None and not server.is_running():
+            bpy.ops.blmcp.server_start()
+        sock = getattr(getattr(server, "_state", None), "sock", None)
+        ready = (
+            server is not None
+            and server.is_running()
+            and sock is not None
+            and sock.getsockname()[1] == int(MCP_PORT)
+        )
+    except Exception as error:  # noqa: BLE001 - a listener that can't start is reported, never a crash
+        print("T3 control add-on: Blender Lab MCP did not start:", error, file=sys.stderr)
+        ready = False
+    if not ready and server is not None and server.is_running():
+        _stop_agent_listener()
+    _State.agent_listener = "ready" if ready else "failed"
+    return None
+
+
+def _check_authorized_file():
+    # Another file opened, or the copy saved under another name, is not what T3 authorized.
+    if _State.grant != "granted":
+        return
+    current = os.path.realpath(bpy.data.filepath) if bpy.data.filepath else None
+    if current is None or current != _State.authorized_file:
+        _end_grant()
+
+
+def _end_grant():
+    if _State.grant == "ended":
+        return
+    _State.grant = "ended"
+    _stop_agent_listener()
+    # Disabled and dropped from these settings, so neither its own Start button nor Reload
+    # Scripts can reopen the port.
+    if _State.mcp_name is not None:
+        import addon_utils
+
+        try:
+            addon_utils.disable(_State.mcp_name, default_set=True)
+        except Exception as error:  # noqa: BLE001 - reported, never a crash
+            print("T3 control add-on: Blender Lab MCP did not disable:", error, file=sys.stderr)
+
+
+def _stop_agent_listener():
+    # Its stop closes the listening socket and every client connection.
+    server = _mcp_server()
+    try:
+        if server is not None and server.is_running():
+            bpy.ops.blmcp.server_stop()
+    except Exception as error:  # noqa: BLE001 - reported, never a crash
+        print("T3 control add-on: Blender Lab MCP did not stop:", error, file=sys.stderr)
+    if server is not None and server.is_running():
+        server.stop()
+    _cancel_mcp_autostart()
+    _State.agent_listener = "off"
 
 
 def _has_viewport_window():
@@ -460,15 +596,17 @@ def _open_viewport_window():
 @persistent
 def _on_save_post(*_args):
     _State.restored = False
+    _check_authorized_file()
 
 
 @persistent
 def _on_load_post(*_args):
+    _check_authorized_file()
     bpy.app.timers.register(_open_viewport_window, first_interval=0.2)
 
 
 def register():
-    _disable_mcp_addon()
+    _setup_mcp_addon()
     _keep_recovery_files()
     try:
         bpy.context.preferences.is_dirty = False
@@ -478,6 +616,7 @@ def register():
         _State.server = _listen()
         bpy.app.timers.register(_tick, first_interval=TICK, persistent=True)
     bpy.app.handlers.load_post.append(_on_load_post)
+    # Save As to another name is another file too, checked before anything else can run.
     bpy.app.handlers.save_post.append(_on_save_post)
     if RECOVER_PATH is not None:
         bpy.app.timers.register(_recover, first_interval=0.1)
