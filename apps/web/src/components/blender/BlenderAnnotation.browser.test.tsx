@@ -196,6 +196,27 @@ it("freezes the pane's frame and attaches the viewport window's camera and what 
   expect(blender.draft()?.images.map((image) => image.id)).toEqual([annotation.id]);
 });
 
+it("asks Blender what an arrow points at first, from its tip", async () => {
+  const blender = setup("thread-blender-arrow", "window");
+  await using screen = await render(blender.element, pane());
+  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
+  const surface = screen.getByRole("img", { name: "Frozen 3D view to annotate" });
+  await expect.element(surface).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Arrow", exact: true }));
+  // The tip is at the middle, which is the frozen frame's middle however it is letterboxed.
+  drag(surface.element(), [0.1, 0.9], [0.5, 0.5]);
+  await userEvent.click(screen.getByRole("button", { name: "Add to chat" }));
+
+  await vi.waitFor(() => expect(blender.draft()?.previewAnnotations).toHaveLength(1));
+  const request = commands.findHits.mock.calls[0]?.[0] as {
+    input: { marks: Array<Array<{ x: number; y: number }>> };
+  };
+  expect(request.input.marks[0]![0]!.x).toBeCloseTo(0.5, 2);
+  expect(request.input.marks[0]![0]!.y).toBeCloseTo(0.5, 2);
+  const annotation = blender.draft()!.previewAnnotations[0]!;
+  expect(annotation.strokes[0]?.hit).toEqual({ object: "Cube", point: [0.2, -1, 0.4] });
+});
+
 it("places marks even when the stream shows the whole display, since Blender rendered the view", async () => {
   const blender = setup("thread-blender-display", "output");
   await using screen = await render(blender.element, pane());
