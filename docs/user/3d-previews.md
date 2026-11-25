@@ -8,7 +8,9 @@ A glTF can keep its buffers and textures in separate files, and an OBJ its mater
 
 ## Point the agent at part of a model
 
-Screenshot & annotate freezes the view so you can draw on it, mark regions, erase marks, and write or dictate a comment. Add to chat (or Enter) puts it in the composer with the screenshot, like an annotation from the browser preview. The agent also gets the camera position and, for each mark, the name of the object under it and the 3D point it covers. Esc puts the view back without adding anything.
+Screenshot & annotate freezes the view so you can draw on it, draw lines and arrows, mark regions, erase marks, and write or dictate a comment. Add to chat (or Enter) puts it in the composer with the screenshot, like an annotation from the browser preview. The agent also gets the camera position and, for each mark, the name of the object under it and the 3D point it covers; for an arrow, that's what its tip points at. Esc puts the view back without adding anything.
+
+Hold Shift while you drag to keep a mark tidy: a freehand line becomes one straight stroke, lines and arrows snap to 45° steps, and a region becomes a square. Pick a color before you draw if the default doesn't stand out against the model, and turn off fill to outline a region without tinting it. Marks already drawn keep their color. Ctrl+Z (Cmd+Z on macOS) takes back the last mark or brings back one you erased, and Ctrl+Shift+Z or Ctrl+Y puts it back. Once the comment has text in it, Ctrl+Z there undoes your typing instead.
 
 ## View links
 

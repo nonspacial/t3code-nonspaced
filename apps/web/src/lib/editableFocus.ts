@@ -14,3 +14,8 @@ export function isEditableFocused(target: EventTarget | null = document.activeEl
   while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement;
   return element !== null && element.closest(EDITABLE_SELECTOR) !== null;
 }
+
+/** Inside an element marked `data-own-undo`, mod+z is that element's undo, not the app's. */
+export function hasOwnUndo(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest("[data-own-undo]") !== null;
+}
