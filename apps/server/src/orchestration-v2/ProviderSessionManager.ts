@@ -706,9 +706,12 @@ export const layerWithOptions = (
                     return { mcpCredentialId: existing.providerSessionId, issued: false };
                   }
                   dropMcpCredentialReservation(threadId, existing.providerSessionId);
-                  // The replaced credential's agent loses its hosted Blenders before the new
-                  // one reuses the thread's ports.
-                  yield* endHostedBlenderAccess(threadId);
+                  // The replaced credential stops working first, so nothing can grant it a
+                  // hosted Blender again; then its agent loses them, before the new one reuses
+                  // the thread's ports.
+                  yield* mcpSessionRegistry.revokeThread(threadId);
+                  yield* mcpSessions.clear(threadId);
+                  yield* endHostedBlenderAccess(threadId, existing.providerSessionId);
                 }
                 yield* mcpSessionRegistry.revokeThread(threadId);
                 const credential = yield* mcpSessionRegistry.issue({
@@ -733,22 +736,24 @@ export const layerWithOptions = (
               }),
             );
       // A hosted Blender listens for the thread's agent only while its session holds the MCP.
-      const endHostedBlenderAccess = (threadId: ThreadId) =>
+      const endHostedBlenderAccess = (threadId: ThreadId, mcpCredentialId: string | undefined) =>
         Option.isNone(hostedBlenderAgents)
           ? Effect.void
-          : hostedBlenderAgents.value.sessionEnded(threadId);
+          : hostedBlenderAgents.value.sessionEnded(threadId, mcpCredentialId);
       const clearMcpSession = (threadId: ThreadId, mcpCredentialId?: string) =>
         mcpCredentialId === undefined
-          ? mcpSessionRegistry.revokeThread(threadId).pipe(
-              Effect.tap(() => mcpSessions.clear(threadId)),
-              Effect.tap(() => endHostedBlenderAccess(threadId)),
-            )
+          ? Effect.gen(function* () {
+              const ended = (yield* mcpSessions.read(threadId))?.providerSessionId;
+              yield* mcpSessionRegistry.revokeThread(threadId);
+              yield* mcpSessions.clear(threadId);
+              yield* endHostedBlenderAccess(threadId, ended);
+            })
           : mcpSessionRegistry.revokeProviderSession(mcpCredentialId).pipe(
               Effect.tap(() =>
                 Effect.gen(function* () {
                   if ((yield* mcpSessions.read(threadId))?.providerSessionId === mcpCredentialId) {
                     yield* mcpSessions.clear(threadId);
-                    yield* endHostedBlenderAccess(threadId);
+                    yield* endHostedBlenderAccess(threadId, mcpCredentialId);
                   }
                 }),
               ),

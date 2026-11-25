@@ -490,6 +490,7 @@ it("passes a good run and names every rule a bad run breaks", () => {
 it("grades the order of the code an agent sends Blender", () => {
   const expect = {
     codeOrder: ["bpy\\.data\\.filepath", "t3_copy_back", "undo_push", "save_mainfile"],
+    codeEvery: ["bpy\\.data\\.filepath"],
   };
   const code = (...codes: Array<string>): SampleRun => ({
     calls: codes.map((value, step) => ({
@@ -501,22 +502,28 @@ it("grades the order of the code an agent sends Blender", () => {
     stopReason: "end_turn",
   });
   const inOrder = code(
-    "assert bpy.data.filepath == master",
-    'bpy.data.scenes[0]["t3_copy_back"] = "hero.wip 12:00"',
-    "replace(); bpy.ops.ed.undo_push(message='copy back')",
-    'del bpy.data.scenes[0]["t3_copy_back"]; bpy.ops.wm.save_mainfile()',
+    'assert bpy.data.filepath == master; bpy.data.scenes[0]["t3_copy_back"] = "hero 12:00"',
+    "assert bpy.data.filepath == master; replace(); bpy.ops.ed.undo_push(message='copy back')",
+    'assert bpy.data.filepath == master; del bpy.data.scenes[0]["t3_copy_back"]; bpy.ops.wm.save_mainfile()',
   );
   assert.deepEqual(failed(expect, inOrder), []);
-  // The clash check and replacement ran before the marker was taken.
-  const markerLate = code(
-    "assert bpy.data.filepath == master; replace(); bpy.ops.ed.undo_push(message='x')",
-    'bpy.data.scenes[0]["t3_copy_back"] = "x"; bpy.ops.wm.save_mainfile()',
+  // The real-app run: the file checked once, with the objects, then the marker with no re-check.
+  const haiku = code(
+    "assert bpy.data.filepath == master; result = {o.name: o.matrix_world[:] for o in objects}",
+    'bpy.data.scenes[0]["t3_copy_back"] = "hero 12:00"; replace()',
+    "bpy.ops.ed.undo_push(message='copy back'); bpy.ops.wm.save_mainfile()",
   );
-  assert.deepEqual(failed(expect, markerLate), [
+  assert.deepEqual(failed(expect, haiku), ["codeEvery /bpy\\.data\\.filepath/"]);
+  // Saved before the undo step, in one request.
+  const saveFirst = code(
+    'assert bpy.data.filepath == master; bpy.data.scenes[0]["t3_copy_back"] = "x"; bpy.ops.wm.save_mainfile(); bpy.ops.ed.undo_push(message="x")',
+  );
+  assert.deepEqual(failed(expect, saveFirst), [
     "codeOrder bpy\\.data\\.filepath > t3_copy_back > undo_push > save_mainfile",
   ]);
   assert.deepEqual(failed(expect, code()), [
     "codeOrder bpy\\.data\\.filepath > t3_copy_back > undo_push > save_mainfile",
+    "codeEvery /bpy\\.data\\.filepath/",
   ]);
 });
 

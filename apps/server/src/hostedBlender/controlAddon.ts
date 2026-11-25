@@ -40,6 +40,8 @@ class _State:
     client = None
     buffer = b""
     sent = None
+    # Quit requests T3 gave up on; one still waiting here is never carried out.
+    cancelled_quits = set()
 
 
 def _listen():
@@ -266,6 +268,10 @@ def _hits(command):
 
 
 def _set_view(command):
+    # The link names the file it was made for; Blender may have another open by now.
+    current = os.path.realpath(bpy.data.filepath) if bpy.data.filepath else ""
+    if current != command.get("filepath"):
+        return "otherFile"
     found = _viewport()
     if found is None:
         return None
@@ -303,16 +309,20 @@ def _handle(command):
     if kind == "grantAgentListener":
         _grant_agent_listener()
         return
+    if kind == "cancelQuit":
+        _State.cancelled_quits.add(command.get("id"))
+        _send({"type": "quitCancelled", "id": command.get("id")})
+        return
     if kind == "quitIfClean":
-        # Checked here, at the moment of quitting: T3's last word on unsaved changes may be stale.
-        # Saving the .blend leaves edited images unsaved, so they count too.
-        if bpy.data.is_dirty or any(image.is_dirty for image in bpy.data.images):
-            _send({"type": "quitRefused"})
+        if command.get("id") in _State.cancelled_quits:
             return
-        # Invoked as the user's quit is, so Blender's own check (asset catalogs and the rest)
-        # asks instead of quitting; T3 then keeps it.
+        # Decided here, at the moment of quitting, with no dialog nobody could answer: T3's last
+        # word on unsaved changes may be stale.
+        if not _session_is_clean():
+            _send({"type": "quitRefused", "id": command.get("id")})
+            return
         with bpy.context.temp_override(window=_main_window()):
-            bpy.ops.wm.quit_blender("INVOKE_DEFAULT")
+            bpy.ops.wm.quit_blender()
         return
     if kind == "quit":
         if command.get("save"):
@@ -325,6 +335,38 @@ def _handle(command):
         window = _main_window()
         with bpy.context.temp_override(window=window):
             bpy.ops.wm.quit_blender()
+
+
+def _unsaved_catalogs():
+    # Blender's own quit check also covers asset catalogs, which Python can read only through
+    # catalogs_save's poll in an asset browser. Catalogs are edited only in one, so with none
+    # there is nothing unsaved; one that can't be asked, out of view, can't be ruled out.
+    for screen in bpy.data.screens:
+        for area in screen.areas:
+            for space in area.spaces:
+                if space.type != "FILE_BROWSER" or getattr(space, "browse_mode", "") != "ASSETS":
+                    continue
+                window = next(
+                    (window for window in bpy.context.window_manager.windows if window.screen == screen),
+                    None,
+                )
+                if window is None or space != area.spaces.active:
+                    return True
+                with bpy.context.temp_override(window=window, area=area, space_data=space):
+                    if bpy.ops.asset.catalogs_save.poll():
+                        return True
+    return False
+
+
+def _session_is_clean():
+    # The .blend, edited images and asset catalogs, as Blender's quit checks; unknown is unclean.
+    try:
+        if bpy.data.is_dirty or any(image.is_dirty for image in bpy.data.images):
+            return False
+        return not _unsaved_catalogs()
+    except Exception as error:  # noqa: BLE001 - can't tell is not clean
+        print("T3 control add-on: could not check for unsaved catalogs:", error, file=sys.stderr)
+        return False
 
 
 def _tick():
@@ -353,14 +395,16 @@ def _tick():
             pass
         except OSError:
             _drop_client()
-        # A stop already waiting wins over a grant queued before it.
+        # A stop already waiting wins over a grant queued before it, and a cancel over its quit.
         for queued in _State.buffer.split(b"\n")[:-1]:
             try:
-                if json.loads(queued).get("type") == "stopAgentListener":
-                    _end_grant()
-                    break
+                waiting = json.loads(queued)
             except ValueError:
-                pass
+                continue
+            if waiting.get("type") == "cancelQuit":
+                _State.cancelled_quits.add(waiting.get("id"))
+            if waiting.get("type") == "stopAgentListener":
+                _end_grant()
         while b"\n" in _State.buffer:
             line, _State.buffer = _State.buffer.split(b"\n", 1)
             try:

@@ -241,9 +241,11 @@ const McpToolUseExpect = Schema.Struct({
   order: Schema.optional(Schema.Array(Schema.String)),
   /**
    * Regexes on the code the agent sends Blender Lab's `execute_blender_code`, in this order: each
-   * first matches the same request as the one before it, or a later one.
+   * first matches after the one before it, later in the same request or in a later one.
    */
   codeOrder: Schema.optional(Schema.Array(Schema.String)),
+  /** Regexes every `execute_blender_code` request must match, as a check repeated in each. */
+  codeEvery: Schema.optional(Schema.Array(Schema.String)),
   /**
    * One `args`-style value per new top-level thread the agent asks for, by `t3_thread_launch` or a
    * `create_threads` entry. Each matches a different thread's request; no other thread is asked for.
@@ -2641,13 +2643,33 @@ export const gradeSample = (
     const inOrder = firsts.every((at, i) => at > (firsts[i - 1] ?? -1));
     add(`order ${expect.order.join(" > ")}`, inOrder);
   }
+  const codes = calls
+    .filter((call) => call.tool.endsWith("__execute_blender_code"))
+    .map((call) => (isRecord(call.input) ? valueText(call.input.code) : ""));
   if (expect.codeOrder !== undefined) {
-    const codes = calls
-      .filter((call) => call.tool.endsWith("__execute_blender_code"))
-      .map((call) => (isRecord(call.input) ? valueText(call.input.code) : ""));
-    const firsts = expect.codeOrder.map((p) => codes.findIndex((code) => new RegExp(p).test(code)));
-    const inOrder = firsts.every((at, i) => at >= 0 && at >= (firsts[i - 1] ?? 0));
+    // Where each pattern first matches, as [request, offset], after the previous pattern's match.
+    let after: readonly [number, number] = [0, -1];
+    let inOrder = true;
+    for (const pattern of expect.codeOrder) {
+      const at = codes.reduce<readonly [number, number] | undefined>((found, code, request) => {
+        if (found !== undefined || request < after[0]) return found;
+        const from = request === after[0] ? after[1] + 1 : 0;
+        const offset = code.slice(from).search(new RegExp(pattern));
+        return offset < 0 ? undefined : [request, from + offset];
+      }, undefined);
+      if (at === undefined) {
+        inOrder = false;
+        break;
+      }
+      after = at;
+    }
     add(`codeOrder ${expect.codeOrder.join(" > ")}`, inOrder);
+  }
+  for (const pattern of expect.codeEvery ?? []) {
+    add(
+      `codeEvery /${pattern}/`,
+      codes.length > 0 && codes.every((code) => new RegExp(pattern).test(code)),
+    );
   }
   for (const [t, n] of Object.entries(expect.minCalls ?? {}))
     add(`minCalls ${t} >= ${n}`, count(t) >= n);

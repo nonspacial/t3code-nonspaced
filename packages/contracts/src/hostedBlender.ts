@@ -288,6 +288,7 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "desktopDidNotQuit",
       "masterUnsaved",
       "masterChanged",
+      "desktopAlias",
     ]),
   },
 ) {
@@ -331,6 +332,8 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "This thread's master Blender has unsaved changes. Save or quit it in the Blender pane's Master view first.";
       case "masterChanged":
         return "This thread's master changed. Check the Blender pane and try again.";
+      case "desktopAlias":
+        return "The desktop Blender has this master open under another name, so its save wouldn't reach the master. Open the master itself there, or quit it and open the master here.";
     }
   }
 }

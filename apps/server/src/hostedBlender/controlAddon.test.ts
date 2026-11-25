@@ -25,13 +25,23 @@ class Addons(dict):
     def keys(self): return list(super().keys())
 addons = Addons({name: Addon() for name in state["enabled"]})
 import contextlib
+# The main window's screen; assetBrowser adds an asset browser, shown or out of view.
+class _Spaces(list):
+    active = None
+_view3d = types.SimpleNamespace(type="VIEW_3D")
+_assets = types.SimpleNamespace(type="FILE_BROWSER", browse_mode="ASSETS")
+_spaces = _Spaces([_view3d] + ([_assets] if state.get("assetBrowser") else []))
+_spaces.active = _assets if state.get("assetBrowser") == "shown" else _view3d
+_area = types.SimpleNamespace(width=800, height=600, spaces=_spaces)
+_screen = types.SimpleNamespace(areas=[_area])
+_windows = [] if state.get("noWindow") else [types.SimpleNamespace(screen=_screen)]
 context = types.SimpleNamespace(
     preferences=types.SimpleNamespace(addons=addons, is_dirty=True),
-    window_manager=types.SimpleNamespace(windows=[]),
+    window_manager=types.SimpleNamespace(windows=_windows),
     temp_override=lambda **_kwargs: contextlib.nullcontext(),
 )
 images = [types.SimpleNamespace(name=name, is_dirty=True) for name in state.get("dirtyImages", [])]
-data = types.SimpleNamespace(filepath=state.get("filepath", "/work/hero.wip-1a2b3c4d.blend"), is_dirty=False, images=images)
+data = types.SimpleNamespace(filepath=state.get("filepath", "/work/hero.wip-1a2b3c4d.blend"), is_dirty=False, images=images, screens=[_screen])
 from . import app, ops
 # Blender registers the enabled add-ons before --python scripts run.
 import addon_utils
@@ -79,6 +89,12 @@ def _quit(*args):
     addon_utils.log("quit_blender", *args)
     return {"FINISHED"}
 wm = types.SimpleNamespace(quit_blender=_quit)
+def _catalogs_poll():
+    # Blender's own unsaved-catalog state, read through an asset browser.
+    return state.get("unsavedCatalogs", False)
+import json as _json, os as _os
+state = _json.loads(_os.environ["STUB_STATE"])
+asset = types.SimpleNamespace(catalogs_save=types.SimpleNamespace(poll=_catalogs_poll))
 `,
   // Imported at the top for the capture and hit tests, which register() never runs.
   "gpu.py": "",
@@ -252,7 +268,15 @@ const runAddon = (input: {
   readonly portTaken?: boolean;
   readonly connect?: boolean;
   /** What T3 sends once connected; a grant by default. */
-  readonly send?: ReadonlyArray<"grantAgentListener" | "stopAgentListener" | "quitIfClean">;
+  readonly send?: ReadonlyArray<
+    "grantAgentListener" | "stopAgentListener" | "quitIfClean" | "cancelQuit"
+  >;
+  /** Asset catalogs edited and not saved, which only Blender's catalog poll can tell. */
+  readonly unsavedCatalogs?: boolean;
+  /** No window to check catalogs through. */
+  readonly noWindow?: boolean;
+  /** An asset browser in the main window, as its area's editor or out of view behind another. */
+  readonly assetBrowser?: "shown" | "hidden";
   /** Blender has unsaved changes when T3's commands arrive. */
   readonly dirty?: boolean;
   /** Images edited and not saved, which saving the .blend leaves behind. */
@@ -440,9 +464,50 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     });
     expect(image.calls.some((call: Array<unknown>) => call[0] === "quit_blender")).toBe(false);
     expect(image.received).toContain("quitRefused");
+    const quits = (result: { readonly calls: ReadonlyArray<Array<unknown>> }) =>
+      result.calls.some((call) => call[0] === "quit_blender");
+    // Unsaved catalogs, which Blender's own quit would ask about, are unsaved work too.
+    const catalogs = runAddon({
+      installed: [],
+      enabled: [],
+      listen: false,
+      send: ["quitIfClean"],
+      unsavedCatalogs: true,
+      assetBrowser: "shown",
+    });
+    expect(quits(catalogs)).toBe(false);
+    expect(catalogs.received).toContain("quitRefused");
+    // An asset browser out of view can't be asked, so its catalogs aren't known to be saved.
+    const unknown = runAddon({
+      installed: [],
+      enabled: [],
+      listen: false,
+      send: ["quitIfClean"],
+      assetBrowser: "hidden",
+    });
+    expect(quits(unknown)).toBe(false);
+    expect(unknown.received).toContain("quitRefused");
+    // A quit T3 cancelled while it waited here is never carried out.
+    const cancelled = runAddon({
+      installed: [],
+      enabled: [],
+      listen: false,
+      send: ["quitIfClean", "cancelQuit"],
+    });
+    expect(quits(cancelled)).toBe(false);
+    expect(cancelled.received).toContain("quitCancelled");
     const clean = runAddon({ installed: [], enabled: [], listen: false, send: ["quitIfClean"] });
-    // As the user's own quit, so Blender's check covers what T3 can't see.
-    expect(clean.calls).toContainEqual(["quit_blender", "INVOKE_DEFAULT"]);
+    // Quit directly once clean: no dialog appears where nobody can answer it.
+    expect(clean.calls).toContainEqual(["quit_blender"]);
+    // With an asset browser shown and nothing unsaved, it quits too.
+    const shown = runAddon({
+      installed: [],
+      enabled: [],
+      listen: false,
+      send: ["quitIfClean"],
+      assetBrowser: "shown",
+    });
+    expect(shown.calls).toContainEqual(["quit_blender"]);
     expect(clean.received).not.toContain("quitRefused");
   });
 });

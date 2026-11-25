@@ -222,8 +222,12 @@ describe("HostedBlenderAgents.revocations", () => {
       const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
       const next = yield* agents.revocations.pipe(Stream.runHead, Effect.forkScoped);
       yield* Effect.yieldNow;
-      yield* agents.sessionEnded(threadId);
-      assert.deepEqual(yield* Fiber.join(next), Option.some(threadId));
+      yield* agents.sessionEnded(threadId, "provider-session-1");
+      // Scoped to the credential that ended, so a newer session keeps what it was granted.
+      assert.deepEqual(
+        yield* Fiber.join(next),
+        Option.some({ threadId, session: "provider-session-1" }),
+      );
     }).pipe(Effect.scoped, Effect.provide(layerFor({}))),
   );
 });
