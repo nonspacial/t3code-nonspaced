@@ -38,7 +38,11 @@ Ask the agent to change a `.blend`, say `models/hero.blend`. It doesn't edit tha
 
 What the agent may do without asking follows the thread's access mode. In **Full access** it uses every Blender tool freely. In the other modes it reads the scene, takes screenshots and searches the docs freely, and asks before it runs code or writes files. In Plan mode it can only look: it can't start or quit Blender, and embedded scripts stay off. Changing the mode applies from the next turn.
 
-While the agent is running something in Blender, the composer says **Working in Blender**, with **Stop** to stop the turn.
+While the agent is running something in Blender, the composer says **Working in Blender**, with **Stop** to stop the turn, and the pane's status bar shows **Agent editing**.
+
+Each piece of code the agent runs in Blender is one undo step, plus one more when it leaves work running in the background that can change the file, such as a bake. Its edits count as unsaved changes, so Blender autosaves them, asks before quitting, and **Ctrl+Z** in the pane undoes them step by step. Renders the agent takes only to look at the scene add no step.
+
+Only programs running under your own account on the server can reach the agent's connection to Blender; T3 Code drops any other. If your Blender's MCP extension is a version T3 Code hasn't tested, the agent gets no access and tells you whether to update the extension or T3 Code. Update the extension in your own Blender: T3 Code copies it into hosted Blenders the next time one starts. If undo is off in your Blender (Undo Steps set to 0, or Global Undo off for edits in Object Mode), the agent's edits can't be undone, and the agent is told so.
 
 Only the working copy the agent started takes its calls. A file you opened from the pane, even the working copy, doesn't; the agent quits it, saving first, and starts it again. Switching **Allow agents to start hosted Blenders** off, or the thread's agent session ending, closes the agent's connection to Blender at once, and so does opening another file in that Blender or saving the copy under another name (reverting it doesn't); Blender keeps running, and you can still watch and use it in the pane. The agent gets it back by quitting and starting the working copy again. If T3 loses its connection to that Blender, save your work in the pane before the agent restarts it.
 

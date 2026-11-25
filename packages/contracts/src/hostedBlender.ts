@@ -130,6 +130,8 @@ export const HostedBlenderRunningState = Schema.Struct({
   relativePath: TrimmedNonEmptyString,
   /** The file has changes Blender hasn't saved. */
   dirty: Schema.Boolean,
+  /** The agent is acting in this Blender through Blender Lab's MCP, as T3's add-on reports. */
+  agentActing: Schema.optionalKey(Schema.Boolean),
 });
 export type HostedBlenderRunningState = typeof HostedBlenderRunningState.Type;
 
@@ -490,6 +492,8 @@ export const HostedBlenderToolStatusResult = Schema.Struct({
       agentAccessEnded: Schema.optionalKey(
         Schema.Literals(["revoked", "connectionLost", "otherFile"]),
       ),
+      /** T3 never gave access: the Blender's Blender Lab version is one T3 hasn't tested. */
+      agentAccessRefused: Schema.optionalKey(Schema.Literal("untestedBlenderLab")),
     }),
   ),
 });

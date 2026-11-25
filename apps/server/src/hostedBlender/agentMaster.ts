@@ -11,6 +11,7 @@ import * as Stream from "effect/Stream";
 
 import { threadWorkspaceRoot } from "../project/threadWorkspaceRoot.ts";
 import { BLENDER_MASTER_MCP_SERVER } from "../provider/hostedBlenderMcp.ts";
+import { untestedBlenderLabReason } from "./agentGuard.ts";
 import { threadTag } from "./agentWorkingCopy.ts";
 import * as HostedBlender from "./HostedBlender.ts";
 
@@ -65,6 +66,15 @@ export const openAgentMaster = Effect.fn("HostedBlender.openAgentMaster")(functi
   if (listener?.state === "off") {
     return yield* new HostedBlenderToolError({
       reason: `The master Blender with ${name} doesn't take your calls: your access ended or agents were off when it started. Ask the user to quit it from the Blender pane's Master view, then call blender_master_open again.`,
+    });
+  }
+  if (listener?.state === "untested") {
+    return yield* new HostedBlenderToolError({
+      reason: untestedBlenderLabReason(
+        name,
+        listener.mcpVersion,
+        "Then ask the user to quit the master Blender from the Blender pane's Master view, and call blender_master_open again.",
+      ),
     });
   }
   if (listener?.state !== "ready") {

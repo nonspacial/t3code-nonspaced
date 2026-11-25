@@ -102,6 +102,7 @@ const layerFor = (input: {
               state: input.listener ?? "ready",
               ended: input.ended ?? null,
               openFile: input.openFile,
+              mcpVersion: "1.0.3",
             }),
           quit: (quit) =>
             Effect.sync(() => {
@@ -420,6 +421,41 @@ describe("hosted Blender MCP tools", () => {
       expect(refused.isError).toBe(true);
       expect(JSON.stringify(refused.content)).toContain("quit it from the Blender pane");
     }).pipe(Effect.provide(layerFor({ state: running, listener: "off" }))),
+  );
+
+  it.effect("tells the agent an untested Blender Lab version refused its master access", () =>
+    Effect.gen(function* () {
+      const refused = yield* call(
+        "blender_master_open",
+        { path: "models/hero.blend" },
+        threadCaller(["hosted-blender"]),
+      );
+      expect(refused.isError).toBe(true);
+      const text = JSON.stringify(refused.content);
+      expect(text).toContain("refused you access");
+      expect(text).toContain("blender_master_open again");
+      expect(text).not.toContain("blender_start");
+    }).pipe(Effect.provide(layerFor({ state: running, listener: "untested" }))),
+  );
+
+  it.effect("reports an untested Blender Lab version's refusal in blender_status", () =>
+    Effect.gen(function* () {
+      const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
+      expect(status.structuredContent).toMatchObject({
+        blenders: [
+          { role: "working", agentAccess: false, agentAccessRefused: "untestedBlenderLab" },
+          { role: "master", agentAccess: false, agentAccessRefused: "untestedBlenderLab" },
+        ],
+      });
+    }).pipe(
+      Effect.provide(
+        layerFor({
+          state: running,
+          listener: "untested",
+          master: { status: "running", relativePath: "models/hero.blend", dirty: false },
+        }),
+      ),
+    ),
   );
 
   it.effect("lists the master Blender beside the working one", () =>

@@ -55,8 +55,10 @@ import {
   newestBlenderConfigVersion,
 } from "./BlenderLaunch.ts";
 import { SessionControl } from "../preview/SessionControl.ts";
+import { HOSTED_STARTUP_GATE_SOURCE } from "./agentGuard.ts";
 import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
 import * as DesktopBlender from "./DesktopBlender.ts";
+import { isSameAccountPeer } from "./loopbackPeer.ts";
 import { forwardLoopbackPort } from "./portForward.ts";
 import { type ControlConnection, requestSave, type SaveReply } from "./ControlSave.ts";
 import { type AgentListenerState, awaitAgentListener } from "./agentListenerWait.ts";
@@ -101,7 +103,13 @@ const ControlMessage = Schema.Union([
     type: Schema.Literal("state"),
     filepath: Schema.String,
     dirty: Schema.Boolean,
-    agentListener: Schema.optional(Schema.Literals(["off", "starting", "ready", "failed"])),
+    agentListener: Schema.optional(
+      Schema.Literals(["off", "starting", "ready", "failed", "untested"]),
+    ),
+    /** Blender Lab is running agent calls, or just has. */
+    agentActing: Schema.optional(Schema.Boolean),
+    /** The installed Blender Lab extension's version, when the launch asked for its listener. */
+    mcpVersion: Schema.optional(Schema.NullOr(Schema.String)),
   }),
   Schema.Struct({ type: Schema.Literal("saving") }),
   Schema.Struct({ type: Schema.Literal("saved") }),
@@ -155,6 +163,8 @@ export interface AgentListenerReport {
    * before it has said.
    */
   readonly openFile: string | null | undefined;
+  /** The installed Blender Lab extension's version, once the add-on has said. */
+  readonly mcpVersion: string | null;
 }
 const encodeControlCommand = Schema.encodeSync(
   Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("quit"), save: Schema.Boolean })),
@@ -375,6 +385,9 @@ interface Instance {
   /** Answered when the add-on has dropped the quit T3 gave up on. */
   quitCancelled: { readonly id: number; readonly done: Deferred.Deferred<void> } | null;
   openFile: string | null | undefined;
+  mcpVersion: string | null;
+  /** The agent is acting through Blender Lab, as the add-on reports it; for the pane's badge. */
+  agentActing: boolean;
   /**
    * Which viewer controls the mouse and keyboard. There is no agent side: the agent works
    * through its own MCP connection, so a viewer in control never pauses it.
@@ -463,6 +476,7 @@ const make = Effect.gen(function* () {
         status: instance.quitCancelled != null ? "starting" : instance.status,
         relativePath: known.relativePath,
         dirty: instance.dirty,
+        ...(instance.agentActing ? { agentActing: true } : {}),
         ...(instance.desktopUnchecked ? { desktopUnchecked: true } : {}),
       };
     }
@@ -494,6 +508,7 @@ const make = Effect.gen(function* () {
                 status: instance.status,
                 relativePath: instance.relativePath,
                 dirty: instance.dirty,
+                ...(instance.agentActing ? { agentActing: true } : {}),
               },
             ]),
         ]),
@@ -783,6 +798,13 @@ const make = Effect.gen(function* () {
           const opened = yield* forwardLoopbackPort({
             listenPort,
             targetPort: instance.mcpPort,
+            // As Blender's add-on checks its own clients: only this OS account's connections.
+            accept: (socket) =>
+              runPromise(
+                isSameAccountPeer(socket).pipe(
+                  Effect.provideService(FileSystem.FileSystem, fileSystem),
+                ),
+              ),
           }).pipe(Scope.provide(scope), Effect.isSuccess);
           const session = threadMasters.get(threadId)?.agentSession ?? null;
           if (opened) instance.forwards.set(threadId, { scope, session });
@@ -791,6 +813,14 @@ const make = Effect.gen(function* () {
       }),
     ),
   );
+
+  /** A master's grant is one per launch: once no agent thread is left, it ends in Blender too. */
+  const endUnusedMasterGrant = (instance: Instance) =>
+    instance.role === "master" &&
+    instance.agentListenerGrantSent &&
+    instance.agentThreads.size === 0
+      ? revokeAgentListener(instance)
+      : Effect.void;
 
   /** The agent session that asked for the thread's master is still the thread's. */
   const sessionCurrent = Effect.fnUntraced(function* (threadId: ThreadId) {
@@ -832,6 +862,10 @@ const make = Effect.gen(function* () {
     instance.agentAccessEnded = reason;
     yield* setAgentListener(instance, "off");
     if (instance.control) yield* instance.control.write(STOP_AGENT_LISTENER);
+    if (instance.agentActing) {
+      instance.agentActing = false;
+      yield* publishNow();
+    }
   });
 
   const handleControlLine = Effect.fnUntraced(function* (instance: Instance, line: string) {
@@ -843,6 +877,7 @@ const make = Effect.gen(function* () {
         return;
       case "state": {
         instance.openFile = message.value.filepath === "" ? null : message.value.filepath;
+        if (message.value.mcpVersion !== undefined) instance.mcpVersion = message.value.mcpVersion;
         // Only the working copy T3 opened may reach the agent, so the file is checked before
         // any listener state is taken; the add-on closes it too.
         const listener = message.value.agentListener;
@@ -854,8 +889,11 @@ const make = Effect.gen(function* () {
           }
           yield* maybeGrant(instance);
         }
-        if (instance.dirty === message.value.dirty) return;
+        // A report queued before T3 revoked access is stale: nothing acts after that.
+        const agentActing = message.value.agentActing === true && !instance.agentListenerRevoked;
+        if (instance.dirty === message.value.dirty && instance.agentActing === agentActing) return;
         instance.dirty = message.value.dirty;
+        instance.agentActing = agentActing;
         return yield* publishNow();
       }
       case "quitRefused":
@@ -930,7 +968,11 @@ const make = Effect.gen(function* () {
               instance.agentAccessEnded = "connectionLost";
             }
             instance.agentListenerRevoked = true;
-            return setAgentListener(instance, "off");
+            const wasActing = instance.agentActing;
+            instance.agentActing = false;
+            return setAgentListener(instance, "off").pipe(
+              Effect.andThen(wasActing ? publishNow() : Effect.void),
+            );
           }),
         ),
       ),
@@ -960,24 +1002,130 @@ const make = Effect.gen(function* () {
       }
     });
 
+  const userBlenderSettings = Effect.fnUntraced(function* () {
+    const configHome = environment.XDG_CONFIG_HOME || path.join(homeDirectory, ".config");
+    const source = path.join(configHome, "blender");
+    const version = newestBlenderConfigVersion(
+      yield* fileSystem.readDirectory(source).pipe(Effect.orElseSucceed(() => [])),
+    );
+    return version === undefined ? undefined : path.join(source, version);
+  });
+
+  // Blender Lab is never kept in the settings copy, where Blender could load it at startup.
+  const removeBlenderLab = Effect.fnUntraced(function* (userResources: string) {
+    const extensions = path.join(userResources, "extensions");
+    const repos = yield* fileSystem.readDirectory(extensions).pipe(Effect.orElseSucceed(() => []));
+    for (const repo of repos) {
+      yield* fileSystem.remove(path.join(extensions, repo, "mcp"), {
+        recursive: true,
+        force: true,
+      });
+    }
+  });
+
+  // What a folder holds, links left out as copyWithoutLinks leaves them, to tell a whole copy.
+  // Each folder level shares the snapshot's span.
+  const listFolder: (
+    dir: string,
+    relative?: string,
+  ) => Effect.Effect<ReadonlyArray<string>, PlatformError> = Effect.fnUntraced(function* (
+    dir: string,
+    relative = "",
+  ) {
+    const entries: Array<string> = [];
+    for (const entry of (yield* fileSystem.readDirectory(path.join(dir, relative))).toSorted()) {
+      const child = path.join(relative, entry);
+      const info = yield* fileSystem.lstat(path.join(dir, child));
+      if (info.type === "Directory") entries.push(`${child}/`, ...(yield* listFolder(dir, child)));
+      else if (info.type === "File") {
+        const mtime = Option.getOrUndefined(info.mtime)?.getTime() ?? 0;
+        entries.push(`${child} ${String(info.size)} ${mtime}`);
+      }
+    }
+    return entries;
+  });
+  const withoutTimes = (entries: ReadonlyArray<string>) =>
+    entries.map((entry) => entry.replace(/ \d+$/, ""));
+
+  /**
+   * The user's Blender Lab, copied into a launch's private folder for that Blender alone, or
+   * null with none installed or none that holds still while it is copied.
+   */
+  const snapshotBlenderLab = Effect.fnUntraced(function* (stateDir: string) {
+    const settings = yield* userBlenderSettings();
+    if (settings === undefined) return null;
+    const extensions = path.join(settings, "extensions");
+    const repos = (yield* fileSystem
+      .readDirectory(extensions)
+      .pipe(Effect.orElseSucceed(() => []))).toSorted(
+      (a, b) =>
+        Number(b === "lab_blender_org") - Number(a === "lab_blender_org") ||
+        (a < b ? -1 : a > b ? 1 : 0),
+    );
+    let installed: string | undefined;
+    for (const repo of repos) {
+      const candidate = path.join(extensions, repo, "mcp");
+      const info = yield* fileSystem.lstat(candidate).pipe(Effect.option);
+      const manifest = path.join(candidate, "blender_manifest.toml");
+      if (
+        Option.isSome(info) &&
+        info.value.type === "Directory" &&
+        (yield* fileSystem.exists(manifest))
+      ) {
+        installed = candidate;
+        break;
+      }
+    }
+    if (installed === undefined) return null;
+    const snapshot = path.join(stateDir, "blender-lab");
+    const copy = path.join(snapshot, "mcp");
+    for (let attempt = 0; attempt < 3; attempt++) {
+      yield* fileSystem.remove(snapshot, { recursive: true, force: true });
+      yield* fileSystem.makeDirectory(snapshot, { recursive: true });
+      const before = yield* listFolder(installed);
+      yield* copyWithoutLinks(installed, copy);
+      const after = yield* listFolder(installed);
+      const copied = yield* listFolder(copy);
+      // Unchanged while it was copied, and all of it copied: one version, whole.
+      if (
+        before.join("\n") === after.join("\n") &&
+        withoutTimes(before).join("\n") === withoutTimes(copied).join("\n")
+      ) {
+        return snapshot;
+      }
+    }
+    yield* Effect.logWarning("hosted Blender's copy of Blender Lab's MCP kept changing");
+    return null;
+  });
+
+  // Runs before Blender enables add-ons, so Blender Lab never registers from these settings.
+  const writeStartupGate = Effect.fnUntraced(function* (userResources: string) {
+    const startup = path.join(userResources, "scripts", "startup");
+    yield* fileSystem.makeDirectory(startup, { recursive: true });
+    const gate = path.join(startup, "t3_hosted_gate.py");
+    yield* fileSystem.writeFileString(`${gate}.partial`, HOSTED_STARTUP_GATE_SOURCE);
+    yield* fileSystem.rename(`${gate}.partial`, gate);
+  });
+
   /** T3's own copy of the user's newest Blender settings, made on first use. */
   const ensureUserResources = userResourcesLock.withPermits(1)(
     Effect.gen(function* () {
       const target = path.join(rootDir, "user-resources");
-      if (yield* fileSystem.exists(target)) return target;
-      const configHome = environment.XDG_CONFIG_HOME || path.join(homeDirectory, ".config");
-      const source = path.join(configHome, "blender");
-      const version = newestBlenderConfigVersion(
-        yield* fileSystem.readDirectory(source).pipe(Effect.orElseSucceed(() => [])),
-      );
-      const partial = `${target}.partial`;
-      yield* fileSystem.remove(partial, { recursive: true, force: true });
-      if (version === undefined) {
-        yield* fileSystem.makeDirectory(partial, { recursive: true });
-      } else {
-        yield* copyWithoutLinks(path.join(source, version), partial);
+      if (!(yield* fileSystem.exists(target))) {
+        const settings = yield* userBlenderSettings();
+        const partial = `${target}.partial`;
+        yield* fileSystem.remove(partial, { recursive: true, force: true });
+        if (settings === undefined) {
+          yield* fileSystem.makeDirectory(partial, { recursive: true });
+        } else {
+          yield* copyWithoutLinks(settings, partial);
+        }
+        yield* removeBlenderLab(partial);
+        yield* fileSystem.rename(partial, target);
       }
-      yield* fileSystem.rename(partial, target);
+      // Copies made before T3 kept Blender Lab out still hold it.
+      yield* removeBlenderLab(target);
+      yield* writeStartupGate(target);
       return target;
     }),
   );
@@ -1016,6 +1164,16 @@ const make = Effect.gen(function* () {
           (yield* agents.value.currentSession(instance.threadId)) ?? undefined;
       }
       if (agentPort === null) yield* setAgentListener(instance, "off");
+      const mcpSnapshot =
+        agentPort === null
+          ? null
+          : yield* snapshotBlenderLab(stateDir).pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("hosted Blender could not copy Blender Lab's MCP", {
+                  cause,
+                }).pipe(Effect.as(null)),
+              ),
+            );
       instance.agentListenerGranted = agentPort !== null;
       const mcpPort = agentPort ?? (yield* net.reserveLoopbackPort());
       instance.mcpPort = agentPort;
@@ -1042,6 +1200,7 @@ const make = Effect.gen(function* () {
               controlSocket,
               mcpPort,
               mcpListen: agentPort !== null,
+              ...(mcpSnapshot === null ? {} : { mcpSnapshot }),
               // Plan mode is read-only, whatever the runtime mode. A master serves threads of
               // any mode, so its embedded scripts never run.
               autoRun:
@@ -1281,6 +1440,8 @@ const make = Effect.gen(function* () {
       quitCancelled: null,
       agentSession: undefined,
       openFile: undefined,
+      mcpVersion: null,
+      agentActing: false,
       session: new SessionControl(null),
       held: new HeldInput(),
       cursorCaptured: false,
@@ -1714,6 +1875,7 @@ const make = Effect.gen(function* () {
           (instance.role === "master" && state === "off" ? "revoked" : null),
       ),
       openFile: instance.openFile,
+      mcpVersion: instance.mcpVersion,
     };
   });
 
@@ -1752,6 +1914,7 @@ const make = Effect.gen(function* () {
               if (stale) instance.forwards.delete(revocation.threadId);
               return (stale ? Scope.close(relay.scope, Exit.void) : Effect.void).pipe(
                 Effect.andThen(syncForwards(instance)),
+                Effect.andThen(endUnusedMasterGrant(instance)),
               );
             },
             { discard: true },
@@ -1969,6 +2132,7 @@ const make = Effect.gen(function* () {
       threadMasters.delete(threadId);
     }
     yield* publishNow();
+    return outcome;
   });
 
   /** In the master's queue, finished even when the caller stops waiting. */
@@ -1986,11 +2150,15 @@ const make = Effect.gen(function* () {
         instance.agentThreads.delete(threadId);
         yield* syncForwards(instance);
         if (instance.masterThreads.size > 1) {
+          yield* endUnusedMasterGrant(instance);
           instance.masterThreads.delete(threadId);
           if (threadMasters.get(threadId) === known) threadMasters.delete(threadId);
           return yield* publishNow();
         }
-        yield* decideQuit(instance, threadId);
+        // Asked first: a master that quits needs no stop, and one that stays keeps no grant.
+        if ((yield* decideQuit(instance, threadId)) !== "quit") {
+          yield* endUnusedMasterGrant(instance);
+        }
       }),
     );
     // Takes its place in the queue now, as called, and finishes even if the caller goes.

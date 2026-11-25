@@ -313,6 +313,27 @@ it("warns in the status strip when the server has no usable GPU", async () => {
   }
 });
 
+it("shows Agent editing in the status strip only while the add-on says the agent acts", async () => {
+  using _app = startup();
+  const idle = stream.state;
+  try {
+    stream.state = { ...(idle as object), agentActing: true };
+    await using acting = await render(
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+    );
+    await expect.element(acting.getByText("Agent editing")).toBeInTheDocument();
+  } finally {
+    stream.state = idle;
+  }
+  await using quiet = await render(
+    <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+  );
+  await expect
+    .element(quiet.getByText("You're in control").or(quiet.getByText("Watching")))
+    .toBeInTheDocument();
+  expect(quiet.container.textContent).not.toContain("Agent editing");
+});
+
 it("sizes the display in real pixels, and says when the window hides the pane", async () => {
   using _app = startup();
   await using screen = await render(
@@ -397,6 +418,30 @@ it("switches between the working copy and the master, each with its own stream",
   await screen.getByRole("button", { name: "Working copy" }).click();
   await expect.element(screen.getByText("hero.wip-1a2b3c4d.blend")).toBeInTheDocument();
   expect(stream.targets.at(-1)).toMatchObject({ master: false });
+});
+
+it("shows Agent editing for whichever Blender the agent acts in, master or working copy", async () => {
+  using _app = startup();
+  stream.master = {
+    status: "running",
+    relativePath: "models/hero.blend",
+    dirty: true,
+    agentActing: true,
+  };
+  stream.state = {
+    status: "running",
+    relativePath: "models/hero.wip-1a2b3c4d.blend",
+    dirty: false,
+  };
+  await using screen = await render(
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>,
+  );
+  await expect.element(screen.getByText("hero.wip-1a2b3c4d.blend")).toBeInTheDocument();
+  expect(screen.container.textContent).not.toContain("Agent editing");
+  await screen.getByRole("button", { name: "Master" }).click();
+  await expect.element(screen.getByText("Agent editing")).toBeInTheDocument();
 });
 
 it("shows no switch until the thread has a master", async () => {

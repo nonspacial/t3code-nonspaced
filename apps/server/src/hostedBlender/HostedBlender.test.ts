@@ -27,11 +27,13 @@ import * as ServerConfig from "../config.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import { HOSTED_STARTUP_GATE_SOURCE } from "./agentGuard.ts";
 import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
 import * as DesktopBlender from "./DesktopBlender.ts";
 import * as HostedBlender from "./HostedBlender.ts";
 import * as HostedBlenderAgents from "./HostedBlenderAgents.ts";
 import * as HostedBlenderSetup from "./HostedBlenderSetup.ts";
+import * as LoopbackPeer from "./loopbackPeer.ts";
 
 const threadId = ThreadId.make("thread-hosted-blender");
 const otherThreadId = ThreadId.make("thread-same-workspace");
@@ -61,6 +63,8 @@ interface Host {
   readonly privatePort?: number;
   /** The user's desktop Blender, as T3 reaches it; none by default. */
   readonly desktop?: DesktopBlender.DesktopBlender["Service"];
+  /** The TCP tables a master's relay reads its clients' accounts from; the kernel's by default. */
+  readonly tcpTables?: ReadonlyArray<string>;
 }
 
 const blenderOnPath = (env: NodeJS.ProcessEnv) =>
@@ -133,6 +137,9 @@ const layerFor = (host: Host) =>
     Layer.provide(
       Layer.mergeAll(
         Layer.succeed(HostProcess.Platform, "linux"),
+        host.tcpTables === undefined
+          ? Layer.empty
+          : Layer.succeed(LoopbackPeer.LoopbackTcpTables, host.tcpTables),
         Layer.succeed(HostProcess.Environment, host.env),
         Layer.succeed(HostProcess.HomeDirectory, host.baseDir),
       ),
@@ -1450,7 +1457,9 @@ print("T3-RESULT", json.dumps(results))`,
       expect(
         NodeFS.readFileSync(NodePath.join(userResources, "config", "nested", "note.txt"), "utf8"),
       ).toBe("kept");
-      expect(NodeFS.existsSync(NodePath.join(userResources, "scripts"))).toBe(false);
+      // The link to desktop scripts isn't followed; T3's own startup gate is all that's there.
+      expect(NodeFS.readdirSync(NodePath.join(userResources, "scripts"))).toEqual(["startup"]);
+      expect(NodeFS.readdirSync(NodePath.join(dir, "desktop-scripts"))).toEqual([]);
       // The viewport window opens after the stand-in's timer would have fired.
       expect(
         NodeFS.existsSync(
@@ -1620,10 +1629,10 @@ def control():
     server.bind(t3[1])
     server.listen(1)
     connection, _ = server.accept()
-    def state(filepath):
+    def state(filepath, **extra):
         dirty = os.environ.get("STANDIN_DIRTY") == "1"
         connection.sendall((json.dumps({"type": "state", "filepath": filepath, "dirty": dirty,
-                                        "agentListener": listener[0]}) + "\n").encode())
+                                        "agentListener": listener[0], **extra}) + "\n").encode())
     after = os.environ.get("STANDIN_AFTER")
     # Another file already open by the time T3 hears, claiming its listener is ready.
     if after == "otherFileFirst":
@@ -1635,6 +1644,11 @@ def control():
         with open(os.environ["STANDIN_ARGS"] + ".control", "a") as log:
             log.write(line)
         kind = json.loads(line).get("type")
+        if kind == "grantAgentListener" and listener[0] == "starting" and after == "untested":
+            # The add-on found a Blender Lab version T3 hasn't tested and never enabled it.
+            listener[0] = "untested"
+            state(blend, mcpVersion="1.1.0")
+            continue
         if kind == "grantAgentListener" and listener[0] == "starting":
             # Blender Lab's listener: answers "pong" to anything, on the port T3 gave it.
             mcp = socket.socket()
@@ -1651,10 +1665,19 @@ def control():
                     threading.Thread(target=serve, args=(client,), daemon=True).start()
             threading.Thread(target=answer, daemon=True).start()
             listener[0] = "ready"
-            state(blend)
+            state(blend, agentActing=after in ("acting", "staleActing"), mcpVersion="1.0.3")
             if after == "otherFile":
                 # Someone opens another file through Blender's own UI.
                 state(os.environ.get("STANDIN_OTHER", "/elsewhere/other.blend"))
+        if kind == "stopAgentListener" and after == "acting":
+            listener[0] = "off"
+            state(blend, agentActing=False, mcpVersion="1.0.3")
+            continue
+        if kind == "stopAgentListener" and after == "staleActing":
+            # A report Blender queued before it heard the stop, with a change T3 does publish.
+            connection.sendall((json.dumps({"type": "state", "filepath": blend, "dirty": True,
+                                            "agentListener": "ready", "agentActing": True}) + "\n").encode())
+            continue
         if kind == "stopAgentListener":
             # Gone once it has heard the stop, so a test can wait for the stopped state.
             os._exit(0)
@@ -1698,9 +1721,11 @@ describe("Agent access at launch", () => {
   const launch = Effect.fn(function* (
     host: Pick<Host, "runtimeMode" | "interactionMode" | "agentPort" | "revocations">,
     options: { readonly agentWorkingCopy?: boolean } = { agentWorkingCopy: true },
-    after?: "otherFile" | "otherFileFirst",
+    after?: "otherFile" | "otherFileFirst" | "untested" | "acting" | "staleActing",
+    prepare?: (dir: string) => void,
   ) {
     const dir = yield* tempDir("agent-access");
+    prepare?.(dir);
     const bin = fakeTools(dir);
     NodeFS.writeFileSync(NodePath.join(bin, "helper"), `#!${python}\n${ARGS_HELPER}`, {
       mode: 0o755,
@@ -1805,6 +1830,130 @@ describe("Agent access at launch", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("passes on an untested Blender Lab version, which never listens", () =>
+    Effect.gen(function* () {
+      const { service } = yield* launch({ agentPort: 41234 }, undefined, "untested");
+      expect(yield* service.agentListener(threadId)).toMatchObject({
+        state: "untested",
+        mcpVersion: "1.1.0",
+      });
+      yield* service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("shows the agent acting while the add-on says so, for the pane's badge", () =>
+    Effect.gen(function* () {
+      const revoked = yield* Queue.unbounded<HostedBlenderAgents.HostedBlenderRevocation | null>();
+      const { service } = yield* launch(
+        { agentPort: 41234, revocations: Stream.fromQueue(revoked) },
+        undefined,
+        "acting",
+      );
+      const acting = (value: boolean) =>
+        service.threadState(threadId).pipe(
+          Stream.filter(
+            (state) => state.status === "running" && (state.agentActing === true) === value,
+          ),
+          Stream.runHead,
+        );
+      expect(Option.getOrThrow(yield* acting(true))).toMatchObject({ agentActing: true });
+      // The add-on stops acting once access ends; the published state drops the flag.
+      yield* Queue.offer(revoked, { threadId, session: undefined });
+      expect(Option.getOrThrow(yield* acting(false))).not.toHaveProperty("agentActing");
+      yield* service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("never takes the agent as acting from a report Blender sent before the revoke", () =>
+    Effect.gen(function* () {
+      const revoked = yield* Queue.unbounded<HostedBlenderAgents.HostedBlenderRevocation | null>();
+      const { service } = yield* launch(
+        { agentPort: 41234, revocations: Stream.fromQueue(revoked) },
+        undefined,
+        "staleActing",
+      );
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "running" && state.agentActing === true),
+        Stream.runHead,
+      );
+      yield* Queue.offer(revoked, { threadId, session: undefined });
+      const dirty = yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "running" && state.dirty),
+        Stream.runHead,
+      );
+      expect(Option.getOrThrow(dirty)).not.toHaveProperty("agentActing");
+      yield* service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
+  // The user's own Blender Lab, and T3's settings copy from a launch before it was kept out.
+  const withBlenderLab =
+    (unreadable = false) =>
+    (dir: string) => {
+      const mine = NodePath.join(dir, ".config/blender/5.3/extensions/lab_blender_org/mcp");
+      NodeFS.mkdirSync(NodePath.join(mine, "tools"), { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(mine, "blender_manifest.toml"), 'version = "1.0.3"\n');
+      NodeFS.writeFileSync(NodePath.join(mine, "__init__.py"), "# Blender Lab\n");
+      NodeFS.writeFileSync(NodePath.join(mine, "tools", "execute.py"), "# tool\n");
+      if (unreadable) NodeFS.chmodSync(NodePath.join(mine, "tools", "execute.py"), 0o000);
+      const resources = NodePath.join(dir, "userdata/hosted-blender/user-resources");
+      NodeFS.mkdirSync(NodePath.join(resources, "extensions/lab_blender_org/mcp"), {
+        recursive: true,
+      });
+      NodeFS.mkdirSync(NodePath.join(resources, "config"));
+      NodeFS.writeFileSync(NodePath.join(resources, "config", "kept.txt"), "kept");
+    };
+  const snapshotArg = (args: ReadonlyArray<string>) =>
+    args.includes("--t3-mcp-snapshot") ? args[args.indexOf("--t3-mcp-snapshot") + 1] : undefined;
+
+  it.live("keeps Blender Lab out of the settings copy, behind T3's startup gate", () =>
+    Effect.gen(function* () {
+      let resources = "";
+      const { service } = yield* launch({}, {}, undefined, (dir) => {
+        withBlenderLab()(dir);
+        resources = NodePath.join(dir, "userdata/hosted-blender/user-resources");
+      });
+      expect(NodeFS.existsSync(NodePath.join(resources, "extensions/lab_blender_org/mcp"))).toBe(
+        false,
+      );
+      expect(NodeFS.readFileSync(NodePath.join(resources, "config", "kept.txt"), "utf8")).toBe(
+        "kept",
+      );
+      expect(
+        NodeFS.readFileSync(NodePath.join(resources, "scripts/startup/t3_hosted_gate.py"), "utf8"),
+      ).toBe(HOSTED_STARTUP_GATE_SOURCE);
+      yield* service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("gives a granted launch a whole private snapshot of Blender Lab, and the pane none", () =>
+    Effect.gen(function* () {
+      const granted = yield* launch({ agentPort: 41234 }, undefined, undefined, withBlenderLab());
+      const snapshot = snapshotArg(granted.args);
+      expect(snapshot).toContain(NodePath.join("hosted-blender", "launches"));
+      expect(
+        NodeFS.readFileSync(NodePath.join(snapshot!, "mcp", "tools", "execute.py"), "utf8"),
+      ).toBe("# tool\n");
+      yield* granted.service.quit({ threadId, save: false });
+      const pane = yield* launch({ agentPort: 41234 }, {}, undefined, withBlenderLab());
+      expect(snapshotArg(pane.args)).toBeUndefined();
+      yield* pane.service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("gives no snapshot when Blender Lab can't be copied whole", () =>
+    Effect.gen(function* () {
+      const { service, args } = yield* launch(
+        { agentPort: 41234 },
+        undefined,
+        undefined,
+        withBlenderLab(true),
+      );
+      expect(snapshotArg(args)).toBeUndefined();
+      yield* service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
   it("waits for the control connection as long as Blender may take to start", () => {
     expect(HostedBlender.CONTROL_CONNECT_ATTEMPTS * 200).toBeGreaterThanOrEqual(90_000);
     expect(Duration.toMillis(HostedBlender.AGENT_LISTENER_TIMEOUT)).toBeGreaterThan(90_000);
@@ -1822,6 +1971,7 @@ describe("Agent access at launch", () => {
         state: "off",
         ended: "otherFile",
         openFile: "/elsewhere/other.blend",
+        mcpVersion: null,
       });
       yield* service.threadState(threadId).pipe(
         Stream.filter((state) => state.status === "stopped"),
@@ -1834,6 +1984,8 @@ describe("Agent access at launch", () => {
 });
 
 /** Sends a byte to the loopback port and answers what comes back, or how it failed. */
+const onLinux = HostProcess.Platform.defaultValue() === "linux";
+
 const ping = (port: number) =>
   Effect.callback<string>((resume) => {
     const socket = NodeNet.connect(port, "127.0.0.1");
@@ -1856,6 +2008,7 @@ const masterHost = Effect.fn(function* (
     | "endedSessions"
     | "privatePort"
     | "sessions"
+    | "tcpTables"
   > & {
     /** Blender reports `other.blend` open, beside `cube.blend`, from its first word. */
     readonly otherFileFirst?: boolean;
@@ -1873,9 +2026,14 @@ const masterHost = Effect.fn(function* (
     readonly cancelGate?: boolean;
     /** Blender exits once it hears the cancel, as if the quit it was busy with went through. */
     readonly exitOnCancel?: boolean;
+    /** The add-on finds a Blender Lab version T3 hasn't tested and never listens. */
+    readonly untested?: boolean;
+    /** Lays out the home folder before the service starts, as the user's own Blender Lab. */
+    readonly home?: (dir: string) => void;
   } = {},
 ) {
   const dir = yield* tempDir("master");
+  host.home?.(dir);
   const bin = fakeTools(dir);
   NodeFS.writeFileSync(NodePath.join(bin, "helper"), `#!${python}\n${ARGS_HELPER}`, {
     mode: 0o755,
@@ -1897,6 +2055,7 @@ const masterHost = Effect.fn(function* (
               STANDIN_OTHER: NodeFS.realpathSync(NodePath.join(dir, "other.blend")),
             }
           : {}),
+        ...(host.untested ? { STANDIN_AFTER: "untested" } : {}),
         ...(host.dirty ? { STANDIN_DIRTY: "1" } : {}),
         ...(host.unsaved ? { STANDIN_UNSAVED: "1" } : {}),
         ...(host.slowQuit ? { STANDIN_SLOW_QUIT: "1" } : {}),
@@ -2106,6 +2265,160 @@ describe("Master Blenders", () => {
         expect(host.controlLog()).toContain("stopAgentListener");
         expect(yield* ping(ports.get(otherThreadId)!)).toBe("ECONNREFUSED");
       }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
+  );
+
+  it.live("ends the master's grant once its last agent thread's access ends", () =>
+    Effect.gen(function* () {
+      const net = yield* NetService.NetService;
+      const ports = new Map([
+        [threadId, yield* net.reserveLoopbackPort()],
+        [otherThreadId, yield* net.reserveLoopbackPort()],
+      ]);
+      const revoked = yield* Queue.unbounded<HostedBlenderAgents.HostedBlenderRevocation | null>();
+      const host = yield* masterHost({
+        masterPorts: ports,
+        revocations: Stream.fromQueue(revoked),
+      });
+      const { service } = host;
+      for (const id of [threadId, otherThreadId]) {
+        yield* service.openMaster(
+          { threadId: id, relativePath: "cube.blend" },
+          { agentSession: "session-1" },
+        );
+      }
+      for (const id of [threadId, otherThreadId]) {
+        expect((yield* service.agentListener(id, { role: "master" }))?.state).toBe("ready");
+      }
+      expect(yield* ping(ports.get(otherThreadId)!)).toBe("pong");
+
+      // One thread leaves: only its relay closes; Blender Lab keeps serving the other.
+      yield* Queue.offer(revoked, { threadId, session: undefined });
+      yield* service
+        .agentListener(threadId, { role: "master" })
+        .pipe(Effect.repeat({ until: (report) => report?.state === "off" }));
+      expect(yield* ping(ports.get(otherThreadId)!)).toBe("pong");
+      expect(host.controlLog()).not.toContain("stopAgentListener");
+
+      // The last one leaves: nothing is left to serve, so the grant ends in Blender too.
+      const stopped = yield* watchMaster(service, otherThreadId);
+      yield* Queue.offer(revoked, { threadId: otherThreadId, session: undefined });
+      yield* stopped;
+      expect(host.controlLog()).toContain("stopAgentListener");
+    }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
+  );
+
+  // The relay checks its clients against the kernel's own tables, which only Linux has.
+  it.live.skipIf(!onLinux)(
+    "relays only this OS account's connections to the master, as Blender's add-on checks them",
+    () =>
+      Effect.gen(function* () {
+        const net = yield* NetService.NetService;
+        const ports = new Map([
+          [threadId, yield* net.reserveLoopbackPort()],
+          [otherThreadId, yield* net.reserveLoopbackPort()],
+        ]);
+        // This account's own connection, read from the real tables, passes.
+        const owner = yield* masterHost({ masterPorts: ports });
+        yield* owner.service.openMaster(
+          { threadId, relativePath: "cube.blend" },
+          { agentSession: "session-1" },
+        );
+        expect((yield* owner.service.agentListener(threadId, { role: "master" }))?.state).toBe(
+          "ready",
+        );
+        expect(yield* ping(ports.get(threadId)!)).toBe("pong");
+
+        // Tables that don't show the client as this account: the relay closes it unanswered.
+        const dir = yield* tempDir("tcp");
+        const empty = NodePath.join(dir, "tcp");
+        NodeFS.writeFileSync(empty, "  sl  local_address rem_address   st\n");
+        const strangerPort = yield* net.reserveLoopbackPort();
+        const stranger = yield* masterHost({
+          masterPorts: new Map([[otherThreadId, strangerPort]]),
+          tcpTables: [empty],
+        });
+        yield* stranger.service.openMaster(
+          { threadId: otherThreadId, relativePath: "cube.blend" },
+          { agentSession: "session-1" },
+        );
+        expect(
+          (yield* stranger.service.agentListener(otherThreadId, { role: "master" }))?.state,
+        ).toBe("ready");
+        expect(["", "ECONNRESET"]).toContain(yield* ping(strangerPort));
+      }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
+  );
+
+  it.live(
+    "loads Blender Lab from one snapshot per launch, which a second thread never retakes",
+    () =>
+      Effect.gen(function* () {
+        const net = yield* NetService.NetService;
+        let installed = "";
+        const host = yield* masterHost({
+          masterPorts: new Map([
+            [threadId, yield* net.reserveLoopbackPort()],
+            [otherThreadId, yield* net.reserveLoopbackPort()],
+          ]),
+          home: (dir) => {
+            installed = NodePath.join(dir, ".config/blender/5.3/extensions/lab_blender_org/mcp");
+            NodeFS.mkdirSync(installed, { recursive: true });
+            NodeFS.writeFileSync(
+              NodePath.join(installed, "blender_manifest.toml"),
+              'version = "1.0.3"\n',
+            );
+            NodeFS.writeFileSync(NodePath.join(installed, "__init__.py"), "# 1.0.3\n");
+          },
+        });
+        const { service } = host;
+        yield* service.openMaster(
+          { threadId, relativePath: "cube.blend" },
+          { agentSession: "session-1" },
+        );
+        expect((yield* service.agentListener(threadId, { role: "master" }))?.state).toBe("ready");
+        const args = host.args();
+        const snapshot = args[args.indexOf("--t3-mcp-snapshot") + 1]!;
+        expect(NodeFS.readFileSync(NodePath.join(snapshot, "mcp", "__init__.py"), "utf8")).toBe(
+          "# 1.0.3\n",
+        );
+
+        // The user updates Blender Lab while the master runs; a second agent thread joins.
+        NodeFS.writeFileSync(NodePath.join(installed, "__init__.py"), "# newer\n");
+        yield* service.openMaster(
+          { threadId: otherThreadId, relativePath: "cube.blend" },
+          { agentSession: "session-1" },
+        );
+        expect((yield* service.agentListener(otherThreadId, { role: "master" }))?.state).toBe(
+          "ready",
+        );
+        expect(host.launches()).toBe(1);
+        expect(NodeFS.readFileSync(NodePath.join(snapshot, "mcp", "__init__.py"), "utf8")).toBe(
+          "# 1.0.3\n",
+        );
+        expect(host.controlLog().match(/grantAgentListener/g)).toHaveLength(1);
+      }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
+  );
+
+  it.live("tells every agent thread on a master that an untested Blender Lab refused it", () =>
+    Effect.gen(function* () {
+      const net = yield* NetService.NetService;
+      const { service } = yield* masterHost({
+        masterPorts: new Map([
+          [threadId, yield* net.reserveLoopbackPort()],
+          [otherThreadId, yield* net.reserveLoopbackPort()],
+        ]),
+        untested: true,
+      });
+      for (const id of [threadId, otherThreadId]) {
+        yield* service.openMaster(
+          { threadId: id, relativePath: "cube.blend" },
+          { agentSession: "session-1" },
+        );
+        expect(yield* service.agentListener(id, { role: "master" })).toMatchObject({
+          state: "untested",
+          mcpVersion: "1.1.0",
+        });
+      }
+    }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
   );
 
   it.live("never listens for agents while agents aren't allowed", () =>

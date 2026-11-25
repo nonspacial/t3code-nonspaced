@@ -102,6 +102,9 @@ const workingStatus = Effect.fnUntraced(function* (threadId: ThreadId) {
       // Only a listener that came up on the thread's port takes `blender-hosted` calls.
       agentAccess: listener?.state === "ready",
       ...(listener?.ended == null ? {} : { agentAccessEnded: listener.ended }),
+      ...(listener?.state === "untested"
+        ? { agentAccessRefused: "untestedBlenderLab" as const }
+        : {}),
     },
   ] as const;
 });
@@ -156,6 +159,9 @@ const handlers = {
             // Only this thread's own `blender-master` port reaches the shared master.
             agentAccess: listener?.state === "ready",
             ...(listener?.ended == null ? {} : { agentAccessEnded: listener.ended }),
+            ...(listener?.state === "untested"
+              ? { agentAccessRefused: "untestedBlenderLab" as const }
+              : {}),
           },
         ],
       } satisfies HostedBlenderToolStatusResult;
