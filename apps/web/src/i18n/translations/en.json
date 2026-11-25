@@ -71,7 +71,6 @@
   "cd03eb1b84271c02": "Agent",
   "bfe1a60f3f9c60fb": "Turn {turn} · {what}",
   "dfdaa6255a416140": "Outline of {turns, plural, one {{turns} recent turn} other {{turns} recent turns}}, {textTurns, plural, =0 {no message text} one {message text of the last turn} other {message text of the last {textTurns} turns}}{truncated, select, yes {, shortened to fit} other {}}",
-  "260c6b45f52d2f27": "Adds the text of your messages and the agent's replies in the last {textTurns, plural, one {turn} other {{textTurns} turns}}.",
   "afac52a5cc2dc801": "Could not send your answer. Try again.",
   "79d776428f4d0650": "The file could not be loaded. Reconnect and try again.",
   "3ea34cbb1ca5ba9b": "Preview cancelled.",
@@ -566,15 +565,6 @@
   "0108edbdb5f27c83": "This browser cannot decode this device's stream (WebCodecs unavailable).",
   "eabffa063b9244f8": "Your DNS or firewall may be blocking T3 Connect. Try another network, such as a different Wi-Fi or mobile data.",
   "c039a54c8238eafe": "It may be overloaded, asleep, or off the network.",
-  "3ed524933c568f8c": "Scene",
-  "8f9167efec844695": "Frames",
-  "8f57fe4fcc5c7945": "{start}–{end}",
-  "5d5a2f58f1a34c19": "Scenes",
-  "9737b868f7aebd61": "Objects",
-  "3a4c33441eda8301": "Meshes",
-  "472ca1deae1a19f5": "Materials",
-  "6116c7ae71bc7d05": "Linked files",
-  "3286ce5553d9f505": "Size",
   "3c4391a7f6421455": "{host} did not confirm the message within 60 seconds.",
   "204ac030de627c0a": "Git URL",
   "68b989c06486c4e0": "URL",
@@ -1352,9 +1342,9 @@
   "a9b663922945a4fa": "This connection cannot open an editor on this environment.",
   "868596d482a1a2bd": "Open",
   "f58caaa68c09fbeb": "Open with",
-  "75b6d7c3bc9c72da": "Could not open in {editor}",
   "415d9fed5542d278": "Could not open file",
   "1d1bbe5b700afe63": "Unable to reveal file",
+  "75b6d7c3bc9c72da": "Could not open in {editor}",
   "31dc19d033af2774": "Unable to open link.",
   "029d8d0201aed231": "Unable to open System Settings.",
   "9af3083226778d3c": "Open VSX returned malformed theme details.",
@@ -1562,6 +1552,7 @@
   "6848f5bbb2bd9eec": "PDF document",
   "7873a79df0cf6d0e": "Browser page",
   "0b55696e27387e4e": "Press Shift+Escape to leave the browser page.",
+  "90dfebe26eb86b2d": "Page select options",
   "737d3c6bec93f9e6": "Choose files for the page",
   "e6a3fa7cfc14f86a": "Browser dialog",
   "61a552a67e9e3eac": "Dialog response",
@@ -2449,7 +2440,6 @@
   "ac0de2a59d9c8860": "Device",
   "1354df9fb7278843": "Watch an iOS Simulator or Android Emulator.",
   "fdcd9643e2e63b15": "Ask a side question while this thread keeps working.",
-  "46dae7e064a17ca3": "Blender",
   "1944f04b75ddf26d": "Thread on {label}",
   "314cfeebf191ba0d": "needs approval",
   "4e5b7363441a3831": "needs input",
@@ -2640,6 +2630,8 @@
   "89b5e8f3887812da": "Guest request",
   "62e626804919b294": "Input needed",
   "c6196d99000642b4": "Open thread",
+  "70bdebaa3d291d3b": "Thread unavailable",
+  "a351ebbdcf1a3f7a": "This thread is on an environment this app is not connected to.",
   "826cb862b4a11fb3": "{label}:",
   "3e597ec938e7551b": "You:",
   "a1fbf2422c588292": "Agent:",
@@ -2745,9 +2737,9 @@
   "db7b3a938c45e56c": "Update {version} ready to download",
   "9a951140b69ba740": "Downloading update ({percent}%)",
   "7fdece033260e9fb": "Downloading update",
-  "52e1d4a487c0cf4b": "Install failed for {version}. Click to retry.",
   "09ef51903e99e876": "Update ready downloaded. Click to restart and install.",
   "d62631cab06d2b80": "Update {version} downloaded. Click to restart and install.",
+  "52e1d4a487c0cf4b": "Install failed for {version}. Click to retry.",
   "78a04e0e625c0990": "Update failed",
   "c24de5eb69373a55": "This {build} build ignores {track} releases. Review the update track in Settings to finish the switch.",
   "b02ae45a6109c93b": "Up to date",
@@ -3291,231 +3283,6 @@
   "984c25ffcae69300": "Add backend",
   "08570ee0982df89d": "Pairing...",
   "3bbae7c96b6cbfc3": "Open app",
-  "473079352585294d": "Which Blender to show",
-  "72ec28b225ed9811": "Couldn't open the master",
-  "70da4581cf87971c": "Couldn't move into T3 Code",
-  "d5da364f3ffb7fa7": "Working copy",
-  "d3b2dad809961953": "Master",
-  "8fc9ef73a784da09": "A desktop Blender T3 Code couldn't check may also have this file open. Save and close it there so the two don't overwrite each other.",
-  "ab03a468cc62daf1": "Move into T3 Code",
-  "77b72b3b7ee97069": "Open in T3 Code",
-  "cb4451ab067ff47d": "Blender didn't start",
-  "731b80ac194beb4a": "Open in your desktop Blender",
-  "ca40a1f4300b4838": "Master not open in T3 Code",
-  "10a2ab0021554b0a": [
-    "Blender couldn't open ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " on the hidden display. Check that Blender opens it, then open it again."
-  ],
-  "f5db5877ab70bfc8": [
-    "Move into T3 Code saves ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " in your desktop Blender, with its unsaved changes, quits that Blender and opens the file here. Its undo history is lost."
-  ],
-  "6484265e8c18d3dd": [
-    "Move into T3 Code saves ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " in your desktop Blender, quits that Blender and opens the file here. Its undo history is lost."
-  ],
-  "d77c7db5a642f111": [
-    "A desktop Blender is running, but T3 Code can't reach its MCP add-on to see whether it has",
-    " ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " open. Save and close the file there before opening it here."
-  ],
-  "a0056043b004c957": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " isn't open in a master Blender. Agents copy their proven changes into it there."
-  ],
-  "e69c6af74880ba75": "English (US)",
-  "675e421e80618158": "English (UK)",
-  "27cface4ce8ec314": "German",
-  "252113dddccaec1a": "French",
-  "8ab4b97531ab9d38": "Spanish",
-  "3545659a9d1bb2e3": "Italian",
-  "38923bf04cdeb628": "Portuguese",
-  "587094706a1471b7": "Portuguese (Brazil)",
-  "5950bf35d9440cd8": "Swedish",
-  "9db1b78d4555eaae": "Norwegian",
-  "12de4ccc884a2322": "Danish",
-  "fa15389723321c00": "Swiss German",
-  "4011a07411675ba1": "Russian",
-  "d1634d41846e72cb": "Japanese",
-  "c77caac5b764ef8c": "English (Dvorak)",
-  "7b15925473b02c07": "English (Colemak)",
-  "7c6bc1129dc9f48e": "Untitled scene",
-  "cd078f4497dfcd36": "Couldn't restart Blender",
-  "ad3ce6044792509a": "Couldn't reopen Blender",
-  "90e3c64eab32945e": "Discard the autosave of {name}?",
-  "01201ecb830d7c68": "Discard the unsaved changes to {name}?",
-  "a1628cec6e798a98": "T3 Code's hidden display helper",
-  "759aa5a1a95bc013": "an H.264 encoder",
-  "f5a8efdb194519df": "GStreamer's OpenGL plugin",
-  "d6fcf229c9306851": "Screenshot & annotate",
-  "32cf9ac006229af1": "Blender menu",
-  "9287e12fbeade687": "Another device took control of Blender",
-  "d2b10ff67d190925": "Blender viewport",
-  "2151790bc5e65b31": "Not available on this host",
-  "b94f5fc6d71bc852": "Setup needed",
-  "7050870331ac8b9a": "No hosted Blender running",
-  "fb2c65328a8a2e17": "Open a .blend file in the file preview and choose Open in hosted Blender.",
-  "3f25b97ec987231e": "Blender couldn't open the file on the hidden display. Check that Blender opens it and that GStreamer has an H.264 encoder, then open it in hosted Blender again.",
-  "c9d23ccb15073177": "Blender crashed",
-  "9f406050b6efb934": "Blender was closed",
-  "0693a88b1530f8eb": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " is outside this project, so T3 Code can't reopen it. Its unsaved changes are kept at ",
-    {
-      "i": 2,
-      "k": "_gt_value_2",
-      "v": "v"
-    },
-    "."
-  ],
-  "95b2d0bdafc5b01d": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " is outside this project, so T3 Code can't reopen it."
-  ],
-  "0181fc8af235ad77": [
-    "T3 Code kept the unsaved changes to an untitled scene at ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    "."
-  ],
-  "c3528aaa534d9a33": "Blender had an untitled scene open, which T3 Code can't reopen.",
-  "df374db2c12ff019": [
-    "Blender couldn't restore the copy of ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ". The copy is kept: try again, open the file as last saved, or discard the copy."
-  ],
-  "ff3775198cef1512": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " stopped unexpectedly. Restart opens the file as last saved, or restore its newest autosave."
-  ],
-  "945cdcba38a31b0c": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " stopped unexpectedly. Restart opens the file as last saved."
-  ],
-  "a1705e3412c3634e": [
-    "T3 Code closed ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " when this thread settled or T3 Code stopped, and kept its unsaved changes. Reopen restores them."
-  ],
-  "891e3d7d231af485": [
-    "T3 Code closed ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " when this thread settled or T3 Code stopped."
-  ],
-  "bd90fd96c98e9c6f": "Restart",
-  "220f0a0fa43d9f59": "Restore autosave",
-  "182049c015041be2": "Reopen",
-  "eb23e8b7b8458cfa": "Open as last saved",
-  "97585565390197f6": "Discard",
-  "930be3d3ed674427": "Also kept:",
-  "d6c851db16c7dfd8": "The file as last saved is kept. This can't be undone.",
-  "7dfc4caecd0ca4da": "Open Blender settings",
-  "22e7ff1b5896ba7b": "Hosted Blender needs a Linux server. You can still open 3D files in the file preview.",
-  "ccb9bcd7825f2f99": "This server's Linux release ships labwc and GStreamer too old for hosted Blender. You can still open 3D files in the file preview.",
-  "efd53a6196afbf6d": "Flatpak and Snap builds of Blender aren't supported yet. Settings › Blender says how to use another Blender.",
-  "ec1b57292361ae76": "Switch on Hosted Blender in Settings › Blender to watch and steer Blender here.",
-  "e4ec327ad1a82eb5": "T3 Code hasn't checked this server yet. Open a .blend in hosted Blender, or check it in Settings › Blender.",
-  "af467bacc13f5e57": [
-    "This server is missing: ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ". Settings › Blender can install them with an agent or show you the commands."
-  ],
-  "f4266902a2c24f1e": "Starting Blender…",
-  "9d8acbbea6eafeef": [
-    "Opening ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " on the hidden display."
-  ],
-  "4e4f72c4986c5f68": "Take over",
-  "14d410b8b9a578d0": "Fullscreen",
-  "2026a467bc778ad9": "Keyboard layout",
-  "1d9b37b42f1216c8": "Automatic",
-  "4b0ca2d2af30068a": "Scrolling",
-  "3e3e743c7c26648a": "Automatic",
-  "8884c1281f2a2db4": "Mouse wheel",
-  "295182c176fc7bd0": "Trackpad",
-  "8b290ab856b8f02b": "Quit Blender",
-  "6b30f7f4ebd659d7": "Too many people are watching this Blender. Try again later.",
-  "1681e6f089782b9d": "This browser can't play the Blender stream.",
-  "7579927020ad5107": "You're in control",
-  "67ab7e22612414d0": "Another device is in control",
-  "81f3ce1d88ecf7bb": "Watching",
-  "b41e3eeb664df523": "Agent editing",
-  "3906097eebf88153": "Showing the whole display",
-  "27ea83219396f796": "No GPU: Blender will be slow",
-  "156c7543e861dda6": "No GPU access: Blender will be slow",
-  "907a0f7ed16a709d": "Couldn't open in hosted Blender",
-  "7b0cb06d256e6b28": "Open in hosted Blender",
-  "119259d2fa66fadf": "Couldn't quit Blender",
-  "e2d3b41b3731a6c1": "Save changes to {name} before quitting?",
-  "32504fe5e26d8233": "Changes Blender hasn't saved are lost if you quit without saving.",
-  "9ceb68fb844584c9": "Quit without saving",
-  "e21dfc1887d124ec": "Save and quit",
-  "004649901eabfebd": "Working in Blender",
-  "614e5ad58a795fb5": "Stop",
   "49cc06e79f21f85a": "{seconds}s",
   "8603d41c52392f1d": "{minutes}m {seconds}s",
   "f2a955905704b91d": "{hours}h {minutes}m",
@@ -3559,6 +3326,9 @@
   "b90e87f4b7125237": "Details",
   "16dc67f5429d8bae": "Background work",
   "2188eee8f81b0f51": "Open subagent",
+  "ec9e0be8ec693302": "Collapse all folders",
+  "b791dd86f7991cc0": "Expand all folders",
+  "55b936e3014e16c8": "Open diff",
   "28bb7ce40dfd349a": "Terminal output can't be added to a question answer.",
   "801cb8edea94b8f6": "Answer or dismiss the question first, then add it to chat.",
   "aa5507f20d94d5a9": "Update this server to send files with question answers",
@@ -3860,8 +3630,8 @@
   "478e3b4551be4db3": "Show extracted text",
   "e7205ebfead1aafc": "Expanded video preview",
   "1bda77e861bb472f": "Expanded image preview",
-  "eebe5b17e3c19a1c": "Back, close video preview",
-  "58fd0009a6eb7258": "Back, close image preview",
+  "fb633d54edaeb4b1": "Close video preview",
+  "62d0c453f5803180": "Close image preview",
   "47bae54b5f532ff3": "Previous media",
   "fb9434aad2b5c0bb": "This image could not be loaded.",
   "26aee5d4e97bfb28": "Image unavailable. The file may have been moved or deleted.",
@@ -3872,6 +3642,7 @@
   "4e0710d19dfc2e7e": "Send this report to the T3 team?",
   "87d0ae0723ba75d1": "This is everything that leaves your machine. Nothing is sent unless you press Send.",
   "bf19826f81484328": "Include the conversation",
+  "260c6b45f52d2f27": "Adds the text of your messages and the agent's replies in the last {textTurns, plural, one {turn} other {{textTurns} turns}}.",
   "ddb7e6f8ce99e657": "Only someone who can run agents on this machine can send or decline it.",
   "03c1eb603c112f47": "Don't send",
   "653405e4ed498d9f": "Send",
@@ -4031,6 +3802,21 @@
       "v": "v"
     },
     " app left its page and was stopped"
+  ],
+  "796b81c4875c4feb": [
+    "The ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " app needs a newer ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    " server on this environment. Update the server to use it."
   ],
   "5ef18e4d39b398bf": [
     "Unable to load the ",
@@ -4857,6 +4643,7 @@
   "7f0f9b1ee42892db": "Output is no longer available.",
   "e470bb79fa74a6ae": "Tool output image",
   "e8c80b6d40c0944c": "Search result",
+  "76cf478e5674fd12": "{count, plural, one {{count} match} other {{count} matches}}",
   "8d1906900b5c95c7": [
     "exit ",
     {
@@ -4865,7 +4652,6 @@
       "v": "v"
     }
   ],
-  "55b936e3014e16c8": "Open diff",
   "83c29850641c8935": "Queued",
   "8402f099f88fd0e0": "Running",
   "c5f5b73e92221a6a": "Waiting",
@@ -5747,8 +5533,6 @@
   "1601d7e39a52c48f": "Retry loading diff",
   "b7b137472adb6989": "Partial diff preview",
   "f0d79aa56f06663f": "This file is too large to show in full. Counts include all changes.",
-  "ec9e0be8ec693302": "Collapse all folders",
-  "b791dd86f7991cc0": "Expand all folders",
   "7fdde2b893ba1b9d": "Removed",
   "e58ce271d835b447": "Added",
   "07b9970b662ab70d": "Show Mermaid source",
@@ -5821,32 +5605,6 @@
   "7b05d792ad825483": "This folder is empty.",
   "0a698dff05246810": "This table is empty.",
   "a52678523d189f7b": "This database has no readable tables.",
-  "7c23820b77e42b2c": "Reload file",
-  "586cd2c4199fa323": "Saved thumbnail of {name}",
-  "25d1be241b107e99": "The file could not be read.",
-  "af3426b9850d4da7": "Converted with Blender {version} · cached",
-  "5b88b6929848ca03": "Converted {seconds} s ago",
-  "ea085b85d5409d6d": "Converted with Blender {version}",
-  "e1de2d5335083143": "Converting with Blender {version}… {seconds} s",
-  "9228469f14b148a6": "{file} changed · updating…",
-  "41f9012753a424a9": "Conversion failed",
-  "047618ba1e0fe59d": "Conversion cancelled",
-  "53a1519e0b7358cf": "Waiting: {ahead} ahead",
-  "202d05bbf54b83c1": "Too slow to preview",
-  "dd22e61b9a4efe81": "Converting took over a minute, so it was stopped. Keep trying converts with no limit.",
-  "569078051cbef37c": "No Blender on this server",
-  "484bbf26d26f6f65": "Install Blender from blender.org on the machine running T3 Code, or set its path in Settings under General, to see this file in 3D.",
-  "a3a292e8b22c02db": "Saved by Blender {file} · server has {server}",
-  "4e2b52d678917c4d": "Saved thumbnail · Blender {version}",
-  "864d83692fd9047f": "Saved by Blender {version}",
-  "3caa4fb20ff3277d": "Blender saves this picture with the file, so it can be out of date when a script saved the file.",
-  "301ece9c34df1726": "Blender's log",
-  "20fc073d179a63f5": "Blender wrote nothing to its log.",
-  "71f9aa2ee31aac46": "No thumbnail saved in this file",
-  "27088355449cdd28": "Scene details",
-  "3a87f8c40f3b8065": "Convert",
-  "3a7a505e7bb890be": "Show log",
-  "5ac36af75f80daf6": "Keep trying",
   "8366e42937c9e3e1": "Decrease reading size",
   "d847122435025b26": "Increase reading size",
   "a2a71f4799fba9a9": "Reset reading size",
@@ -5943,44 +5701,6 @@
   "b75105bef8f564a4": "Showing the first 1,024 columns. Source and Save retain every column.",
   "2a6e1b1f209c3888": "This file is empty.",
   "192fc79eb3b5b2cb": "This diagram contains resource URLs, markup, node metadata, or custom configuration. Show Mermaid source to inspect it safely.",
-  "aaf4d7b88f1a09d8": "Describe the change…",
-  "51dbb09f63c653ea": "Annotation comment",
-  "dd2fd8921e6266cc": "Frozen 3D view to annotate",
-  "5e28beecabfa2e5c": "Annotation tool",
-  "44480ea1a65332c2": "Draw",
-  "ef38e20921500bd4": "Mark a region",
-  "3634581310a50ead": "Erase a mark",
-  "509733274928da85": "Cancel annotation",
-  "bdac60fb8176f6cd": "3D previews need WebGL, which this browser has turned off or does not support.",
-  "2c35172b5a5d8a64": "The 3D view stopped responding.",
-  "791277de6140c5c7": "This 3D file is damaged or uses features the preview does not support.",
-  "54d0d4483d261e37": "This 3D file has no geometry to show.",
-  "bee9d18a1a2b0c3e": "A file this model needs could not be found.",
-  "2d782dfff8e968f8": "The model could not be loaded.",
-  "a1ad1c48825fa0b5": "This model is over 1 GB, too large to preview. Save it to open it in a 3D app.",
-  "6c74f6e6e2d69293": "Loading 3D model…",
-  "4fc027df67b0cbbc": "Large model",
-  "dd420bd9b4c8f356": "Preview failed",
-  "108ec15bf5350d7d": "{format} · rendered in the browser",
-  "b1a9bdc9615401d5": "{count, plural, one {{count} texture not found} other {{count} textures not found}}",
-  "cbcdb6061aa78bf6": "{count, plural, one {{count} file not found} other {{count} files not found}}",
-  "35d235e816e6f4b0": "3D view of {name}",
-  "c85eef9dc05fa21b": "{files} could not be found next to {model}.",
-  "411a4c0012fbdc78": "This model is over {size}. Loading it can slow this window down for a while.",
-  "7a4197b6468d9219": "This model is {size}. Loading it can slow this window down for a while.",
-  "0b87945c6568d758": "A newer version is available",
-  "7805e0174e665cd4": "Couldn't load the new version",
-  "5ec36ad4005866e2": "{files} not found next to {model}",
-  "164dcb32e690fb3b": "Reset view",
-  "fd84ebd10dd79423": "Reload model",
-  "69b6a587633c2599": "Triangles",
-  "26a4ebec594d4dee": "Points",
-  "db81a08c825964a9": "Size",
-  "d51618c38e9c4e73": "{width} × {height} × {depth}",
-  "317be90a94ab7326": "{width} × {height} × {depth} {unit}",
-  "a33fd1cd3116533d": "Keep this version",
-  "c61866d92a739c56": "Load model",
-  "800f266a8be8e117": "Model details",
   "3bd23d5083b5d405": "{count, plural, one {{formatted} cell} other {{formatted} cells}}",
   "192bad6b5ce4de80": "Cell {number}",
   "e7b4d35b3eeeb470": "Cell {number} HTML output",
@@ -6053,9 +5773,6 @@
   "e7db07db10325fb0": "The file is binary and cannot be displayed as text.",
   "98de7fbcf514dac7": "The requested path is outside the workspace.",
   "fa347e700afd8d04": "The path resolves to a location outside the workspace.",
-  "22738c009abc434a": "This file is not a Blender file, or it is damaged.",
-  "458554b0a4245572": "This Blender file is too large to read its details.",
-  "31714e7420776a7c": "This attachment is no longer available.",
   "2d6da78ecabfd210": "The workspace folder could not be accessed.",
   "fdf4cf5389fb7848": "The file could not be accessed or read. It may be missing or inaccessible.",
   "40d67da2e98bb2ff": "Loading file",
@@ -6163,8 +5880,6 @@
   "cf91653e72226743": "Image decoding is unavailable.",
   "4333d220c55ba5e4": "Workspace query failed.",
   "422c1671dfcfe474": "''{path}'' does not exist.",
-  "29e40a5da4bbbf79": "Could not capture the 3D view",
-  "cd312dae87fc794f": "The annotation was kept without the screenshot.",
   "20194b81e50497ad": "Unable to load folder.",
   "0061fff77e36bd4f": "Could not reach the server.",
   "04dfdd46e3dd4a2e": "Something went wrong. Try again.",
@@ -6649,6 +6364,7 @@
   "153553848233ee15": "Forward",
   "240853568cd99a49": "Stop",
   "c345982ed3610277": "Search or enter URL",
+  "509733274928da85": "Cancel annotation",
   "0b5bf74d94f7f690": "Annotate preview",
   "c8243141ce88918f": "Cancel annotation (Esc)",
   "f4ad38f77fe12791": "Annotate elements, regions, and drawings",
@@ -6761,9 +6477,9 @@
   "ae32c462968b0f93": "Unable to copy screenshot",
   "d96a16d699f1a6df": "Unable to capture screenshot",
   "b18dda39d9585f3e": "Could not capture the picked element",
+  "cd312dae87fc794f": "The annotation was kept without the screenshot.",
   "4616fb6552fd8875": "Page didn't load. Pick is unavailable until the page renders",
   "770d6036de8dbcb7": "This tab is open in the T3 Code desktop app.",
-  "ce122949162f2073": "Floating Blender preview",
   "b252602c8f71d6af": "Unable to pop out preview",
   "0fc0a2ff438851b5": "Floating browser preview",
   "74892fefe58df8e3": "Close popped-out preview",
@@ -6943,6 +6659,8 @@
   "1b381201aba745c2": "No checks reported",
   "a6d75a4380173c60": "Open checks: {summary}",
   "be3d1766bad18693": "Checks: {summary}",
+  "425e4a3d6c5c2867": "{count, plural, one {{count} failed} other {{count} failed}}",
+  "fd63b391898889f9": "{count, plural, one {{count} awaiting action} other {{count} awaiting action}}",
   "cb116c139cdace98": "No checks reported",
   "60b56e201607c7ec": "Check details are out of date. Refresh the pull request to update them.",
   "e74cd4e960cbb5e5": "Unchanged lines are unavailable in a file with cut lines.",
@@ -7324,27 +7042,19 @@
     }
   ],
   "ce703d4ba40dc9b4": "Merging stack...",
-  "8a883c4fbc127b68": "Enabling stack auto-merge...",
   "ac7feb9c583b02a0": "Rebasing stack...",
   "cb0f63bbb0b68d94": "Could not merge the stack",
-  "5fb2a26ae31e8983": "Could not enable stack auto-merge",
   "c8a943fa15a56b2b": "Could not rebase the stack",
   "ec22caeb8b949ed1": "The host refused the rebase. A rebase stops at the first commit that does not apply cleanly.",
   "ead3e2bac1a8d231": "Stack merge request completed",
-  "986d0dcbf4dd0098": "Stack auto-merge enabled",
   "d7079b5ac269c65e": "Stack rebased",
   "5631b32be0ce48d3": "{host} merged the stack or added it to its merge queue.",
-  "f3ed1f63c8a3eef2": "{host} merges the stack through #{number} once its requirements are met.",
-  "bd536a0a1754f6cb": "Could not cancel stack auto-merge",
-  "bb90ac3b2f3a72d5": "The host refused to cancel auto-merge. Refresh and try again.",
   "2d3b55018a54287e": "Checking the stack with the host…",
   "eea55205e46d2e3d": "Stack {number}, layer {position} of {size}",
   "b6f729119107a145": "{count, plural, one {Merge stack through '#'{number} into {base} ({count} {term, select, mr {merge request} cr {change request} other {pull request}})} other {Merge stack through '#'{number} into {base} ({count} {term, select, mr {merge requests} cr {change requests} other {pull requests}})}}",
   "d4bfcdc6bb7676a3": "{count, plural, one {Merge {count} {term, select, mr {merge request} cr {change request} other {pull request}}?} other {Merge {count} {term, select, mr {merge requests} cr {change requests} other {pull requests}}?}}",
-  "9c28753c777c37b7": "{count, plural, one {Auto-merge {count} {term, select, mr {merge request} cr {change request} other {pull request}}?} other {Auto-merge {count} {term, select, mr {merge requests} cr {change requests} other {pull requests}}?}}",
   "b9f2a24a3757f6c9": "{count, plural, one {Rebase {count} {term, select, mr {merge request} cr {change request} other {pull request}}?} other {Rebase {count} {term, select, mr {merge requests} cr {change requests} other {pull requests}}?}}",
   "d1bcf19eb2753fff": "Merge #{number} and its unmerged layers below into {base} using {method}. {host} checks their rules before merging or queueing them and rebases the remaining stack after merging.",
-  "a86b49982e18784d": "Merge #{number} and its unmerged layers below into {base} using {method} once every one of them meets the requirements on {host}. This may happen immediately.",
   "31d2f22f5a282719": "Rebase the remote branches from bottom to top onto {base}. This rewrites branch history and may restart checks. If a layer fails, earlier updates remain.",
   "a0adf78733c368ae": "Merge stack",
   "140dc384c58b74f3": "Rebase stack",
@@ -7379,19 +7089,8 @@
     },
     ")"
   ],
-  "b1afda5c964deee4": [
-    "Auto-merge stack (",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ")"
-  ],
-  "33d18dda74f6d7b3": "Cancel stack auto-merge",
   "30440f98e929440a": "Rebase stack",
   "13718a03e3144142": "Every layer being merged must be open and ready for review.",
-  "012c67c7f1a99e33": "Auto-merge stack",
   "4aafe1baf113088a": "Merge stack",
   "0292da19054f2a04": "Loading stack…",
   "583869e6df57abeb": "This pull request is no longer in a stack.",
@@ -7619,9 +7318,6 @@
   "9b0647af63a7d8c1": "Approved earlier changes",
   "abe99679224fea5e": "Changes requested earlier changes",
   "6b31ad910278ff72": "Review dismissed earlier changes",
-  "425e4a3d6c5c2867": "{count, plural, one {{count} failed} other {{count} failed}}",
-  "fd63b391898889f9": "{count, plural, one {{count} awaiting action} other {{count} awaiting action}}",
-  "948185631ef288e6": "{count, plural, one {{count} running} other {{count} running}}",
   "aaf22207b2f18c45": "{workflows, plural, one {{workflows} workflow} other {{workflows} workflows}} and {checks, plural, one {{checks} check} other {{checks} checks}} awaiting action",
   "c51411813ebafcc1": "{count, plural, one {{count} workflow awaiting approval} other {{count} workflows awaiting approval}}",
   "4946778c8e18a1db": "{count, plural, one {{count} check awaiting action} other {{count} checks awaiting action}}",
@@ -7830,9 +7526,20 @@
   "dc87902396b8ade4": "Letters, digits, '-', or '_'.",
   "251dfec07b7c3612": "This driver has no required configuration. You can add the instance now.",
   "08fe32f007e788f1": "Configure manually",
+  "65300794c1edb929": "Bearer token (optional)",
   "84eb2878dc17d3eb": "Management key",
   "7ac196c1e8175928": "Defaults to the hub's host name",
+  "0c026221dcd2820b": "Add an HTTP quota source",
   "e3548407052e9e12": "Add a CLIProxyAPI hub",
+  "d185c750156b2121": [
+    "Read quotas from an endpoint on ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
   "432e85a50e2e7964": [
     "Show the quota of every account the hub pools, next to the providers on",
     " ",
@@ -7843,7 +7550,9 @@
     },
     ". The key stays on that server."
   ],
+  "2324770ba91371ac": "Endpoint URL",
   "556a695b117565ac": "Hub URL",
+  "e4e5b75bba51396c": "Bearer token (optional)",
   "e62cedcbcdbafc75": "Management key",
   "f1b3d0634ec035cb": "Label (optional)",
   "52814dd6f7d0a15c": "Add hub",
@@ -7855,7 +7564,6 @@
   "d5dc7576fd468be7": "Comfortable",
   "3141408bf3874e64": "Wide",
   "831badd18b64547e": "Full",
-  "6287212fed0deec6": "Match chat",
   "a96255594ebf2ce3": "Word",
   "1ee44eb65708a8aa": "Bars",
   "7670f789e0d8672a": "Only built-in themes show artwork, so this theme shows the version pill.",
@@ -7873,11 +7581,12 @@
   "03338c6aec8edacd": "Set how wide messages and the composer can grow on large screens.",
   "92785adb251da88c": "Reset chat width to default",
   "4d457bcce0c0e272": "Chat width",
-  "81f3a196537bbee0": "Comfortable (default)",
+  "7d7f65967cc821e3": "HTML preview width",
   "70ce0af7f78d5957": "Let HTML previews in a chat grow wider than its messages, which stay centered.",
   "f2b119bf02ae2558": "Reset HTML preview width to default",
-  "7d7f65967cc821e3": "HTML preview width",
+  "6287212fed0deec6": "Match chat",
   "dc8e85ea0364649c": "Match chat (default)",
+  "81f3a196537bbee0": "Comfortable (default)",
   "e79e5388f669495f": "Show reasoning effort in the composer as its name, such as High, or as bars.",
   "7f0365c7e4e8bcbf": "Reset effort display to default",
   "14bf40f765172a50": "Effort display",
@@ -8020,11 +7729,6 @@
   "3943d8479dc44551": "Poll host power state when no foreground client is active.",
   "d13f97c11d2f322b": "Reset all",
   "cc310b2ec0179edf": "Configure background activity",
-  "a0f6aecb07b533ff": "Running Blenders ({count})",
-  "b04a15f0adaa16b9": "No hosted Blenders are running",
-  "201b5d40d08e74d0": "Each thread's hosted Blender shows here while it runs.",
-  "75daeb1e9b041511": "Unknown thread",
-  "0eda0be3d24af58c": "Quit",
   "e116ed85458b6613": "Static prefix",
   "575ae567e3b6ca3d": "Semantic prefix",
   "6675de66f9b3f71d": "Custom instructions",
@@ -8953,122 +8657,6 @@
   "e8622c39abe68f9d": "default",
   "5383ef2d2c09cdf7": "Search fonts…",
   "ea08337bcadd35b4": "No fonts found.",
-  "7660bc93bbd673be": "Let T3 Code run its own Blender on this server, on a hidden display, so you can watch and steer it in the Blender pane. Linux only. Your desktop Blender is never touched.",
-  "41dfe036cd2b2975": "Hosted Blender",
-  "9cc2228be8a75b39": "Agents in Claude and Codex threads may start this server's hosted Blenders, from their next session. Other providers are not supported yet.",
-  "9dfd275b6a5d4f9a": "Finish setup first, including the official Blender MCP server. Agents use it to work in hosted Blenders.",
-  "1f0df945c5a89af5": "Allow agents to start hosted Blenders",
-  "67c674ad132e17bb": "Hidden display helper",
-  "16da5cd9c2fa80bc": "H.264 encoder",
-  "af0373642246bb1c": "GStreamer OpenGL upload (NVIDIA)",
-  "129d601c223507ec": "GPU",
-  "d87898d465d6309f": "Blender MCP server",
-  "541ee140c8330a2a": "Couldn't check hosted Blender's setup",
-  "428192e9745f36eb": "Couldn't start the setup thread",
-  "31ba36fb9402faa7": "Install commands",
-  "b6554bc1ff014f77": "The official Blender Lab MCP server, such as ~/.local/bin/blender-mcp. Leave empty to find it on PATH or in ~/.local/bin. Check again after changing it.",
-  "e7743bf6a3de9ca3": "Reset Blender MCP path to default",
-  "a9b3c3359bce1e24": "Blender MCP path",
-  "d52b3d6bf9f2a013": "Mixed",
-  "6d0cb7390c17be3b": "Find automatically",
-  "0726bb02c4c42175": "Checking this server…",
-  "3a450021c92f3e4e": "T3 Code looks for Blender, labwc, GStreamer and the GPU, and runs a test encode.",
-  "b0537628ad92ed53": "Not checked yet",
-  "33bb3044d9712567": "Check this server for Blender, labwc, GStreamer and the GPU, with a test encode.",
-  "c3f155eda04d9708": "Hosted Blender needs a Linux server. 3D file previews still work on this one.",
-  "60f2565d2d2a6c3e": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " ships labwc and GStreamer too old for hosted Blender. Ubuntu 24.04, Debian 13, Fedora 43 and Arch work."
-  ],
-  "66c4a476d0b4abaa": "Flatpak and Snap builds of Blender aren't supported yet. Install Blender from blender.org or your distro, or set its path in Settings › General › 3D previews, then check again.",
-  "cd212c9950bba81d": "Found",
-  "f9ab32870fe2bf3a": "Missing",
-  "d724abd4cc4a85e5": "Too old",
-  "7b01b12da1a9fd17": "Slow",
-  "a5fe3dee0a941705": "Not Blender Lab's",
-  "7174ef3cfccc7a54": "Runs Blender on the hidden display and streams it.",
-  "59e399ec181acb63": "T3 Code's own helper is missing from this install. Update or reinstall T3 Code.",
-  "92a36f954d094a6f": [
-    "Version ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    "."
-  ],
-  "759ad8d8187ed946": [
-    "Version ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ". Hosted Blender needs Blender 4.5 or later."
-  ],
-  "2cf31d1c821751ac": "Install Blender 4.5 or later, or set its path in Settings › General › 3D previews.",
-  "5d52dcf7276c5199": "The compositor behind the hidden display.",
-  "ac6f1be5c0b72432": [
-    "Version ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ", captured with wlr-screencopy. labwc 0.9 or later captures Blender's window alone."
-  ],
-  "8ca441a272a1c6e1": [
-    "Version ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ". Hosted Blender needs GStreamer 1.24 or later."
-  ],
-  "f400a2435a7c9972": "GStreamer 1.24 or later encodes the stream.",
-  "991f74849ed9e582": [
-    "The one-second test encode used ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    "."
-  ],
-  "ba5e2c560dd26d57": "No H.264 encoder passed the test encode. Install GStreamer's plugins: one of nvh264enc, vah264enc, x264enc or openh264enc.",
-  "2ab5a1fabca22fd0": "NVIDIA's encoder reads Blender's frames straight from the GPU.",
-  "fce6aa0c10874b0c": "NVIDIA's encoder needs GStreamer's OpenGL plugin.",
-  "040d82d74fa9b290": "Blender draws with the GPU.",
-  "b1f3a29faa7594ff": "This server has a GPU, but T3 Code can't open it. Add your user to the render and video groups. Until then, Blender will be slow.",
-  "e4f914bd5e6899bf": "No GPU found. Hosted Blender still works, but Blender will be slow.",
-  "933fa7740fe8c681": {
-    "i": 1,
-    "k": "_gt_value_1",
-    "v": "v"
-  },
-  "92c9412a1a79bb73": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " is a different project with the same name, not the Blender Lab MCP. Install the official one, or set its path below."
-  ],
-  "9a397640135c1803": "Agents need the official Blender Lab MCP server. The pane works without it.",
-  "7c26d4f38c0094aa": "The result is kept until you check again, such as after installing something.",
-  "021b62ff834041f0": "Install what's missing",
-  "ec5d04aa0c3eed05": "An agent is installing what's missing",
-  "26c7f14fb81274cb": "An agent can install it in a new thread, asking for your password in a private card, never in chat. Or run the commands yourself. T3 Code never installs system packages itself.",
-  "0d7eb1eeb33375bb": "T3 Code checks again when the agent finishes.",
-  "a19376d3fce3f52d": "Install with an agent",
-  "5dee7399d93445e1": "Hide the commands",
-  "fbb5ec917cc3451d": "Show me the commands",
-  "db2f53db5e812a59": "Copy commands",
   "d6ad43bc4b700a88": "Browser profile data is not available to clear.",
   "ad8efd437b301a37": "System",
   "42e23caa6ef99cad": "Light",
@@ -9195,13 +8783,9 @@
   "ed83b25c71c98a20": "Pick one or more {tracker} {scope}s for each project. Their issues list beside the repository's own, and agents file new issues in the first one unless asked for another.",
   "19c2d5e81ff8f89a": "{tracker} {scope} for {project}",
   "68e061510b765772": "Not bound",
-  "99d51127f573296b": "Another account",
-  "8ec2c57414669b79": "Connect a second {tracker} workspace or user.",
-  "99963c0142e17f00": "For the new {tracker} account.",
   "a2d95d39d3398bda": "Credential rejected",
   "9eae463720500113": "Stored on the server.",
   "b6e27ab2537ef874": "Create one",
-  "6d8e4ebc889bace9": "Add account",
   "13ef526271b0f5d4": "Clear all conditions",
   "d1938a629f039515": "Remove condition",
   "84a605b241ce65b7": "Remove group and its conditions",
@@ -9239,7 +8823,7 @@
   "a9cdd8c7073be920": "Command Palette: Toggle",
   "4e0943e8c7a465d1": "File Picker: Toggle",
   "df5fdcdf26a6b52a": "Project Search: Toggle",
-  "a8ff6d33b060736f": "Usage: Open",
+  "0ca6fd2b8fcab2c3": "Usage: Toggle",
   "a513d51b71b95674": "Theme: Select",
   "1ffd8427452372e1": "Appearance: Cycle",
   "3a3bb4a7551a87cc": "Theme Editor: Toggle",
@@ -9354,6 +8938,7 @@
   "f9904f78d3003f58": "Fast worktree checkout",
   "9c2f647882522302": "The selected machines use different agent feedback modes.",
   "31bbf7bf8c0a5279": "Agent feedback",
+  "d52b3d6bf9f2a013": "Mixed",
   "ec7623deed751c05": [
     "Share a thread with a guest who watches it live in a browser and sends messages you approve. Needs T3 Connect: sign in and link this machine in",
     " ",
@@ -11632,6 +11217,7 @@
       }
     }
   ],
+  "97585565390197f6": "Discard",
   "c0fce4a3555c5c17": "Connect",
   "0d1eba54ff075d77": "Use it",
   "035dc7d3b0f3e526": "Thread titles and other generated text",
@@ -11918,10 +11504,6 @@
   "42d843f45e1de53b": "Appended to the prompt for new and regenerated thread titles.",
   "169d0ed4364b4644": "Reset thread title instructions to default",
   "f307391eb1c5c9d7": "Keep titles to a few words. Lead with the main subject.",
-  "47eb7e3f2072d8a4": "3D previews",
-  "a2fc60e4c15eb1de": "The Blender that turns .blend files into 3D previews, such as /usr/bin/blender or C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe. Leave empty to find it on PATH or where Blender installs.",
-  "4c0182441f7f746d": "Reset Blender path to default",
-  "b0e5f2ebaa0f2d56": "Blender path",
   "ea6f97bad03faf84": "System monospace",
   "afa0ba3d124d9b8a": "Reset interface font to default",
   "eb19ce0364bb9a6e": "Everything outside code blocks and the terminal.",
@@ -11965,10 +11547,11 @@
       "v": "v"
     }
   ],
-  "f54364b854a07918": "No hubs configured.",
+  "39f64d971ba424b5": "No usage sources configured.",
+  "dbd877abdc2c7c81": "HTTP quota source",
   "4cf6a373a7535324": "{name} · Disabled",
-  "1d1e9cda847bd398": "The hub's management key is deleted from this server. Its accounts leave the Limits view; the hub itself is untouched. Add it again with the URL and key to bring them back.",
-  "c9bee4f93481b77a": "Remove hub",
+  "c792e744936dbe1b": "Add HTTP source",
+  "4032a03ee5301037": "The saved connection and its credentials are removed from this environment.",
   "0424112d5a0ecd71": "Auto",
   "3f0e1b77e45d53a9": "Tap to toggle, hold to talk",
   "45928549c050a1b4": "Hold",
@@ -12254,7 +11837,6 @@
   "b1c7f74049a4147c": "storage cleanup run now results report removed kept failed",
   "2678550365a59e17": "Worktree cleanup",
   "8deb2b0fd308fc26": "disk storage automatic delete deleted archived threads old inactive merged settled unchanged worktrees retention days project inherit off custom",
-  "6ac7d143dd2dd2a5": "blender 3d preview blend file convert glb model path binary install",
   "c875f7fa9a48560a": "worktree location folder directory path drive external disk",
   "c7254dc82b23d291": "disk storage delete old browser artifacts screenshots captures rotated logs cleanup retention",
   "3af3a34e376082c7": "Project defaults and overrides",
@@ -12299,6 +11881,10 @@
   "6826fa9579c22035": "beta share guest invite link teammate watch t3 connect tunnel",
   "f10c06cba0cdf7fe": "beta link another machine vps peer agents work there delegate",
   "bc0b409d89ce086e": "beta workflow durable runs automation steps schedule webhook folder",
+  "933dabf0700708af": "How many skipped runs each workflow keeps in its history. Older skipped runs are deleted; runs that did something are always kept.",
+  "f172d7e5deb24f75": "Reset skipped runs kept to default",
+  "ba94015389f327bc": "Skipped runs kept",
+  "4b2669dcdb7d3776": "workflow history retention delete old skipped runs webhook",
   "4a21cf825a2045b0": "beta tab autocomplete predict next message claude codex ghost text",
   "fea2dc36585c4a20": "Simlock device hosts (alpha)",
   "9d834d178130180e": "beta alpha simlock callstack simulator emulator ios android pool lease gateway",
@@ -12387,11 +11973,6 @@
   "f2b07faba1229ce7": "Health check interval",
   "5c9dc9970db79fe2": "refresh availability versions auth state models background probes seconds off",
   "056ba6a180d114b5": "allow disable enable open drive preview tools sessions project override",
-  "dd6b767f08eff9f7": "Running Blenders",
-  "ec2bc06507d0d9af": "hosted blender quit memory 3d thread",
-  "37d76dab21a26b2a": "blender hosted setup install check labwc gstreamer encoder gpu hidden display linux agent commands",
-  "f74fb1f1e951cb67": "blender hosted agents mcp start allow",
-  "3cf7f8ed35b33c5f": "blender lab mcp server path binary install uv pipx",
   "345075be6cacc171": "device hosts ssh remote mac mini identity key connection eas expo cloud simlock pool gateway local simulators",
   "a6b742430b05d6cc": "Agents can use devices",
   "1d5d7418a83575c2": "allow simulator emulator ios android drive tools sessions",
@@ -12519,11 +12100,14 @@
   "37ffec8201f153c1": "Failed",
   "984b361806ce8d25": "Woke",
   "c6e8abc00ae470d2": "Done",
+  "353b08f4363dbb2c": "Pending",
   "f31a95961de19433": "Issue {key}: {title}, {state}",
   "2dd9d295c882ef65": "{count, plural, one {{count} linked issue} other {{count} linked issues}}",
   "8cf699ae75fd8067": "Pinned",
   "be451f475c514b37": "Dismiss Woke notification",
   "e9ced65134f2f36c": "Wake thread now",
+  "374dac09151d4578": "Pending",
+  "a8f30f631e2b010e": "Waiting to sync with its environment",
   "aca5896600bf173e": "You're currently checked out on another branch.",
   "f665b5be60d8c144": [
     "Handed off from ",
@@ -12590,12 +12174,14 @@
   "c1a9fe8e24876f1d": "{count, plural, one {{count} running thread will be interrupted.} other {{count} running threads will be interrupted.}}",
   "ecdf5f108ecc71d0": "{count, plural, one {{count} can resume after the restart.} other {{count} can resume after the restart.}}",
   "0576c87870fb6389": "Update",
+  "948185631ef288e6": "{count, plural, one {{count} running} other {{count} running}}",
   "3d9a2f6b9c114039": "Providers",
   "f4baf8deafbb227d": "Skipped",
   "f938bb483eb3d189": "restarts last",
-  "f13e08bd3614112e": "update T3 Code on that machine",
   "9bca02be2b4d612a": "not connected",
   "2dcc418b6a13b83c": "needs a manual update",
+  "f13e08bd3614112e": "update T3 Code on that machine",
+  "3c3348c36a2695af": "change the update track on that machine",
   "fa8faa732a2688ef": "on the {channel} channel",
   "e65649675cb4cbaa": "turned off",
   "a1e7c08d9ef315c7": "still loading",
@@ -12612,7 +12198,6 @@
   "3ac986d604a2ad62": "This app cannot switch: its server is not connected, so its database cannot be checked.",
   "3bbb6e9ade0cf7e1": "run `{command}` there",
   "e7194946af611278": "runs a preview build",
-  "3c3348c36a2695af": "change the update track on that machine",
   "f5eac23351c99297": "switch the Mac app on that Mac",
   "d7444fbde9a80f04": "<1m",
   "09c1af20e9323765": "Restart in {seconds}s",
@@ -12655,6 +12240,7 @@
   "9c015d3d034316cb": "Use arrow keys to adjust the focused value. Hold Shift for larger steps. Use Home and End for the minimum and maximum. Press Tab to move between saturation and brightness.",
   "8639d5532561f87f": "Close",
   "e1186ad82ee08b33": "Close",
+  "a4579e548b768663": "Show sidebar",
   "a1b11a1cf39c9dc9": "Resize Sidebar",
   "c557090df5722838": "Toggle Sidebar",
   "bbde430e56272901": "Drag to resize sidebar",
@@ -12704,6 +12290,28 @@
   "8bcab2ef61de6518": "$0 cap",
   "a16b48709357a5a7": "Manage usage",
   "a00e74aaa421c524": "left",
+  "0e34c3076c08feb2": [
+    {
+      "t": "span",
+      "i": 1,
+      "c": [
+        "↻ +",
+        {
+          "i": 2,
+          "k": "_gt_value_2",
+          "v": "v"
+        },
+        "%"
+      ]
+    },
+    " ",
+    "in ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    }
+  ],
   "8bd6f07136317c8f": "No provider on the selected environments reports subscription limits.",
   "87f5d0c61b335f38": "View usage in ChatGPT with your connected account.",
   "5b4c71b36b979e80": "Cost",
@@ -12929,6 +12537,7 @@
   "3cc43f1dbf3f8e0c": "Cancelled",
   "ded70e75de6404ba": "Back to the list of runs",
   "2f4ed7dbd22be30d": "Cancel run",
+  "614e5ad58a795fb5": "Stop",
   "04b050b0329f0ac8": "took {duration}",
   "aff78e1774818ff4": "{duration} so far",
   "38eddd466439afc9": "What the run touched",
@@ -13050,24 +12659,18 @@
   "5459bf696a187c26": "Could not load workflow runs",
   "d57c35d43b0f163a": "This run is not here",
   "b9aae2f7cdb1a379": "No workflow runs yet",
+  "45a94c724845ec1d": "Other",
   "8f15f66e545af7c0": "Which runs",
   "b6409289e0c9a4dd": "Workflow",
   "035cb02ca1ae4952": "All {count} workflows",
+  "8eeb9cb07d7c59e1": "Kind of question",
+  "e4d1316c85ed7066": "No questions of this kind wait on you.",
+  "e2131cbec8accfe3": "All kinds",
   "46d614fa7b4bf1e5": "Workflow runs",
   "1c635faa2fb45b8b": "Has not run yet.",
   "156ff7b625287a1e": "Hide skipped",
   "69b985b97ab45e6b": "Show {count} skipped",
   "2400254d362de84d": "Loading workflow runs…",
-  "cae5c3205c01d062": [
-    {
-      "t": "span",
-      "i": 1,
-      "c": "A workflow file has a problem."
-    },
-    " ",
-    "The last version that did keeps running."
-  ],
-  "ed8ce6ebc73dc12d": "Open the file",
   "145e1f7503ba3b2c": [
     "This environment has no run with that link.",
     " ",
@@ -13093,7 +12696,18 @@
       "c": "Read the guide"
     }
   ],
+  "cae5c3205c01d062": [
+    {
+      "t": "span",
+      "i": 1,
+      "c": "A workflow file has a problem."
+    },
+    " ",
+    "The last version that did keeps running."
+  ],
+  "ed8ce6ebc73dc12d": "Open the file",
   "5d8d278ff828102d": "All workflows",
+  "3b0f1659172107e4": "All kinds",
   "39459da07479f482": "Agent",
   "7741243632056b81": "{step} · transcript",
   "c512071143a5ba32": "This thread is no longer there.",
@@ -13236,5 +12850,570 @@
   "27d76249d09eb69f": "Review guide ready",
   "faa3bb26abb39c93": "Review guide failed",
   "b7df38b7d8792d78": "Open guide",
-  "9e91e9a77b664e4e": "Could not start a review guide"
+  "9e91e9a77b664e4e": "Could not start a review guide",
+  "99d51127f573296b": "Another account",
+  "8ec2c57414669b79": "Connect a second {tracker} workspace or user.",
+  "99963c0142e17f00": "For the new {tracker} account.",
+  "6d8e4ebc889bace9": "Add account",
+  "8a883c4fbc127b68": "Enabling stack auto-merge...",
+  "5fb2a26ae31e8983": "Could not enable stack auto-merge",
+  "986d0dcbf4dd0098": "Stack auto-merge enabled",
+  "f3ed1f63c8a3eef2": "{host} merges the stack through #{number} once its requirements are met.",
+  "bd536a0a1754f6cb": "Could not cancel stack auto-merge",
+  "bb90ac3b2f3a72d5": "The host refused to cancel auto-merge. Refresh and try again.",
+  "9c28753c777c37b7": "{count, plural, one {Auto-merge {count} {term, select, mr {merge request} cr {change request} other {pull request}}?} other {Auto-merge {count} {term, select, mr {merge requests} cr {change requests} other {pull requests}}?}}",
+  "a86b49982e18784d": "Merge #{number} and its unmerged layers below into {base} using {method} once every one of them meets the requirements on {host}. This may happen immediately.",
+  "b1afda5c964deee4": [
+    "Auto-merge stack (",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ")"
+  ],
+  "33d18dda74f6d7b3": "Cancel stack auto-merge",
+  "012c67c7f1a99e33": "Auto-merge stack",
+  "4a18481bea4b4ad5": "New device signed in to {environmentLabel}",
+  "4144ab6aa487528a": "{device} connected through {product}. Not you? Review it.",
+  "a10cfdb27152c757": "{count, plural, one {{count} device} other {{count} devices}} connected through {product}. Not you? Review them.",
+  "e0856d6a402ad821": "{organization}'s policy does not allow project worktree layout commands.",
+  "206811f6f441bfc7": "This project sets up worktrees with its own command, which nobody has approved as it is written now. This connection cannot approve it: approve it from a client that can use the terminal.",
+  "b8087c9a70c26da9": "Could not approve the worktree layout command.",
+  "49eda70cfd56e621": "Runs when a worktree thread starts, and when its folder is restored",
+  "188ccaa1199f5611": "Runs when a thread's worktree is removed",
+  "7e8476e7306acabe": "Let this project run its worktree commands?",
+  "8e11914556fd8b13": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " sets up worktree threads with its own commands from ",
+    {
+      "t": "code",
+      "i": 2,
+      "c": "t3.json"
+    },
+    ". They run on this environment's machine with your permissions, outside any agent sandbox. You are asked again whenever their text changes."
+  ],
+  "46807acd02a4ff72": "Approve and continue",
+  "a9cb97fca6a6576b": "Create command",
+  "90f45a354884ccdd": "Remove command",
+  "78e308ada516928b": "Could not approve the command",
+  "a0c772d32a233da6": "Could not revoke the approval",
+  "0cdc8cdbed3e5eae": "Worktree layout",
+  "c17b25519e2b194e": "Could not load the worktree layout commands",
+  "5ccd5614c65f8d1f": "Revoke approval of the {kind} command",
+  "80c3794a5fa12f3a": "Approve the {kind} command",
+  "f206891e124c77b0": [
+    "This project's ",
+    {
+      "t": "code",
+      "i": 1,
+      "c": "t3.json"
+    },
+    " sets up worktree threads with its own commands. They run on this environment's machine with your permissions, and only as approved here: a command whose text changes needs approval again."
+  ],
+  "f6a91589456cca50": "Approved",
+  "c92657bb7f2293ff": "Needs approval",
+  "f1e5c1be1ac92361": "Approve",
+  "fcb5f3c4d4753326": "This connection cannot approve commands. Use a client that can use the terminal.",
+  "4e96712d839ccbff": "{who} said {choice}",
+  "19097cfb8f5a79cf": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " said",
+    " ",
+    {
+      "t": "span",
+      "i": 2,
+      "c": {
+        "i": 3,
+        "k": "_gt_value_3",
+        "v": "v"
+      }
+    },
+    "."
+  ],
+  "e7bbf693910057bf": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " said",
+    " ",
+    {
+      "t": "span",
+      "i": 2,
+      "c": {
+        "i": 3,
+        "k": "_gt_value_3",
+        "v": "v"
+      }
+    },
+    ": ",
+    {
+      "i": 4,
+      "k": "_gt_value_4",
+      "v": "v"
+    }
+  ],
+  "3759768c5d342c22": [
+    "answered",
+    " ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "e114d37b32ab0dc7": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " needs a reason."
+  ],
+  "91aadfc843c600de": "Verify Google account",
+  "201490988858b511": "withdrawn by {by}",
+  "99451a5d2d40440f": "Withdrawn by {by}.",
+  "3ee30a50b70fffab": "Withdrawn by {by}: {reason}",
+  "92e129bf413a1220": "withdrawn",
+  "3ed524933c568f8c": "Scene",
+  "8f9167efec844695": "Frames",
+  "8f57fe4fcc5c7945": "{start}–{end}",
+  "5d5a2f58f1a34c19": "Scenes",
+  "9737b868f7aebd61": "Objects",
+  "3a4c33441eda8301": "Meshes",
+  "472ca1deae1a19f5": "Materials",
+  "6116c7ae71bc7d05": "Linked files",
+  "3286ce5553d9f505": "Size",
+  "46dae7e064a17ca3": "Blender",
+  "473079352585294d": "Which Blender to show",
+  "72ec28b225ed9811": "Couldn't open the master",
+  "70da4581cf87971c": "Couldn't move into T3 Code",
+  "d5da364f3ffb7fa7": "Working copy",
+  "d3b2dad809961953": "Master",
+  "8fc9ef73a784da09": "A desktop Blender T3 Code couldn't check may also have this file open. Save and close it there so the two don't overwrite each other.",
+  "ab03a468cc62daf1": "Move into T3 Code",
+  "77b72b3b7ee97069": "Open in T3 Code",
+  "cb4451ab067ff47d": "Blender didn't start",
+  "731b80ac194beb4a": "Open in your desktop Blender",
+  "ca40a1f4300b4838": "Master not open in T3 Code",
+  "10a2ab0021554b0a": [
+    "Blender couldn't open ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " on the hidden display. Check that Blender opens it, then open it again."
+  ],
+  "f5db5877ab70bfc8": [
+    "Move into T3 Code saves ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " in your desktop Blender, with its unsaved changes, quits that Blender and opens the file here. Its undo history is lost."
+  ],
+  "6484265e8c18d3dd": [
+    "Move into T3 Code saves ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " in your desktop Blender, quits that Blender and opens the file here. Its undo history is lost."
+  ],
+  "d77c7db5a642f111": [
+    "A desktop Blender is running, but T3 Code can't reach its MCP add-on to see whether it has",
+    " ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " open. Save and close the file there before opening it here."
+  ],
+  "a0056043b004c957": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " isn't open in a master Blender. Agents copy their proven changes into it there."
+  ],
+  "e69c6af74880ba75": "English (US)",
+  "675e421e80618158": "English (UK)",
+  "27cface4ce8ec314": "German",
+  "252113dddccaec1a": "French",
+  "8ab4b97531ab9d38": "Spanish",
+  "3545659a9d1bb2e3": "Italian",
+  "38923bf04cdeb628": "Portuguese",
+  "587094706a1471b7": "Portuguese (Brazil)",
+  "5950bf35d9440cd8": "Swedish",
+  "9db1b78d4555eaae": "Norwegian",
+  "12de4ccc884a2322": "Danish",
+  "fa15389723321c00": "Swiss German",
+  "4011a07411675ba1": "Russian",
+  "d1634d41846e72cb": "Japanese",
+  "c77caac5b764ef8c": "English (Dvorak)",
+  "7b15925473b02c07": "English (Colemak)",
+  "7c6bc1129dc9f48e": "Untitled scene",
+  "cd078f4497dfcd36": "Couldn't restart Blender",
+  "ad3ce6044792509a": "Couldn't reopen Blender",
+  "90e3c64eab32945e": "Discard the autosave of {name}?",
+  "01201ecb830d7c68": "Discard the unsaved changes to {name}?",
+  "a1628cec6e798a98": "T3 Code's hidden display helper",
+  "759aa5a1a95bc013": "an H.264 encoder",
+  "f5a8efdb194519df": "GStreamer's OpenGL plugin",
+  "d6fcf229c9306851": "Screenshot & annotate",
+  "32cf9ac006229af1": "Blender menu",
+  "9287e12fbeade687": "Another device took control of Blender",
+  "d2b10ff67d190925": "Blender viewport",
+  "2151790bc5e65b31": "Not available on this host",
+  "b94f5fc6d71bc852": "Setup needed",
+  "7050870331ac8b9a": "No hosted Blender running",
+  "fb2c65328a8a2e17": "Open a .blend file in the file preview and choose Open in hosted Blender.",
+  "3f25b97ec987231e": "Blender couldn't open the file on the hidden display. Check that Blender opens it and that GStreamer has an H.264 encoder, then open it in hosted Blender again.",
+  "c9d23ccb15073177": "Blender crashed",
+  "9f406050b6efb934": "Blender was closed",
+  "0693a88b1530f8eb": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " is outside this project, so T3 Code can't reopen it. Its unsaved changes are kept at ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "95b2d0bdafc5b01d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " is outside this project, so T3 Code can't reopen it."
+  ],
+  "0181fc8af235ad77": [
+    "T3 Code kept the unsaved changes to an untitled scene at ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "c3528aaa534d9a33": "Blender had an untitled scene open, which T3 Code can't reopen.",
+  "df374db2c12ff019": [
+    "Blender couldn't restore the copy of ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". The copy is kept: try again, open the file as last saved, or discard the copy."
+  ],
+  "ff3775198cef1512": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " stopped unexpectedly. Restart opens the file as last saved, or restore its newest autosave."
+  ],
+  "945cdcba38a31b0c": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " stopped unexpectedly. Restart opens the file as last saved."
+  ],
+  "a1705e3412c3634e": [
+    "T3 Code closed ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " when this thread settled or T3 Code stopped, and kept its unsaved changes. Reopen restores them."
+  ],
+  "891e3d7d231af485": [
+    "T3 Code closed ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " when this thread settled or T3 Code stopped."
+  ],
+  "bd90fd96c98e9c6f": "Restart",
+  "220f0a0fa43d9f59": "Restore autosave",
+  "182049c015041be2": "Reopen",
+  "eb23e8b7b8458cfa": "Open as last saved",
+  "930be3d3ed674427": "Also kept:",
+  "d6c851db16c7dfd8": "The file as last saved is kept. This can't be undone.",
+  "7dfc4caecd0ca4da": "Open Blender settings",
+  "22e7ff1b5896ba7b": "Hosted Blender needs a Linux server. You can still open 3D files in the file preview.",
+  "ccb9bcd7825f2f99": "This server's Linux release ships labwc and GStreamer too old for hosted Blender. You can still open 3D files in the file preview.",
+  "efd53a6196afbf6d": "Flatpak and Snap builds of Blender aren't supported yet. Settings › Blender says how to use another Blender.",
+  "ec1b57292361ae76": "Switch on Hosted Blender in Settings › Blender to watch and steer Blender here.",
+  "e4ec327ad1a82eb5": "T3 Code hasn't checked this server yet. Open a .blend in hosted Blender, or check it in Settings › Blender.",
+  "af467bacc13f5e57": [
+    "This server is missing: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Settings › Blender can install them with an agent or show you the commands."
+  ],
+  "f4266902a2c24f1e": "Starting Blender…",
+  "9d8acbbea6eafeef": [
+    "Opening ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " on the hidden display."
+  ],
+  "4e4f72c4986c5f68": "Take over",
+  "14d410b8b9a578d0": "Fullscreen",
+  "2026a467bc778ad9": "Keyboard layout",
+  "1d9b37b42f1216c8": "Automatic",
+  "4b0ca2d2af30068a": "Scrolling",
+  "3e3e743c7c26648a": "Automatic",
+  "8884c1281f2a2db4": "Mouse wheel",
+  "295182c176fc7bd0": "Trackpad",
+  "8b290ab856b8f02b": "Quit Blender",
+  "6b30f7f4ebd659d7": "Too many people are watching this Blender. Try again later.",
+  "1681e6f089782b9d": "This browser can't play the Blender stream.",
+  "7579927020ad5107": "You're in control",
+  "67ab7e22612414d0": "Another device is in control",
+  "81f3ce1d88ecf7bb": "Watching",
+  "b41e3eeb664df523": "Agent editing",
+  "3906097eebf88153": "Showing the whole display",
+  "27ea83219396f796": "No GPU: Blender will be slow",
+  "156c7543e861dda6": "No GPU access: Blender will be slow",
+  "907a0f7ed16a709d": "Couldn't open in hosted Blender",
+  "7b0cb06d256e6b28": "Open in hosted Blender",
+  "119259d2fa66fadf": "Couldn't quit Blender",
+  "e2d3b41b3731a6c1": "Save changes to {name} before quitting?",
+  "32504fe5e26d8233": "Changes Blender hasn't saved are lost if you quit without saving.",
+  "9ceb68fb844584c9": "Quit without saving",
+  "e21dfc1887d124ec": "Save and quit",
+  "004649901eabfebd": "Working in Blender",
+  "7c23820b77e42b2c": "Reload file",
+  "586cd2c4199fa323": "Saved thumbnail of {name}",
+  "25d1be241b107e99": "The file could not be read.",
+  "af3426b9850d4da7": "Converted with Blender {version} · cached",
+  "5b88b6929848ca03": "Converted {seconds} s ago",
+  "ea085b85d5409d6d": "Converted with Blender {version}",
+  "e1de2d5335083143": "Converting with Blender {version}… {seconds} s",
+  "9228469f14b148a6": "{file} changed · updating…",
+  "41f9012753a424a9": "Conversion failed",
+  "047618ba1e0fe59d": "Conversion cancelled",
+  "53a1519e0b7358cf": "Waiting: {ahead} ahead",
+  "202d05bbf54b83c1": "Too slow to preview",
+  "dd22e61b9a4efe81": "Converting took over a minute, so it was stopped. Keep trying converts with no limit.",
+  "569078051cbef37c": "No Blender on this server",
+  "484bbf26d26f6f65": "Install Blender from blender.org on the machine running T3 Code, or set its path in Settings under General, to see this file in 3D.",
+  "a3a292e8b22c02db": "Saved by Blender {file} · server has {server}",
+  "4e2b52d678917c4d": "Saved thumbnail · Blender {version}",
+  "864d83692fd9047f": "Saved by Blender {version}",
+  "3caa4fb20ff3277d": "Blender saves this picture with the file, so it can be out of date when a script saved the file.",
+  "301ece9c34df1726": "Blender's log",
+  "20fc073d179a63f5": "Blender wrote nothing to its log.",
+  "71f9aa2ee31aac46": "No thumbnail saved in this file",
+  "27088355449cdd28": "Scene details",
+  "3a87f8c40f3b8065": "Convert",
+  "3a7a505e7bb890be": "Show log",
+  "5ac36af75f80daf6": "Keep trying",
+  "aaf4d7b88f1a09d8": "Describe the change…",
+  "51dbb09f63c653ea": "Annotation comment",
+  "dd2fd8921e6266cc": "Frozen 3D view to annotate",
+  "5e28beecabfa2e5c": "Annotation tool",
+  "44480ea1a65332c2": "Draw",
+  "ef38e20921500bd4": "Mark a region",
+  "3634581310a50ead": "Erase a mark",
+  "bdac60fb8176f6cd": "3D previews need WebGL, which this browser has turned off or does not support.",
+  "2c35172b5a5d8a64": "The 3D view stopped responding.",
+  "791277de6140c5c7": "This 3D file is damaged or uses features the preview does not support.",
+  "54d0d4483d261e37": "This 3D file has no geometry to show.",
+  "bee9d18a1a2b0c3e": "A file this model needs could not be found.",
+  "2d782dfff8e968f8": "The model could not be loaded.",
+  "a1ad1c48825fa0b5": "This model is over 1 GB, too large to preview. Save it to open it in a 3D app.",
+  "6c74f6e6e2d69293": "Loading 3D model…",
+  "4fc027df67b0cbbc": "Large model",
+  "dd420bd9b4c8f356": "Preview failed",
+  "108ec15bf5350d7d": "{format} · rendered in the browser",
+  "b1a9bdc9615401d5": "{count, plural, one {{count} texture not found} other {{count} textures not found}}",
+  "cbcdb6061aa78bf6": "{count, plural, one {{count} file not found} other {{count} files not found}}",
+  "35d235e816e6f4b0": "3D view of {name}",
+  "c85eef9dc05fa21b": "{files} could not be found next to {model}.",
+  "411a4c0012fbdc78": "This model is over {size}. Loading it can slow this window down for a while.",
+  "7a4197b6468d9219": "This model is {size}. Loading it can slow this window down for a while.",
+  "0b87945c6568d758": "A newer version is available",
+  "7805e0174e665cd4": "Couldn't load the new version",
+  "5ec36ad4005866e2": "{files} not found next to {model}",
+  "164dcb32e690fb3b": "Reset view",
+  "fd84ebd10dd79423": "Reload model",
+  "69b6a587633c2599": "Triangles",
+  "26a4ebec594d4dee": "Points",
+  "db81a08c825964a9": "Size",
+  "d51618c38e9c4e73": "{width} × {height} × {depth}",
+  "317be90a94ab7326": "{width} × {height} × {depth} {unit}",
+  "a33fd1cd3116533d": "Keep this version",
+  "c61866d92a739c56": "Load model",
+  "800f266a8be8e117": "Model details",
+  "22738c009abc434a": "This file is not a Blender file, or it is damaged.",
+  "458554b0a4245572": "This Blender file is too large to read its details.",
+  "31714e7420776a7c": "This attachment is no longer available.",
+  "29e40a5da4bbbf79": "Could not capture the 3D view",
+  "ce122949162f2073": "Floating Blender preview",
+  "a0f6aecb07b533ff": "Running Blenders ({count})",
+  "b04a15f0adaa16b9": "No hosted Blenders are running",
+  "201b5d40d08e74d0": "Each thread's hosted Blender shows here while it runs.",
+  "75daeb1e9b041511": "Unknown thread",
+  "0eda0be3d24af58c": "Quit",
+  "7660bc93bbd673be": "Let T3 Code run its own Blender on this server, on a hidden display, so you can watch and steer it in the Blender pane. Linux only. Your desktop Blender is never touched.",
+  "41dfe036cd2b2975": "Hosted Blender",
+  "9cc2228be8a75b39": "Agents in Claude and Codex threads may start this server's hosted Blenders, from their next session. Other providers are not supported yet.",
+  "9dfd275b6a5d4f9a": "Finish setup first, including the official Blender MCP server. Agents use it to work in hosted Blenders.",
+  "1f0df945c5a89af5": "Allow agents to start hosted Blenders",
+  "67c674ad132e17bb": "Hidden display helper",
+  "16da5cd9c2fa80bc": "H.264 encoder",
+  "af0373642246bb1c": "GStreamer OpenGL upload (NVIDIA)",
+  "129d601c223507ec": "GPU",
+  "d87898d465d6309f": "Blender MCP server",
+  "541ee140c8330a2a": "Couldn't check hosted Blender's setup",
+  "428192e9745f36eb": "Couldn't start the setup thread",
+  "31ba36fb9402faa7": "Install commands",
+  "b6554bc1ff014f77": "The official Blender Lab MCP server, such as ~/.local/bin/blender-mcp. Leave empty to find it on PATH or in ~/.local/bin. Check again after changing it.",
+  "e7743bf6a3de9ca3": "Reset Blender MCP path to default",
+  "a9b3c3359bce1e24": "Blender MCP path",
+  "6d0cb7390c17be3b": "Find automatically",
+  "0726bb02c4c42175": "Checking this server…",
+  "3a450021c92f3e4e": "T3 Code looks for Blender, labwc, GStreamer and the GPU, and runs a test encode.",
+  "b0537628ad92ed53": "Not checked yet",
+  "33bb3044d9712567": "Check this server for Blender, labwc, GStreamer and the GPU, with a test encode.",
+  "c3f155eda04d9708": "Hosted Blender needs a Linux server. 3D file previews still work on this one.",
+  "60f2565d2d2a6c3e": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ships labwc and GStreamer too old for hosted Blender. Ubuntu 24.04, Debian 13, Fedora 43 and Arch work."
+  ],
+  "66c4a476d0b4abaa": "Flatpak and Snap builds of Blender aren't supported yet. Install Blender from blender.org or your distro, or set its path in Settings › General › 3D previews, then check again.",
+  "cd212c9950bba81d": "Found",
+  "f9ab32870fe2bf3a": "Missing",
+  "d724abd4cc4a85e5": "Too old",
+  "7b01b12da1a9fd17": "Slow",
+  "a5fe3dee0a941705": "Not Blender Lab's",
+  "7174ef3cfccc7a54": "Runs Blender on the hidden display and streams it.",
+  "59e399ec181acb63": "T3 Code's own helper is missing from this install. Update or reinstall T3 Code.",
+  "92a36f954d094a6f": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "759ad8d8187ed946": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Hosted Blender needs Blender 4.5 or later."
+  ],
+  "2cf31d1c821751ac": "Install Blender 4.5 or later, or set its path in Settings › General › 3D previews.",
+  "5d52dcf7276c5199": "The compositor behind the hidden display.",
+  "ac6f1be5c0b72432": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", captured with wlr-screencopy. labwc 0.9 or later captures Blender's window alone."
+  ],
+  "8ca441a272a1c6e1": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Hosted Blender needs GStreamer 1.24 or later."
+  ],
+  "f400a2435a7c9972": "GStreamer 1.24 or later encodes the stream.",
+  "991f74849ed9e582": [
+    "The one-second test encode used ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "ba5e2c560dd26d57": "No H.264 encoder passed the test encode. Install GStreamer's plugins: one of nvh264enc, vah264enc, x264enc or openh264enc.",
+  "2ab5a1fabca22fd0": "NVIDIA's encoder reads Blender's frames straight from the GPU.",
+  "fce6aa0c10874b0c": "NVIDIA's encoder needs GStreamer's OpenGL plugin.",
+  "040d82d74fa9b290": "Blender draws with the GPU.",
+  "b1f3a29faa7594ff": "This server has a GPU, but T3 Code can't open it. Add your user to the render and video groups. Until then, Blender will be slow.",
+  "e4f914bd5e6899bf": "No GPU found. Hosted Blender still works, but Blender will be slow.",
+  "933fa7740fe8c681": {
+    "i": 1,
+    "k": "_gt_value_1",
+    "v": "v"
+  },
+  "92c9412a1a79bb73": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " is a different project with the same name, not the Blender Lab MCP. Install the official one, or set its path below."
+  ],
+  "9a397640135c1803": "Agents need the official Blender Lab MCP server. The pane works without it.",
+  "7c26d4f38c0094aa": "The result is kept until you check again, such as after installing something.",
+  "021b62ff834041f0": "Install what's missing",
+  "ec5d04aa0c3eed05": "An agent is installing what's missing",
+  "26c7f14fb81274cb": "An agent can install it in a new thread, asking for your password in a private card, never in chat. Or run the commands yourself. T3 Code never installs system packages itself.",
+  "0d7eb1eeb33375bb": "T3 Code checks again when the agent finishes.",
+  "a19376d3fce3f52d": "Install with an agent",
+  "5dee7399d93445e1": "Hide the commands",
+  "fbb5ec917cc3451d": "Show me the commands",
+  "db2f53db5e812a59": "Copy commands",
+  "47eb7e3f2072d8a4": "3D previews",
+  "a2fc60e4c15eb1de": "The Blender that turns .blend files into 3D previews, such as /usr/bin/blender or C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe. Leave empty to find it on PATH or where Blender installs.",
+  "4c0182441f7f746d": "Reset Blender path to default",
+  "b0e5f2ebaa0f2d56": "Blender path",
+  "6ac7d143dd2dd2a5": "blender 3d preview blend file convert glb model path binary install",
+  "dd6b767f08eff9f7": "Running Blenders",
+  "ec2bc06507d0d9af": "hosted blender quit memory 3d thread",
+  "37d76dab21a26b2a": "blender hosted setup install check labwc gstreamer encoder gpu hidden display linux agent commands",
+  "f74fb1f1e951cb67": "blender hosted agents mcp start allow",
+  "3cf7f8ed35b33c5f": "blender lab mcp server path binary install uv pipx"
 }

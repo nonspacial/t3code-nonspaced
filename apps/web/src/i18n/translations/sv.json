@@ -71,7 +71,6 @@
   "cd03eb1b84271c02": "Agent",
   "bfe1a60f3f9c60fb": "Omgång {turn} · {what}",
   "dfdaa6255a416140": "Översikt över {turns, plural, one {{turns} senaste omgång} other {{turns} senaste omgångar}}, {textTurns, plural, =0 {ingen meddelandetext} one {meddelandetext från den senaste omgången} other {meddelandetext från de senaste {textTurns} omgångarna}}{truncated, select, yes {, förkortad för att få plats} other {}}",
-  "260c6b45f52d2f27": "Lägger till texten i dina meddelanden och agentens svar under {textTurns, plural, one {den senaste omgången} other {de senaste {textTurns} omgångarna}}.",
   "afac52a5cc2dc801": "Det gick inte att skicka ditt svar. Försök igen.",
   "79d776428f4d0650": "Filen kunde inte läsas in. Återanslut och försök igen.",
   "3ea34cbb1ca5ba9b": "Förhandsvisningen avbröts.",
@@ -566,15 +565,6 @@
   "0108edbdb5f27c83": "Den här webbläsaren kan inte avkoda enhetens ström (WebCodecs är inte tillgängligt).",
   "eabffa063b9244f8": "Din DNS eller brandvägg kanske blockerar T3 Connect. Prova ett annat nätverk, till exempel ett annat wifi eller mobildata.",
   "c039a54c8238eafe": "Den kan vara överbelastad, i viloläge eller utanför nätverket.",
-  "3ed524933c568f8c": "Scen",
-  "8f9167efec844695": "Bildrutor",
-  "8f57fe4fcc5c7945": "{start}–{end}",
-  "5d5a2f58f1a34c19": "Scener",
-  "9737b868f7aebd61": "Objekt",
-  "3a4c33441eda8301": "Nät",
-  "472ca1deae1a19f5": "Material",
-  "6116c7ae71bc7d05": "Länkade filer",
-  "3286ce5553d9f505": "Storlek",
   "3c4391a7f6421455": "{host} bekräftade inte meddelandet inom 60 sekunder.",
   "204ac030de627c0a": "Git-URL",
   "68b989c06486c4e0": "URL",
@@ -1352,9 +1342,9 @@
   "a9b663922945a4fa": "Den här anslutningen kan inte öppna en redigerare i den här miljön.",
   "868596d482a1a2bd": "Öppna",
   "f58caaa68c09fbeb": "Öppna med",
-  "75b6d7c3bc9c72da": "Kunde inte öppna i {editor}",
   "415d9fed5542d278": "Kunde inte öppna filen",
   "1d1bbe5b700afe63": "Det gick inte att visa filen",
+  "75b6d7c3bc9c72da": "Kunde inte öppna i {editor}",
   "31dc19d033af2774": "Det gick inte att öppna länken.",
   "029d8d0201aed231": "Det gick inte att öppna Systeminställningar.",
   "9af3083226778d3c": "Open VSX returnerade felformaterad temainformation.",
@@ -1562,6 +1552,7 @@
   "6848f5bbb2bd9eec": "PDF-dokument",
   "7873a79df0cf6d0e": "Webbsida",
   "0b55696e27387e4e": "Tryck på Shift+Escape för att lämna webbsidan.",
+  "90dfebe26eb86b2d": "Sidans valalternativ",
   "737d3c6bec93f9e6": "Välj filer för sidan",
   "e6a3fa7cfc14f86a": "Webbläsardialog",
   "61a552a67e9e3eac": "Dialogsvar",
@@ -2449,7 +2440,6 @@
   "ac0de2a59d9c8860": "Enhet",
   "1354df9fb7278843": "Titta på en iOS-simulator eller Android-emulator.",
   "fdcd9643e2e63b15": "Ställ en sidofråga medan tråden fortsätter arbeta.",
-  "46dae7e064a17ca3": "Blender",
   "1944f04b75ddf26d": "Tråd på {label}",
   "314cfeebf191ba0d": "behöver godkännande",
   "4e5b7363441a3831": "behöver input",
@@ -2640,6 +2630,8 @@
   "89b5e8f3887812da": "Gästbegäran",
   "62e626804919b294": "Input behövs",
   "c6196d99000642b4": "Öppna tråd",
+  "70bdebaa3d291d3b": "Tråden är inte tillgänglig",
+  "a351ebbdcf1a3f7a": "Den här tråden finns i en miljö som den här appen inte är ansluten till.",
   "826cb862b4a11fb3": "{label}:",
   "3e597ec938e7551b": "Du:",
   "a1fbf2422c588292": "Agent:",
@@ -2745,9 +2737,9 @@
   "db7b3a938c45e56c": "Uppdateringen {version} är redo att laddas ned",
   "9a951140b69ba740": "Laddar ned uppdatering ({percent} %)",
   "7fdece033260e9fb": "Laddar ned uppdatering",
-  "52e1d4a487c0cf4b": "Installationen av {version} misslyckades. Klicka för att försöka igen.",
   "09ef51903e99e876": "Uppdateringen har laddats ned. Klicka för att starta om och installera.",
   "d62631cab06d2b80": "Uppdateringen {version} har laddats ned. Klicka för att starta om och installera.",
+  "52e1d4a487c0cf4b": "Installationen av {version} misslyckades. Klicka för att försöka igen.",
   "78a04e0e625c0990": "Uppdateringen misslyckades",
   "c24de5eb69373a55": "Den här {build}-versionen ignorerar {track}-versioner. Granska uppdateringsspåret i Inställningar för att slutföra bytet.",
   "b02ae45a6109c93b": "Uppdaterad",
@@ -3291,230 +3283,6 @@
   "984c25ffcae69300": "Lägg till backend",
   "08570ee0982df89d": "Parkopplar...",
   "3bbae7c96b6cbfc3": "Öppna app",
-  "473079352585294d": "Vilken Blender som visas",
-  "72ec28b225ed9811": "Det gick inte att öppna huvudfilen",
-  "70da4581cf87971c": "Det gick inte att flytta till T3 Code",
-  "d5da364f3ffb7fa7": "Arbetskopia",
-  "d3b2dad809961953": "Huvudfil",
-  "8fc9ef73a784da09": "En Blender på skrivbordet som T3 Code inte kunde kontrollera kan också ha den här filen öppen. Spara och stäng den där så att de inte skriver över varandra.",
-  "ab03a468cc62daf1": "Flytta till T3 Code",
-  "77b72b3b7ee97069": "Öppna i T3 Code",
-  "cb4451ab067ff47d": "Blender startade inte",
-  "731b80ac194beb4a": "Öppen i din Blender på skrivbordet",
-  "ca40a1f4300b4838": "Huvudfilen är inte öppen i T3 Code",
-  "10a2ab0021554b0a": [
-    "Blender kunde inte öppna ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " på den dolda skärmen. Kontrollera att Blender kan öppna den och öppna den sedan igen."
-  ],
-  "f5db5877ab70bfc8": [
-    "Flytta till T3 Code sparar ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " i din Blender på skrivbordet, med osparade ändringar, avslutar den Blendern och öppnar filen här. Ångrahistoriken går förlorad."
-  ],
-  "6484265e8c18d3dd": [
-    "Flytta till T3 Code sparar ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " i din Blender på skrivbordet, avslutar den Blendern och öppnar filen här. Ångrahistoriken går förlorad."
-  ],
-  "d77c7db5a642f111": [
-    "En Blender körs på skrivbordet, men T3 Code når inte dess MCP-tillägg och kan inte se om ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " är öppen där. Spara och stäng filen där innan du öppnar den här."
-  ],
-  "a0056043b004c957": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " är inte öppen i en huvud-Blender. Där kopierar agenter in sina beprövade ändringar."
-  ],
-  "e69c6af74880ba75": "Engelska (USA)",
-  "675e421e80618158": "Engelska (Storbritannien)",
-  "27cface4ce8ec314": "Tyska",
-  "252113dddccaec1a": "Franska",
-  "8ab4b97531ab9d38": "Spanska",
-  "3545659a9d1bb2e3": "Italienska",
-  "38923bf04cdeb628": "Portugisiska",
-  "587094706a1471b7": "Portugisiska (Brasilien)",
-  "5950bf35d9440cd8": "Svenska",
-  "9db1b78d4555eaae": "Norska",
-  "12de4ccc884a2322": "Danska",
-  "fa15389723321c00": "Schweizertyska",
-  "4011a07411675ba1": "Ryska",
-  "d1634d41846e72cb": "Japanska",
-  "c77caac5b764ef8c": "Engelska (Dvorak)",
-  "7b15925473b02c07": "Engelska (Colemak)",
-  "7c6bc1129dc9f48e": "Namnlös scen",
-  "cd078f4497dfcd36": "Det gick inte att starta om Blender",
-  "ad3ce6044792509a": "Det gick inte att öppna Blender igen",
-  "90e3c64eab32945e": "Ta bort den automatiska sparningen av {name}?",
-  "01201ecb830d7c68": "Ta bort de osparade ändringarna i {name}?",
-  "a1628cec6e798a98": "T3 Codes hjälpprogram för dold skärm",
-  "759aa5a1a95bc013": "en H.264-kodare",
-  "f5a8efdb194519df": "GStreamers OpenGL-insticksmodul",
-  "d6fcf229c9306851": "Skärmbild och anteckning",
-  "32cf9ac006229af1": "Blender-meny",
-  "9287e12fbeade687": "En annan enhet tog kontrollen över Blender",
-  "d2b10ff67d190925": "Blender-vyport",
-  "2151790bc5e65b31": "Inte tillgängligt på den här värden",
-  "b94f5fc6d71bc852": "Konfiguration krävs",
-  "7050870331ac8b9a": "Ingen Hosted Blender körs",
-  "fb2c65328a8a2e17": "Öppna en .blend-fil i filförhandsvisningen och välj Öppna i Hosted Blender.",
-  "3f25b97ec987231e": "Blender kunde inte öppna filen på den dolda skärmen. Kontrollera att Blender kan öppna den och att GStreamer har en H.264-kodare, och öppna den sedan i Hosted Blender igen.",
-  "c9d23ccb15073177": "Blender kraschade",
-  "9f406050b6efb934": "Blender stängdes",
-  "0693a88b1530f8eb": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " ligger utanför det här projektet, så T3 Code kan inte öppna den igen. Dess osparade ändringar finns kvar i ",
-    {
-      "i": 2,
-      "k": "_gt_value_2",
-      "v": "v"
-    },
-    "."
-  ],
-  "95b2d0bdafc5b01d": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " ligger utanför det här projektet, så T3 Code kan inte öppna den igen."
-  ],
-  "0181fc8af235ad77": [
-    "T3 Code behöll de osparade ändringarna i en namnlös scen i ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    "."
-  ],
-  "c3528aaa534d9a33": "Blender hade en namnlös scen öppen, som T3 Code inte kan öppna igen.",
-  "df374db2c12ff019": [
-    "Blender kunde inte återställa kopian av ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ". Kopian behålls: försök igen, öppna filen som den senast sparades eller ta bort kopian."
-  ],
-  "ff3775198cef1512": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " stannade oväntat. Starta om öppnar filen som den senast sparades, eller återställ den senaste automatiska sparningen."
-  ],
-  "945cdcba38a31b0c": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " stannade oväntat. Starta om öppnar filen som den senast sparades."
-  ],
-  "a1705e3412c3634e": [
-    "T3 Code stängde ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " när den här tråden avslutades eller T3 Code stoppades, och behöll de osparade ändringarna. Öppna igen återställer dem."
-  ],
-  "891e3d7d231af485": [
-    "T3 Code stängde ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " när den här tråden avslutades eller T3 Code stoppades."
-  ],
-  "bd90fd96c98e9c6f": "Starta om",
-  "220f0a0fa43d9f59": "Återställ automatisk sparning",
-  "182049c015041be2": "Öppna igen",
-  "eb23e8b7b8458cfa": "Öppna senast sparade",
-  "97585565390197f6": "Kasta",
-  "930be3d3ed674427": "Sparas också:",
-  "d6c851db16c7dfd8": "Filen som den senast sparades behålls. Det går inte att ångra.",
-  "7dfc4caecd0ca4da": "Öppna Blender-inställningar",
-  "22e7ff1b5896ba7b": "Hosted Blender kräver en Linux-server. Du kan fortfarande öppna 3D-filer i filförhandsvisningen.",
-  "ccb9bcd7825f2f99": "Den här serverns Linux-version levererar för gamla versioner av labwc och GStreamer för Hosted Blender. Du kan fortfarande öppna 3D-filer i filförhandsvisningen.",
-  "efd53a6196afbf6d": "Flatpak- och Snap-versioner av Blender stöds inte än. Inställningar › Blender beskriver hur du använder en annan Blender.",
-  "ec1b57292361ae76": "Slå på Hosted Blender under Inställningar › Blender för att se och styra Blender här.",
-  "e4ec327ad1a82eb5": "T3 Code har inte kontrollerat den här servern än. Öppna en .blend i Hosted Blender eller kontrollera den under Inställningar › Blender.",
-  "af467bacc13f5e57": [
-    "Den här servern saknar: ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ". Under Inställningar › Blender kan en agent installera dem, eller så kan du visa kommandona."
-  ],
-  "f4266902a2c24f1e": "Startar Blender…",
-  "9d8acbbea6eafeef": [
-    "Öppnar ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " på den dolda skärmen."
-  ],
-  "4e4f72c4986c5f68": "Ta kontrollen",
-  "14d410b8b9a578d0": "Helskärm",
-  "2026a467bc778ad9": "Tangentbordslayout",
-  "1d9b37b42f1216c8": "Automatisk",
-  "4b0ca2d2af30068a": "Rullning",
-  "3e3e743c7c26648a": "Automatisk",
-  "8884c1281f2a2db4": "Mushjul",
-  "295182c176fc7bd0": "Styrplatta",
-  "8b290ab856b8f02b": "Avsluta Blender",
-  "6b30f7f4ebd659d7": "För många tittar på den här Blender. Försök igen senare.",
-  "1681e6f089782b9d": "Den här webbläsaren kan inte spela upp Blender-strömmen.",
-  "7579927020ad5107": "Du har kontrollen",
-  "67ab7e22612414d0": "En annan enhet har kontrollen",
-  "81f3ce1d88ecf7bb": "Tittar",
-  "b41e3eeb664df523": "Agenten redigerar",
-  "3906097eebf88153": "Visar hela skärmen",
-  "27ea83219396f796": "Ingen GPU: Blender blir långsam",
-  "156c7543e861dda6": "Ingen GPU-åtkomst: Blender blir långsam",
-  "907a0f7ed16a709d": "Det gick inte att öppna i Hosted Blender",
-  "7b0cb06d256e6b28": "Öppna i Hosted Blender",
-  "119259d2fa66fadf": "Det gick inte att avsluta Blender",
-  "e2d3b41b3731a6c1": "Spara ändringarna i {name} innan du avslutar?",
-  "32504fe5e26d8233": "Ändringar som Blender inte har sparat går förlorade om du avslutar utan att spara.",
-  "9ceb68fb844584c9": "Avsluta utan att spara",
-  "e21dfc1887d124ec": "Spara och avsluta",
-  "004649901eabfebd": "Arbetar i Blender",
-  "614e5ad58a795fb5": "Stoppa",
   "49cc06e79f21f85a": "{seconds} s",
   "8603d41c52392f1d": "{minutes} min {seconds} s",
   "f2a955905704b91d": "{hours} h {minutes} min",
@@ -3558,6 +3326,9 @@
   "b90e87f4b7125237": "Detaljer",
   "16dc67f5429d8bae": "Bakgrundsarbete",
   "2188eee8f81b0f51": "Öppna subagent",
+  "ec9e0be8ec693302": "Fäll ihop alla mappar",
+  "b791dd86f7991cc0": "Fäll ut alla mappar",
+  "55b936e3014e16c8": "Öppna diff",
   "28bb7ce40dfd349a": "Terminalutdata kan inte läggas till i ett svar på en fråga.",
   "801cb8edea94b8f6": "Svara på eller stäng frågan först och lägg sedan till det i chatten.",
   "aa5507f20d94d5a9": "Uppdatera servern för att skicka filer med svar på frågor",
@@ -3859,8 +3630,8 @@
   "478e3b4551be4db3": "Visa extraherad text",
   "e7205ebfead1aafc": "Expanderad videoförhandsvisning",
   "1bda77e861bb472f": "Expanderad bildförhandsvisning",
-  "eebe5b17e3c19a1c": "Tillbaka, stäng videoförhandsvisningen",
-  "58fd0009a6eb7258": "Tillbaka, stäng bildförhandsvisningen",
+  "fb633d54edaeb4b1": "Stäng videoförhandsvisningen",
+  "62d0c453f5803180": "Stäng bildförhandsvisningen",
   "47bae54b5f532ff3": "Föregående media",
   "fb9434aad2b5c0bb": "Bilden kunde inte läsas in.",
   "26aee5d4e97bfb28": "Bilden är inte tillgänglig. Filen kan ha flyttats eller tagits bort.",
@@ -3871,6 +3642,7 @@
   "4e0710d19dfc2e7e": "Skicka den här rapporten till T3-teamet?",
   "87d0ae0723ba75d1": "Det här är allt som lämnar din dator. Inget skickas förrän du trycker på Skicka.",
   "bf19826f81484328": "Ta med konversationen",
+  "260c6b45f52d2f27": "Lägger till texten i dina meddelanden och agentens svar under {textTurns, plural, one {den senaste omgången} other {de senaste {textTurns} omgångarna}}.",
   "ddb7e6f8ce99e657": "Bara den som kan köra agenter på den här datorn kan skicka eller avböja rapporten.",
   "03c1eb603c112f47": "Skicka inte",
   "653405e4ed498d9f": "Skicka",
@@ -4030,6 +3802,21 @@
       "v": "v"
     },
     " lämnade sin sida och stoppades"
+  ],
+  "796b81c4875c4feb": [
+    "Appen ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " behöver en nyare ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "-server i den här miljön. Uppdatera servern för att använda den."
   ],
   "5ef18e4d39b398bf": [
     "Det gick inte att läsa in appen ",
@@ -4855,6 +4642,7 @@
   "7f0f9b1ee42892db": "Utdata är inte längre tillgängliga.",
   "e470bb79fa74a6ae": "Bild från verktygsutdata",
   "e8c80b6d40c0944c": "Sökresultat",
+  "76cf478e5674fd12": "{count, plural, one {{count} träff} other {{count} träffar}}",
   "8d1906900b5c95c7": [
     "avslutningskod ",
     {
@@ -4863,7 +4651,6 @@
       "v": "v"
     }
   ],
-  "55b936e3014e16c8": "Öppna diff",
   "83c29850641c8935": "I kö",
   "8402f099f88fd0e0": "Körs",
   "c5f5b73e92221a6a": "Väntar",
@@ -5745,8 +5532,6 @@
   "1601d7e39a52c48f": "Försök läsa in diffen igen",
   "b7b137472adb6989": "Partiell diffförhandsvisning",
   "f0d79aa56f06663f": "Den här filen är för stor för att visas i sin helhet. Antalen inkluderar alla ändringar.",
-  "ec9e0be8ec693302": "Fäll ihop alla mappar",
-  "b791dd86f7991cc0": "Fäll ut alla mappar",
   "7fdde2b893ba1b9d": "Borttagen",
   "e58ce271d835b447": "Tillagd",
   "07b9970b662ab70d": "Visa Mermaid-källa",
@@ -5819,32 +5604,6 @@
   "7b05d792ad825483": "Den här mappen är tom.",
   "0a698dff05246810": "Den här tabellen är tom.",
   "a52678523d189f7b": "Den här databasen har inga läsbara tabeller.",
-  "7c23820b77e42b2c": "Läs in filen igen",
-  "586cd2c4199fa323": "Sparad miniatyr av {name}",
-  "25d1be241b107e99": "Det gick inte att läsa filen.",
-  "af3426b9850d4da7": "Konverterad med Blender {version} · cachad",
-  "5b88b6929848ca03": "Konverterad för {seconds} s sedan",
-  "ea085b85d5409d6d": "Konverterad med Blender {version}",
-  "e1de2d5335083143": "Konverterar med Blender {version}… {seconds} s",
-  "9228469f14b148a6": "{file} ändrades · uppdaterar…",
-  "41f9012753a424a9": "Konverteringen misslyckades",
-  "047618ba1e0fe59d": "Konverteringen avbröts",
-  "53a1519e0b7358cf": "Väntar: {ahead} före",
-  "202d05bbf54b83c1": "För långsam för förhandsvisning",
-  "dd22e61b9a4efe81": "Konverteringen tog över en minut och stoppades. Fortsätt försöka konverterar utan tidsgräns.",
-  "569078051cbef37c": "Ingen Blender på den här servern",
-  "484bbf26d26f6f65": "Installera Blender från blender.org på datorn som kör T3 Code, eller ange sökvägen under Inställningar › Allmänt, för att se filen i 3D.",
-  "a3a292e8b22c02db": "Sparad med Blender {file} · servern har {server}",
-  "4e2b52d678917c4d": "Sparad miniatyr · Blender {version}",
-  "864d83692fd9047f": "Sparad med Blender {version}",
-  "3caa4fb20ff3277d": "Blender sparar den här bilden med filen, så den kan vara inaktuell om ett skript sparade filen.",
-  "301ece9c34df1726": "Blenders logg",
-  "20fc073d179a63f5": "Blender skrev inget i sin logg.",
-  "71f9aa2ee31aac46": "Ingen miniatyr sparad i den här filen",
-  "27088355449cdd28": "Scendetaljer",
-  "3a87f8c40f3b8065": "Konvertera",
-  "3a7a505e7bb890be": "Visa logg",
-  "5ac36af75f80daf6": "Fortsätt försöka",
   "8366e42937c9e3e1": "Minska textstorleken för läsning",
   "d847122435025b26": "Öka textstorleken för läsning",
   "a2a71f4799fba9a9": "Återställ textstorleken för läsning",
@@ -5941,44 +5700,6 @@
   "b75105bef8f564a4": "Visar de första 1 024 kolumnerna. Källa och Spara behåller alla kolumner.",
   "2a6e1b1f209c3888": "Den här filen är tom.",
   "192fc79eb3b5b2cb": "Det här diagrammet innehåller resurs-URL:er, markup, nodmetadata eller anpassad konfiguration. Visa Mermaid-källan för att granska det säkert.",
-  "aaf4d7b88f1a09d8": "Beskriv ändringen…",
-  "51dbb09f63c653ea": "Anteckningskommentar",
-  "dd2fd8921e6266cc": "Fryst 3D-vy att anteckna",
-  "5e28beecabfa2e5c": "Anteckningsverktyg",
-  "44480ea1a65332c2": "Rita",
-  "ef38e20921500bd4": "Markera ett område",
-  "3634581310a50ead": "Sudda en markering",
-  "509733274928da85": "Avbryt anteckning",
-  "bdac60fb8176f6cd": "3D-förhandsvisningar kräver WebGL, som den här webbläsaren har stängt av eller inte stöder.",
-  "2c35172b5a5d8a64": "3D-vyn slutade svara.",
-  "791277de6140c5c7": "Den här 3D-filen är skadad eller använder funktioner som förhandsvisningen inte stöder.",
-  "54d0d4483d261e37": "Den här 3D-filen har ingen geometri att visa.",
-  "bee9d18a1a2b0c3e": "En fil som modellen behöver hittades inte.",
-  "2d782dfff8e968f8": "Det gick inte att läsa in modellen.",
-  "a1ad1c48825fa0b5": "Den här modellen är över 1 GB, för stor för att förhandsvisas. Spara den för att öppna den i en 3D-app.",
-  "6c74f6e6e2d69293": "Läser in 3D-modell…",
-  "4fc027df67b0cbbc": "Stor modell",
-  "dd420bd9b4c8f356": "Förhandsvisningen misslyckades",
-  "108ec15bf5350d7d": "{format} · renderad i webbläsaren",
-  "b1a9bdc9615401d5": "{count, plural, one {{count} textur hittades inte} other {{count} texturer hittades inte}}",
-  "cbcdb6061aa78bf6": "{count, plural, one {{count} fil hittades inte} other {{count} filer hittades inte}}",
-  "35d235e816e6f4b0": "3D-vy av {name}",
-  "c85eef9dc05fa21b": "{files} hittades inte bredvid {model}.",
-  "411a4c0012fbdc78": "Den här modellen är över {size}. Att läsa in den kan göra fönstret långsamt en stund.",
-  "7a4197b6468d9219": "Den här modellen är {size}. Att läsa in den kan göra fönstret långsamt en stund.",
-  "0b87945c6568d758": "En nyare version finns",
-  "7805e0174e665cd4": "Det gick inte att läsa in den nya versionen",
-  "5ec36ad4005866e2": "{files} hittades inte bredvid {model}",
-  "164dcb32e690fb3b": "Återställ vyn",
-  "fd84ebd10dd79423": "Läs in modellen igen",
-  "69b6a587633c2599": "Trianglar",
-  "26a4ebec594d4dee": "Punkter",
-  "db81a08c825964a9": "Storlek",
-  "d51618c38e9c4e73": "{width} × {height} × {depth}",
-  "317be90a94ab7326": "{width} × {height} × {depth} {unit}",
-  "a33fd1cd3116533d": "Behåll den här versionen",
-  "c61866d92a739c56": "Läs in modell",
-  "800f266a8be8e117": "Modelldetaljer",
   "3bd23d5083b5d405": "{count, plural, one {{formatted} cell} other {{formatted} celler}}",
   "192bad6b5ce4de80": "Cell {number}",
   "e7b4d35b3eeeb470": "HTML-utdata för cell {number}",
@@ -6051,9 +5772,6 @@
   "e7db07db10325fb0": "Filen är binär och kan inte visas som text.",
   "98de7fbcf514dac7": "Den begärda sökvägen ligger utanför arbetsytan.",
   "fa347e700afd8d04": "Sökvägen leder till en plats utanför arbetsytan.",
-  "22738c009abc434a": "Den här filen är inte en Blender-fil, eller så är den skadad.",
-  "458554b0a4245572": "Den här Blender-filen är för stor för att läsa dess detaljer.",
-  "31714e7420776a7c": "Den här bilagan är inte längre tillgänglig.",
   "2d6da78ecabfd210": "Det gick inte att komma åt arbetsytans mapp.",
   "fdf4cf5389fb7848": "Det gick inte att komma åt eller läsa filen. Den kan saknas eller vara otillgänglig.",
   "40d67da2e98bb2ff": "Läser in fil",
@@ -6161,8 +5879,6 @@
   "cf91653e72226743": "Bildavkodning är inte tillgänglig.",
   "4333d220c55ba5e4": "Frågan mot arbetsytan misslyckades.",
   "422c1671dfcfe474": "''{path}'' finns inte.",
-  "29e40a5da4bbbf79": "Det gick inte att fånga 3D-vyn",
-  "cd312dae87fc794f": "Anteckningen behölls utan skärmbilden.",
   "20194b81e50497ad": "Det gick inte att läsa in mappen.",
   "0061fff77e36bd4f": "Kunde inte nå servern.",
   "04dfdd46e3dd4a2e": "Något gick fel. Försök igen.",
@@ -6647,6 +6363,7 @@
   "153553848233ee15": "Framåt",
   "240853568cd99a49": "Stoppa",
   "c345982ed3610277": "Sök eller ange URL",
+  "509733274928da85": "Avbryt anteckning",
   "0b5bf74d94f7f690": "Kommentera förhandsvisning",
   "c8243141ce88918f": "Avbryt anteckning (Esc)",
   "f4ad38f77fe12791": "Kommentera element, områden och ritningar",
@@ -6759,9 +6476,9 @@
   "ae32c462968b0f93": "Det gick inte att kopiera skärmbilden",
   "d96a16d699f1a6df": "Det gick inte att ta en skärmbild",
   "b18dda39d9585f3e": "Kunde inte fånga det valda elementet",
+  "cd312dae87fc794f": "Anteckningen behölls utan skärmbilden.",
   "4616fb6552fd8875": "Sidan lästes inte in. Välj är inte tillgängligt förrän sidan har renderats",
   "770d6036de8dbcb7": "Den här fliken är öppen i skrivbordsappen T3 Code.",
-  "ce122949162f2073": "Svävande Blender-förhandsvisning",
   "b252602c8f71d6af": "Det gick inte att bryta ut förhandsvisningen",
   "0fc0a2ff438851b5": "Svävande webbläsarförhandsvisning",
   "74892fefe58df8e3": "Stäng utbruten förhandsvisning",
@@ -6941,6 +6658,8 @@
   "1b381201aba745c2": "Inga kontroller rapporterade",
   "a6d75a4380173c60": "Öppna kontroller: {summary}",
   "be3d1766bad18693": "Kontroller: {summary}",
+  "425e4a3d6c5c2867": "{count, plural, one {{count} misslyckades} other {{count} misslyckades}}",
+  "fd63b391898889f9": "{count, plural, one {{count} väntar på åtgärd} other {{count} väntar på åtgärd}}",
   "cb116c139cdace98": "Inga kontroller rapporterade",
   "60b56e201607c7ec": "Kontrolldetaljerna är inaktuella. Uppdatera pull requesten för att uppdatera dem.",
   "e74cd4e960cbb5e5": "Oförändrade rader är inte tillgängliga i en fil med bortklippta rader.",
@@ -7322,27 +7041,19 @@
     }
   ],
   "ce703d4ba40dc9b4": "Mergar stacken...",
-  "8a883c4fbc127b68": "Aktiverar automatisk merge för stacken...",
   "ac7feb9c583b02a0": "Rebasar stacken...",
   "cb0f63bbb0b68d94": "Kunde inte merga stacken",
-  "5fb2a26ae31e8983": "Kunde inte aktivera automatisk merge för stacken",
   "c8a943fa15a56b2b": "Kunde inte rebasa stacken",
   "ec22caeb8b949ed1": "Värden nekade rebasen. En rebase stannar vid den första commit som inte kan tillämpas rent.",
   "ead3e2bac1a8d231": "Merge-begäran för stacken slutfördes",
-  "986d0dcbf4dd0098": "Automatisk merge för stacken aktiverad",
   "d7079b5ac269c65e": "Stacken rebasades",
   "5631b32be0ce48d3": "{host} mergade stacken eller lade till den i sin merge-kö.",
-  "f3ed1f63c8a3eef2": "{host} mergar stacken till och med #{number} när kraven är uppfyllda.",
-  "bd536a0a1754f6cb": "Kunde inte avbryta automatisk merge för stacken",
-  "bb90ac3b2f3a72d5": "Värden vägrade avbryta den automatiska mergen. Uppdatera och försök igen.",
   "2d3b55018a54287e": "Kontrollerar stacken med värden…",
   "eea55205e46d2e3d": "Stack {number}, lager {position} av {size}",
   "b6f729119107a145": "{count, plural, one {Merga stacken till och med '#'{number} in i {base} ({count} {term, select, mr {merge request} cr {ändringsbegäran} other {pull request}})} other {Merga stacken till och med '#'{number} in i {base} ({count} {term, select, mr {merge requests} cr {ändringsbegäranden} other {pull requests}})}}",
   "d4bfcdc6bb7676a3": "{count, plural, one {Merga {count} {term, select, mr {merge request} cr {ändringsbegäran} other {pull request}}?} other {Merga {count} {term, select, mr {merge requests} cr {ändringsbegäranden} other {pull requests}}?}}",
-  "9c28753c777c37b7": "{count, plural, one {Merga {count} {term, select, mr {merge request} cr {ändringsbegäran} other {pull request}} automatiskt?} other {Merga {count} {term, select, mr {merge requests} cr {ändringsbegäranden} other {pull requests}} automatiskt?}}",
   "b9f2a24a3757f6c9": "{count, plural, one {Rebasa {count} {term, select, mr {merge request} cr {ändringsbegäran} other {pull request}}?} other {Rebasa {count} {term, select, mr {merge requests} cr {ändringsbegäranden} other {pull requests}}?}}",
   "d1bcf19eb2753fff": "Merga #{number} och dess omergade lager under in i {base} med {method}. {host} kontrollerar sina regler innan de mergas eller köas och rebasar resten av stacken efter mergen.",
-  "a86b49982e18784d": "Merga #{number} och dess omergade lager under in i {base} med {method} när vart och ett uppfyller kraven på {host}. Det kan ske direkt.",
   "31d2f22f5a282719": "Rebasa fjärrgrenarna nerifrån och upp på {base}. Det här skriver om grenhistoriken och kan starta om kontroller. Om ett lager misslyckas finns tidigare uppdateringar kvar.",
   "a0adf78733c368ae": "Merga stacken",
   "140dc384c58b74f3": "Rebasa stacken",
@@ -7377,19 +7088,8 @@
     },
     ")"
   ],
-  "b1afda5c964deee4": [
-    "Merga stacken automatiskt (",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ")"
-  ],
-  "33d18dda74f6d7b3": "Avbryt automatisk merge för stacken",
   "30440f98e929440a": "Rebasa stacken",
   "13718a03e3144142": "Alla lager som mergas måste vara öppna och redo för granskning.",
-  "012c67c7f1a99e33": "Merga stacken automatiskt",
   "4aafe1baf113088a": "Merga stacken",
   "0292da19054f2a04": "Läser in stacken…",
   "583869e6df57abeb": "Den här pull requesten ingår inte längre i en stack.",
@@ -7617,9 +7317,6 @@
   "9b0647af63a7d8c1": "Godkände tidigare ändringar",
   "abe99679224fea5e": "Begärde ändringar i tidigare ändringar",
   "6b31ad910278ff72": "Granskning av tidigare ändringar avfärdad",
-  "425e4a3d6c5c2867": "{count, plural, one {{count} misslyckades} other {{count} misslyckades}}",
-  "fd63b391898889f9": "{count, plural, one {{count} väntar på åtgärd} other {{count} väntar på åtgärd}}",
-  "948185631ef288e6": "{count, plural, one {{count} körs} other {{count} körs}}",
   "aaf22207b2f18c45": "{workflows, plural, one {{workflows} arbetsflöde} other {{workflows} arbetsflöden}} och {checks, plural, one {{checks} kontroll} other {{checks} kontroller}} väntar på åtgärd",
   "c51411813ebafcc1": "{count, plural, one {{count} arbetsflöde väntar på godkännande} other {{count} arbetsflöden väntar på godkännande}}",
   "4946778c8e18a1db": "{count, plural, one {{count} kontroll väntar på åtgärd} other {{count} kontroller väntar på åtgärd}}",
@@ -7828,9 +7525,20 @@
   "dc87902396b8ade4": "Bokstäver, siffror, '-' eller '_'.",
   "251dfec07b7c3612": "Den här drivrutinen har ingen obligatorisk konfiguration. Du kan lägga till instansen nu.",
   "08fe32f007e788f1": "Konfigurera manuellt",
+  "65300794c1edb929": "Bearer-token (valfritt)",
   "84eb2878dc17d3eb": "Hanteringsnyckel",
   "7ac196c1e8175928": "Standard är hubbens värdnamn",
+  "0c026221dcd2820b": "Lägg till en HTTP-källa för kvoter",
   "e3548407052e9e12": "Lägg till en CLIProxyAPI-hubb",
+  "d185c750156b2121": [
+    "Hämta kvoter från en slutpunkt på ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
   "432e85a50e2e7964": [
     "Visa kvoten för alla konton som hubben samlar, bredvid leverantörerna på",
     " ",
@@ -7841,7 +7549,9 @@
     },
     ". Nyckeln stannar på den servern."
   ],
+  "2324770ba91371ac": "Slutpunktens URL",
   "556a695b117565ac": "Hubb-URL",
+  "e4e5b75bba51396c": "Bearer-token (valfritt)",
   "e62cedcbcdbafc75": "Hanteringsnyckel",
   "f1b3d0634ec035cb": "Etikett (valfritt)",
   "52814dd6f7d0a15c": "Lägg till hubb",
@@ -7853,7 +7563,6 @@
   "d5dc7576fd468be7": "Bekväm",
   "3141408bf3874e64": "Bred",
   "831badd18b64547e": "Full",
-  "6287212fed0deec6": "Samma som chatten",
   "a96255594ebf2ce3": "Ord",
   "1ee44eb65708a8aa": "Staplar",
   "7670f789e0d8672a": "Bara inbyggda teman visar grafik, så det här temat visar versionsetiketten.",
@@ -7871,11 +7580,12 @@
   "03338c6aec8edacd": "Ange hur breda meddelanden och inmatningsfältet kan bli på stora skärmar.",
   "92785adb251da88c": "Återställ chattbredd till standard",
   "4d457bcce0c0e272": "Chattbredd",
-  "81f3a196537bbee0": "Bekväm (standard)",
+  "7d7f65967cc821e3": "Bredd för HTML-förhandsvisning",
   "70ce0af7f78d5957": "Låter HTML-förhandsvisningar i en chatt bli bredare än meddelandena, som förblir centrerade.",
   "f2b119bf02ae2558": "Återställ bredd för HTML-förhandsvisning till standard",
-  "7d7f65967cc821e3": "Bredd för HTML-förhandsvisning",
+  "6287212fed0deec6": "Samma som chatten",
   "dc8e85ea0364649c": "Samma som chatten (standard)",
+  "81f3a196537bbee0": "Bekväm (standard)",
   "e79e5388f669495f": "Visa resonemangsnivån i inmatningsfältet som sitt namn, till exempel Hög, eller som staplar.",
   "7f0365c7e4e8bcbf": "Återställ visning av ansträngning till standard",
   "14bf40f765172a50": "Visning av ansträngning",
@@ -8018,11 +7728,6 @@
   "3943d8479dc44551": "Kontrollera värdens strömstatus när ingen klient i förgrunden är aktiv.",
   "d13f97c11d2f322b": "Återställ alla",
   "cc310b2ec0179edf": "Konfigurera bakgrundsaktivitet",
-  "a0f6aecb07b533ff": "Blender som körs ({count})",
-  "b04a15f0adaa16b9": "Inga värdbaserade Blender körs",
-  "201b5d40d08e74d0": "Varje tråds värdbaserade Blender visas här medan den körs.",
-  "75daeb1e9b041511": "Okänd tråd",
-  "0eda0be3d24af58c": "Avsluta",
   "e116ed85458b6613": "Statiskt prefix",
   "575ae567e3b6ca3d": "Semantiskt prefix",
   "6675de66f9b3f71d": "Anpassade instruktioner",
@@ -8950,122 +8655,6 @@
   "e8622c39abe68f9d": "standard",
   "5383ef2d2c09cdf7": "Sök teckensnitt…",
   "ea08337bcadd35b4": "Inga teckensnitt hittades.",
-  "7660bc93bbd673be": "Låt T3 Code köra en egen Blender på den här servern, på en dold skärm, så att du kan se och styra den i Blender-panelen. Endast Linux. Din Blender på datorn rörs aldrig.",
-  "41dfe036cd2b2975": "Hosted Blender",
-  "9cc2228be8a75b39": "Agenter i Claude- och Codex-trådar får starta den här serverns Hosted Blender, från nästa session. Andra leverantörer stöds inte än.",
-  "9dfd275b6a5d4f9a": "Slutför konfigurationen först, inklusive den officiella Blender-MCP-servern. Agenter använder den för att arbeta i Hosted Blender.",
-  "1f0df945c5a89af5": "Tillåt agenter att starta Hosted Blender",
-  "67c674ad132e17bb": "Hjälpprogram för dold skärm",
-  "16da5cd9c2fa80bc": "H.264-kodare",
-  "af0373642246bb1c": "GStreamer OpenGL-uppladdning (NVIDIA)",
-  "129d601c223507ec": "GPU",
-  "d87898d465d6309f": "Blender-MCP-server",
-  "541ee140c8330a2a": "Det gick inte att kontrollera konfigurationen av Hosted Blender",
-  "428192e9745f36eb": "Det gick inte att starta konfigurationstråden",
-  "31ba36fb9402faa7": "Installationskommandon",
-  "b6554bc1ff014f77": "Den officiella MCP-servern från Blender Lab, till exempel ~/.local/bin/blender-mcp. Lämna tomt för att hitta den i PATH eller i ~/.local/bin. Kontrollera igen efter att du har ändrat den.",
-  "e7743bf6a3de9ca3": "Återställ Blender-MCP-sökvägen",
-  "a9b3c3359bce1e24": "Blender-MCP-sökväg",
-  "d52b3d6bf9f2a013": "Blandat",
-  "6d0cb7390c17be3b": "Hitta automatiskt",
-  "0726bb02c4c42175": "Kontrollerar den här servern…",
-  "3a450021c92f3e4e": "T3 Code letar efter Blender, labwc, GStreamer och GPU:n och kör en testkodning.",
-  "b0537628ad92ed53": "Inte kontrollerad än",
-  "33bb3044d9712567": "Kontrollera den här servern efter Blender, labwc, GStreamer och GPU:n, med en testkodning.",
-  "c3f155eda04d9708": "Hosted Blender kräver en Linux-server. Förhandsvisningar av 3D-filer fungerar ändå på den här.",
-  "60f2565d2d2a6c3e": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " levererar för gamla versioner av labwc och GStreamer för Hosted Blender. Ubuntu 24.04, Debian 13, Fedora 43 och Arch fungerar."
-  ],
-  "66c4a476d0b4abaa": "Flatpak- och Snap-versioner av Blender stöds inte än. Installera Blender från blender.org eller din distribution, eller ange sökvägen under Inställningar › Allmänt › 3D-förhandsvisningar, och kontrollera sedan igen.",
-  "cd212c9950bba81d": "Hittad",
-  "f9ab32870fe2bf3a": "Saknas",
-  "d724abd4cc4a85e5": "För gammal",
-  "7b01b12da1a9fd17": "Långsam",
-  "a5fe3dee0a941705": "Inte Blender Labs",
-  "7174ef3cfccc7a54": "Kör Blender på den dolda skärmen och strömmar den.",
-  "59e399ec181acb63": "T3 Codes eget hjälpprogram saknas i den här installationen. Uppdatera eller installera om T3 Code.",
-  "92a36f954d094a6f": [
-    "Version ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    "."
-  ],
-  "759ad8d8187ed946": [
-    "Version ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ". Hosted Blender kräver Blender 4.5 eller senare."
-  ],
-  "2cf31d1c821751ac": "Installera Blender 4.5 eller senare, eller ange sökvägen under Inställningar › Allmänt › 3D-förhandsvisningar.",
-  "5d52dcf7276c5199": "Kompositören bakom den dolda skärmen.",
-  "ac6f1be5c0b72432": [
-    "Version ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ", fångad med wlr-screencopy. labwc 0.9 eller senare fångar bara Blenders fönster."
-  ],
-  "8ca441a272a1c6e1": [
-    "Version ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ". Hosted Blender kräver GStreamer 1.24 eller senare."
-  ],
-  "f400a2435a7c9972": "GStreamer 1.24 eller senare kodar strömmen.",
-  "991f74849ed9e582": [
-    "Testkodningen på en sekund använde ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    "."
-  ],
-  "ba5e2c560dd26d57": "Ingen H.264-kodare klarade testkodningen. Installera GStreamers insticksmoduler: någon av nvh264enc, vah264enc, x264enc eller openh264enc.",
-  "2ab5a1fabca22fd0": "NVIDIA:s kodare läser Blenders bildrutor direkt från GPU:n.",
-  "fce6aa0c10874b0c": "NVIDIA:s kodare kräver GStreamers OpenGL-insticksmodul.",
-  "040d82d74fa9b290": "Blender ritar med GPU:n.",
-  "b1f3a29faa7594ff": "Den här servern har en GPU, men T3 Code kan inte öppna den. Lägg till din användare i grupperna render och video. Tills dess blir Blender långsam.",
-  "e4f914bd5e6899bf": "Ingen GPU hittades. Hosted Blender fungerar ändå, men Blender blir långsam.",
-  "933fa7740fe8c681": {
-    "i": 1,
-    "k": "_gt_value_1",
-    "v": "v"
-  },
-  "92c9412a1a79bb73": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " är ett annat projekt med samma namn, inte MCP:n från Blender Lab. Installera den officiella eller ange dess sökväg nedan."
-  ],
-  "9a397640135c1803": "Agenter behöver den officiella MCP-servern från Blender Lab. Panelen fungerar utan den.",
-  "7c26d4f38c0094aa": "Resultatet sparas tills du kontrollerar igen, till exempel efter att du har installerat något.",
-  "021b62ff834041f0": "Installera det som saknas",
-  "ec5d04aa0c3eed05": "En agent installerar det som saknas",
-  "26c7f14fb81274cb": "En agent kan installera det i en ny tråd och ber om ditt lösenord i ett privat kort, aldrig i chatten. Eller kör kommandona själv. T3 Code installerar aldrig systempaket själv.",
-  "0d7eb1eeb33375bb": "T3 Code kontrollerar igen när agenten är klar.",
-  "a19376d3fce3f52d": "Installera med en agent",
-  "5dee7399d93445e1": "Dölj kommandona",
-  "fbb5ec917cc3451d": "Visa kommandona",
-  "db2f53db5e812a59": "Kopiera kommandon",
   "d6ad43bc4b700a88": "Det finns inga webbläsarprofildata att rensa.",
   "ad8efd437b301a37": "System",
   "42e23caa6ef99cad": "Ljust",
@@ -9192,13 +8781,9 @@
   "ed83b25c71c98a20": "Välj en eller flera {scope} i {tracker} för varje projekt. Deras ärenden listas bredvid repots egna, och agenter skapar nya ärenden i det första om de inte ombeds välja ett annat.",
   "19c2d5e81ff8f89a": "{scope} i {tracker} för {project}",
   "68e061510b765772": "Inte kopplad",
-  "99d51127f573296b": "Ett konto till",
-  "8ec2c57414669b79": "Anslut en andra {tracker}-arbetsyta eller användare.",
-  "99963c0142e17f00": "För det nya {tracker}-kontot.",
   "a2d95d39d3398bda": "Autentiseringsuppgiften avvisades",
   "9eae463720500113": "Lagras på servern.",
   "b6e27ab2537ef874": "Skapa en",
-  "6d8e4ebc889bace9": "Lägg till konto",
   "13ef526271b0f5d4": "Rensa alla villkor",
   "d1938a629f039515": "Ta bort villkor",
   "84a605b241ce65b7": "Ta bort gruppen och dess villkor",
@@ -9236,7 +8821,7 @@
   "a9cdd8c7073be920": "Kommandopalett: växla",
   "4e0943e8c7a465d1": "Filväljare: växla",
   "df5fdcdf26a6b52a": "Projektsökning: växla",
-  "a8ff6d33b060736f": "Användning: öppna",
+  "0ca6fd2b8fcab2c3": "Användning: Visa eller dölj",
   "a513d51b71b95674": "Tema: välj",
   "1ffd8427452372e1": "Utseende: växla mellan",
   "3a3bb4a7551a87cc": "Temaredigerare: växla",
@@ -9351,6 +8936,7 @@
   "f9904f78d3003f58": "Snabb utcheckning av worktree",
   "9c2f647882522302": "De valda datorerna använder olika lägen för återkoppling från agenter.",
   "31bbf7bf8c0a5279": "Återkoppling från agenter",
+  "d52b3d6bf9f2a013": "Blandat",
   "ec7623deed751c05": [
     "Dela en tråd med en gäst som följer den live i en webbläsare och skickar meddelanden som du godkänner. Kräver T3 Connect: logga in och länka den här datorn under",
     " ",
@@ -11629,6 +11215,7 @@
       }
     }
   ],
+  "97585565390197f6": "Kasta",
   "c0fce4a3555c5c17": "Anslut",
   "0d1eba54ff075d77": "Använd den",
   "035dc7d3b0f3e526": "Trådtitlar och annan genererad text",
@@ -11915,10 +11502,6 @@
   "42d843f45e1de53b": "Läggs till i prompten för nya och omgenererade trådtitlar.",
   "169d0ed4364b4644": "Återställ instruktioner för trådtitlar till standard",
   "f307391eb1c5c9d7": "Håll titlarna till några ord. Börja med huvudämnet.",
-  "47eb7e3f2072d8a4": "3D-förhandsvisningar",
-  "a2fc60e4c15eb1de": "Den Blender som gör .blend-filer till 3D-förhandsvisningar, till exempel /usr/bin/blender eller C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe. Lämna tomt för att hitta den i PATH eller där Blender installeras.",
-  "4c0182441f7f746d": "Återställ Blender-sökvägen",
-  "b0e5f2ebaa0f2d56": "Blender-sökväg",
   "ea6f97bad03faf84": "Systemets teckensnitt med fast bredd",
   "afa0ba3d124d9b8a": "Återställ gränssnittets typsnitt till standard",
   "eb19ce0364bb9a6e": "Allt utanför kodblock och terminalen.",
@@ -11962,10 +11545,11 @@
       "v": "v"
     }
   ],
-  "f54364b854a07918": "Inga hubbar konfigurerade.",
+  "39f64d971ba424b5": "Inga användningskällor har konfigurerats.",
+  "dbd877abdc2c7c81": "HTTP-källa för kvoter",
   "4cf6a373a7535324": "{name} · Inaktiverad",
-  "1d1e9cda847bd398": "Hubbens hanteringsnyckel tas bort från den här servern. Dess konton försvinner från vyn Gränser; själva hubben påverkas inte. Lägg till den igen med URL och nyckel för att få tillbaka dem.",
-  "c9bee4f93481b77a": "Ta bort hubb",
+  "c792e744936dbe1b": "Lägg till HTTP-källa",
+  "4032a03ee5301037": "Den sparade anslutningen och dess autentiseringsuppgifter tas bort från den här miljön.",
   "0424112d5a0ecd71": "Auto",
   "3f0e1b77e45d53a9": "Tryck för att växla, håll ned för att prata",
   "45928549c050a1b4": "Håll ned",
@@ -12251,7 +11835,6 @@
   "b1c7f74049a4147c": "lagring rensning kör nu resultat rapport borttagna behållna misslyckade storage cleanup",
   "2678550365a59e17": "Rensning av worktrees",
   "8deb2b0fd308fc26": "disk lagring automatisk ta bort borttagna arkiverade trådar gamla inaktiva mergade klara oförändrade worktrees kvarhållning dagar projekt ärv av anpassad",
-  "6ac7d143dd2dd2a5": "blender 3d förhandsvisning blend fil konvertera glb modell sökväg program installera",
   "c875f7fa9a48560a": "worktree plats mapp katalog sökväg enhet extern disk",
   "c7254dc82b23d291": "disk lagring ta bort gamla webbläsarartefakter skärmbilder inspelningar roterade loggar rensning kvarhållning",
   "3af3a34e376082c7": "Projektstandarder och åsidosättningar",
@@ -12296,6 +11879,10 @@
   "6826fa9579c22035": "beta dela gäst bjud in länk kollega titta t3 connect tunnel",
   "f10c06cba0cdf7fe": "beta länka en annan dator vps peer agenter arbetar där delegera",
   "bc0b409d89ce086e": "beta arbetsflöde workflow beständiga körningar automatisering steg schema webhook mapp",
+  "933dabf0700708af": "Hur många överhoppade körningar varje arbetsflöde behåller i sin historik. Äldre överhoppade körningar tas bort; körningar som gjorde något behålls alltid.",
+  "f172d7e5deb24f75": "Återställ antal sparade överhoppade körningar till standard",
+  "ba94015389f327bc": "Sparade överhoppade körningar",
+  "4b2669dcdb7d3776": "arbetsflöde historik lagring ta bort gamla överhoppade körningar webhook workflow history retention skipped runs",
   "4a21cf825a2045b0": "beta tabb autokomplettering förutsäg nästa meddelande claude codex spöktext",
   "fea2dc36585c4a20": "Simlock-enhetsvärdar (alfa)",
   "9d834d178130180e": "beta alpha simlock callstack simulator emulator ios android pool lån gateway",
@@ -12384,11 +11971,6 @@
   "f2b07faba1229ce7": "Intervall för hälsokontroll",
   "5c9dc9970db79fe2": "uppdatera tillgänglighet versioner autentiseringsstatus modeller bakgrundskontroller sekunder av",
   "056ba6a180d114b5": "tillåt inaktivera aktivera öppna styr förhandsvisning verktyg sessioner projekt åsidosätt",
-  "dd6b767f08eff9f7": "Blender som körs",
-  "ec2bc06507d0d9af": "värdbaserad blender avsluta minne 3d tråd",
-  "37d76dab21a26b2a": "blender hosted konfiguration installera kontrollera labwc gstreamer kodare gpu dold skärm linux agent kommandon",
-  "f74fb1f1e951cb67": "blender hosted agenter mcp starta tillåt",
-  "3cf7f8ed35b33c5f": "blender lab mcp server sökväg program installera uv pipx",
   "345075be6cacc171": "enhetsvärdar ssh fjärr mac mini identitet nyckel anslutning eas expo moln simlock pool gateway lokala simulatorer",
   "a6b742430b05d6cc": "Agenter kan använda enheter",
   "1d5d7418a83575c2": "tillåt simulator emulator ios android styr verktyg sessioner",
@@ -12516,11 +12098,14 @@
   "37ffec8201f153c1": "Misslyckades",
   "984b361806ce8d25": "Väckt",
   "c6e8abc00ae470d2": "Klar",
+  "353b08f4363dbb2c": "Väntar",
   "f31a95961de19433": "Ärende {key}: {title}, {state}",
   "2dd9d295c882ef65": "{count, plural, one {{count} länkat ärende} other {{count} länkade ärenden}}",
   "8cf699ae75fd8067": "Fäst",
   "be451f475c514b37": "Stäng aviseringen Väckt",
   "e9ced65134f2f36c": "Väck tråden nu",
+  "374dac09151d4578": "Väntar",
+  "a8f30f631e2b010e": "Väntar på synkronisering med sin miljö",
   "aca5896600bf173e": "Du har en annan gren utcheckad just nu.",
   "f665b5be60d8c144": [
     "Överlämnad från ",
@@ -12587,12 +12172,14 @@
   "c1a9fe8e24876f1d": "{count, plural, one {{count} pågående tråd avbryts.} other {{count} pågående trådar avbryts.}}",
   "ecdf5f108ecc71d0": "{count, plural, one {{count} kan återupptas efter omstarten.} other {{count} kan återupptas efter omstarten.}}",
   "0576c87870fb6389": "Uppdatera",
+  "948185631ef288e6": "{count, plural, one {{count} körs} other {{count} körs}}",
   "3d9a2f6b9c114039": "Leverantörer",
   "f4baf8deafbb227d": "Överhoppad",
   "f938bb483eb3d189": "startar om sist",
-  "f13e08bd3614112e": "uppdatera T3 Code på den datorn",
   "9bca02be2b4d612a": "inte ansluten",
   "2dcc418b6a13b83c": "behöver uppdateras manuellt",
+  "f13e08bd3614112e": "uppdatera T3 Code på den datorn",
+  "3c3348c36a2695af": "byt uppdateringsspår på den datorn",
   "fa8faa732a2688ef": "på kanalen {channel}",
   "e65649675cb4cbaa": "avstängd",
   "a1e7c08d9ef315c7": "läses fortfarande in",
@@ -12609,7 +12196,6 @@
   "3ac986d604a2ad62": "Den här appen kan inte byta: dess server är inte ansluten, så dess databas kan inte kontrolleras.",
   "3bbb6e9ade0cf7e1": "kör `{command}` där",
   "e7194946af611278": "kör en förhandsversion",
-  "3c3348c36a2695af": "byt uppdateringsspår på den datorn",
   "f5eac23351c99297": "byt Mac-appen på den Macen",
   "d7444fbde9a80f04": "<1 min",
   "09c1af20e9323765": "Startar om om {seconds} s",
@@ -12652,6 +12238,7 @@
   "9c015d3d034316cb": "Använd piltangenterna för att justera det fokuserade värdet. Håll ned Shift för större steg. Använd Home och End för minsta och högsta värde. Tryck Tab för att växla mellan mättnad och ljusstyrka.",
   "8639d5532561f87f": "Stäng",
   "e1186ad82ee08b33": "Stäng",
+  "a4579e548b768663": "Visa sidofältet",
   "a1b11a1cf39c9dc9": "Ändra storlek på sidofältet",
   "c557090df5722838": "Växla sidofält",
   "bbde430e56272901": "Dra för att ändra storlek på sidofältet",
@@ -12701,6 +12288,28 @@
   "8bcab2ef61de6518": "Tak på 0 $",
   "a16b48709357a5a7": "Hantera användning",
   "a00e74aaa421c524": "kvar",
+  "0e34c3076c08feb2": [
+    {
+      "t": "span",
+      "i": 1,
+      "c": [
+        "↻ +",
+        {
+          "i": 2,
+          "k": "_gt_value_2",
+          "v": "v"
+        },
+        "%"
+      ]
+    },
+    " ",
+    "om ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    }
+  ],
   "8bd6f07136317c8f": "Ingen leverantör i de valda miljöerna rapporterar abonnemangsgränser.",
   "87f5d0c61b335f38": "Visa användning i ChatGPT med ditt anslutna konto.",
   "5b4c71b36b979e80": "Kostnad",
@@ -12926,6 +12535,7 @@
   "3cc43f1dbf3f8e0c": "Avbruten",
   "ded70e75de6404ba": "Tillbaka till listan över körningar",
   "2f4ed7dbd22be30d": "Avbryt körningen",
+  "614e5ad58a795fb5": "Stoppa",
   "04b050b0329f0ac8": "tog {duration}",
   "aff78e1774818ff4": "{duration} hittills",
   "38eddd466439afc9": "Vad körningen rörde",
@@ -13047,24 +12657,18 @@
   "5459bf696a187c26": "Kunde inte läsa in arbetsflödeskörningarna",
   "d57c35d43b0f163a": "Den här körningen finns inte här",
   "b9aae2f7cdb1a379": "Inga arbetsflödeskörningar än",
+  "45a94c724845ec1d": "Övrigt",
   "8f15f66e545af7c0": "Vilka körningar",
   "b6409289e0c9a4dd": "Arbetsflöde",
   "035cb02ca1ae4952": "Alla arbetsflöden ({count})",
+  "8eeb9cb07d7c59e1": "Typ av fråga",
+  "e4d1316c85ed7066": "Inga frågor av den här typen väntar på dig.",
+  "e2131cbec8accfe3": "Alla typer",
   "46d614fa7b4bf1e5": "Arbetsflödeskörningar",
   "1c635faa2fb45b8b": "Har inte körts än.",
   "156ff7b625287a1e": "Dölj överhoppade",
   "69b985b97ab45e6b": "Visa överhoppade ({count})",
   "2400254d362de84d": "Läser in arbetsflödeskörningar…",
-  "cae5c3205c01d062": [
-    {
-      "t": "span",
-      "i": 1,
-      "c": "En arbetsflödesfil har ett problem."
-    },
-    " ",
-    "Den senaste versionen som gick att läsa in körs vidare."
-  ],
-  "ed8ce6ebc73dc12d": "Öppna filen",
   "145e1f7503ba3b2c": [
     "Den här miljön har ingen körning med den länken.",
     " ",
@@ -13090,7 +12694,18 @@
       "c": "Läs guiden"
     }
   ],
+  "cae5c3205c01d062": [
+    {
+      "t": "span",
+      "i": 1,
+      "c": "En arbetsflödesfil har ett problem."
+    },
+    " ",
+    "Den senaste versionen som gick att läsa in körs vidare."
+  ],
+  "ed8ce6ebc73dc12d": "Öppna filen",
   "5d8d278ff828102d": "Alla arbetsflöden",
+  "3b0f1659172107e4": "Alla typer",
   "39459da07479f482": "Agent",
   "7741243632056b81": "{step} · transkript",
   "c512071143a5ba32": "Den här tråden finns inte längre.",
@@ -13233,5 +12848,569 @@
   "27d76249d09eb69f": "Granskningsguiden är klar",
   "faa3bb26abb39c93": "Granskningsguiden misslyckades",
   "b7df38b7d8792d78": "Öppna guiden",
-  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide"
+  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide",
+  "99d51127f573296b": "Ett konto till",
+  "8ec2c57414669b79": "Anslut en andra {tracker}-arbetsyta eller användare.",
+  "99963c0142e17f00": "För det nya {tracker}-kontot.",
+  "6d8e4ebc889bace9": "Lägg till konto",
+  "8a883c4fbc127b68": "Aktiverar automatisk merge för stacken...",
+  "5fb2a26ae31e8983": "Kunde inte aktivera automatisk merge för stacken",
+  "986d0dcbf4dd0098": "Automatisk merge för stacken aktiverad",
+  "f3ed1f63c8a3eef2": "{host} mergar stacken till och med #{number} när kraven är uppfyllda.",
+  "bd536a0a1754f6cb": "Kunde inte avbryta automatisk merge för stacken",
+  "bb90ac3b2f3a72d5": "Värden vägrade avbryta den automatiska mergen. Uppdatera och försök igen.",
+  "9c28753c777c37b7": "{count, plural, one {Merga {count} {term, select, mr {merge request} cr {ändringsbegäran} other {pull request}} automatiskt?} other {Merga {count} {term, select, mr {merge requests} cr {ändringsbegäranden} other {pull requests}} automatiskt?}}",
+  "a86b49982e18784d": "Merga #{number} och dess omergade lager under in i {base} med {method} när vart och ett uppfyller kraven på {host}. Det kan ske direkt.",
+  "b1afda5c964deee4": [
+    "Merga stacken automatiskt (",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ")"
+  ],
+  "33d18dda74f6d7b3": "Avbryt automatisk merge för stacken",
+  "012c67c7f1a99e33": "Merga stacken automatiskt",
+  "4a18481bea4b4ad5": "Ny enhet inloggad på {environmentLabel}",
+  "4144ab6aa487528a": "{device} anslöt via {product}. Inte du? Granska den.",
+  "a10cfdb27152c757": "{count, plural, one {{count} enhet} other {{count} enheter}} anslöt via {product}. Inte du? Granska dem.",
+  "e0856d6a402ad821": "Policyn för {organization} tillåter inte projekts layoutkommandon för worktrees.",
+  "206811f6f441bfc7": "Det här projektet förbereder worktrees med ett eget kommando, som ingen har godkänt som det är skrivet nu. Den här anslutningen kan inte godkänna det: godkänn det från en klient som får använda terminalen.",
+  "b8087c9a70c26da9": "Det gick inte att godkänna layoutkommandot för worktrees.",
+  "49eda70cfd56e621": "Körs när en worktree-tråd startar och när dess mapp återställs",
+  "188ccaa1199f5611": "Körs när en tråds worktree tas bort",
+  "7e8476e7306acabe": "Låta det här projektet köra sina worktree-kommandon?",
+  "8e11914556fd8b13": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " förbereder worktree-trådar med egna kommandon från ",
+    {
+      "t": "code",
+      "i": 2,
+      "c": "t3.json"
+    },
+    ". De körs på den här miljöns dator med dina behörigheter, utanför alla agentsandlådor. Du får frågan igen varje gång deras text ändras."
+  ],
+  "46807acd02a4ff72": "Godkänn och fortsätt",
+  "a9cb97fca6a6576b": "Kommando för att skapa",
+  "90f45a354884ccdd": "Kommando för att ta bort",
+  "78e308ada516928b": "Det gick inte att godkänna kommandot",
+  "a0c772d32a233da6": "Det gick inte att återkalla godkännandet",
+  "0cdc8cdbed3e5eae": "Worktree-layout",
+  "c17b25519e2b194e": "Kunde inte läsa in layoutkommandona för worktrees",
+  "5ccd5614c65f8d1f": "Återkalla godkännandet av kommandot {kind}",
+  "80c3794a5fa12f3a": "Godkänn kommandot {kind}",
+  "f206891e124c77b0": [
+    "Projektets ",
+    {
+      "t": "code",
+      "i": 1,
+      "c": "t3.json"
+    },
+    " förbereder worktree-trådar med egna kommandon. De körs på den här miljöns dator med dina behörigheter, och bara så som de godkänts här: ett kommando vars text ändras behöver godkännas igen."
+  ],
+  "f6a91589456cca50": "Godkänt",
+  "c92657bb7f2293ff": "Behöver godkännande",
+  "f1e5c1be1ac92361": "Godkänn",
+  "fcb5f3c4d4753326": "Den här anslutningen kan inte godkänna kommandon. Använd en klient som får använda terminalen.",
+  "4e96712d839ccbff": "{who} svarade {choice}",
+  "19097cfb8f5a79cf": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " svarade",
+    " ",
+    {
+      "t": "span",
+      "i": 2,
+      "c": {
+        "i": 3,
+        "k": "_gt_value_3",
+        "v": "v"
+      }
+    },
+    "."
+  ],
+  "e7bbf693910057bf": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " svarade",
+    " ",
+    {
+      "t": "span",
+      "i": 2,
+      "c": {
+        "i": 3,
+        "k": "_gt_value_3",
+        "v": "v"
+      }
+    },
+    ": ",
+    {
+      "i": 4,
+      "k": "_gt_value_4",
+      "v": "v"
+    }
+  ],
+  "3759768c5d342c22": [
+    "besvarad",
+    " ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "e114d37b32ab0dc7": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " kräver en anledning."
+  ],
+  "91aadfc843c600de": "Verifiera Google-konto",
+  "201490988858b511": "återkallad av {by}",
+  "99451a5d2d40440f": "Återkallad av {by}.",
+  "3ee30a50b70fffab": "Återkallad av {by}: {reason}",
+  "92e129bf413a1220": "återkallad",
+  "3ed524933c568f8c": "Scen",
+  "8f9167efec844695": "Bildrutor",
+  "8f57fe4fcc5c7945": "{start}–{end}",
+  "5d5a2f58f1a34c19": "Scener",
+  "9737b868f7aebd61": "Objekt",
+  "3a4c33441eda8301": "Nät",
+  "472ca1deae1a19f5": "Material",
+  "6116c7ae71bc7d05": "Länkade filer",
+  "3286ce5553d9f505": "Storlek",
+  "46dae7e064a17ca3": "Blender",
+  "473079352585294d": "Vilken Blender som visas",
+  "72ec28b225ed9811": "Det gick inte att öppna huvudfilen",
+  "70da4581cf87971c": "Det gick inte att flytta till T3 Code",
+  "d5da364f3ffb7fa7": "Arbetskopia",
+  "d3b2dad809961953": "Huvudfil",
+  "8fc9ef73a784da09": "En Blender på skrivbordet som T3 Code inte kunde kontrollera kan också ha den här filen öppen. Spara och stäng den där så att de inte skriver över varandra.",
+  "ab03a468cc62daf1": "Flytta till T3 Code",
+  "77b72b3b7ee97069": "Öppna i T3 Code",
+  "cb4451ab067ff47d": "Blender startade inte",
+  "731b80ac194beb4a": "Öppen i din Blender på skrivbordet",
+  "ca40a1f4300b4838": "Huvudfilen är inte öppen i T3 Code",
+  "10a2ab0021554b0a": [
+    "Blender kunde inte öppna ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " på den dolda skärmen. Kontrollera att Blender kan öppna den och öppna den sedan igen."
+  ],
+  "f5db5877ab70bfc8": [
+    "Flytta till T3 Code sparar ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " i din Blender på skrivbordet, med osparade ändringar, avslutar den Blendern och öppnar filen här. Ångrahistoriken går förlorad."
+  ],
+  "6484265e8c18d3dd": [
+    "Flytta till T3 Code sparar ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " i din Blender på skrivbordet, avslutar den Blendern och öppnar filen här. Ångrahistoriken går förlorad."
+  ],
+  "d77c7db5a642f111": [
+    "En Blender körs på skrivbordet, men T3 Code når inte dess MCP-tillägg och kan inte se om ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " är öppen där. Spara och stäng filen där innan du öppnar den här."
+  ],
+  "a0056043b004c957": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " är inte öppen i en huvud-Blender. Där kopierar agenter in sina beprövade ändringar."
+  ],
+  "e69c6af74880ba75": "Engelska (USA)",
+  "675e421e80618158": "Engelska (Storbritannien)",
+  "27cface4ce8ec314": "Tyska",
+  "252113dddccaec1a": "Franska",
+  "8ab4b97531ab9d38": "Spanska",
+  "3545659a9d1bb2e3": "Italienska",
+  "38923bf04cdeb628": "Portugisiska",
+  "587094706a1471b7": "Portugisiska (Brasilien)",
+  "5950bf35d9440cd8": "Svenska",
+  "9db1b78d4555eaae": "Norska",
+  "12de4ccc884a2322": "Danska",
+  "fa15389723321c00": "Schweizertyska",
+  "4011a07411675ba1": "Ryska",
+  "d1634d41846e72cb": "Japanska",
+  "c77caac5b764ef8c": "Engelska (Dvorak)",
+  "7b15925473b02c07": "Engelska (Colemak)",
+  "7c6bc1129dc9f48e": "Namnlös scen",
+  "cd078f4497dfcd36": "Det gick inte att starta om Blender",
+  "ad3ce6044792509a": "Det gick inte att öppna Blender igen",
+  "90e3c64eab32945e": "Ta bort den automatiska sparningen av {name}?",
+  "01201ecb830d7c68": "Ta bort de osparade ändringarna i {name}?",
+  "a1628cec6e798a98": "T3 Codes hjälpprogram för dold skärm",
+  "759aa5a1a95bc013": "en H.264-kodare",
+  "f5a8efdb194519df": "GStreamers OpenGL-insticksmodul",
+  "d6fcf229c9306851": "Skärmbild och anteckning",
+  "32cf9ac006229af1": "Blender-meny",
+  "9287e12fbeade687": "En annan enhet tog kontrollen över Blender",
+  "d2b10ff67d190925": "Blender-vyport",
+  "2151790bc5e65b31": "Inte tillgängligt på den här värden",
+  "b94f5fc6d71bc852": "Konfiguration krävs",
+  "7050870331ac8b9a": "Ingen Hosted Blender körs",
+  "fb2c65328a8a2e17": "Öppna en .blend-fil i filförhandsvisningen och välj Öppna i Hosted Blender.",
+  "3f25b97ec987231e": "Blender kunde inte öppna filen på den dolda skärmen. Kontrollera att Blender kan öppna den och att GStreamer har en H.264-kodare, och öppna den sedan i Hosted Blender igen.",
+  "c9d23ccb15073177": "Blender kraschade",
+  "9f406050b6efb934": "Blender stängdes",
+  "0693a88b1530f8eb": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ligger utanför det här projektet, så T3 Code kan inte öppna den igen. Dess osparade ändringar finns kvar i ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "95b2d0bdafc5b01d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ligger utanför det här projektet, så T3 Code kan inte öppna den igen."
+  ],
+  "0181fc8af235ad77": [
+    "T3 Code behöll de osparade ändringarna i en namnlös scen i ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "c3528aaa534d9a33": "Blender hade en namnlös scen öppen, som T3 Code inte kan öppna igen.",
+  "df374db2c12ff019": [
+    "Blender kunde inte återställa kopian av ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Kopian behålls: försök igen, öppna filen som den senast sparades eller ta bort kopian."
+  ],
+  "ff3775198cef1512": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " stannade oväntat. Starta om öppnar filen som den senast sparades, eller återställ den senaste automatiska sparningen."
+  ],
+  "945cdcba38a31b0c": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " stannade oväntat. Starta om öppnar filen som den senast sparades."
+  ],
+  "a1705e3412c3634e": [
+    "T3 Code stängde ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " när den här tråden avslutades eller T3 Code stoppades, och behöll de osparade ändringarna. Öppna igen återställer dem."
+  ],
+  "891e3d7d231af485": [
+    "T3 Code stängde ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " när den här tråden avslutades eller T3 Code stoppades."
+  ],
+  "bd90fd96c98e9c6f": "Starta om",
+  "220f0a0fa43d9f59": "Återställ automatisk sparning",
+  "182049c015041be2": "Öppna igen",
+  "eb23e8b7b8458cfa": "Öppna senast sparade",
+  "930be3d3ed674427": "Sparas också:",
+  "d6c851db16c7dfd8": "Filen som den senast sparades behålls. Det går inte att ångra.",
+  "7dfc4caecd0ca4da": "Öppna Blender-inställningar",
+  "22e7ff1b5896ba7b": "Hosted Blender kräver en Linux-server. Du kan fortfarande öppna 3D-filer i filförhandsvisningen.",
+  "ccb9bcd7825f2f99": "Den här serverns Linux-version levererar för gamla versioner av labwc och GStreamer för Hosted Blender. Du kan fortfarande öppna 3D-filer i filförhandsvisningen.",
+  "efd53a6196afbf6d": "Flatpak- och Snap-versioner av Blender stöds inte än. Inställningar › Blender beskriver hur du använder en annan Blender.",
+  "ec1b57292361ae76": "Slå på Hosted Blender under Inställningar › Blender för att se och styra Blender här.",
+  "e4ec327ad1a82eb5": "T3 Code har inte kontrollerat den här servern än. Öppna en .blend i Hosted Blender eller kontrollera den under Inställningar › Blender.",
+  "af467bacc13f5e57": [
+    "Den här servern saknar: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Under Inställningar › Blender kan en agent installera dem, eller så kan du visa kommandona."
+  ],
+  "f4266902a2c24f1e": "Startar Blender…",
+  "9d8acbbea6eafeef": [
+    "Öppnar ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " på den dolda skärmen."
+  ],
+  "4e4f72c4986c5f68": "Ta kontrollen",
+  "14d410b8b9a578d0": "Helskärm",
+  "2026a467bc778ad9": "Tangentbordslayout",
+  "1d9b37b42f1216c8": "Automatisk",
+  "4b0ca2d2af30068a": "Rullning",
+  "3e3e743c7c26648a": "Automatisk",
+  "8884c1281f2a2db4": "Mushjul",
+  "295182c176fc7bd0": "Styrplatta",
+  "8b290ab856b8f02b": "Avsluta Blender",
+  "6b30f7f4ebd659d7": "För många tittar på den här Blender. Försök igen senare.",
+  "1681e6f089782b9d": "Den här webbläsaren kan inte spela upp Blender-strömmen.",
+  "7579927020ad5107": "Du har kontrollen",
+  "67ab7e22612414d0": "En annan enhet har kontrollen",
+  "81f3ce1d88ecf7bb": "Tittar",
+  "b41e3eeb664df523": "Agenten redigerar",
+  "3906097eebf88153": "Visar hela skärmen",
+  "27ea83219396f796": "Ingen GPU: Blender blir långsam",
+  "156c7543e861dda6": "Ingen GPU-åtkomst: Blender blir långsam",
+  "907a0f7ed16a709d": "Det gick inte att öppna i Hosted Blender",
+  "7b0cb06d256e6b28": "Öppna i Hosted Blender",
+  "119259d2fa66fadf": "Det gick inte att avsluta Blender",
+  "e2d3b41b3731a6c1": "Spara ändringarna i {name} innan du avslutar?",
+  "32504fe5e26d8233": "Ändringar som Blender inte har sparat går förlorade om du avslutar utan att spara.",
+  "9ceb68fb844584c9": "Avsluta utan att spara",
+  "e21dfc1887d124ec": "Spara och avsluta",
+  "004649901eabfebd": "Arbetar i Blender",
+  "7c23820b77e42b2c": "Läs in filen igen",
+  "586cd2c4199fa323": "Sparad miniatyr av {name}",
+  "25d1be241b107e99": "Det gick inte att läsa filen.",
+  "af3426b9850d4da7": "Konverterad med Blender {version} · cachad",
+  "5b88b6929848ca03": "Konverterad för {seconds} s sedan",
+  "ea085b85d5409d6d": "Konverterad med Blender {version}",
+  "e1de2d5335083143": "Konverterar med Blender {version}… {seconds} s",
+  "9228469f14b148a6": "{file} ändrades · uppdaterar…",
+  "41f9012753a424a9": "Konverteringen misslyckades",
+  "047618ba1e0fe59d": "Konverteringen avbröts",
+  "53a1519e0b7358cf": "Väntar: {ahead} före",
+  "202d05bbf54b83c1": "För långsam för förhandsvisning",
+  "dd22e61b9a4efe81": "Konverteringen tog över en minut och stoppades. Fortsätt försöka konverterar utan tidsgräns.",
+  "569078051cbef37c": "Ingen Blender på den här servern",
+  "484bbf26d26f6f65": "Installera Blender från blender.org på datorn som kör T3 Code, eller ange sökvägen under Inställningar › Allmänt, för att se filen i 3D.",
+  "a3a292e8b22c02db": "Sparad med Blender {file} · servern har {server}",
+  "4e2b52d678917c4d": "Sparad miniatyr · Blender {version}",
+  "864d83692fd9047f": "Sparad med Blender {version}",
+  "3caa4fb20ff3277d": "Blender sparar den här bilden med filen, så den kan vara inaktuell om ett skript sparade filen.",
+  "301ece9c34df1726": "Blenders logg",
+  "20fc073d179a63f5": "Blender skrev inget i sin logg.",
+  "71f9aa2ee31aac46": "Ingen miniatyr sparad i den här filen",
+  "27088355449cdd28": "Scendetaljer",
+  "3a87f8c40f3b8065": "Konvertera",
+  "3a7a505e7bb890be": "Visa logg",
+  "5ac36af75f80daf6": "Fortsätt försöka",
+  "aaf4d7b88f1a09d8": "Beskriv ändringen…",
+  "51dbb09f63c653ea": "Anteckningskommentar",
+  "dd2fd8921e6266cc": "Fryst 3D-vy att anteckna",
+  "5e28beecabfa2e5c": "Anteckningsverktyg",
+  "44480ea1a65332c2": "Rita",
+  "ef38e20921500bd4": "Markera ett område",
+  "3634581310a50ead": "Sudda en markering",
+  "bdac60fb8176f6cd": "3D-förhandsvisningar kräver WebGL, som den här webbläsaren har stängt av eller inte stöder.",
+  "2c35172b5a5d8a64": "3D-vyn slutade svara.",
+  "791277de6140c5c7": "Den här 3D-filen är skadad eller använder funktioner som förhandsvisningen inte stöder.",
+  "54d0d4483d261e37": "Den här 3D-filen har ingen geometri att visa.",
+  "bee9d18a1a2b0c3e": "En fil som modellen behöver hittades inte.",
+  "2d782dfff8e968f8": "Det gick inte att läsa in modellen.",
+  "a1ad1c48825fa0b5": "Den här modellen är över 1 GB, för stor för att förhandsvisas. Spara den för att öppna den i en 3D-app.",
+  "6c74f6e6e2d69293": "Läser in 3D-modell…",
+  "4fc027df67b0cbbc": "Stor modell",
+  "dd420bd9b4c8f356": "Förhandsvisningen misslyckades",
+  "108ec15bf5350d7d": "{format} · renderad i webbläsaren",
+  "b1a9bdc9615401d5": "{count, plural, one {{count} textur hittades inte} other {{count} texturer hittades inte}}",
+  "cbcdb6061aa78bf6": "{count, plural, one {{count} fil hittades inte} other {{count} filer hittades inte}}",
+  "35d235e816e6f4b0": "3D-vy av {name}",
+  "c85eef9dc05fa21b": "{files} hittades inte bredvid {model}.",
+  "411a4c0012fbdc78": "Den här modellen är över {size}. Att läsa in den kan göra fönstret långsamt en stund.",
+  "7a4197b6468d9219": "Den här modellen är {size}. Att läsa in den kan göra fönstret långsamt en stund.",
+  "0b87945c6568d758": "En nyare version finns",
+  "7805e0174e665cd4": "Det gick inte att läsa in den nya versionen",
+  "5ec36ad4005866e2": "{files} hittades inte bredvid {model}",
+  "164dcb32e690fb3b": "Återställ vyn",
+  "fd84ebd10dd79423": "Läs in modellen igen",
+  "69b6a587633c2599": "Trianglar",
+  "26a4ebec594d4dee": "Punkter",
+  "db81a08c825964a9": "Storlek",
+  "d51618c38e9c4e73": "{width} × {height} × {depth}",
+  "317be90a94ab7326": "{width} × {height} × {depth} {unit}",
+  "a33fd1cd3116533d": "Behåll den här versionen",
+  "c61866d92a739c56": "Läs in modell",
+  "800f266a8be8e117": "Modelldetaljer",
+  "22738c009abc434a": "Den här filen är inte en Blender-fil, eller så är den skadad.",
+  "458554b0a4245572": "Den här Blender-filen är för stor för att läsa dess detaljer.",
+  "31714e7420776a7c": "Den här bilagan är inte längre tillgänglig.",
+  "29e40a5da4bbbf79": "Det gick inte att fånga 3D-vyn",
+  "ce122949162f2073": "Svävande Blender-förhandsvisning",
+  "a0f6aecb07b533ff": "Blender som körs ({count})",
+  "b04a15f0adaa16b9": "Inga värdbaserade Blender körs",
+  "201b5d40d08e74d0": "Varje tråds värdbaserade Blender visas här medan den körs.",
+  "75daeb1e9b041511": "Okänd tråd",
+  "0eda0be3d24af58c": "Avsluta",
+  "7660bc93bbd673be": "Låt T3 Code köra en egen Blender på den här servern, på en dold skärm, så att du kan se och styra den i Blender-panelen. Endast Linux. Din Blender på datorn rörs aldrig.",
+  "41dfe036cd2b2975": "Hosted Blender",
+  "9cc2228be8a75b39": "Agenter i Claude- och Codex-trådar får starta den här serverns Hosted Blender, från nästa session. Andra leverantörer stöds inte än.",
+  "9dfd275b6a5d4f9a": "Slutför konfigurationen först, inklusive den officiella Blender-MCP-servern. Agenter använder den för att arbeta i Hosted Blender.",
+  "1f0df945c5a89af5": "Tillåt agenter att starta Hosted Blender",
+  "67c674ad132e17bb": "Hjälpprogram för dold skärm",
+  "16da5cd9c2fa80bc": "H.264-kodare",
+  "af0373642246bb1c": "GStreamer OpenGL-uppladdning (NVIDIA)",
+  "129d601c223507ec": "GPU",
+  "d87898d465d6309f": "Blender-MCP-server",
+  "541ee140c8330a2a": "Det gick inte att kontrollera konfigurationen av Hosted Blender",
+  "428192e9745f36eb": "Det gick inte att starta konfigurationstråden",
+  "31ba36fb9402faa7": "Installationskommandon",
+  "b6554bc1ff014f77": "Den officiella MCP-servern från Blender Lab, till exempel ~/.local/bin/blender-mcp. Lämna tomt för att hitta den i PATH eller i ~/.local/bin. Kontrollera igen efter att du har ändrat den.",
+  "e7743bf6a3de9ca3": "Återställ Blender-MCP-sökvägen",
+  "a9b3c3359bce1e24": "Blender-MCP-sökväg",
+  "6d0cb7390c17be3b": "Hitta automatiskt",
+  "0726bb02c4c42175": "Kontrollerar den här servern…",
+  "3a450021c92f3e4e": "T3 Code letar efter Blender, labwc, GStreamer och GPU:n och kör en testkodning.",
+  "b0537628ad92ed53": "Inte kontrollerad än",
+  "33bb3044d9712567": "Kontrollera den här servern efter Blender, labwc, GStreamer och GPU:n, med en testkodning.",
+  "c3f155eda04d9708": "Hosted Blender kräver en Linux-server. Förhandsvisningar av 3D-filer fungerar ändå på den här.",
+  "60f2565d2d2a6c3e": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " levererar för gamla versioner av labwc och GStreamer för Hosted Blender. Ubuntu 24.04, Debian 13, Fedora 43 och Arch fungerar."
+  ],
+  "66c4a476d0b4abaa": "Flatpak- och Snap-versioner av Blender stöds inte än. Installera Blender från blender.org eller din distribution, eller ange sökvägen under Inställningar › Allmänt › 3D-förhandsvisningar, och kontrollera sedan igen.",
+  "cd212c9950bba81d": "Hittad",
+  "f9ab32870fe2bf3a": "Saknas",
+  "d724abd4cc4a85e5": "För gammal",
+  "7b01b12da1a9fd17": "Långsam",
+  "a5fe3dee0a941705": "Inte Blender Labs",
+  "7174ef3cfccc7a54": "Kör Blender på den dolda skärmen och strömmar den.",
+  "59e399ec181acb63": "T3 Codes eget hjälpprogram saknas i den här installationen. Uppdatera eller installera om T3 Code.",
+  "92a36f954d094a6f": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "759ad8d8187ed946": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Hosted Blender kräver Blender 4.5 eller senare."
+  ],
+  "2cf31d1c821751ac": "Installera Blender 4.5 eller senare, eller ange sökvägen under Inställningar › Allmänt › 3D-förhandsvisningar.",
+  "5d52dcf7276c5199": "Kompositören bakom den dolda skärmen.",
+  "ac6f1be5c0b72432": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", fångad med wlr-screencopy. labwc 0.9 eller senare fångar bara Blenders fönster."
+  ],
+  "8ca441a272a1c6e1": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Hosted Blender kräver GStreamer 1.24 eller senare."
+  ],
+  "f400a2435a7c9972": "GStreamer 1.24 eller senare kodar strömmen.",
+  "991f74849ed9e582": [
+    "Testkodningen på en sekund använde ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "ba5e2c560dd26d57": "Ingen H.264-kodare klarade testkodningen. Installera GStreamers insticksmoduler: någon av nvh264enc, vah264enc, x264enc eller openh264enc.",
+  "2ab5a1fabca22fd0": "NVIDIA:s kodare läser Blenders bildrutor direkt från GPU:n.",
+  "fce6aa0c10874b0c": "NVIDIA:s kodare kräver GStreamers OpenGL-insticksmodul.",
+  "040d82d74fa9b290": "Blender ritar med GPU:n.",
+  "b1f3a29faa7594ff": "Den här servern har en GPU, men T3 Code kan inte öppna den. Lägg till din användare i grupperna render och video. Tills dess blir Blender långsam.",
+  "e4f914bd5e6899bf": "Ingen GPU hittades. Hosted Blender fungerar ändå, men Blender blir långsam.",
+  "933fa7740fe8c681": {
+    "i": 1,
+    "k": "_gt_value_1",
+    "v": "v"
+  },
+  "92c9412a1a79bb73": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " är ett annat projekt med samma namn, inte MCP:n från Blender Lab. Installera den officiella eller ange dess sökväg nedan."
+  ],
+  "9a397640135c1803": "Agenter behöver den officiella MCP-servern från Blender Lab. Panelen fungerar utan den.",
+  "7c26d4f38c0094aa": "Resultatet sparas tills du kontrollerar igen, till exempel efter att du har installerat något.",
+  "021b62ff834041f0": "Installera det som saknas",
+  "ec5d04aa0c3eed05": "En agent installerar det som saknas",
+  "26c7f14fb81274cb": "En agent kan installera det i en ny tråd och ber om ditt lösenord i ett privat kort, aldrig i chatten. Eller kör kommandona själv. T3 Code installerar aldrig systempaket själv.",
+  "0d7eb1eeb33375bb": "T3 Code kontrollerar igen när agenten är klar.",
+  "a19376d3fce3f52d": "Installera med en agent",
+  "5dee7399d93445e1": "Dölj kommandona",
+  "fbb5ec917cc3451d": "Visa kommandona",
+  "db2f53db5e812a59": "Kopiera kommandon",
+  "47eb7e3f2072d8a4": "3D-förhandsvisningar",
+  "a2fc60e4c15eb1de": "Den Blender som gör .blend-filer till 3D-förhandsvisningar, till exempel /usr/bin/blender eller C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe. Lämna tomt för att hitta den i PATH eller där Blender installeras.",
+  "4c0182441f7f746d": "Återställ Blender-sökvägen",
+  "b0e5f2ebaa0f2d56": "Blender-sökväg",
+  "6ac7d143dd2dd2a5": "blender 3d förhandsvisning blend fil konvertera glb modell sökväg program installera",
+  "dd6b767f08eff9f7": "Blender som körs",
+  "ec2bc06507d0d9af": "värdbaserad blender avsluta minne 3d tråd",
+  "37d76dab21a26b2a": "blender hosted konfiguration installera kontrollera labwc gstreamer kodare gpu dold skärm linux agent kommandon",
+  "f74fb1f1e951cb67": "blender hosted agenter mcp starta tillåt",
+  "3cf7f8ed35b33c5f": "blender lab mcp server sökväg program installera uv pipx"
 }

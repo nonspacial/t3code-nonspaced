@@ -71,7 +71,6 @@
   "cd03eb1b84271c02": "Agent",
   "bfe1a60f3f9c60fb": "Tour {turn} · {what}",
   "dfdaa6255a416140": "Résumé de {turns, plural, one {{turns} tour récent} other {{turns} tours récents}}, {textTurns, plural, =0 {sans texte des messages} one {avec le texte des messages du dernier tour} other {avec le texte des messages des {textTurns} derniers tours}}{truncated, select, yes {, raccourci pour tenir dans la limite} other {}}",
-  "260c6b45f52d2f27": "Ajoute le texte de vos messages et des réponses de l'agent dans {textTurns, plural, one {le dernier tour} other {les {textTurns} derniers tours}}.",
   "afac52a5cc2dc801": "Impossible d'envoyer votre réponse. Réessayez.",
   "79d776428f4d0650": "Le fichier n’a pas pu être chargé. Reconnectez-vous et réessayez.",
   "3ea34cbb1ca5ba9b": "Aperçu annulé.",
@@ -566,15 +565,6 @@
   "0108edbdb5f27c83": "Ce navigateur ne peut pas décoder le flux de cet appareil (WebCodecs indisponible).",
   "eabffa063b9244f8": "Votre DNS ou votre pare-feu bloque peut-être T3 Connect. Essayez un autre réseau, comme un autre Wi-Fi ou les données mobiles.",
   "c039a54c8238eafe": "Il est peut-être surchargé, en veille ou hors réseau.",
-  "3ed524933c568f8c": "Scène",
-  "8f9167efec844695": "Images",
-  "8f57fe4fcc5c7945": "{start}–{end}",
-  "5d5a2f58f1a34c19": "Scènes",
-  "9737b868f7aebd61": "Objets",
-  "3a4c33441eda8301": "Maillages",
-  "472ca1deae1a19f5": "Matériaux",
-  "6116c7ae71bc7d05": "Fichiers liés",
-  "3286ce5553d9f505": "Taille",
   "3c4391a7f6421455": "{host} n’a pas confirmé le message dans les 60 secondes.",
   "204ac030de627c0a": "URL Git",
   "68b989c06486c4e0": "URL",
@@ -1352,9 +1342,9 @@
   "a9b663922945a4fa": "Cette connexion ne peut pas ouvrir d’éditeur sur cet environnement.",
   "868596d482a1a2bd": "Ouvrir",
   "f58caaa68c09fbeb": "Ouvrir avec",
-  "75b6d7c3bc9c72da": "Impossible d’ouvrir dans {editor}",
   "415d9fed5542d278": "Impossible d’ouvrir le fichier",
   "1d1bbe5b700afe63": "Impossible d’afficher le fichier",
+  "75b6d7c3bc9c72da": "Impossible d’ouvrir dans {editor}",
   "31dc19d033af2774": "Impossible d’ouvrir le lien.",
   "029d8d0201aed231": "Impossible d’ouvrir les Réglages Système.",
   "9af3083226778d3c": "Open VSX a renvoyé des détails de thème mal formés.",
@@ -1562,6 +1552,7 @@
   "6848f5bbb2bd9eec": "Document PDF",
   "7873a79df0cf6d0e": "Page du navigateur",
   "0b55696e27387e4e": "Appuyez sur Shift+Escape pour quitter la page du navigateur.",
+  "90dfebe26eb86b2d": "Options de sélection de la page",
   "737d3c6bec93f9e6": "Choisir des fichiers pour la page",
   "e6a3fa7cfc14f86a": "Boîte de dialogue du navigateur",
   "61a552a67e9e3eac": "Réponse à la boîte de dialogue",
@@ -2449,7 +2440,6 @@
   "ac0de2a59d9c8860": "Appareil",
   "1354df9fb7278843": "Regardez un simulateur iOS ou un émulateur Android.",
   "fdcd9643e2e63b15": "Posez une question annexe pendant que ce fil continue de travailler.",
-  "46dae7e064a17ca3": "Blender",
   "1944f04b75ddf26d": "Fil sur {label}",
   "314cfeebf191ba0d": "approbation requise",
   "4e5b7363441a3831": "réponse requise",
@@ -2640,6 +2630,8 @@
   "89b5e8f3887812da": "Demande d’invité",
   "62e626804919b294": "Réponse requise",
   "c6196d99000642b4": "Ouvrir le fil",
+  "70bdebaa3d291d3b": "Fil indisponible",
+  "a351ebbdcf1a3f7a": "Ce fil se trouve dans un environnement auquel cette app n’est pas connectée.",
   "826cb862b4a11fb3": "{label} :",
   "3e597ec938e7551b": "Vous :",
   "a1fbf2422c588292": "Agent :",
@@ -2745,9 +2737,9 @@
   "db7b3a938c45e56c": "Mise à jour {version} prête à être téléchargée",
   "9a951140b69ba740": "Téléchargement de la mise à jour ({percent} %)",
   "7fdece033260e9fb": "Téléchargement de la mise à jour",
-  "52e1d4a487c0cf4b": "Échec de l’installation de {version}. Cliquez pour réessayer.",
   "09ef51903e99e876": "Mise à jour téléchargée. Cliquez pour redémarrer et l’installer.",
   "d62631cab06d2b80": "Mise à jour {version} téléchargée. Cliquez pour redémarrer et l’installer.",
+  "52e1d4a487c0cf4b": "Échec de l’installation de {version}. Cliquez pour réessayer.",
   "78a04e0e625c0990": "Échec de la mise à jour",
   "c24de5eb69373a55": "Cette version {build} ignore les versions {track}. Vérifiez le canal de mise à jour dans les Réglages pour terminer le changement.",
   "b02ae45a6109c93b": "À jour",
@@ -3291,230 +3283,6 @@
   "984c25ffcae69300": "Ajouter le backend",
   "08570ee0982df89d": "Appairage...",
   "3bbae7c96b6cbfc3": "Ouvrir l’app",
-  "473079352585294d": "Blender à afficher",
-  "72ec28b225ed9811": "Impossible d’ouvrir le fichier maître",
-  "70da4581cf87971c": "Impossible de déplacer vers T3 Code",
-  "d5da364f3ffb7fa7": "Copie de travail",
-  "d3b2dad809961953": "Maître",
-  "8fc9ef73a784da09": "Un Blender de bureau que T3 Code n’a pas pu vérifier a peut-être aussi ce fichier ouvert. Enregistrez-le et fermez-le là-bas pour que les deux ne s’écrasent pas mutuellement.",
-  "ab03a468cc62daf1": "Déplacer vers T3 Code",
-  "77b72b3b7ee97069": "Ouvrir dans T3 Code",
-  "cb4451ab067ff47d": "Blender n’a pas démarré",
-  "731b80ac194beb4a": "Ouvert dans votre Blender de bureau",
-  "ca40a1f4300b4838": "Fichier maître non ouvert dans T3 Code",
-  "10a2ab0021554b0a": [
-    "Blender n’a pas pu ouvrir ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " sur l’écran masqué. Vérifiez que Blender l’ouvre, puis rouvrez-le."
-  ],
-  "f5db5877ab70bfc8": [
-    "Déplacer vers T3 Code enregistre ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " dans votre Blender de bureau, avec ses modifications non enregistrées, quitte ce Blender et ouvre le fichier ici. Son historique d’annulation est perdu."
-  ],
-  "6484265e8c18d3dd": [
-    "Déplacer vers T3 Code enregistre ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " dans votre Blender de bureau, quitte ce Blender et ouvre le fichier ici. Son historique d’annulation est perdu."
-  ],
-  "d77c7db5a642f111": [
-    "Un Blender de bureau est en cours d’exécution, mais T3 Code ne peut pas joindre son module MCP pour savoir si ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " y est ouvert. Enregistrez et fermez le fichier là-bas avant de l’ouvrir ici."
-  ],
-  "a0056043b004c957": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " n’est ouvert dans aucun Blender maître. C’est là que les agents y recopient leurs modifications validées."
-  ],
-  "e69c6af74880ba75": "Anglais (États-Unis)",
-  "675e421e80618158": "Anglais (Royaume-Uni)",
-  "27cface4ce8ec314": "Allemand",
-  "252113dddccaec1a": "Français",
-  "8ab4b97531ab9d38": "Espagnol",
-  "3545659a9d1bb2e3": "Italien",
-  "38923bf04cdeb628": "Portugais",
-  "587094706a1471b7": "Portugais (Brésil)",
-  "5950bf35d9440cd8": "Suédois",
-  "9db1b78d4555eaae": "Norvégien",
-  "12de4ccc884a2322": "Danois",
-  "fa15389723321c00": "Suisse allemand",
-  "4011a07411675ba1": "Russe",
-  "d1634d41846e72cb": "Japonais",
-  "c77caac5b764ef8c": "Anglais (Dvorak)",
-  "7b15925473b02c07": "Anglais (Colemak)",
-  "7c6bc1129dc9f48e": "Scène sans titre",
-  "cd078f4497dfcd36": "Impossible de redémarrer Blender",
-  "ad3ce6044792509a": "Impossible de rouvrir Blender",
-  "90e3c64eab32945e": "Supprimer l’enregistrement automatique de {name} ?",
-  "01201ecb830d7c68": "Abandonner les modifications non enregistrées de {name} ?",
-  "a1628cec6e798a98": "l’assistant d’écran masqué de T3 Code",
-  "759aa5a1a95bc013": "un encodeur H.264",
-  "f5a8efdb194519df": "le plugin OpenGL de GStreamer",
-  "d6fcf229c9306851": "Capturer et annoter",
-  "32cf9ac006229af1": "Menu Blender",
-  "9287e12fbeade687": "Un autre appareil a pris le contrôle de Blender",
-  "d2b10ff67d190925": "Vue Blender",
-  "2151790bc5e65b31": "Non disponible sur cet hôte",
-  "b94f5fc6d71bc852": "Configuration requise",
-  "7050870331ac8b9a": "Aucun Hosted Blender en cours d’exécution",
-  "fb2c65328a8a2e17": "Ouvrez un fichier .blend dans l’aperçu de fichier et choisissez Ouvrir dans Hosted Blender.",
-  "3f25b97ec987231e": "Blender n’a pas pu ouvrir le fichier sur l’écran masqué. Vérifiez que Blender l’ouvre et que GStreamer dispose d’un encodeur H.264, puis rouvrez-le dans Hosted Blender.",
-  "c9d23ccb15073177": "Blender a planté",
-  "9f406050b6efb934": "Blender a été fermé",
-  "0693a88b1530f8eb": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " se trouve hors de ce projet, T3 Code ne peut donc pas le rouvrir. Ses modifications non enregistrées sont conservées dans ",
-    {
-      "i": 2,
-      "k": "_gt_value_2",
-      "v": "v"
-    },
-    "."
-  ],
-  "95b2d0bdafc5b01d": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " se trouve hors de ce projet, T3 Code ne peut donc pas le rouvrir."
-  ],
-  "0181fc8af235ad77": [
-    "T3 Code a conservé les modifications non enregistrées d’une scène sans titre dans ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    "."
-  ],
-  "c3528aaa534d9a33": "Blender avait une scène sans titre ouverte, que T3 Code ne peut pas rouvrir.",
-  "df374db2c12ff019": [
-    "Blender n’a pas pu restaurer la copie de ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ". La copie est conservée : réessayez, ouvrez le fichier tel qu’enregistré en dernier ou supprimez la copie."
-  ],
-  "ff3775198cef1512": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " s’est arrêté de façon inattendue. Redémarrer ouvre le fichier tel qu’enregistré en dernier, ou restaurez son enregistrement automatique le plus récent."
-  ],
-  "945cdcba38a31b0c": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " s’est arrêté de façon inattendue. Redémarrer ouvre le fichier tel qu’enregistré en dernier."
-  ],
-  "a1705e3412c3634e": [
-    "T3 Code a fermé ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " lorsque ce fil a été réglé ou que T3 Code s’est arrêté, et a conservé ses modifications non enregistrées. Rouvrir les restaure."
-  ],
-  "891e3d7d231af485": [
-    "T3 Code a fermé ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " lorsque ce fil a été réglé ou que T3 Code s’est arrêté."
-  ],
-  "bd90fd96c98e9c6f": "Redémarrer",
-  "220f0a0fa43d9f59": "Restaurer l’enregistrement automatique",
-  "182049c015041be2": "Rouvrir",
-  "eb23e8b7b8458cfa": "Ouvrir la dernière version enregistrée",
-  "97585565390197f6": "Abandonner",
-  "930be3d3ed674427": "Également conservés :",
-  "d6c851db16c7dfd8": "Le fichier tel qu’enregistré en dernier est conservé. Cette action est irréversible.",
-  "7dfc4caecd0ca4da": "Ouvrir les paramètres Blender",
-  "22e7ff1b5896ba7b": "Hosted Blender nécessite un serveur Linux. Vous pouvez toujours ouvrir les fichiers 3D dans l’aperçu de fichier.",
-  "ccb9bcd7825f2f99": "La version de Linux de ce serveur fournit des versions de labwc et GStreamer trop anciennes pour Hosted Blender. Vous pouvez toujours ouvrir les fichiers 3D dans l’aperçu de fichier.",
-  "efd53a6196afbf6d": "Les versions Flatpak et Snap de Blender ne sont pas encore prises en charge. Paramètres › Blender explique comment utiliser un autre Blender.",
-  "ec1b57292361ae76": "Activez Hosted Blender dans Paramètres › Blender pour voir et piloter Blender ici.",
-  "e4ec327ad1a82eb5": "T3 Code n’a pas encore vérifié ce serveur. Ouvrez un .blend dans Hosted Blender ou vérifiez-le dans Paramètres › Blender.",
-  "af467bacc13f5e57": [
-    "Il manque sur ce serveur : ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ". Paramètres › Blender peut les installer avec un agent ou vous montrer les commandes."
-  ],
-  "f4266902a2c24f1e": "Démarrage de Blender…",
-  "9d8acbbea6eafeef": [
-    "Ouverture de ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " sur l’écran masqué."
-  ],
-  "4e4f72c4986c5f68": "Prendre le contrôle",
-  "14d410b8b9a578d0": "Plein écran",
-  "2026a467bc778ad9": "Disposition du clavier",
-  "1d9b37b42f1216c8": "Automatique",
-  "4b0ca2d2af30068a": "Défilement",
-  "3e3e743c7c26648a": "Automatique",
-  "8884c1281f2a2db4": "Molette de la souris",
-  "295182c176fc7bd0": "Pavé tactile",
-  "8b290ab856b8f02b": "Quitter Blender",
-  "6b30f7f4ebd659d7": "Trop de personnes regardent ce Blender. Réessayez plus tard.",
-  "1681e6f089782b9d": "Ce navigateur ne peut pas lire le flux Blender.",
-  "7579927020ad5107": "Vous avez le contrôle",
-  "67ab7e22612414d0": "Un autre appareil a le contrôle",
-  "81f3ce1d88ecf7bb": "Visionnage",
-  "b41e3eeb664df523": "L’agent modifie",
-  "3906097eebf88153": "Affichage de tout l’écran",
-  "27ea83219396f796": "Pas de GPU : Blender sera lent",
-  "156c7543e861dda6": "Pas d’accès au GPU : Blender sera lent",
-  "907a0f7ed16a709d": "Impossible d’ouvrir dans Hosted Blender",
-  "7b0cb06d256e6b28": "Ouvrir dans Hosted Blender",
-  "119259d2fa66fadf": "Impossible de quitter Blender",
-  "e2d3b41b3731a6c1": "Enregistrer les modifications de {name} avant de quitter ?",
-  "32504fe5e26d8233": "Les modifications que Blender n’a pas enregistrées sont perdues si vous quittez sans enregistrer.",
-  "9ceb68fb844584c9": "Quitter sans enregistrer",
-  "e21dfc1887d124ec": "Enregistrer et quitter",
-  "004649901eabfebd": "Travaille dans Blender",
-  "614e5ad58a795fb5": "Arrêter",
   "49cc06e79f21f85a": "{seconds} s",
   "8603d41c52392f1d": "{minutes} min {seconds} s",
   "f2a955905704b91d": "{hours} h {minutes} min",
@@ -3558,6 +3326,9 @@
   "b90e87f4b7125237": "Détails",
   "16dc67f5429d8bae": "Travail en arrière-plan",
   "2188eee8f81b0f51": "Ouvrir le sous-agent",
+  "ec9e0be8ec693302": "Réduire tous les dossiers",
+  "b791dd86f7991cc0": "Développer tous les dossiers",
+  "55b936e3014e16c8": "Ouvrir le diff",
   "28bb7ce40dfd349a": "La sortie du terminal ne peut pas être ajoutée à la réponse à une question.",
   "801cb8edea94b8f6": "Répondez à la question ou ignorez-la d’abord, puis ajoutez-la à la discussion.",
   "aa5507f20d94d5a9": "Mettez à jour ce serveur pour envoyer des fichiers avec les réponses aux questions",
@@ -3859,8 +3630,8 @@
   "478e3b4551be4db3": "Afficher le texte extrait",
   "e7205ebfead1aafc": "Aperçu vidéo agrandi",
   "1bda77e861bb472f": "Aperçu d’image agrandi",
-  "eebe5b17e3c19a1c": "Retour, fermer l’aperçu vidéo",
-  "58fd0009a6eb7258": "Retour, fermer l’aperçu d’image",
+  "fb633d54edaeb4b1": "Fermer l’aperçu vidéo",
+  "62d0c453f5803180": "Fermer l’aperçu d’image",
   "47bae54b5f532ff3": "Média précédent",
   "fb9434aad2b5c0bb": "Impossible de charger cette image.",
   "26aee5d4e97bfb28": "Image indisponible. Le fichier a peut-être été déplacé ou supprimé.",
@@ -3871,6 +3642,7 @@
   "4e0710d19dfc2e7e": "Envoyer ce rapport à l'équipe T3 ?",
   "87d0ae0723ba75d1": "Voici tout ce qui quitte votre machine. Rien n'est envoyé tant que vous ne cliquez pas sur Envoyer.",
   "bf19826f81484328": "Inclure la conversation",
+  "260c6b45f52d2f27": "Ajoute le texte de vos messages et des réponses de l'agent dans {textTurns, plural, one {le dernier tour} other {les {textTurns} derniers tours}}.",
   "ddb7e6f8ce99e657": "Seule une personne autorisée à exécuter des agents sur cette machine peut l'envoyer ou le refuser.",
   "03c1eb603c112f47": "Ne pas envoyer",
   "653405e4ed498d9f": "Envoyer",
@@ -4030,6 +3802,21 @@
       "v": "v"
     },
     " a quitté sa page et a été arrêtée"
+  ],
+  "796b81c4875c4feb": [
+    "L’app ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " a besoin d’un serveur ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    " plus récent sur cet environnement. Mettez à jour le serveur pour l’utiliser."
   ],
   "5ef18e4d39b398bf": [
     "Impossible de charger l’app ",
@@ -4855,6 +4642,7 @@
   "7f0f9b1ee42892db": "La sortie n’est plus disponible.",
   "e470bb79fa74a6ae": "Image de sortie de l’outil",
   "e8c80b6d40c0944c": "Résultat de recherche",
+  "76cf478e5674fd12": "{count, plural, one {{count} correspondance} other {{count} correspondances}}",
   "8d1906900b5c95c7": [
     "code de sortie ",
     {
@@ -4863,7 +4651,6 @@
       "v": "v"
     }
   ],
-  "55b936e3014e16c8": "Ouvrir le diff",
   "83c29850641c8935": "En file d’attente",
   "8402f099f88fd0e0": "En cours",
   "c5f5b73e92221a6a": "En attente",
@@ -5745,8 +5532,6 @@
   "1601d7e39a52c48f": "Réessayer de charger le diff",
   "b7b137472adb6989": "Aperçu partiel du diff",
   "f0d79aa56f06663f": "Ce fichier est trop volumineux pour être affiché en entier. Les totaux incluent toutes les modifications.",
-  "ec9e0be8ec693302": "Réduire tous les dossiers",
-  "b791dd86f7991cc0": "Développer tous les dossiers",
   "7fdde2b893ba1b9d": "Supprimé",
   "e58ce271d835b447": "Ajouté",
   "07b9970b662ab70d": "Afficher la source Mermaid",
@@ -5819,32 +5604,6 @@
   "7b05d792ad825483": "Ce dossier est vide.",
   "0a698dff05246810": "Cette table est vide.",
   "a52678523d189f7b": "Cette base de données n’a aucune table lisible.",
-  "7c23820b77e42b2c": "Recharger le fichier",
-  "586cd2c4199fa323": "Miniature enregistrée de {name}",
-  "25d1be241b107e99": "Le fichier n’a pas pu être lu.",
-  "af3426b9850d4da7": "Converti avec Blender {version} · en cache",
-  "5b88b6929848ca03": "Converti il y a {seconds} s",
-  "ea085b85d5409d6d": "Converti avec Blender {version}",
-  "e1de2d5335083143": "Conversion avec Blender {version}… {seconds} s",
-  "9228469f14b148a6": "{file} modifié · mise à jour…",
-  "41f9012753a424a9": "Échec de la conversion",
-  "047618ba1e0fe59d": "Conversion annulée",
-  "53a1519e0b7358cf": "En attente : {ahead} avant",
-  "202d05bbf54b83c1": "Trop lent pour l’aperçu",
-  "dd22e61b9a4efe81": "La conversion a pris plus d’une minute et a été arrêtée. Continuer convertit sans limite.",
-  "569078051cbef37c": "Pas de Blender sur ce serveur",
-  "484bbf26d26f6f65": "Installez Blender depuis blender.org sur la machine qui exécute T3 Code, ou indiquez son chemin dans Réglages › Général, pour voir ce fichier en 3D.",
-  "a3a292e8b22c02db": "Enregistré avec Blender {file} · le serveur a {server}",
-  "4e2b52d678917c4d": "Miniature enregistrée · Blender {version}",
-  "864d83692fd9047f": "Enregistré avec Blender {version}",
-  "3caa4fb20ff3277d": "Blender enregistre cette image avec le fichier ; elle peut donc être obsolète si un script a enregistré le fichier.",
-  "301ece9c34df1726": "Journal de Blender",
-  "20fc073d179a63f5": "Blender n’a rien écrit dans son journal.",
-  "71f9aa2ee31aac46": "Aucune miniature enregistrée dans ce fichier",
-  "27088355449cdd28": "Détails de la scène",
-  "3a87f8c40f3b8065": "Convertir",
-  "3a7a505e7bb890be": "Afficher le journal",
-  "5ac36af75f80daf6": "Continuer",
   "8366e42937c9e3e1": "Réduire la taille de lecture",
   "d847122435025b26": "Augmenter la taille de lecture",
   "a2a71f4799fba9a9": "Réinitialiser la taille de lecture",
@@ -5941,44 +5700,6 @@
   "b75105bef8f564a4": "Affichage des 1 024 premières colonnes. Source et Enregistrer conservent toutes les colonnes.",
   "2a6e1b1f209c3888": "Ce fichier est vide.",
   "192fc79eb3b5b2cb": "Ce diagramme contient des URL de ressources, du balisage, des métadonnées de nœuds ou une configuration personnalisée. Affichez la source Mermaid pour l’examiner en toute sécurité.",
-  "aaf4d7b88f1a09d8": "Décrivez la modification…",
-  "51dbb09f63c653ea": "Commentaire de l’annotation",
-  "dd2fd8921e6266cc": "Vue 3D figée à annoter",
-  "5e28beecabfa2e5c": "Outil d’annotation",
-  "44480ea1a65332c2": "Dessiner",
-  "ef38e20921500bd4": "Marquer une zone",
-  "3634581310a50ead": "Effacer une marque",
-  "509733274928da85": "Annuler l’annotation",
-  "bdac60fb8176f6cd": "Les aperçus 3D nécessitent WebGL, que ce navigateur a désactivé ou ne prend pas en charge.",
-  "2c35172b5a5d8a64": "La vue 3D ne répond plus.",
-  "791277de6140c5c7": "Ce fichier 3D est endommagé ou utilise des fonctions que l’aperçu ne prend pas en charge.",
-  "54d0d4483d261e37": "Ce fichier 3D ne contient aucune géométrie à afficher.",
-  "bee9d18a1a2b0c3e": "Un fichier nécessaire à ce modèle est introuvable.",
-  "2d782dfff8e968f8": "Le modèle n’a pas pu être chargé.",
-  "a1ad1c48825fa0b5": "Ce modèle dépasse 1 Go, trop volumineux pour l’aperçu. Enregistrez-le pour l’ouvrir dans une app 3D.",
-  "6c74f6e6e2d69293": "Chargement du modèle 3D…",
-  "4fc027df67b0cbbc": "Modèle volumineux",
-  "dd420bd9b4c8f356": "Échec de l’aperçu",
-  "108ec15bf5350d7d": "{format} · rendu dans le navigateur",
-  "b1a9bdc9615401d5": "{count, plural, one {{count} texture introuvable} other {{count} textures introuvables}}",
-  "cbcdb6061aa78bf6": "{count, plural, one {{count} fichier introuvable} other {{count} fichiers introuvables}}",
-  "35d235e816e6f4b0": "Vue 3D de {name}",
-  "c85eef9dc05fa21b": "{files} introuvable à côté de {model}.",
-  "411a4c0012fbdc78": "Ce modèle dépasse {size}. Le charger peut ralentir cette fenêtre pendant un moment.",
-  "7a4197b6468d9219": "Ce modèle fait {size}. Le charger peut ralentir cette fenêtre pendant un moment.",
-  "0b87945c6568d758": "Une version plus récente est disponible",
-  "7805e0174e665cd4": "Impossible de charger la nouvelle version",
-  "5ec36ad4005866e2": "{files} introuvable à côté de {model}",
-  "164dcb32e690fb3b": "Réinitialiser la vue",
-  "fd84ebd10dd79423": "Recharger le modèle",
-  "69b6a587633c2599": "Triangles",
-  "26a4ebec594d4dee": "Points",
-  "db81a08c825964a9": "Taille",
-  "d51618c38e9c4e73": "{width} × {height} × {depth}",
-  "317be90a94ab7326": "{width} × {height} × {depth} {unit}",
-  "a33fd1cd3116533d": "Garder cette version",
-  "c61866d92a739c56": "Charger le modèle",
-  "800f266a8be8e117": "Détails du modèle",
   "3bd23d5083b5d405": "{count, plural, one {{formatted} cellule} other {{formatted} cellules}}",
   "192bad6b5ce4de80": "Cellule {number}",
   "e7b4d35b3eeeb470": "Sortie HTML de la cellule {number}",
@@ -6051,9 +5772,6 @@
   "e7db07db10325fb0": "Le fichier est binaire et ne peut pas être affiché comme du texte.",
   "98de7fbcf514dac7": "Le chemin demandé est en dehors de l’espace de travail.",
   "fa347e700afd8d04": "Le chemin pointe vers un emplacement en dehors de l’espace de travail.",
-  "22738c009abc434a": "Ce fichier n’est pas un fichier Blender, ou il est endommagé.",
-  "458554b0a4245572": "Ce fichier Blender est trop volumineux pour en lire les détails.",
-  "31714e7420776a7c": "Cette pièce jointe n’est plus disponible.",
   "2d6da78ecabfd210": "Impossible d’accéder au dossier de l’espace de travail.",
   "fdf4cf5389fb7848": "Impossible d’accéder au fichier ou de le lire. Il est peut-être absent ou inaccessible.",
   "40d67da2e98bb2ff": "Chargement du fichier",
@@ -6161,8 +5879,6 @@
   "cf91653e72226743": "Le décodage d’image n’est pas disponible.",
   "4333d220c55ba5e4": "Échec de la requête sur l’espace de travail.",
   "422c1671dfcfe474": "''{path}'' n’existe pas.",
-  "29e40a5da4bbbf79": "Impossible de capturer la vue 3D",
-  "cd312dae87fc794f": "L’annotation a été conservée sans la capture d’écran.",
   "20194b81e50497ad": "Impossible de charger le dossier.",
   "0061fff77e36bd4f": "Impossible de joindre le serveur.",
   "04dfdd46e3dd4a2e": "Une erreur s’est produite. Réessayez.",
@@ -6646,6 +6362,7 @@
   "153553848233ee15": "Suivant",
   "240853568cd99a49": "Arrêter",
   "c345982ed3610277": "Rechercher ou saisir une URL",
+  "509733274928da85": "Annuler l’annotation",
   "0b5bf74d94f7f690": "Annoter l’aperçu",
   "c8243141ce88918f": "Annuler l’annotation (Esc)",
   "f4ad38f77fe12791": "Annoter des éléments, des zones et des dessins",
@@ -6758,9 +6475,9 @@
   "ae32c462968b0f93": "Impossible de copier la capture d’écran",
   "d96a16d699f1a6df": "Impossible de prendre la capture d’écran",
   "b18dda39d9585f3e": "Impossible de capturer l’élément sélectionné",
+  "cd312dae87fc794f": "L’annotation a été conservée sans la capture d’écran.",
   "4616fb6552fd8875": "La page ne s’est pas chargée. La sélection est indisponible tant que la page n’est pas affichée",
   "770d6036de8dbcb7": "Cet onglet est ouvert dans l’app desktop T3 Code.",
-  "ce122949162f2073": "Aperçu flottant de Blender",
   "b252602c8f71d6af": "Impossible de détacher l’aperçu",
   "0fc0a2ff438851b5": "Aperçu flottant du navigateur",
   "74892fefe58df8e3": "Fermer l’aperçu détaché",
@@ -6936,6 +6653,8 @@
   "1b381201aba745c2": "Aucun check signalé",
   "a6d75a4380173c60": "Ouvrir les checks : {summary}",
   "be3d1766bad18693": "Checks : {summary}",
+  "425e4a3d6c5c2867": "{count, plural, one {{count} en échec} other {{count} en échec}}",
+  "fd63b391898889f9": "{count, plural, one {{count} en attente d’action} other {{count} en attente d’action}}",
   "cb116c139cdace98": "Aucun check signalé",
   "60b56e201607c7ec": "Les détails des checks ne sont plus à jour. Actualisez la pull request pour les mettre à jour.",
   "e74cd4e960cbb5e5": "Les lignes inchangées ne sont pas disponibles dans un fichier aux lignes tronquées.",
@@ -7317,27 +7036,19 @@
     }
   ],
   "ce703d4ba40dc9b4": "Fusion de la pile...",
-  "8a883c4fbc127b68": "Activation de la fusion automatique de la pile...",
   "ac7feb9c583b02a0": "Rebase de la pile...",
   "cb0f63bbb0b68d94": "Impossible de fusionner la pile",
-  "5fb2a26ae31e8983": "Impossible d’activer la fusion automatique de la pile",
   "c8a943fa15a56b2b": "Impossible de faire le rebase de la pile",
   "ec22caeb8b949ed1": "L’hôte a refusé le rebase. Un rebase s’arrête au premier commit qui ne s’applique pas proprement.",
   "ead3e2bac1a8d231": "Demande de fusion de la pile terminée",
-  "986d0dcbf4dd0098": "Fusion automatique de la pile activée",
   "d7079b5ac269c65e": "Rebase de la pile effectué",
   "5631b32be0ce48d3": "{host} a fusionné la pile ou l’a ajoutée à sa file de fusion.",
-  "f3ed1f63c8a3eef2": "{host} fusionnera la pile jusqu’à #{number} dès que ses conditions seront remplies.",
-  "bd536a0a1754f6cb": "Impossible d’annuler la fusion automatique de la pile",
-  "bb90ac3b2f3a72d5": "L’hôte a refusé d’annuler la fusion automatique. Actualisez et réessayez.",
   "2d3b55018a54287e": "Vérification de la pile auprès de l’hôte…",
   "eea55205e46d2e3d": "Pile {number}, couche {position} sur {size}",
   "b6f729119107a145": "{count, plural, one {Fusionner la pile jusqu’à '#'{number} dans {base} ({count} {term, select, mr {merge request} cr {demande de modification} other {pull request}})} other {Fusionner la pile jusqu’à '#'{number} dans {base} ({count} {term, select, mr {merge requests} cr {demandes de modification} other {pull requests}})}}",
   "d4bfcdc6bb7676a3": "{count, plural, one {Fusionner {count} {term, select, mr {merge request} cr {demande de modification} other {pull request}} ?} other {Fusionner {count} {term, select, mr {merge requests} cr {demandes de modification} other {pull requests}} ?}}",
-  "9c28753c777c37b7": "{count, plural, one {Fusionner automatiquement {count} {term, select, mr {merge request} cr {demande de modification} other {pull request}} ?} other {Fusionner automatiquement {count} {term, select, mr {merge requests} cr {demandes de modification} other {pull requests}} ?}}",
   "b9f2a24a3757f6c9": "{count, plural, one {Faire le rebase de {count} {term, select, mr {merge request} cr {demande de modification} other {pull request}} ?} other {Faire le rebase de {count} {term, select, mr {merge requests} cr {demandes de modification} other {pull requests}} ?}}",
   "d1bcf19eb2753fff": "Fusionner #{number} et ses couches non fusionnées inférieures dans {base} avec {method}. {host} vérifie leurs règles avant de les fusionner ou de les mettre en file d’attente, puis fait le rebase du reste de la pile après la fusion.",
-  "a86b49982e18784d": "Fusionner #{number} et ses couches non fusionnées inférieures dans {base} avec {method} dès que chacune remplit les conditions de {host}. Cela peut se produire immédiatement.",
   "31d2f22f5a282719": "Faire le rebase des branches distantes de bas en haut sur {base}. Cela réécrit l’historique des branches et peut relancer les checks. Si une couche échoue, les mises à jour précédentes restent en place.",
   "a0adf78733c368ae": "Fusionner la pile",
   "140dc384c58b74f3": "Rebase de la pile",
@@ -7372,19 +7083,8 @@
     },
     ")"
   ],
-  "b1afda5c964deee4": [
-    "Fusion automatique de la pile (",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ")"
-  ],
-  "33d18dda74f6d7b3": "Annuler la fusion automatique de la pile",
   "30440f98e929440a": "Rebase de la pile",
   "13718a03e3144142": "Chaque couche fusionnée doit être ouverte et prête pour la revue.",
-  "012c67c7f1a99e33": "Fusion automatique de la pile",
   "4aafe1baf113088a": "Fusionner la pile",
   "0292da19054f2a04": "Chargement de la pile…",
   "583869e6df57abeb": "Cette pull request ne fait plus partie d’une pile.",
@@ -7612,9 +7312,6 @@
   "9b0647af63a7d8c1": "Approbation de modifications antérieures",
   "abe99679224fea5e": "Modifications demandées sur des changements antérieurs",
   "6b31ad910278ff72": "Revue rejetée sur des changements antérieurs",
-  "425e4a3d6c5c2867": "{count, plural, one {{count} en échec} other {{count} en échec}}",
-  "fd63b391898889f9": "{count, plural, one {{count} en attente d’action} other {{count} en attente d’action}}",
-  "948185631ef288e6": "{count, plural, one {{count} en cours} other {{count} en cours}}",
   "aaf22207b2f18c45": "{workflows, plural, one {{workflows} workflow} other {{workflows} workflows}} et {checks, plural, one {{checks} check} other {{checks} checks}} en attente d’action",
   "c51411813ebafcc1": "{count, plural, one {{count} workflow en attente d’approbation} other {{count} workflows en attente d’approbation}}",
   "4946778c8e18a1db": "{count, plural, one {{count} check en attente d’action} other {{count} checks en attente d’action}}",
@@ -7823,9 +7520,20 @@
   "dc87902396b8ade4": "Lettres, chiffres, '-' ou '_'.",
   "251dfec07b7c3612": "Ce driver n’a aucune configuration requise. Vous pouvez ajouter l’instance maintenant.",
   "08fe32f007e788f1": "Configurer manuellement",
+  "65300794c1edb929": "Jeton Bearer (facultatif)",
   "84eb2878dc17d3eb": "Clé de gestion",
   "7ac196c1e8175928": "Par défaut, le nom d’hôte du hub",
+  "0c026221dcd2820b": "Ajouter une source de quotas HTTP",
   "e3548407052e9e12": "Ajouter un hub CLIProxyAPI",
+  "d185c750156b2121": [
+    "Consultez les quotas depuis un point de terminaison sur ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
   "432e85a50e2e7964": [
     "Affichez le quota de chaque compte regroupé par le hub, à côté des fournisseurs sur",
     " ",
@@ -7836,7 +7544,9 @@
     },
     ". La clé reste sur ce serveur."
   ],
+  "2324770ba91371ac": "URL du point de terminaison",
   "556a695b117565ac": "URL du hub",
+  "e4e5b75bba51396c": "Jeton Bearer (facultatif)",
   "e62cedcbcdbafc75": "Clé de gestion",
   "f1b3d0634ec035cb": "Libellé (facultatif)",
   "52814dd6f7d0a15c": "Ajouter le hub",
@@ -7848,7 +7558,6 @@
   "d5dc7576fd468be7": "Confortable",
   "3141408bf3874e64": "Large",
   "831badd18b64547e": "Pleine largeur",
-  "6287212fed0deec6": "Comme la discussion",
   "a96255594ebf2ce3": "Mot",
   "1ee44eb65708a8aa": "Barres",
   "7670f789e0d8672a": "Seuls les thèmes intégrés affichent une illustration ; ce thème affiche donc la pastille de version.",
@@ -7866,11 +7575,12 @@
   "03338c6aec8edacd": "Définissez la largeur maximale des messages et de la zone de saisie sur les grands écrans.",
   "92785adb251da88c": "Réinitialiser la largeur de la discussion à la valeur par défaut",
   "4d457bcce0c0e272": "Largeur de la discussion",
-  "81f3a196537bbee0": "Confortable (par défaut)",
+  "7d7f65967cc821e3": "Largeur des aperçus HTML",
   "70ce0af7f78d5957": "Permet aux aperçus HTML d’une discussion d’être plus larges que ses messages, qui restent centrés.",
   "f2b119bf02ae2558": "Réinitialiser la largeur des aperçus HTML à la valeur par défaut",
-  "7d7f65967cc821e3": "Largeur des aperçus HTML",
+  "6287212fed0deec6": "Comme la discussion",
   "dc8e85ea0364649c": "Comme la discussion (par défaut)",
+  "81f3a196537bbee0": "Confortable (par défaut)",
   "e79e5388f669495f": "Afficher l’effort de raisonnement dans la zone de saisie par son nom, comme Élevé, ou sous forme de barres.",
   "7f0365c7e4e8bcbf": "Réinitialiser l’affichage de l’effort à la valeur par défaut",
   "14bf40f765172a50": "Affichage de l’effort",
@@ -8013,11 +7723,6 @@
   "3943d8479dc44551": "Interroger l’état d’alimentation de l’hôte quand aucun client n’est au premier plan.",
   "d13f97c11d2f322b": "Tout réinitialiser",
   "cc310b2ec0179edf": "Configurer l’activité en arrière-plan",
-  "a0f6aecb07b533ff": "Blender en cours d’exécution ({count})",
-  "b04a15f0adaa16b9": "Aucun Blender hébergé n’est en cours d’exécution",
-  "201b5d40d08e74d0": "Le Blender hébergé de chaque fil apparaît ici tant qu’il s’exécute.",
-  "75daeb1e9b041511": "Fil inconnu",
-  "0eda0be3d24af58c": "Quitter",
   "e116ed85458b6613": "Préfixe fixe",
   "575ae567e3b6ca3d": "Préfixe sémantique",
   "6675de66f9b3f71d": "Instructions personnalisées",
@@ -8943,122 +8648,6 @@
   "e8622c39abe68f9d": "par défaut",
   "5383ef2d2c09cdf7": "Rechercher des polices…",
   "ea08337bcadd35b4": "Aucune police trouvée.",
-  "7660bc93bbd673be": "Laissez T3 Code exécuter son propre Blender sur ce serveur, sur un écran masqué, pour le voir et le piloter dans le panneau Blender. Linux uniquement. Votre Blender de bureau n’est jamais touché.",
-  "41dfe036cd2b2975": "Hosted Blender",
-  "9cc2228be8a75b39": "Les agents des fils Claude et Codex peuvent démarrer les Hosted Blender de ce serveur, à partir de leur prochaine session. Les autres fournisseurs ne sont pas encore pris en charge.",
-  "9dfd275b6a5d4f9a": "Terminez d’abord la configuration, y compris le serveur MCP officiel de Blender. Les agents s’en servent pour travailler dans Hosted Blender.",
-  "1f0df945c5a89af5": "Autoriser les agents à démarrer Hosted Blender",
-  "67c674ad132e17bb": "Assistant d’écran masqué",
-  "16da5cd9c2fa80bc": "Encodeur H.264",
-  "af0373642246bb1c": "Transfert OpenGL GStreamer (NVIDIA)",
-  "129d601c223507ec": "GPU",
-  "d87898d465d6309f": "Serveur MCP de Blender",
-  "541ee140c8330a2a": "Impossible de vérifier la configuration de Hosted Blender",
-  "428192e9745f36eb": "Impossible de démarrer le fil de configuration",
-  "31ba36fb9402faa7": "Commandes d’installation",
-  "b6554bc1ff014f77": "Le serveur MCP officiel de Blender Lab, par exemple ~/.local/bin/blender-mcp. Laissez vide pour le trouver dans le PATH ou dans ~/.local/bin. Vérifiez à nouveau après l’avoir modifié.",
-  "e7743bf6a3de9ca3": "Réinitialiser le chemin du MCP Blender",
-  "a9b3c3359bce1e24": "Chemin du MCP Blender",
-  "d52b3d6bf9f2a013": "Mixte",
-  "6d0cb7390c17be3b": "Trouver automatiquement",
-  "0726bb02c4c42175": "Vérification de ce serveur…",
-  "3a450021c92f3e4e": "T3 Code recherche Blender, labwc, GStreamer et le GPU, et lance un encodage de test.",
-  "b0537628ad92ed53": "Pas encore vérifié",
-  "33bb3044d9712567": "Vérifier la présence de Blender, labwc, GStreamer et du GPU sur ce serveur, avec un encodage de test.",
-  "c3f155eda04d9708": "Hosted Blender nécessite un serveur Linux. Les aperçus de fichiers 3D fonctionnent quand même sur celui-ci.",
-  "60f2565d2d2a6c3e": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " fournit des versions de labwc et GStreamer trop anciennes pour Hosted Blender. Ubuntu 24.04, Debian 13, Fedora 43 et Arch fonctionnent."
-  ],
-  "66c4a476d0b4abaa": "Les versions Flatpak et Snap de Blender ne sont pas encore prises en charge. Installez Blender depuis blender.org ou votre distribution, ou indiquez son chemin dans Paramètres › Général › Aperçus 3D, puis vérifiez à nouveau.",
-  "cd212c9950bba81d": "Trouvé",
-  "f9ab32870fe2bf3a": "Introuvable",
-  "d724abd4cc4a85e5": "Trop ancien",
-  "7b01b12da1a9fd17": "Lent",
-  "a5fe3dee0a941705": "Pas celui de Blender Lab",
-  "7174ef3cfccc7a54": "Exécute Blender sur l’écran masqué et le diffuse.",
-  "59e399ec181acb63": "L’assistant propre à T3 Code manque dans cette installation. Mettez à jour ou réinstallez T3 Code.",
-  "92a36f954d094a6f": [
-    "Version ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    "."
-  ],
-  "759ad8d8187ed946": [
-    "Version ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ". Hosted Blender nécessite Blender 4.5 ou ultérieur."
-  ],
-  "2cf31d1c821751ac": "Installez Blender 4.5 ou ultérieur, ou indiquez son chemin dans Paramètres › Général › Aperçus 3D.",
-  "5d52dcf7276c5199": "Le compositeur derrière l’écran masqué.",
-  "ac6f1be5c0b72432": [
-    "Version ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ", capture avec wlr-screencopy. labwc 0.9 ou ultérieur capture uniquement la fenêtre de Blender."
-  ],
-  "8ca441a272a1c6e1": [
-    "Version ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    ". Hosted Blender nécessite GStreamer 1.24 ou ultérieur."
-  ],
-  "f400a2435a7c9972": "GStreamer 1.24 ou ultérieur encode le flux.",
-  "991f74849ed9e582": [
-    "L’encodage de test d’une seconde a utilisé ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    "."
-  ],
-  "ba5e2c560dd26d57": "Aucun encodeur H.264 n’a réussi l’encodage de test. Installez les plugins GStreamer : nvh264enc, vah264enc, x264enc ou openh264enc.",
-  "2ab5a1fabca22fd0": "L’encodeur NVIDIA lit les images de Blender directement depuis le GPU.",
-  "fce6aa0c10874b0c": "L’encodeur NVIDIA nécessite le plugin OpenGL de GStreamer.",
-  "040d82d74fa9b290": "Blender dessine avec le GPU.",
-  "b1f3a29faa7594ff": "Ce serveur a un GPU, mais T3 Code ne peut pas y accéder. Ajoutez votre utilisateur aux groupes render et video. D’ici là, Blender sera lent.",
-  "e4f914bd5e6899bf": "Aucun GPU trouvé. Hosted Blender fonctionne quand même, mais Blender sera lent.",
-  "933fa7740fe8c681": {
-    "i": 1,
-    "k": "_gt_value_1",
-    "v": "v"
-  },
-  "92c9412a1a79bb73": [
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    },
-    " est un autre projet du même nom, pas le MCP de Blender Lab. Installez le serveur officiel ou indiquez son chemin ci-dessous."
-  ],
-  "9a397640135c1803": "Les agents ont besoin du serveur MCP officiel de Blender Lab. Le panneau fonctionne sans lui.",
-  "7c26d4f38c0094aa": "Le résultat est conservé jusqu’à la prochaine vérification, par exemple après une installation.",
-  "021b62ff834041f0": "Installer ce qui manque",
-  "ec5d04aa0c3eed05": "Un agent installe ce qui manque",
-  "26c7f14fb81274cb": "Un agent peut l’installer dans un nouveau fil en vous demandant votre mot de passe dans une carte privée, jamais dans le chat. Ou lancez les commandes vous-même. T3 Code n’installe jamais lui-même de paquets système.",
-  "0d7eb1eeb33375bb": "T3 Code vérifie à nouveau quand l’agent a terminé.",
-  "a19376d3fce3f52d": "Installer avec un agent",
-  "5dee7399d93445e1": "Masquer les commandes",
-  "fbb5ec917cc3451d": "Afficher les commandes",
-  "db2f53db5e812a59": "Copier les commandes",
   "d6ad43bc4b700a88": "Aucune donnée de profil de navigateur à effacer.",
   "ad8efd437b301a37": "Système",
   "42e23caa6ef99cad": "Clair",
@@ -9185,13 +8774,9 @@
   "ed83b25c71c98a20": "Choisissez un ou plusieurs {scope}s {tracker} pour chaque projet. Leurs tickets s'affichent à côté de ceux du dépôt, et les agents créent les nouveaux tickets dans le premier, sauf si vous leur indiquez une autre destination.",
   "19c2d5e81ff8f89a": "{scope} {tracker} pour {project}",
   "68e061510b765772": "Non lié",
-  "99d51127f573296b": "Autre compte",
-  "8ec2c57414669b79": "Connectez un second espace de travail ou utilisateur {tracker}.",
-  "99963c0142e17f00": "Pour le nouveau compte {tracker}.",
   "a2d95d39d3398bda": "Identifiant refusé",
   "9eae463720500113": "Stocké sur le serveur.",
   "b6e27ab2537ef874": "En créer un",
-  "6d8e4ebc889bace9": "Ajouter un compte",
   "13ef526271b0f5d4": "Effacer toutes les conditions",
   "d1938a629f039515": "Supprimer la condition",
   "84a605b241ce65b7": "Supprimer le groupe et ses conditions",
@@ -9229,7 +8814,7 @@
   "a9cdd8c7073be920": "Palette de commandes : afficher/masquer",
   "4e0943e8c7a465d1": "Sélecteur de fichiers : afficher/masquer",
   "df5fdcdf26a6b52a": "Recherche dans le projet : afficher/masquer",
-  "a8ff6d33b060736f": "Utilisation : ouvrir",
+  "0ca6fd2b8fcab2c3": "Utilisation : Afficher ou masquer",
   "a513d51b71b95674": "Thème : sélectionner",
   "1ffd8427452372e1": "Apparence : alterner",
   "3a3bb4a7551a87cc": "Éditeur de thème : afficher/masquer",
@@ -9344,6 +8929,7 @@
   "f9904f78d3003f58": "Checkout rapide des worktrees",
   "9c2f647882522302": "Les machines sélectionnées utilisent des modes de retour des agents différents.",
   "31bbf7bf8c0a5279": "Retours des agents",
+  "d52b3d6bf9f2a013": "Mixte",
   "ec7623deed751c05": [
     "Partagez un fil avec un invité qui le suit en direct dans un navigateur et envoie des messages que vous approuvez. Nécessite T3 Connect : connectez-vous et associez cette machine dans",
     " ",
@@ -11621,6 +11207,7 @@
       }
     }
   ],
+  "97585565390197f6": "Abandonner",
   "c0fce4a3555c5c17": "Connexion",
   "0d1eba54ff075d77": "L’utiliser",
   "035dc7d3b0f3e526": "Titres des fils et autres textes générés",
@@ -11907,10 +11494,6 @@
   "42d843f45e1de53b": "Ajouté au prompt pour les titres de fil nouveaux ou régénérés.",
   "169d0ed4364b4644": "Réinitialiser les instructions de titre des fils à la valeur par défaut",
   "f307391eb1c5c9d7": "Limiter les titres à quelques mots. Commencer par le sujet principal.",
-  "47eb7e3f2072d8a4": "Aperçus 3D",
-  "a2fc60e4c15eb1de": "Le Blender qui transforme les fichiers .blend en aperçus 3D, par exemple /usr/bin/blender ou C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe. Laissez vide pour le trouver dans le PATH ou là où Blender s’installe.",
-  "4c0182441f7f746d": "Réinitialiser le chemin de Blender",
-  "b0e5f2ebaa0f2d56": "Chemin de Blender",
   "ea6f97bad03faf84": "Monospace du système",
   "afa0ba3d124d9b8a": "Réinitialiser la police de l’interface à la valeur par défaut",
   "eb19ce0364bb9a6e": "Tout ce qui est hors des blocs de code et du terminal.",
@@ -11954,10 +11537,11 @@
       "v": "v"
     }
   ],
-  "f54364b854a07918": "Aucun hub configuré.",
+  "39f64d971ba424b5": "Aucune source de suivi de l’utilisation configurée.",
+  "dbd877abdc2c7c81": "Source de quotas HTTP",
   "4cf6a373a7535324": "{name} · Désactivé",
-  "1d1e9cda847bd398": "La clé de gestion du hub est supprimée de ce serveur. Ses comptes quittent la vue Limites ; le hub lui-même n’est pas touché. Ajoutez-le à nouveau avec l’URL et la clé pour les récupérer.",
-  "c9bee4f93481b77a": "Supprimer le hub",
+  "c792e744936dbe1b": "Ajouter une source HTTP",
+  "4032a03ee5301037": "La connexion enregistrée et ses identifiants sont supprimés de cet environnement.",
   "0424112d5a0ecd71": "Auto",
   "3f0e1b77e45d53a9": "Appuyer pour basculer, maintenir pour parler",
   "45928549c050a1b4": "Maintenir",
@@ -12243,7 +11827,6 @@
   "b1c7f74049a4147c": "stockage nettoyage exécuter maintenant résultats rapport supprimés conservés échecs",
   "2678550365a59e17": "Nettoyage des worktrees",
   "8deb2b0fd308fc26": "disque stockage automatique supprimer supprimés fils archivés anciens inactifs fusionnés clos inchangés worktrees conservation jours projet hériter désactivé personnalisé",
-  "6ac7d143dd2dd2a5": "blender 3d aperçu fichier blend convertir glb modèle chemin programme installer",
   "c875f7fa9a48560a": "emplacement worktree dossier répertoire chemin lecteur disque externe",
   "c7254dc82b23d291": "disque stockage supprimer anciens artefacts navigateur captures d’écran captures journaux archivés nettoyage conservation",
   "3af3a34e376082c7": "Valeurs par défaut et remplacements du projet",
@@ -12288,6 +11871,10 @@
   "6826fa9579c22035": "bêta partager invité invitation lien coéquipier regarder t3 connect tunnel",
   "f10c06cba0cdf7fe": "bêta associer une autre machine vps pair agents y travaillent déléguer",
   "bc0b409d89ce086e": "bêta workflow exécutions durables automatisation étapes planification webhook dossier",
+  "933dabf0700708af": "Nombre d’exécutions ignorées que chaque workflow conserve dans son historique. Les exécutions ignorées plus anciennes sont supprimées ; celles qui ont fait quelque chose sont toujours conservées.",
+  "f172d7e5deb24f75": "Rétablir la valeur par défaut des exécutions ignorées conservées",
+  "ba94015389f327bc": "Exécutions ignorées conservées",
+  "4b2669dcdb7d3776": "workflow historique rétention supprimer anciennes exécutions ignorées webhook history retention skipped runs",
   "4a21cf825a2045b0": "bêta tab autocomplétion prédire prochain message claude codex texte fantôme",
   "fea2dc36585c4a20": "Hôtes d’appareils Simlock (alpha)",
   "9d834d178130180e": "bêta alpha simlock callstack simulateur émulateur ios android pool bail passerelle",
@@ -12376,11 +11963,6 @@
   "f2b07faba1229ce7": "Intervalle de vérification de l’état",
   "5c9dc9970db79fe2": "actualiser disponibilité versions état d’authentification modèles sondes en arrière-plan secondes désactivé",
   "056ba6a180d114b5": "autoriser désactiver activer ouvrir piloter aperçu outils sessions remplacement par projet",
-  "dd6b767f08eff9f7": "Blender en cours d’exécution",
-  "ec2bc06507d0d9af": "hébergé blender quitter mémoire 3d fil",
-  "37d76dab21a26b2a": "blender hosted configuration installer vérifier labwc gstreamer encodeur gpu écran masqué linux agent commandes",
-  "f74fb1f1e951cb67": "blender hosted agents mcp démarrer autoriser",
-  "3cf7f8ed35b33c5f": "blender lab mcp serveur chemin programme installer uv pipx",
   "345075be6cacc171": "appareil hôtes ssh distant mac mini identité clé connexion eas expo cloud simlock pool passerelle simulateurs locaux",
   "a6b742430b05d6cc": "Les agents peuvent utiliser les appareils",
   "1d5d7418a83575c2": "autoriser simulateur émulateur ios android piloter outils sessions",
@@ -12508,11 +12090,14 @@
   "37ffec8201f153c1": "Échec",
   "984b361806ce8d25": "Réveillé",
   "c6e8abc00ae470d2": "Terminé",
+  "353b08f4363dbb2c": "En attente",
   "f31a95961de19433": "Ticket {key} : {title}, {state}",
   "2dd9d295c882ef65": "{count, plural, one {{count} ticket lié} other {{count} tickets liés}}",
   "8cf699ae75fd8067": "Épinglés",
   "be451f475c514b37": "Ignorer la notification Réveillé",
   "e9ced65134f2f36c": "Réveiller le fil maintenant",
+  "374dac09151d4578": "En attente",
+  "a8f30f631e2b010e": "En attente de synchronisation avec son environnement",
   "aca5896600bf173e": "Vous êtes actuellement sur une autre branche.",
   "f665b5be60d8c144": [
     "Transféré depuis ",
@@ -12579,12 +12164,14 @@
   "c1a9fe8e24876f1d": "{count, plural, one {{count} fil en cours sera interrompu.} other {{count} fils en cours seront interrompus.}}",
   "ecdf5f108ecc71d0": "{count, plural, one {{count} peut reprendre après le redémarrage.} other {{count} peuvent reprendre après le redémarrage.}}",
   "0576c87870fb6389": "Mettre à jour",
+  "948185631ef288e6": "{count, plural, one {{count} en cours} other {{count} en cours}}",
   "3d9a2f6b9c114039": "Fournisseurs",
   "f4baf8deafbb227d": "Ignorés",
   "f938bb483eb3d189": "redémarre en dernier",
-  "f13e08bd3614112e": "mettez à jour T3 Code sur cette machine",
   "9bca02be2b4d612a": "non connecté",
   "2dcc418b6a13b83c": "nécessite une mise à jour manuelle",
+  "f13e08bd3614112e": "mettez à jour T3 Code sur cette machine",
+  "3c3348c36a2695af": "changez le canal de mise à jour sur cette machine",
   "fa8faa732a2688ef": "sur le canal {channel}",
   "e65649675cb4cbaa": "désactivé",
   "a1e7c08d9ef315c7": "chargement en cours",
@@ -12601,7 +12188,6 @@
   "3ac986d604a2ad62": "Cette app ne peut pas basculer : son serveur n’est pas connecté, sa base de données ne peut donc pas être vérifiée.",
   "3bbb6e9ade0cf7e1": "lancez `{command}` sur cette machine",
   "e7194946af611278": "exécute un build preview",
-  "3c3348c36a2695af": "changez le canal de mise à jour sur cette machine",
   "f5eac23351c99297": "changez l’app Mac sur ce Mac",
   "d7444fbde9a80f04": "<1 min",
   "09c1af20e9323765": "Redémarrage dans {seconds} s",
@@ -12644,6 +12230,7 @@
   "9c015d3d034316cb": "Utilisez les flèches pour ajuster la valeur active. Maintenez Shift pour des pas plus grands. Utilisez Home et End pour le minimum et le maximum. Appuyez sur Tab pour passer de la saturation à la luminosité.",
   "8639d5532561f87f": "Fermer",
   "e1186ad82ee08b33": "Fermer",
+  "a4579e548b768663": "Afficher la barre latérale",
   "a1b11a1cf39c9dc9": "Redimensionner la barre latérale",
   "c557090df5722838": "Afficher ou masquer la barre latérale",
   "bbde430e56272901": "Faites glisser pour redimensionner la barre latérale",
@@ -12693,6 +12280,28 @@
   "8bcab2ef61de6518": "Plafond de 0 $",
   "a16b48709357a5a7": "Gérer l’utilisation",
   "a00e74aaa421c524": "restant",
+  "0e34c3076c08feb2": [
+    {
+      "t": "span",
+      "i": 1,
+      "c": [
+        "↻ +",
+        {
+          "i": 2,
+          "k": "_gt_value_2",
+          "v": "v"
+        },
+        "%"
+      ]
+    },
+    " ",
+    "dans ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    }
+  ],
   "8bd6f07136317c8f": "Aucun fournisseur des environnements sélectionnés ne signale de limites d’abonnement.",
   "87f5d0c61b335f38": "Consultez l’utilisation dans ChatGPT avec votre compte connecté.",
   "5b4c71b36b979e80": "Coût",
@@ -12918,6 +12527,7 @@
   "3cc43f1dbf3f8e0c": "Annulée",
   "ded70e75de6404ba": "Retour à la liste des exécutions",
   "2f4ed7dbd22be30d": "Annuler l’exécution",
+  "614e5ad58a795fb5": "Arrêter",
   "04b050b0329f0ac8": "a duré {duration}",
   "aff78e1774818ff4": "{duration} jusqu’ici",
   "38eddd466439afc9": "Ce que l’exécution a touché",
@@ -13039,24 +12649,18 @@
   "5459bf696a187c26": "Impossible de charger les exécutions de workflow",
   "d57c35d43b0f163a": "Cette exécution n’est pas ici",
   "b9aae2f7cdb1a379": "Aucune exécution de workflow pour l’instant",
+  "45a94c724845ec1d": "Autres",
   "8f15f66e545af7c0": "Quelles exécutions",
   "b6409289e0c9a4dd": "Workflow",
   "035cb02ca1ae4952": "Les {count} workflows",
+  "8eeb9cb07d7c59e1": "Type de question",
+  "e4d1316c85ed7066": "Aucune question de ce type ne vous attend.",
+  "e2131cbec8accfe3": "Tous les types",
   "46d614fa7b4bf1e5": "Exécutions de workflow",
   "1c635faa2fb45b8b": "Pas encore exécuté.",
   "156ff7b625287a1e": "Masquer les éléments ignorés",
   "69b985b97ab45e6b": "Afficher {count} ignorés",
   "2400254d362de84d": "Chargement des exécutions de workflow…",
-  "cae5c3205c01d062": [
-    {
-      "t": "span",
-      "i": 1,
-      "c": "Un fichier de workflow présente un problème."
-    },
-    " ",
-    "La dernière version valide continue de s’exécuter."
-  ],
-  "ed8ce6ebc73dc12d": "Ouvrir le fichier",
   "145e1f7503ba3b2c": [
     "Cet environnement n’a aucune exécution avec ce lien.",
     " ",
@@ -13082,7 +12686,18 @@
       "c": "Lire le guide"
     }
   ],
+  "cae5c3205c01d062": [
+    {
+      "t": "span",
+      "i": 1,
+      "c": "Un fichier de workflow présente un problème."
+    },
+    " ",
+    "La dernière version valide continue de s’exécuter."
+  ],
+  "ed8ce6ebc73dc12d": "Ouvrir le fichier",
   "5d8d278ff828102d": "Tous les workflows",
+  "3b0f1659172107e4": "Tous les types",
   "39459da07479f482": "Agent",
   "7741243632056b81": "{step} · transcription",
   "c512071143a5ba32": "Ce fil n’existe plus.",
@@ -13226,5 +12841,569 @@
   "27d76249d09eb69f": "Guide de revue prêt",
   "faa3bb26abb39c93": "Échec du guide de revue",
   "b7df38b7d8792d78": "Ouvrir le guide",
-  "9e91e9a77b664e4e": "Impossible de démarrer un guide de revue"
+  "9e91e9a77b664e4e": "Impossible de démarrer un guide de revue",
+  "99d51127f573296b": "Autre compte",
+  "8ec2c57414669b79": "Connectez un second espace de travail ou utilisateur {tracker}.",
+  "99963c0142e17f00": "Pour le nouveau compte {tracker}.",
+  "6d8e4ebc889bace9": "Ajouter un compte",
+  "8a883c4fbc127b68": "Activation de la fusion automatique de la pile...",
+  "5fb2a26ae31e8983": "Impossible d’activer la fusion automatique de la pile",
+  "986d0dcbf4dd0098": "Fusion automatique de la pile activée",
+  "f3ed1f63c8a3eef2": "{host} fusionnera la pile jusqu’à #{number} dès que ses conditions seront remplies.",
+  "bd536a0a1754f6cb": "Impossible d’annuler la fusion automatique de la pile",
+  "bb90ac3b2f3a72d5": "L’hôte a refusé d’annuler la fusion automatique. Actualisez et réessayez.",
+  "9c28753c777c37b7": "{count, plural, one {Fusionner automatiquement {count} {term, select, mr {merge request} cr {demande de modification} other {pull request}} ?} other {Fusionner automatiquement {count} {term, select, mr {merge requests} cr {demandes de modification} other {pull requests}} ?}}",
+  "a86b49982e18784d": "Fusionner #{number} et ses couches non fusionnées inférieures dans {base} avec {method} dès que chacune remplit les conditions de {host}. Cela peut se produire immédiatement.",
+  "b1afda5c964deee4": [
+    "Fusion automatique de la pile (",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ")"
+  ],
+  "33d18dda74f6d7b3": "Annuler la fusion automatique de la pile",
+  "012c67c7f1a99e33": "Fusion automatique de la pile",
+  "4a18481bea4b4ad5": "Nouvel appareil connecté à {environmentLabel}",
+  "4144ab6aa487528a": "{device} s’est connecté via {product}. Ce n’était pas vous ? Vérifiez-le.",
+  "a10cfdb27152c757": "{count, plural, one {{count} appareil s’est connecté} other {{count} appareils se sont connectés}} via {product}. Ce n’était pas vous ? Vérifiez-les.",
+  "e0856d6a402ad821": "La politique de {organization} n’autorise pas les commandes de disposition des worktrees des projets.",
+  "206811f6f441bfc7": "Ce projet prépare ses worktrees avec sa propre commande, que personne n’a approuvée telle qu’elle est écrite actuellement. Cette connexion ne peut pas l’approuver : approuvez-la depuis un client qui peut utiliser le terminal.",
+  "b8087c9a70c26da9": "Impossible d’approuver la commande de disposition des worktrees.",
+  "49eda70cfd56e621": "S’exécute au démarrage d’un fil dans un worktree et à la restauration de son dossier",
+  "188ccaa1199f5611": "S’exécute à la suppression du worktree d’un fil",
+  "7e8476e7306acabe": "Autoriser ce projet à exécuter ses commandes de worktree ?",
+  "8e11914556fd8b13": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " prépare les fils en worktree avec ses propres commandes issues de ",
+    {
+      "t": "code",
+      "i": 2,
+      "c": "t3.json"
+    },
+    ". Elles s’exécutent sur la machine de cet environnement avec vos autorisations, hors de tout bac à sable d’agent. La question vous sera reposée chaque fois que leur texte changera."
+  ],
+  "46807acd02a4ff72": "Approuver et continuer",
+  "a9cb97fca6a6576b": "Commande de création",
+  "90f45a354884ccdd": "Commande de suppression",
+  "78e308ada516928b": "Impossible d’approuver la commande",
+  "a0c772d32a233da6": "Impossible de révoquer l’approbation",
+  "0cdc8cdbed3e5eae": "Disposition des worktrees",
+  "c17b25519e2b194e": "Impossible de charger les commandes de disposition des worktrees",
+  "5ccd5614c65f8d1f": "Révoquer l’approbation de la commande {kind}",
+  "80c3794a5fa12f3a": "Approuver la commande {kind}",
+  "f206891e124c77b0": [
+    "Le ",
+    {
+      "t": "code",
+      "i": 1,
+      "c": "t3.json"
+    },
+    " de ce projet prépare les fils en worktree avec ses propres commandes. Elles s’exécutent sur la machine de cet environnement avec vos autorisations, et uniquement telles qu’approuvées ici : une commande dont le texte change doit être approuvée de nouveau."
+  ],
+  "f6a91589456cca50": "Approuvée",
+  "c92657bb7f2293ff": "Approbation requise",
+  "f1e5c1be1ac92361": "Approuver",
+  "fcb5f3c4d4753326": "Cette connexion ne peut pas approuver de commandes. Utilisez un client qui peut utiliser le terminal.",
+  "4e96712d839ccbff": "{who} a répondu {choice}",
+  "19097cfb8f5a79cf": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " a répondu",
+    " ",
+    {
+      "t": "span",
+      "i": 2,
+      "c": {
+        "i": 3,
+        "k": "_gt_value_3",
+        "v": "v"
+      }
+    },
+    "."
+  ],
+  "e7bbf693910057bf": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " a répondu",
+    " ",
+    {
+      "t": "span",
+      "i": 2,
+      "c": {
+        "i": 3,
+        "k": "_gt_value_3",
+        "v": "v"
+      }
+    },
+    ": ",
+    {
+      "i": 4,
+      "k": "_gt_value_4",
+      "v": "v"
+    }
+  ],
+  "3759768c5d342c22": [
+    "répondue",
+    " ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "e114d37b32ab0dc7": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " nécessite une raison."
+  ],
+  "91aadfc843c600de": "Vérifier le compte Google",
+  "201490988858b511": "retirée par {by}",
+  "99451a5d2d40440f": "Retirée par {by}.",
+  "3ee30a50b70fffab": "Retirée par {by} : {reason}",
+  "92e129bf413a1220": "retirée",
+  "3ed524933c568f8c": "Scène",
+  "8f9167efec844695": "Images",
+  "8f57fe4fcc5c7945": "{start}–{end}",
+  "5d5a2f58f1a34c19": "Scènes",
+  "9737b868f7aebd61": "Objets",
+  "3a4c33441eda8301": "Maillages",
+  "472ca1deae1a19f5": "Matériaux",
+  "6116c7ae71bc7d05": "Fichiers liés",
+  "3286ce5553d9f505": "Taille",
+  "46dae7e064a17ca3": "Blender",
+  "473079352585294d": "Blender à afficher",
+  "72ec28b225ed9811": "Impossible d’ouvrir le fichier maître",
+  "70da4581cf87971c": "Impossible de déplacer vers T3 Code",
+  "d5da364f3ffb7fa7": "Copie de travail",
+  "d3b2dad809961953": "Maître",
+  "8fc9ef73a784da09": "Un Blender de bureau que T3 Code n’a pas pu vérifier a peut-être aussi ce fichier ouvert. Enregistrez-le et fermez-le là-bas pour que les deux ne s’écrasent pas mutuellement.",
+  "ab03a468cc62daf1": "Déplacer vers T3 Code",
+  "77b72b3b7ee97069": "Ouvrir dans T3 Code",
+  "cb4451ab067ff47d": "Blender n’a pas démarré",
+  "731b80ac194beb4a": "Ouvert dans votre Blender de bureau",
+  "ca40a1f4300b4838": "Fichier maître non ouvert dans T3 Code",
+  "10a2ab0021554b0a": [
+    "Blender n’a pas pu ouvrir ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " sur l’écran masqué. Vérifiez que Blender l’ouvre, puis rouvrez-le."
+  ],
+  "f5db5877ab70bfc8": [
+    "Déplacer vers T3 Code enregistre ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " dans votre Blender de bureau, avec ses modifications non enregistrées, quitte ce Blender et ouvre le fichier ici. Son historique d’annulation est perdu."
+  ],
+  "6484265e8c18d3dd": [
+    "Déplacer vers T3 Code enregistre ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " dans votre Blender de bureau, quitte ce Blender et ouvre le fichier ici. Son historique d’annulation est perdu."
+  ],
+  "d77c7db5a642f111": [
+    "Un Blender de bureau est en cours d’exécution, mais T3 Code ne peut pas joindre son module MCP pour savoir si ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " y est ouvert. Enregistrez et fermez le fichier là-bas avant de l’ouvrir ici."
+  ],
+  "a0056043b004c957": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " n’est ouvert dans aucun Blender maître. C’est là que les agents y recopient leurs modifications validées."
+  ],
+  "e69c6af74880ba75": "Anglais (États-Unis)",
+  "675e421e80618158": "Anglais (Royaume-Uni)",
+  "27cface4ce8ec314": "Allemand",
+  "252113dddccaec1a": "Français",
+  "8ab4b97531ab9d38": "Espagnol",
+  "3545659a9d1bb2e3": "Italien",
+  "38923bf04cdeb628": "Portugais",
+  "587094706a1471b7": "Portugais (Brésil)",
+  "5950bf35d9440cd8": "Suédois",
+  "9db1b78d4555eaae": "Norvégien",
+  "12de4ccc884a2322": "Danois",
+  "fa15389723321c00": "Suisse allemand",
+  "4011a07411675ba1": "Russe",
+  "d1634d41846e72cb": "Japonais",
+  "c77caac5b764ef8c": "Anglais (Dvorak)",
+  "7b15925473b02c07": "Anglais (Colemak)",
+  "7c6bc1129dc9f48e": "Scène sans titre",
+  "cd078f4497dfcd36": "Impossible de redémarrer Blender",
+  "ad3ce6044792509a": "Impossible de rouvrir Blender",
+  "90e3c64eab32945e": "Supprimer l’enregistrement automatique de {name} ?",
+  "01201ecb830d7c68": "Abandonner les modifications non enregistrées de {name} ?",
+  "a1628cec6e798a98": "l’assistant d’écran masqué de T3 Code",
+  "759aa5a1a95bc013": "un encodeur H.264",
+  "f5a8efdb194519df": "le plugin OpenGL de GStreamer",
+  "d6fcf229c9306851": "Capturer et annoter",
+  "32cf9ac006229af1": "Menu Blender",
+  "9287e12fbeade687": "Un autre appareil a pris le contrôle de Blender",
+  "d2b10ff67d190925": "Vue Blender",
+  "2151790bc5e65b31": "Non disponible sur cet hôte",
+  "b94f5fc6d71bc852": "Configuration requise",
+  "7050870331ac8b9a": "Aucun Hosted Blender en cours d’exécution",
+  "fb2c65328a8a2e17": "Ouvrez un fichier .blend dans l’aperçu de fichier et choisissez Ouvrir dans Hosted Blender.",
+  "3f25b97ec987231e": "Blender n’a pas pu ouvrir le fichier sur l’écran masqué. Vérifiez que Blender l’ouvre et que GStreamer dispose d’un encodeur H.264, puis rouvrez-le dans Hosted Blender.",
+  "c9d23ccb15073177": "Blender a planté",
+  "9f406050b6efb934": "Blender a été fermé",
+  "0693a88b1530f8eb": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " se trouve hors de ce projet, T3 Code ne peut donc pas le rouvrir. Ses modifications non enregistrées sont conservées dans ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "95b2d0bdafc5b01d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " se trouve hors de ce projet, T3 Code ne peut donc pas le rouvrir."
+  ],
+  "0181fc8af235ad77": [
+    "T3 Code a conservé les modifications non enregistrées d’une scène sans titre dans ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "c3528aaa534d9a33": "Blender avait une scène sans titre ouverte, que T3 Code ne peut pas rouvrir.",
+  "df374db2c12ff019": [
+    "Blender n’a pas pu restaurer la copie de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". La copie est conservée : réessayez, ouvrez le fichier tel qu’enregistré en dernier ou supprimez la copie."
+  ],
+  "ff3775198cef1512": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " s’est arrêté de façon inattendue. Redémarrer ouvre le fichier tel qu’enregistré en dernier, ou restaurez son enregistrement automatique le plus récent."
+  ],
+  "945cdcba38a31b0c": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " s’est arrêté de façon inattendue. Redémarrer ouvre le fichier tel qu’enregistré en dernier."
+  ],
+  "a1705e3412c3634e": [
+    "T3 Code a fermé ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " lorsque ce fil a été réglé ou que T3 Code s’est arrêté, et a conservé ses modifications non enregistrées. Rouvrir les restaure."
+  ],
+  "891e3d7d231af485": [
+    "T3 Code a fermé ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " lorsque ce fil a été réglé ou que T3 Code s’est arrêté."
+  ],
+  "bd90fd96c98e9c6f": "Redémarrer",
+  "220f0a0fa43d9f59": "Restaurer l’enregistrement automatique",
+  "182049c015041be2": "Rouvrir",
+  "eb23e8b7b8458cfa": "Ouvrir la dernière version enregistrée",
+  "930be3d3ed674427": "Également conservés :",
+  "d6c851db16c7dfd8": "Le fichier tel qu’enregistré en dernier est conservé. Cette action est irréversible.",
+  "7dfc4caecd0ca4da": "Ouvrir les paramètres Blender",
+  "22e7ff1b5896ba7b": "Hosted Blender nécessite un serveur Linux. Vous pouvez toujours ouvrir les fichiers 3D dans l’aperçu de fichier.",
+  "ccb9bcd7825f2f99": "La version de Linux de ce serveur fournit des versions de labwc et GStreamer trop anciennes pour Hosted Blender. Vous pouvez toujours ouvrir les fichiers 3D dans l’aperçu de fichier.",
+  "efd53a6196afbf6d": "Les versions Flatpak et Snap de Blender ne sont pas encore prises en charge. Paramètres › Blender explique comment utiliser un autre Blender.",
+  "ec1b57292361ae76": "Activez Hosted Blender dans Paramètres › Blender pour voir et piloter Blender ici.",
+  "e4ec327ad1a82eb5": "T3 Code n’a pas encore vérifié ce serveur. Ouvrez un .blend dans Hosted Blender ou vérifiez-le dans Paramètres › Blender.",
+  "af467bacc13f5e57": [
+    "Il manque sur ce serveur : ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Paramètres › Blender peut les installer avec un agent ou vous montrer les commandes."
+  ],
+  "f4266902a2c24f1e": "Démarrage de Blender…",
+  "9d8acbbea6eafeef": [
+    "Ouverture de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " sur l’écran masqué."
+  ],
+  "4e4f72c4986c5f68": "Prendre le contrôle",
+  "14d410b8b9a578d0": "Plein écran",
+  "2026a467bc778ad9": "Disposition du clavier",
+  "1d9b37b42f1216c8": "Automatique",
+  "4b0ca2d2af30068a": "Défilement",
+  "3e3e743c7c26648a": "Automatique",
+  "8884c1281f2a2db4": "Molette de la souris",
+  "295182c176fc7bd0": "Pavé tactile",
+  "8b290ab856b8f02b": "Quitter Blender",
+  "6b30f7f4ebd659d7": "Trop de personnes regardent ce Blender. Réessayez plus tard.",
+  "1681e6f089782b9d": "Ce navigateur ne peut pas lire le flux Blender.",
+  "7579927020ad5107": "Vous avez le contrôle",
+  "67ab7e22612414d0": "Un autre appareil a le contrôle",
+  "81f3ce1d88ecf7bb": "Visionnage",
+  "b41e3eeb664df523": "L’agent modifie",
+  "3906097eebf88153": "Affichage de tout l’écran",
+  "27ea83219396f796": "Pas de GPU : Blender sera lent",
+  "156c7543e861dda6": "Pas d’accès au GPU : Blender sera lent",
+  "907a0f7ed16a709d": "Impossible d’ouvrir dans Hosted Blender",
+  "7b0cb06d256e6b28": "Ouvrir dans Hosted Blender",
+  "119259d2fa66fadf": "Impossible de quitter Blender",
+  "e2d3b41b3731a6c1": "Enregistrer les modifications de {name} avant de quitter ?",
+  "32504fe5e26d8233": "Les modifications que Blender n’a pas enregistrées sont perdues si vous quittez sans enregistrer.",
+  "9ceb68fb844584c9": "Quitter sans enregistrer",
+  "e21dfc1887d124ec": "Enregistrer et quitter",
+  "004649901eabfebd": "Travaille dans Blender",
+  "7c23820b77e42b2c": "Recharger le fichier",
+  "586cd2c4199fa323": "Miniature enregistrée de {name}",
+  "25d1be241b107e99": "Le fichier n’a pas pu être lu.",
+  "af3426b9850d4da7": "Converti avec Blender {version} · en cache",
+  "5b88b6929848ca03": "Converti il y a {seconds} s",
+  "ea085b85d5409d6d": "Converti avec Blender {version}",
+  "e1de2d5335083143": "Conversion avec Blender {version}… {seconds} s",
+  "9228469f14b148a6": "{file} modifié · mise à jour…",
+  "41f9012753a424a9": "Échec de la conversion",
+  "047618ba1e0fe59d": "Conversion annulée",
+  "53a1519e0b7358cf": "En attente : {ahead} avant",
+  "202d05bbf54b83c1": "Trop lent pour l’aperçu",
+  "dd22e61b9a4efe81": "La conversion a pris plus d’une minute et a été arrêtée. Continuer convertit sans limite.",
+  "569078051cbef37c": "Pas de Blender sur ce serveur",
+  "484bbf26d26f6f65": "Installez Blender depuis blender.org sur la machine qui exécute T3 Code, ou indiquez son chemin dans Réglages › Général, pour voir ce fichier en 3D.",
+  "a3a292e8b22c02db": "Enregistré avec Blender {file} · le serveur a {server}",
+  "4e2b52d678917c4d": "Miniature enregistrée · Blender {version}",
+  "864d83692fd9047f": "Enregistré avec Blender {version}",
+  "3caa4fb20ff3277d": "Blender enregistre cette image avec le fichier ; elle peut donc être obsolète si un script a enregistré le fichier.",
+  "301ece9c34df1726": "Journal de Blender",
+  "20fc073d179a63f5": "Blender n’a rien écrit dans son journal.",
+  "71f9aa2ee31aac46": "Aucune miniature enregistrée dans ce fichier",
+  "27088355449cdd28": "Détails de la scène",
+  "3a87f8c40f3b8065": "Convertir",
+  "3a7a505e7bb890be": "Afficher le journal",
+  "5ac36af75f80daf6": "Continuer",
+  "aaf4d7b88f1a09d8": "Décrivez la modification…",
+  "51dbb09f63c653ea": "Commentaire de l’annotation",
+  "dd2fd8921e6266cc": "Vue 3D figée à annoter",
+  "5e28beecabfa2e5c": "Outil d’annotation",
+  "44480ea1a65332c2": "Dessiner",
+  "ef38e20921500bd4": "Marquer une zone",
+  "3634581310a50ead": "Effacer une marque",
+  "bdac60fb8176f6cd": "Les aperçus 3D nécessitent WebGL, que ce navigateur a désactivé ou ne prend pas en charge.",
+  "2c35172b5a5d8a64": "La vue 3D ne répond plus.",
+  "791277de6140c5c7": "Ce fichier 3D est endommagé ou utilise des fonctions que l’aperçu ne prend pas en charge.",
+  "54d0d4483d261e37": "Ce fichier 3D ne contient aucune géométrie à afficher.",
+  "bee9d18a1a2b0c3e": "Un fichier nécessaire à ce modèle est introuvable.",
+  "2d782dfff8e968f8": "Le modèle n’a pas pu être chargé.",
+  "a1ad1c48825fa0b5": "Ce modèle dépasse 1 Go, trop volumineux pour l’aperçu. Enregistrez-le pour l’ouvrir dans une app 3D.",
+  "6c74f6e6e2d69293": "Chargement du modèle 3D…",
+  "4fc027df67b0cbbc": "Modèle volumineux",
+  "dd420bd9b4c8f356": "Échec de l’aperçu",
+  "108ec15bf5350d7d": "{format} · rendu dans le navigateur",
+  "b1a9bdc9615401d5": "{count, plural, one {{count} texture introuvable} other {{count} textures introuvables}}",
+  "cbcdb6061aa78bf6": "{count, plural, one {{count} fichier introuvable} other {{count} fichiers introuvables}}",
+  "35d235e816e6f4b0": "Vue 3D de {name}",
+  "c85eef9dc05fa21b": "{files} introuvable à côté de {model}.",
+  "411a4c0012fbdc78": "Ce modèle dépasse {size}. Le charger peut ralentir cette fenêtre pendant un moment.",
+  "7a4197b6468d9219": "Ce modèle fait {size}. Le charger peut ralentir cette fenêtre pendant un moment.",
+  "0b87945c6568d758": "Une version plus récente est disponible",
+  "7805e0174e665cd4": "Impossible de charger la nouvelle version",
+  "5ec36ad4005866e2": "{files} introuvable à côté de {model}",
+  "164dcb32e690fb3b": "Réinitialiser la vue",
+  "fd84ebd10dd79423": "Recharger le modèle",
+  "69b6a587633c2599": "Triangles",
+  "26a4ebec594d4dee": "Points",
+  "db81a08c825964a9": "Taille",
+  "d51618c38e9c4e73": "{width} × {height} × {depth}",
+  "317be90a94ab7326": "{width} × {height} × {depth} {unit}",
+  "a33fd1cd3116533d": "Garder cette version",
+  "c61866d92a739c56": "Charger le modèle",
+  "800f266a8be8e117": "Détails du modèle",
+  "22738c009abc434a": "Ce fichier n’est pas un fichier Blender, ou il est endommagé.",
+  "458554b0a4245572": "Ce fichier Blender est trop volumineux pour en lire les détails.",
+  "31714e7420776a7c": "Cette pièce jointe n’est plus disponible.",
+  "29e40a5da4bbbf79": "Impossible de capturer la vue 3D",
+  "ce122949162f2073": "Aperçu flottant de Blender",
+  "a0f6aecb07b533ff": "Blender en cours d’exécution ({count})",
+  "b04a15f0adaa16b9": "Aucun Blender hébergé n’est en cours d’exécution",
+  "201b5d40d08e74d0": "Le Blender hébergé de chaque fil apparaît ici tant qu’il s’exécute.",
+  "75daeb1e9b041511": "Fil inconnu",
+  "0eda0be3d24af58c": "Quitter",
+  "7660bc93bbd673be": "Laissez T3 Code exécuter son propre Blender sur ce serveur, sur un écran masqué, pour le voir et le piloter dans le panneau Blender. Linux uniquement. Votre Blender de bureau n’est jamais touché.",
+  "41dfe036cd2b2975": "Hosted Blender",
+  "9cc2228be8a75b39": "Les agents des fils Claude et Codex peuvent démarrer les Hosted Blender de ce serveur, à partir de leur prochaine session. Les autres fournisseurs ne sont pas encore pris en charge.",
+  "9dfd275b6a5d4f9a": "Terminez d’abord la configuration, y compris le serveur MCP officiel de Blender. Les agents s’en servent pour travailler dans Hosted Blender.",
+  "1f0df945c5a89af5": "Autoriser les agents à démarrer Hosted Blender",
+  "67c674ad132e17bb": "Assistant d’écran masqué",
+  "16da5cd9c2fa80bc": "Encodeur H.264",
+  "af0373642246bb1c": "Transfert OpenGL GStreamer (NVIDIA)",
+  "129d601c223507ec": "GPU",
+  "d87898d465d6309f": "Serveur MCP de Blender",
+  "541ee140c8330a2a": "Impossible de vérifier la configuration de Hosted Blender",
+  "428192e9745f36eb": "Impossible de démarrer le fil de configuration",
+  "31ba36fb9402faa7": "Commandes d’installation",
+  "b6554bc1ff014f77": "Le serveur MCP officiel de Blender Lab, par exemple ~/.local/bin/blender-mcp. Laissez vide pour le trouver dans le PATH ou dans ~/.local/bin. Vérifiez à nouveau après l’avoir modifié.",
+  "e7743bf6a3de9ca3": "Réinitialiser le chemin du MCP Blender",
+  "a9b3c3359bce1e24": "Chemin du MCP Blender",
+  "6d0cb7390c17be3b": "Trouver automatiquement",
+  "0726bb02c4c42175": "Vérification de ce serveur…",
+  "3a450021c92f3e4e": "T3 Code recherche Blender, labwc, GStreamer et le GPU, et lance un encodage de test.",
+  "b0537628ad92ed53": "Pas encore vérifié",
+  "33bb3044d9712567": "Vérifier la présence de Blender, labwc, GStreamer et du GPU sur ce serveur, avec un encodage de test.",
+  "c3f155eda04d9708": "Hosted Blender nécessite un serveur Linux. Les aperçus de fichiers 3D fonctionnent quand même sur celui-ci.",
+  "60f2565d2d2a6c3e": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " fournit des versions de labwc et GStreamer trop anciennes pour Hosted Blender. Ubuntu 24.04, Debian 13, Fedora 43 et Arch fonctionnent."
+  ],
+  "66c4a476d0b4abaa": "Les versions Flatpak et Snap de Blender ne sont pas encore prises en charge. Installez Blender depuis blender.org ou votre distribution, ou indiquez son chemin dans Paramètres › Général › Aperçus 3D, puis vérifiez à nouveau.",
+  "cd212c9950bba81d": "Trouvé",
+  "f9ab32870fe2bf3a": "Introuvable",
+  "d724abd4cc4a85e5": "Trop ancien",
+  "7b01b12da1a9fd17": "Lent",
+  "a5fe3dee0a941705": "Pas celui de Blender Lab",
+  "7174ef3cfccc7a54": "Exécute Blender sur l’écran masqué et le diffuse.",
+  "59e399ec181acb63": "L’assistant propre à T3 Code manque dans cette installation. Mettez à jour ou réinstallez T3 Code.",
+  "92a36f954d094a6f": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "759ad8d8187ed946": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Hosted Blender nécessite Blender 4.5 ou ultérieur."
+  ],
+  "2cf31d1c821751ac": "Installez Blender 4.5 ou ultérieur, ou indiquez son chemin dans Paramètres › Général › Aperçus 3D.",
+  "5d52dcf7276c5199": "Le compositeur derrière l’écran masqué.",
+  "ac6f1be5c0b72432": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", capture avec wlr-screencopy. labwc 0.9 ou ultérieur capture uniquement la fenêtre de Blender."
+  ],
+  "8ca441a272a1c6e1": [
+    "Version ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Hosted Blender nécessite GStreamer 1.24 ou ultérieur."
+  ],
+  "f400a2435a7c9972": "GStreamer 1.24 ou ultérieur encode le flux.",
+  "991f74849ed9e582": [
+    "L’encodage de test d’une seconde a utilisé ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "ba5e2c560dd26d57": "Aucun encodeur H.264 n’a réussi l’encodage de test. Installez les plugins GStreamer : nvh264enc, vah264enc, x264enc ou openh264enc.",
+  "2ab5a1fabca22fd0": "L’encodeur NVIDIA lit les images de Blender directement depuis le GPU.",
+  "fce6aa0c10874b0c": "L’encodeur NVIDIA nécessite le plugin OpenGL de GStreamer.",
+  "040d82d74fa9b290": "Blender dessine avec le GPU.",
+  "b1f3a29faa7594ff": "Ce serveur a un GPU, mais T3 Code ne peut pas y accéder. Ajoutez votre utilisateur aux groupes render et video. D’ici là, Blender sera lent.",
+  "e4f914bd5e6899bf": "Aucun GPU trouvé. Hosted Blender fonctionne quand même, mais Blender sera lent.",
+  "933fa7740fe8c681": {
+    "i": 1,
+    "k": "_gt_value_1",
+    "v": "v"
+  },
+  "92c9412a1a79bb73": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " est un autre projet du même nom, pas le MCP de Blender Lab. Installez le serveur officiel ou indiquez son chemin ci-dessous."
+  ],
+  "9a397640135c1803": "Les agents ont besoin du serveur MCP officiel de Blender Lab. Le panneau fonctionne sans lui.",
+  "7c26d4f38c0094aa": "Le résultat est conservé jusqu’à la prochaine vérification, par exemple après une installation.",
+  "021b62ff834041f0": "Installer ce qui manque",
+  "ec5d04aa0c3eed05": "Un agent installe ce qui manque",
+  "26c7f14fb81274cb": "Un agent peut l’installer dans un nouveau fil en vous demandant votre mot de passe dans une carte privée, jamais dans le chat. Ou lancez les commandes vous-même. T3 Code n’installe jamais lui-même de paquets système.",
+  "0d7eb1eeb33375bb": "T3 Code vérifie à nouveau quand l’agent a terminé.",
+  "a19376d3fce3f52d": "Installer avec un agent",
+  "5dee7399d93445e1": "Masquer les commandes",
+  "fbb5ec917cc3451d": "Afficher les commandes",
+  "db2f53db5e812a59": "Copier les commandes",
+  "47eb7e3f2072d8a4": "Aperçus 3D",
+  "a2fc60e4c15eb1de": "Le Blender qui transforme les fichiers .blend en aperçus 3D, par exemple /usr/bin/blender ou C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe. Laissez vide pour le trouver dans le PATH ou là où Blender s’installe.",
+  "4c0182441f7f746d": "Réinitialiser le chemin de Blender",
+  "b0e5f2ebaa0f2d56": "Chemin de Blender",
+  "6ac7d143dd2dd2a5": "blender 3d aperçu fichier blend convertir glb modèle chemin programme installer",
+  "dd6b767f08eff9f7": "Blender en cours d’exécution",
+  "ec2bc06507d0d9af": "hébergé blender quitter mémoire 3d fil",
+  "37d76dab21a26b2a": "blender hosted configuration installer vérifier labwc gstreamer encodeur gpu écran masqué linux agent commandes",
+  "f74fb1f1e951cb67": "blender hosted agents mcp démarrer autoriser",
+  "3cf7f8ed35b33c5f": "blender lab mcp serveur chemin programme installer uv pipx"
 }
