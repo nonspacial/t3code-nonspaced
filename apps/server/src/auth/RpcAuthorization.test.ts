@@ -61,9 +61,10 @@ describe("RPC authorization scopes", () => {
     );
   });
 
-  it("lets thread readers watch and annotate a hosted Blender and only operators drive one", () => {
+  it("lets thread readers watch and annotate hosted Blenders and only operators drive one", () => {
     for (const method of [
       WS_METHODS.hostedBlenderSubscribeThread,
+      WS_METHODS.hostedBlenderSubscribeRunning,
       WS_METHODS.hostedBlenderCaptureView,
       WS_METHODS.hostedBlenderFindHits,
     ]) {
@@ -72,6 +73,8 @@ describe("RPC authorization scopes", () => {
     for (const method of [
       WS_METHODS.hostedBlenderOpen,
       WS_METHODS.hostedBlenderQuit,
+      WS_METHODS.hostedBlenderReopen,
+      WS_METHODS.hostedBlenderDismiss,
       WS_METHODS.hostedBlenderSetView,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);

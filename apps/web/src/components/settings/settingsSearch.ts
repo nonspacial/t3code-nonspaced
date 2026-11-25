@@ -1139,6 +1139,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("allow disable enable open drive preview tools sessions project override")],
   },
   {
+    id: "running-blenders",
+    title: msg("Running Blenders"),
+    to: "/settings/blender",
+    targetId: "running-blenders",
+    searchTerms: [msg("hosted blender quit memory 3d thread")],
+  },
+  {
     id: "hosted-blender",
     title: msg("Hosted Blender"),
     to: "/settings/blender",

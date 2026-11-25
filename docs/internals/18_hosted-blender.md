@@ -9,7 +9,9 @@ adapters and the Blender process, and are easy to undo by accident.
 A working Blender belongs to one thread: it quits when that thread settles or is archived, when T3
 shuts down, or when the user or agent quits it. A master Blender is the one exception, shared by
 the threads that chose its master file and kept until the last of them leaves (and then only if
-it has nothing unsaved). Agent access is narrower still: it lasts only while T3 holds the control
+it has nothing unsaved). Every other ending (T3 stopping, Hosted Blender switched off, a crash)
+ends it like a working one, and its recovery copy belongs to the master, not a thread: one copy,
+under the master file's real path, that any thread whose master is that file reopens or discards. Agent access is narrower still: it lasts only while T3 holds the control
 connection, Allow agents is on, and the launch file (the working copy, or the master) is still the
 open file; a working Blender also needs its thread's session alive. Once any of those ends, access
 stays ended until that Blender restarts

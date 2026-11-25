@@ -36,6 +36,10 @@ use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
     zwp_virtual_keyboard_manager_v1 as keyboard_manager,
     zwp_virtual_keyboard_v1 as virtual_keyboard,
 };
+use wayland_protocols_wlr::foreign_toplevel::v1::client::{
+    zwlr_foreign_toplevel_handle_v1 as wlr_toplevel,
+    zwlr_foreign_toplevel_manager_v1 as wlr_toplevel_manager,
+};
 use wayland_protocols_wlr::output_management::v1::client::{
     zwlr_output_configuration_head_v1 as configuration_head,
     zwlr_output_configuration_v1 as configuration, zwlr_output_head_v1 as output_head,
@@ -260,6 +264,8 @@ pub struct State {
     dmabuf: Option<dmabuf::ZwpLinuxDmabufV1>,
     gbm: Option<gbm::Device>,
     toplevels: Vec<Toplevel>,
+    /// The same windows through wlr-foreign-toplevel-management, which can set them fullscreen.
+    managed: Vec<ManagedToplevel>,
     window_title: Option<String>,
     target: Option<Target>,
     ext_capture: Option<ExtCapture>,
@@ -333,6 +339,10 @@ impl State {
             let _list: toplevel_list::ExtForeignToplevelListV1 = globals
                 .bind(qh, 1..=1, ())
                 .map_err(bind_error("ext_foreign_toplevel_list_v1"))?;
+            // labwc's rule only toggles fullscreen as a window maps, so one that maps fullscreen
+            // already (Blender restoring a window from a file) would leave it; this keeps it set.
+            let _manager: Option<wlr_toplevel_manager::ZwlrForeignToplevelManagerV1> =
+                globals.bind(qh, 1..=3, ()).ok();
         }
 
         let cursor = ext.as_ref().map(|ext| {
@@ -366,6 +376,7 @@ impl State {
             dmabuf: globals.bind(qh, 3..=4, ()).ok(),
             gbm: None,
             toplevels: Vec::new(),
+            managed: Vec::new(),
             window_title: if toplevels_wanted {
                 options.window_title
             } else {
@@ -1160,6 +1171,77 @@ impl Dispatch<configuration::ZwlrOutputConfigurationV1, ()> for State {
             _ => {}
         }
         config.destroy();
+    }
+}
+
+struct ManagedToplevel {
+    handle: wlr_toplevel::ZwlrForeignToplevelHandleV1,
+    title: String,
+    fullscreen: bool,
+}
+
+impl Dispatch<wlr_toplevel_manager::ZwlrForeignToplevelManagerV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &wlr_toplevel_manager::ZwlrForeignToplevelManagerV1,
+        event: wlr_toplevel_manager::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wlr_toplevel_manager::Event::Toplevel { toplevel } = event {
+            state.managed.push(ManagedToplevel {
+                handle: toplevel,
+                title: String::new(),
+                fullscreen: false,
+            });
+        }
+    }
+    event_created_child!(State, wlr_toplevel_manager::ZwlrForeignToplevelManagerV1, [wlr_toplevel_manager::EVT_TOPLEVEL_OPCODE => (wlr_toplevel::ZwlrForeignToplevelHandleV1, ())]);
+}
+
+impl Dispatch<wlr_toplevel::ZwlrForeignToplevelHandleV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        handle: &wlr_toplevel::ZwlrForeignToplevelHandleV1,
+        event: wlr_toplevel::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(index) = state
+            .managed
+            .iter()
+            .position(|managed| &managed.handle == handle)
+        else {
+            return;
+        };
+        match event {
+            wlr_toplevel::Event::Title { title } => state.managed[index].title = title,
+            wlr_toplevel::Event::State { state: states } => {
+                let fullscreen = wlr_toplevel::State::Fullscreen as u32;
+                state.managed[index].fullscreen = states
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|chunk| u32::from_ne_bytes(*chunk) == fullscreen);
+            }
+            // Every window the capture would match fills the display, whatever state it mapped in.
+            wlr_toplevel::Event::Done => {
+                let managed = &state.managed[index];
+                let wanted = state
+                    .window_title
+                    .as_deref()
+                    .is_some_and(|title| managed.title.contains(title));
+                if wanted && !managed.fullscreen {
+                    managed.handle.set_fullscreen(None);
+                }
+            }
+            wlr_toplevel::Event::Closed => {
+                state.managed.remove(index).handle.destroy();
+            }
+            _ => {}
+        }
     }
 }
 

@@ -24,6 +24,7 @@ def _option(name):
 
 SOCKET_PATH = _option("--t3-control")
 MCP_PORT = _option("--t3-mcp-port")
+RECOVER_PATH = _option("--t3-recover")
 # The launch's own copy of Blender Lab: a folder holding its "mcp" package.
 MCP_SNAPSHOT = _option("--t3-mcp-snapshot")
 MCP_LISTEN = "--t3-mcp-listen" in (sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
@@ -48,6 +49,18 @@ class _State:
     client = None
     buffer = b""
     sent = None
+    # A restored session until it is marked unsaved or saved.
+    restored = False
+    # "ok" or "failed" once a restore T3 asked for has run; T3 waits for it.
+    restore = None
+    # The viewport window this session opened, by pointer: one a loaded file brings back is not.
+    viewport_window = None
+    # When Blender last loaded a file (open, revert, recover), epoch ms; T3 ignores autosaves
+    # from before it.
+    loaded_at = None
+    # The file just loaded (at launch, opened, reverted or recovered) may bring viewport windows
+    # back, to be replaced.
+    replace_loaded = True
     # Quit requests T3 gave up on; one still waiting here is never carried out.
     cancelled_quits = set()
     # Seen with unsaved asset catalogs, until a save or an askable asset browser says otherwise.
@@ -98,7 +111,7 @@ def _drop_client():
 
 
 def _snapshot():
-    return {
+    snapshot = {
         "type": "state",
         "filepath": bpy.data.filepath,
         "dirty": bool(bpy.data.is_dirty),
@@ -106,6 +119,11 @@ def _snapshot():
         "agentActing": _agent_acting(_mcp_server()),
         "mcpVersion": _State.mcp_version,
     }
+    if _State.restore is not None:
+        snapshot["restore"] = _State.restore
+    if _State.loaded_at is not None:
+        snapshot["loadedAt"] = _State.loaded_at
+    return snapshot
 
 
 def _main_window():
@@ -125,14 +143,42 @@ def _save():
         return False
 
 
+def _push_undo_step():
+    # Blender's quit copy (quit.blend, which T3 keeps to reopen) is its newest undo step, so
+    # changes made without one, such as by a script (which leaves the file looking clean), are
+    # recorded first.
+    window = _main_window()
+    try:
+        with bpy.context.temp_override(window=window):
+            bpy.ops.ed.undo_push(message="T3 recovery copy")
+    except Exception as error:  # noqa: BLE001 - quitting matters more than the extra step
+        print("T3 control add-on: undo step failed:", error, file=sys.stderr)
+def _lone_3d_view(window):
+    return len(window.screen.areas) == 1 and window.screen.areas[0].type == "VIEW_3D"
+
+
+def _viewport_lost():
+    # T3's viewport window closed, or turned into another editor.
+    if _State.viewport_window is None:
+        return False
+    tracked = [
+        window
+        for window in bpy.context.window_manager.windows
+        if window.as_pointer() == _State.viewport_window
+    ]
+    return not tracked or not _lone_3d_view(tracked[0])
+
+
 def _viewport():
-    # The person's viewport window: the one _open_viewport_window made, never the main window.
-    windows = bpy.context.window_manager.windows
-    for index, window in enumerate(windows):
-        areas = window.screen.areas
-        if index == 0 or len(areas) != 1 or areas[0].type != "VIEW_3D":
-            continue
-        area = areas[0]
+    # The person's viewport window: the one _open_viewport_window made this launch, never the
+    # main window or one a file brought back.
+    candidates = [
+        window
+        for window in _viewport_windows()
+        if window.as_pointer() == _State.viewport_window and _lone_3d_view(window)
+    ]
+    for window in candidates:
+        area = window.screen.areas[0]
         region = next((region for region in area.regions if region.type == "WINDOW"), None)
         if region is not None:
             return window, area, region, area.spaces.active
@@ -336,17 +382,39 @@ def _handle(command):
         if pending_writes or not _session_is_clean():
             _send({"type": "quitRefused", "id": command.get("id")})
             return
+        # The same last word as any quit: what its end keeps is judged by the same facts.
+        _send({"type": "quitting", "filepath": bpy.data.filepath, "dirty": bool(bpy.data.is_dirty)})
         with bpy.context.temp_override(window=_main_window()):
             bpy.ops.wm.quit_blender()
         return
     if kind == "quit":
-        if command.get("save"):
+        if not command.get("save"):
+            # T3 waits on this rather than stopping a Blender still writing its quit copy. It
+            # carries the file and its unsaved bit as they are now, before the undo step below
+            # (which always reads unsaved), as the run's last word on them.
+            _send({
+                "type": "quitting",
+                "filepath": bpy.data.filepath,
+                "dirty": bool(bpy.data.is_dirty),
+            })
+            _push_undo_step()
+        else:
             # Answered before the save, which blocks Blender for as long as a big file takes.
             _send({"type": "saving"})
             if not _save():
                 _send({"type": "quitFailed", "reason": "saveFailed"})
                 return
-            _send({"type": "saved"})
+            # Saved, so Blender quits next: the agent's grant ends now, as T3's stop would
+            # come too late once quitting begins. Ending it records the agent's pending work
+            # that can write as a step after the save, leaving the file unsaved; the result
+            # says so with the file saved, and T3 then keeps the quit copy.
+            pending = (
+                _State.grant == "granted"
+                and _on_authorized_file()
+                and any(record["writes"] for record in _Guard.deferred)
+            )
+            _end_grant()
+            _send({"type": "saved", "filepath": bpy.data.filepath, "dirty": pending})
         window = _main_window()
         with bpy.context.temp_override(window=window):
             bpy.ops.wm.quit_blender()
@@ -421,6 +489,15 @@ def _tick():
             connection.close()
     except BlockingIOError:
         pass
+    if _State.restored and not bpy.data.is_dirty:
+        # Blender clears the unsaved mark it gives a recovered file once loading finishes;
+        # an undo step sets it again, so the user is still asked to save the restored work.
+        _State.restored = False
+        _push_undo_step()
+    # T3's viewport window turned into another editor is no longer its viewport: a fresh one
+    # opens, as on a first open.
+    if _viewport_lost() and not bpy.app.timers.is_registered(_open_viewport_window):
+        bpy.app.timers.register(_open_viewport_window, first_interval=0.2)
     _pump_control()
     if _State.client is not None:
         while b"\n" in _State.buffer:
@@ -505,6 +582,31 @@ def _setup_mcp_addon():
         preferences.is_dirty = False
     except AttributeError:
         pass
+
+
+def _keep_recovery_files():
+    # Copied settings may name a temporary folder shared with the desktop Blender; this session
+    # keeps its quit copy and autosaves in the private TMPDIR T3 gave it, where T3 finds them.
+    filepaths = bpy.context.preferences.filepaths
+    if filepaths.temporary_directory:
+        filepaths.temporary_directory = ""
+
+
+def _recover():
+    # Restores a recovery copy or autosave over the file Blender opened. Blender recovers its
+    # own session files with their original path, so saving still writes the user's file, and
+    # an agent's working copy stays the file T3 authorized.
+    # Scripts stay off as --disable-autoexec says; left out, recovering reads the preference.
+    window = _main_window()
+    try:
+        with bpy.context.temp_override(window=window):
+            result = bpy.ops.wm.recover_auto_save(filepath=RECOVER_PATH, use_scripts=False)
+            _State.restored = "FINISHED" in result
+            _State.replace_loaded = True
+    except Exception as error:  # noqa: BLE001 - reported to T3, which keeps the copy
+        print("T3 control add-on: recovery failed:", error, file=sys.stderr)
+    _State.restore = "ok" if _State.restored else "failed"
+    return None
 
 
 def _grant_agent_listener():
@@ -665,10 +767,61 @@ def _has_viewport_window():
     return _viewport() is not None
 
 
+# Marks T3's viewport window on its screen, which a saved file keeps, so a file brings it back
+# recognisably while a second 3D view the person made is never mistaken for it.
+VIEWPORT_MARKER = "t3_viewport"
+
+
+def _viewport_windows():
+    # T3's viewport windows: this session's, and any a loaded file brought back.
+    windows = bpy.context.window_manager.windows
+    return [
+        window
+        for index, window in enumerate(windows)
+        if index > 0 and window.screen.get(VIEWPORT_MARKER)
+    ]
+
+
 def _open_viewport_window():
     # The pane streams this window alone, so the agent's own view in the main window never moves.
     window = _main_window()
-    if window is None or _has_viewport_window():
+    if window is None:
+        return None
+    found = _viewport_windows()
+    own = [
+        other
+        for other in found
+        if other.as_pointer() == _State.viewport_window and _lone_3d_view(other)
+    ]
+    # The hidden display streams the first lone 3D view window it finds, so a file's own (T3's
+    # from an earlier session, marked or from a build before the mark, in its saved fullscreen
+    # state, which the compositor's toggle undoes) would be streamed instead. After any load,
+    # every one T3 didn't open this launch is replaced by a fresh one, on the first pass only.
+    # T3's own turned into another editor goes too: it would go on being streamed.
+    windows = bpy.context.window_manager.windows
+    restored = [
+        other
+        for index, other in enumerate(windows)
+        if index > 0
+        and other.as_pointer() not in {kept.as_pointer() for kept in own}
+        and (
+            other.as_pointer() == _State.viewport_window
+            or _State.replace_loaded
+            and (other.screen.get(VIEWPORT_MARKER) or _lone_3d_view(other))
+        )
+    ]
+    _State.replace_loaded = False
+    if not own:
+        _State.viewport_window = None
+    if restored:
+        for other in restored:
+            # Closing one can take its child windows with it.
+            if other.as_pointer() not in {left.as_pointer() for left in windows}:
+                continue
+            with bpy.context.temp_override(window=other):
+                bpy.ops.wm.window_close()
+        return 0.2
+    if own:
         return None
     areas = [area for area in window.screen.areas if area.type == "VIEW_3D"]
     if not areas:
@@ -677,13 +830,21 @@ def _open_viewport_window():
         areas = [area]
     area = max(areas, key=lambda area: area.width * area.height)
     region = next(region for region in area.regions if region.type == "WINDOW")
+    before = {other.as_pointer() for other in bpy.context.window_manager.windows}
     with bpy.context.temp_override(window=window, screen=window.screen, area=area, region=region):
         bpy.ops.screen.area_dupli("INVOKE_DEFAULT")
+    opened = [
+        other for other in bpy.context.window_manager.windows if other.as_pointer() not in before
+    ]
+    if opened:
+        opened[-1].screen[VIEWPORT_MARKER] = True
+        _State.viewport_window = opened[-1].as_pointer()
     return None
 
 
 @persistent
 def _on_save_post(*_args):
+    _State.restored = False
     _check_authorized_file()
     # Saving the .blend saves its asset catalogs too.
     _State.catalogs_unsaved = False
@@ -691,18 +852,27 @@ def _on_save_post(*_args):
 
 @persistent
 def _on_load_post(*_args):
+    _State.loaded_at = time.time() * 1000
     _check_authorized_file()
+    _State.replace_loaded = True
     bpy.app.timers.register(_open_viewport_window, first_interval=0.2)
 
 
 def register():
     _setup_mcp_addon()
+    _keep_recovery_files()
+    try:
+        bpy.context.preferences.is_dirty = False
+    except AttributeError:
+        pass
     if SOCKET_PATH is not None:
         _State.server = _listen()
         bpy.app.timers.register(_tick, first_interval=TICK, persistent=True)
     bpy.app.handlers.load_post.append(_on_load_post)
     # Save As to another name is another file too, checked before anything else can run.
     bpy.app.handlers.save_post.append(_on_save_post)
+    if RECOVER_PATH is not None:
+        bpy.app.timers.register(_recover, first_interval=0.1)
     bpy.app.timers.register(_open_viewport_window, first_interval=0.5)
 
 

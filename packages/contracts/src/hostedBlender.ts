@@ -135,6 +135,32 @@ export const HostedBlenderRunningState = Schema.Struct({
 });
 export type HostedBlenderRunningState = typeof HostedBlenderRunningState.Type;
 
+/** A file a thread keeps a recovery copy of: one in its workspace, one outside it, or untitled. */
+export const HostedBlenderKeptFile = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("workspace"), relativePath: TrimmedNonEmptyString }),
+  Schema.Struct({ kind: Schema.Literal("outside"), path: TrimmedNonEmptyString }),
+  Schema.Struct({ kind: Schema.Literal("untitled") }),
+]);
+export type HostedBlenderKeptFile = typeof HostedBlenderKeptFile.Type;
+
+/**
+ * What a thread's hosted Blender left for one file: `closed` when T3 quit it (its thread settled
+ * or was archived, T3 shut down, or Hosted Blender was switched off), `crashed` when it stopped
+ * on its own. `recovery` is a copy of that file's session, unsaved changes included.
+ */
+export const HostedBlenderKeptCopy = Schema.Struct({
+  /** Names this copy to Reopen and Discard. */
+  key: Schema.String,
+  kind: Schema.Literals(["closed", "crashed"]),
+  file: HostedBlenderKeptFile,
+  recovery: Schema.Boolean,
+  /** The last try to restore it failed; the copy is kept. */
+  restoreFailed: Schema.optional(Schema.Boolean),
+  /** Where the copy is on the server, for one T3 can't reopen: untitled or outside the workspace. */
+  copyPath: Schema.optional(Schema.String),
+});
+export type HostedBlenderKeptCopy = typeof HostedBlenderKeptCopy.Type;
+
 /**
  * A thread's hosted Blender. `unavailable` is a host that can never run one (not Linux);
  * `notSetUp` is a Linux host missing `missing`.
@@ -151,6 +177,12 @@ export const HostedBlenderThreadState = Schema.Union([
   Schema.Struct({ status: Schema.Literal("stopped") }),
   /** The last start never showed Blender's viewport window. Opening a file again retries. */
   Schema.Struct({ status: Schema.Literal("failed") }),
+  /** No Blender running, and what earlier ones left for each file, newest first. */
+  Schema.Struct({
+    /** The newest copy's kind. */
+    status: Schema.Literals(["closed", "crashed"]),
+    copies: Schema.NonEmptyArray(HostedBlenderKeptCopy),
+  }),
   HostedBlenderRunningState,
 ]);
 export type HostedBlenderThreadState = typeof HostedBlenderThreadState.Type;
@@ -177,6 +209,12 @@ export const HostedBlenderMasterState = Schema.Union([
     desktopDirty: Schema.Boolean,
   }),
   Schema.Struct({ status: Schema.Literal("failed"), relativePath: TrimmedNonEmptyString }),
+  /** No master Blender running, and the one copy the last one left of the master file. */
+  Schema.Struct({
+    status: Schema.Literals(["closed", "crashed"]),
+    relativePath: TrimmedNonEmptyString,
+    copies: Schema.NonEmptyArray(HostedBlenderKeptCopy),
+  }),
   Schema.Struct({
     ...HostedBlenderRunningState.fields,
     /** A desktop Blender T3 couldn't ask was running when it opened, and may have it open too. */
@@ -201,9 +239,45 @@ export const HostedBlenderQuitInput = Schema.Struct({
   save: Schema.Boolean,
   /** Quitting the master Blender quits it for every thread sharing it. */
   role: Schema.optionalKey(HostedBlenderRole),
+  /** A master Blender by its key from the Running Blenders list, which may have no thread. */
+  master: Schema.optionalKey(Schema.String),
 });
 export type HostedBlenderQuitInput = typeof HostedBlenderQuitInput.Type;
 
+export const HostedBlenderDismissInput = Schema.Struct({
+  threadId: ThreadId,
+  /** The master's copy, shared by every thread whose master is that file. */
+  role: Schema.optionalKey(HostedBlenderRole),
+  /** Discards this copy; without one, clears a failed start. */
+  key: Schema.optional(Schema.String),
+});
+export type HostedBlenderDismissInput = typeof HostedBlenderDismissInput.Type;
+
+export const HostedBlenderReopenInput = Schema.Struct({
+  threadId: ThreadId,
+  /** The master's copy, restored in the master Blender, which the thread joins. */
+  role: Schema.optionalKey(HostedBlenderRole),
+  /** The kept copy whose file to reopen. */
+  key: Schema.String,
+  /** Restore that recovery copy or autosave instead of the file as saved. */
+  restore: Schema.Boolean,
+});
+export type HostedBlenderReopenInput = typeof HostedBlenderReopenInput.Type;
+
+/** One hosted Blender on this server, for the Running Blenders list. */
+export const HostedBlenderRunningBlender = Schema.Struct({
+  threadId: ThreadId,
+  status: Schema.Literals(["starting", "running"]),
+  relativePath: TrimmedNonEmptyString,
+  dirty: Schema.Boolean,
+  memoryBytes: Schema.NullOr(Schema.Number),
+  /** A master Blender's own key, which Quit takes: it may have no thread left. */
+  master: Schema.optionalKey(Schema.String),
+});
+export type HostedBlenderRunningBlender = typeof HostedBlenderRunningBlender.Type;
+
+export const HostedBlenderRunningList = Schema.Array(HostedBlenderRunningBlender);
+export type HostedBlenderRunningList = typeof HostedBlenderRunningList.Type;
 export const HostedBlenderThreadInput = Schema.Struct({
   threadId: ThreadId,
   role: Schema.optionalKey(HostedBlenderRole),
@@ -280,6 +354,8 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "otherFileOpen",
       "openInAnotherThread",
       "saveFailed",
+      "nothingToReopen",
+      "recoveryPending",
       "notRunning",
       "noReply",
       "noViewport",
@@ -315,6 +391,10 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "This file is already open in another thread's hosted Blender.";
       case "saveFailed":
         return "Blender could not save the file.";
+      case "nothingToReopen":
+        return "This thread has no closed hosted Blender to reopen.";
+      case "recoveryPending":
+        return "This thread's hosted Blender kept unsaved changes to this file. Reopen or discard them first.";
       case "notRunning":
         return "This thread has no hosted Blender running.";
       case "noReply":
@@ -479,9 +559,11 @@ export const HostedBlenderToolStatusResult = Schema.Struct({
   blenders: Schema.Array(
     Schema.Struct({
       role: HostedBlenderRole,
-      status: Schema.Literals(["starting", "running", "failed"]),
-      /** The open file's absolute path; absent for a start that failed. */
+      status: Schema.Literals(["starting", "running", "failed", "closed", "crashed"]),
+      /** The file's absolute path; absent for a start that failed or an untitled scene. */
       file: Schema.optionalKey(Schema.String),
+      /** Closed or crashed: a recovery copy of its session that Reopen in the pane can restore. */
+      recovery: Schema.optionalKey(Schema.Boolean),
       unsavedChanges: Schema.optionalKey(Schema.Boolean),
       /** Whether its Blender MCP takes this thread's `blender-hosted` calls. */
       agentAccess: Schema.optionalKey(Schema.Boolean),

@@ -10,6 +10,8 @@ export interface BlenderLaunch {
   readonly blendPath: string;
   readonly controlSocket: string;
   readonly mcpPort: number;
+  /** A recovery copy or autosave the control add-on restores over `blendPath`. */
+  readonly recover?: string | null;
   /** The official add-on listens on `mcpPort` for the thread's agent; otherwise it stays off. */
   readonly mcpListen?: boolean;
   /** The launch's own copy of Blender Lab's extension, the only one its grant may load. */
@@ -51,6 +53,7 @@ export const helperArguments = (launch: BlenderLaunch): ReadonlyArray<string> =>
   launch.controlSocket,
   "--t3-mcp-port",
   String(launch.mcpPort),
+  ...(launch.recover ? ["--t3-recover", launch.recover] : []),
   ...(launch.mcpListen === true ? ["--t3-mcp-listen"] : []),
   ...(launch.mcpSnapshot === undefined ? [] : ["--t3-mcp-snapshot", launch.mcpSnapshot]),
 ];

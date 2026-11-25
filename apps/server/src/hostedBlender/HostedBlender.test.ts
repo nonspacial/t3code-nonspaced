@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - the real-Blender fixture probes the host and reads Blender's /proc entries.
 import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
@@ -11,10 +12,11 @@ import { assert, describe, expect, it } from "@effect/vitest";
 import { type HostedBlenderThreadState, type RuntimeMode, ThreadId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -45,11 +47,15 @@ interface Host {
   readonly env: NodeJS.ProcessEnv;
   readonly workspaceRoot: string;
   readonly baseDir: string;
+  /** Runs before each thread lookup, so a test can hold `open` mid-validation. */
+  readonly beforeThreadLookup?: () => Effect.Effect<void>;
   readonly runtimeMode?: RuntimeMode;
   readonly interactionMode?: "default" | "plan";
   /** The thread's agent session holds the hosted Blender MCP on this port. */
   readonly agentPort?: number;
   /** Agent access T3 takes back, by thread (null for every thread). */
+  /** What setup reports after its first readiness, as Settings changes it. */
+  readonly readinessChanges?: Stream.Stream<HostedBlenderSetup.HostedBlenderReadiness>;
   readonly revocations?: Stream.Stream<HostedBlenderAgents.HostedBlenderRevocation | null>;
   /** Each thread's `blender-master` port, held by its agent session. */
   readonly masterPorts?: ReadonlyMap<ThreadId, number>;
@@ -93,20 +99,25 @@ const layerFor = (host: Host) =>
             check: Effect.void,
             ensureChecked: Effect.void,
             installWithAgent: Effect.die("not used"),
-            readiness: Stream.concat(Stream.succeed(readinessFor(host)), Stream.never),
+            readiness: Stream.concat(
+              Stream.succeed(readinessFor(host)),
+              host.readinessChanges ?? Stream.never,
+            ),
           }),
         ),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadShell: (id) =>
-            Effect.succeed(
-              id === threadId || id === otherThreadId
-                ? ({
-                    worktreePath: host.workspaceRoot,
-                    projectId: "project",
-                    runtimeMode: host.runtimeMode ?? "approval-required",
-                    interactionMode: host.interactionMode ?? "default",
-                  } as never)
-                : null,
+            Effect.suspend(() => host.beforeThreadLookup?.() ?? Effect.void).pipe(
+              Effect.as(
+                id === threadId || id === otherThreadId
+                  ? ({
+                      worktreePath: host.workspaceRoot,
+                      projectId: "project",
+                      runtimeMode: host.runtimeMode ?? "approval-required",
+                      interactionMode: host.interactionMode ?? "default",
+                    } as never)
+                  : null,
+              ),
             ),
         }),
         Layer.mock(ProjectService.ProjectService)({}),
@@ -162,7 +173,9 @@ const tempDir = (prefix: string) =>
   );
 
 const firstState = (service: HostedBlender.HostedBlender["Service"]) =>
-  service.threadState(threadId).pipe(Stream.runHead, Effect.map(Option.getOrThrow));
+  service
+    .threadState(threadId)
+    .pipe(Stream.runHead, Effect.map(Option.getOrThrow), Effect.map(card));
 
 /** A PATH holding stand-ins for Blender, labwc and the helper, which never start Blender. */
 const fakeTools = (dir: string, helper = "exit 1") => {
@@ -181,21 +194,53 @@ const fakeTools = (dir: string, helper = "exit 1") => {
 const WAITING_HELPER = 'while read line; do case "$line" in *quit*) exit 0;; esac; done';
 
 /**
- * Stands in for the helper and its Blender: answers the control socket as the add-on would (per
- * STANDIN_SCENARIO), reports the file dirty, logs saves to STANDIN_SAVES and commands to
- * STANDIN_COMMANDS, answers keyframe requests and resizes, and on `quit` writes STANDIN_MARKER.
+ * Stands in for the helper and its Blender, answering the control socket as the add-on would
+ * (per STANDIN_SCENARIO). Like Blender, a quit without saving leaves quit.blend in its TMPDIR,
+ * and SIGUSR1 crashes it leaving an autosave. It answers keyframe requests and resizes, and
+ * STANDIN_* files record what it was asked to do.
  */
 const STANDIN_HELPER = String.raw`
-import json, os, socket, struct, sys, threading, time
+import json, os, signal, socket, struct, sys, threading, time
+own = sys.argv[1:][:sys.argv[1:].index("--")]
 rest = sys.argv[1:][sys.argv[1:].index("--") + 1:]
 t3 = rest[rest.index("--") + 1:]
 scenario = os.environ.get("STANDIN_SCENARIO", "")
+tmp = os.path.join(own[own.index("--state-dir") + 1], "tmp")
+os.makedirs(tmp, exist_ok=True)
+if os.environ.get("STANDIN_LAUNCHES"):
+    with open(os.environ["STANDIN_LAUNCHES"], "a") as log:
+        log.write(json.dumps(rest) + "\n")
+if os.environ.get("STANDIN_PID"):
+    open(os.environ["STANDIN_PID"], "w").write(str(os.getpid()))
 lock = threading.Lock()
 def event(value):
     data = json.dumps(value).encode()
     with lock:
         sys.stdout.buffer.write(struct.pack(">IB", len(data) + 1, 1) + data)
         sys.stdout.buffer.flush()
+state = {"connection": None, "stem": "cube"}
+matrix = json.load(open(os.environ["STANDIN_MATRIX"])) if scenario == "matrix" else {}
+def lose_connection(*_args):
+    # Blender dies: its autosave of the file it has open stays (named as Blender names it), and
+    # the add-on's connection really drops (shutdown, as close leaves it open while the reader
+    # holds it), though the helper is still running.
+    if matrix.get("autosave", True):
+        name = "%s_4242_autosave.blend" % state["stem"] if state["stem"] else "4242_autosave.blend"
+        open(os.path.join(tmp, name), "w").write("autosave")
+    if state["connection"] is not None:
+        try:
+            state["connection"].shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+def crash(*_args):
+    lose_connection()
+    event({"type": "exited", "process": "blender", "code": None, "signal": 11})
+# Handled on a thread of their own: a handler runs on the main thread, which may be holding
+# the stdout lock mid-packet when the signal lands.
+signal.signal(signal.SIGUSR2, lambda *_args: threading.Thread(target=lose_connection).start())
+signal.signal(signal.SIGUSR1, lambda *_args: threading.Thread(target=crash).start())
+state["finishing"] = threading.Event()
+state["finishing"].set()
 def video(key):
     # A SEMU header (magic, version, flags, pts) and one byte of "access unit".
     data = struct.pack(">IBBHQ", 0x53454D55, 1, 1 if key else 0, 0, 0) + b"\x00"
@@ -203,12 +248,26 @@ def video(key):
         sys.stdout.buffer.write(struct.pack(">IB", len(data) + 1, 2) + data)
         sys.stdout.buffer.flush()
 server = socket.socket(socket.AF_UNIX)
-server.bind(t3[t3.index("--t3-control") + 1])
-server.listen(1)
+def listen():
+    # "late-control": the add-on's socket appears only once the test creates STANDIN_BIND.
+    if scenario == "late-control":
+        while not os.path.exists(os.environ["STANDIN_BIND"]):
+            time.sleep(0.05)
+    if scenario == "never-connects":
+        threading.Event().wait()
+    if scenario == "late-slow-quit":
+        time.sleep(3)
+    server.bind(t3[t3.index("--t3-control") + 1])
+    server.listen(1)
 event({"type": "ready", "capture": "extImageCopyCapture", "target": "window",
        "encoder": "x264enc", "width": 1280, "height": 720, "cursorTracking": True})
 if scenario != "never-shows":
     event({"type": "windowCaptured", "title": "3D Viewport"})
+def send(connection, value):
+    if value.get("type") == "state":
+        state["open"] = value["filepath"]
+        state["dirty"] = value["dirty"]
+    connection.sendall((json.dumps(value) + "\n").encode())
 # A 1x1 PNG, as the add-on renders the viewport into the control socket's private folder.
 PIXEL = bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de"
@@ -235,9 +294,46 @@ def view_reply(command):
     screenshot(command["screenshot"])
     return {"width": 1, "height": 1}
 def control():
+    listen()
     connection, _ = server.accept()
-    connection.sendall(b'{"type": "hello", "pid": %d}\n' % os.getpid())
-    connection.sendall(b'{"type": "state", "filepath": "cube.blend", "dirty": true}\n')
+    state["connection"] = connection
+    send(connection, {"type": "hello", "pid": os.getpid()})
+    # Blender reports the file it has open by its full path, as it was given.
+    opened = next(arg for arg in rest if arg.endswith(".blend"))
+    first = {"type": "state", "filepath": opened,
+             "dirty": scenario not in ("switches", "matrix", "quit-dirty", "quit-other")}
+    if "--t3-recover" in t3 and scenario != "restore-silent":
+        first["restore"] = "failed" if scenario == "restore-fails" else matrix.get("restore", "ok")
+        if scenario == "restored-elsewhere":
+            # The copy brings back the path it was saved from, which isn't where it reopened.
+            first["filepath"] = "/elsewhere/cube.blend"
+    send(connection, first)
+    if scenario == "opens-other" and "--t3-recover" not in t3:
+        # The person opens another file of the workspace from Blender's own File menu.
+        send(connection, dict(first, filepath=os.path.join(os.path.dirname(opened), "other.blend")))
+    if scenario == "matrix":
+        # Ends on the file asked for, clean or dirty; a dirty state first tells the test T3 has
+        # read everything before it.
+        end = {"same": opened, "other": os.path.join(os.path.dirname(opened), "other.blend"),
+               "outside": "/elsewhere/outside.blend", "untitled": ""}[matrix["end"]]
+        state["stem"] = os.path.basename(end)[:-len(".blend")] if end else ""
+        last = {"type": "state", "filepath": end, "dirty": True}
+        send(connection, last)
+        if not matrix["dirty"] and not matrix.get("revert"):
+            send(connection, dict(last, dirty=False))
+        if matrix.get("revert"):
+            # Edited and autosaved, then reverted to the file as saved, which Blender reports
+            # as a load after that autosave.
+            open(os.path.join(tmp, "%s_4242_autosave.blend" % state["stem"]), "w").write("autosave")
+            time.sleep(0.01)
+            send(connection, dict(last, dirty=False, loadedAt=time.time() * 1000))
+    if scenario == "opens-outside":
+        # The person opens a file from outside the workspace and edits it.
+        send(connection, dict(first, filepath="/elsewhere/outside.blend"))
+    if scenario == "switches":
+        # Opens another file and edits it: once T3 sees it dirty, it has seen the switch.
+        other = os.path.join(os.path.dirname(opened), "other.blend")
+        send(connection, dict(first, filepath=other, dirty=True))
     saves = 0
     view = {"position": [7, -7, 5], "target": [0, 0, 1]}
     outstanding = [0]
@@ -249,6 +345,31 @@ def control():
         connection.sendall((json.dumps({"type": "reply", "id": command["id"], "result": result}) + "\n").encode())
     for line in connection.makefile():
         command = json.loads(line)
+        if command.get("type") == "quit" and not command.get("save"):
+            if scenario == "ignores-quit":
+                continue
+            # As the add-on does: the file and its unsaved bit as they are as it begins to quit.
+            # "quit-dirty" was edited, and "quit-other" opened another file, since it last said.
+            other = os.path.join(os.path.dirname(opened), "other.blend")
+            quitting = {"type": "quitting", "filepath": state.get("open", opened),
+                        "dirty": state.get("dirty", True)}
+            if scenario == "quit-dirty":
+                quitting["dirty"] = True
+            if scenario == "quit-other":
+                quitting.update(filepath=other, dirty=True)
+            send(connection, quitting)
+            # Its quit pushes an undo step, so its next report is unsaved.
+            send(connection, {"type": "state", "filepath": state.get("open", opened), "dirty": True})
+            state["finishing"].clear()
+            if scenario in ("slow-quit", "late-slow-quit"):
+                # Still writing its quit copy past T3's shutdown deadline.
+                time.sleep(5)
+            if scenario != "no-quit-copy":
+                open(os.path.join(tmp, "quit.blend"), "w").write("quit copy %d" % os.getpid())
+            event({"type": "exited", "process": "blender", "code": 0, "signal": None})
+            connection.close()
+            state["finishing"].set()
+            return
         kind = command.get("type")
         if kind == "hits" and scenario == "slow-hits":
             outstanding[0] += 1
@@ -300,16 +421,45 @@ def control():
         with open(os.environ["STANDIN_SAVES"], "a") as log:
             log.write("save\n")
         connection.sendall(b'{"type": "saving"}\n')
+        if scenario == "held-save":
+            # Acknowledged, then fails once the test creates STANDIN_BIND.
+            def fail_when_released():
+                while not os.path.exists(os.environ["STANDIN_BIND"]):
+                    time.sleep(0.05)
+                connection.sendall(b'{"type": "quitFailed", "reason": "saveFailed"}\n')
+            threading.Thread(target=fail_when_released, daemon=True).start()
+            continue
+        if scenario == "late-failing-save":
+            # Acknowledged, then fails only after T3's 20-second settle deadline.
+            threading.Timer(21.0, lambda: connection.sendall(
+                b'{"type": "quitFailed", "reason": "saveFailed"}\n')).start()
+            continue
         if scenario == "exit-while-saving":
             os._exit(0)
         if scenario == "drop-socket":
             connection.close()
             server.close()
             return
+        if scenario == "saved-then-dirty":
+            # Saved, then ending the agent's grant recorded its pending work: unsaved again,
+            # and Blender quits into its quit copy.
+            send(connection, {"type": "saved", "filepath": opened, "dirty": True})
+            open(os.path.join(tmp, "quit.blend"), "w").write("quit copy %d" % os.getpid())
+            event({"type": "exited", "process": "blender", "code": 0, "signal": None})
+            connection.close()
+            return
+        if scenario == "save-other":
+            # Opened other.blend since it last said, and that is the file it saved.
+            send(connection, {"type": "saved", "dirty": False,
+                              "filepath": os.path.join(os.path.dirname(opened), "other.blend")})
+            open(os.path.join(tmp, "quit.blend"), "w").write("quit copy %d" % os.getpid())
+            event({"type": "exited", "process": "blender", "code": 0, "signal": None})
+            connection.close()
+            return
         if scenario == "saved-then-exit":
             # Saved, then a moment before Blender is gone; "clean" marks the moment.
-            connection.sendall(b'{"type": "saved"}\n')
-            connection.sendall(b'{"type": "state", "filepath": "cube.blend", "dirty": false}\n')
+            send(connection, {"type": "saved", "filepath": opened, "dirty": False})
+            send(connection, {"type": "state", "filepath": opened, "dirty": False})
             connection.close()
             threading.Timer(1.0, lambda: os._exit(0)).start()
             return
@@ -317,6 +467,11 @@ def control():
             threading.Timer(1.0, lambda: connection.sendall(
                 b'{"type": "quitFailed", "reason": "saveFailed"}\n')).start()
 threading.Thread(target=control, daemon=True).start()
+def stopped(how):
+    marker = os.environ.get("STANDIN_MARKER")
+    if marker:
+        open(marker, "w").write(how)
+    os._exit(0)
 for line in sys.stdin:
     command = json.loads(line)
     if command.get("type") != "quit":
@@ -338,19 +493,23 @@ for line in sys.stdin:
     # A middle-drag orbit: Blender hides its cursor while the button is down.
     if command.get("type") == "pointerButton" and command.get("button") == 274:
         event({"type": "cursorLeave"} if command["pressed"] else {"type": "cursorEnter", "x": 1, "y": 2})
+    if '"quit"' in line and scenario == "never-connects":
+        continue  # A helper stuck stopping Blender.
     if '"quit"' in line:
-        marker = os.environ.get("STANDIN_MARKER")
-        if marker:
-            open(marker, "w").write("quit")
-        os._exit(0)
-os._exit(0)
+        stopped("quit" if state["finishing"].is_set() else "killed")
+stopped("quit" if state["finishing"].is_set() else "killed")
 `;
 const python = NodeChildProcess.execFileSync("sh", ["-c", "command -v python3"], {
   encoding: "utf8",
 }).trim();
 
 /** A workspace with cube.blend, served by the stand-in helper in `scenario`. */
-const standIn = Effect.fn(function* (prefix: string, scenario: string) {
+const standIn = Effect.fn(function* (
+  prefix: string,
+  scenario: string,
+  beforeThreadLookup?: () => Effect.Effect<void>,
+  host: Pick<Host, "readinessChanges"> = {},
+) {
   const dir = yield* tempDir(prefix);
   const bin = fakeTools(dir);
   NodeFS.writeFileSync(NodePath.join(bin, "helper"), `#!${python}\n${STANDIN_HELPER}`, {
@@ -363,29 +522,39 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
   const savesLog = NodePath.join(dir, "saves.log");
   const inputLog = NodePath.join(dir, "input.log");
   const commandLog = NodePath.join(dir, "commands.log");
-  const service = yield* serviceFor(
-    layerFor({
-      env: {
-        PATH: bin,
-        XDG_RUNTIME_DIR: runtime,
-        STANDIN_SCENARIO: scenario,
-        STANDIN_MARKER: marker,
-        STANDIN_SAVES: savesLog,
-        STANDIN_INPUT: inputLog,
-        STANDIN_COMMANDS: commandLog,
-      },
-      helper: NodePath.join(bin, "helper"),
-      workspaceRoot: dir,
-      baseDir: dir,
-    }),
-  );
+  const launchesLog = NodePath.join(dir, "launches.log");
+  const pidFile = NodePath.join(dir, "helper.pid");
+  const layer = layerFor({
+    env: {
+      PATH: bin,
+      XDG_RUNTIME_DIR: runtime,
+      STANDIN_SCENARIO: scenario,
+      STANDIN_MARKER: marker,
+      STANDIN_SAVES: savesLog,
+      STANDIN_INPUT: inputLog,
+      STANDIN_COMMANDS: commandLog,
+      STANDIN_LAUNCHES: launchesLog,
+      STANDIN_PID: pidFile,
+      STANDIN_BIND: NodePath.join(dir, "bind"),
+      STANDIN_MATRIX: NodePath.join(dir, "matrix.json"),
+    },
+    helper: NodePath.join(bin, "helper"),
+    workspaceRoot: dir,
+    baseDir: dir,
+    ...(beforeThreadLookup === undefined ? {} : { beforeThreadLookup }),
+    ...host,
+  });
+  const service = yield* serviceFor(layer);
   const states = yield* Queue.unbounded<HostedBlenderThreadState>();
   yield* service.threadState(threadId).pipe(
     Stream.runForEach((state) => Queue.offer(states, state)),
     Effect.forkScoped,
   );
   const awaitStatus = (status: HostedBlenderThreadState["status"]) =>
-    Queue.take(states).pipe(Effect.repeat({ until: (state) => state.status === status }));
+    Queue.take(states).pipe(
+      Effect.repeat({ until: (state) => state.status === status }),
+      Effect.map(card),
+    );
   const awaitDirty = (dirty: boolean) =>
     Queue.take(states).pipe(
       Effect.repeat({ until: (state) => state.status === "running" && state.dirty === dirty }),
@@ -411,10 +580,21 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
           .filter((line) => line.length > 0)
           .map((line) => JSON.parse(line))
       : [];
+  /** Every launch's Blender arguments, oldest first. */
+  const launches = (): ReadonlyArray<ReadonlyArray<string>> =>
+    NodeFS.existsSync(launchesLog)
+      ? NodeFS.readFileSync(launchesLog, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line))
+      : [];
+  const hostedDir = NodePath.join(dir, "userdata", "hosted-blender");
   const helperInput = (): unknown[] => readLog(inputLog);
   /** Every command the helper got but quit, in order. */
   const helperCommands = () => readLog(commandLog);
   return {
+    dir,
+    layer,
     service,
     awaitStatus,
     awaitDirty,
@@ -425,8 +605,61 @@ const standIn = Effect.fn(function* (prefix: string, scenario: string) {
     helperCommands,
     marker,
     runtime,
+    launches,
+    hostedDir,
+    /** Lets a "late-control" stand-in's add-on socket appear. */
+    bind: () => NodeFS.writeFileSync(NodePath.join(dir, "bind"), ""),
+    /** Crashes the stand-in Blender, by the pid it wrote itself at spawn. */
+    crash: () => process.kill(Number(NodeFS.readFileSync(pidFile, "utf8")), "SIGUSR1"),
+    /** Drops the stand-in Blender's connection, leaving it to report its exit on `crash`. */
+    loseConnection: () => process.kill(Number(NodeFS.readFileSync(pidFile, "utf8")), "SIGUSR2"),
   };
 });
+
+const CUBE = "workspace:cube.blend";
+const OTHER = "workspace:other.blend";
+
+/** The kept copy of one file (cube.blend by default) of the thread, and what it holds. */
+const recoveryOf = (hostedDir: string, key = CUBE, thread: string = threadId) => {
+  const root = NodePath.join(hostedDir, "recovery", Buffer.from(thread).toString("base64url"));
+  for (const folder of NodeFS.existsSync(root) ? NodeFS.readdirSync(root) : []) {
+    const recordPath = NodePath.join(root, folder, "record.json");
+    if (!NodeFS.existsSync(recordPath)) continue;
+    const record = JSON.parse(NodeFS.readFileSync(recordPath, "utf8"));
+    const file = record.file;
+    const recordKey =
+      file.kind === "workspace"
+        ? `workspace:${file.relativePath}`
+        : file.kind === "outside"
+          ? `outside:${file.path}`
+          : "untitled";
+    if (recordKey !== key) continue;
+    const session = NodePath.join(root, folder, "session.blend");
+    return {
+      record,
+      session,
+      contents: NodeFS.existsSync(session) ? NodeFS.readFileSync(session, "utf8") : null,
+    };
+  }
+  return null;
+};
+
+/** A thread state, with a closed or crashed one shown as its newest copy, as the card is. */
+const card = (state: HostedBlenderThreadState) => {
+  if (!("copies" in state)) return state;
+  const [newest, ...rest] = state.copies;
+  return {
+    status: state.status,
+    ...(newest.file.kind === "workspace"
+      ? { relativePath: newest.file.relativePath }
+      : newest.file.kind === "outside"
+        ? { outside: newest.file.path }
+        : { untitled: true }),
+    recovery: newest.recovery,
+    ...(newest.restoreFailed ? { restoreFailed: true } : {}),
+    ...(rest.length > 0 ? { alsoKept: rest.map((copy) => copy.key) } : {}),
+  };
+};
 
 describe("Save and quit", () => {
   it.live("fails when Blender exits before confirming the save", () =>
@@ -487,6 +720,1419 @@ describe("Save and quit", () => {
       yield* Fiber.join(first);
       yield* awaitStatus("stopped");
       expect(saveCommands()).toBe(1);
+    }).pipe(Effect.scoped),
+  );
+});
+
+/** A launch folder a stopped server left behind, and the copy already waiting for the thread. */
+/** A copy of cube.blend left waiting by an earlier run, in today's layout. */
+const waitingCopy = (hostedDir: string, contents: string, relativePath = "cube.blend") => {
+  const key = `workspace:${relativePath}`;
+  const folder = NodePath.join(
+    hostedDir,
+    "recovery",
+    Buffer.from(threadId).toString("base64url"),
+    NodeCrypto.createHash("sha256").update(key).digest("hex"),
+  );
+  NodeFS.mkdirSync(folder, { recursive: true });
+  NodeFS.writeFileSync(NodePath.join(folder, "session.blend"), contents);
+  NodeFS.writeFileSync(
+    NodePath.join(folder, "record.json"),
+    JSON.stringify({
+      threadId,
+      file: { kind: "workspace", relativePath },
+      kind: "closed",
+      recovery: true,
+      keptAt: 1,
+    }),
+  );
+};
+
+const leftover = (
+  dir: string,
+  input: {
+    readonly facts?: {
+      readonly restore: string;
+      readonly saved: boolean;
+      readonly changed: boolean;
+      readonly relativePath?: string;
+      /** A master's file, by its real path, as a master's run names it. */
+      readonly path?: string;
+    };
+    readonly waiting?: string;
+    readonly helperPid?: number;
+    readonly name?: string;
+    /** Whose launch it was: a thread's, or every master's one owner. */
+    readonly owner?: string;
+  },
+) => {
+  const hostedDir = NodePath.join(dir, "userdata", "hosted-blender");
+  const launchDir = NodePath.join(hostedDir, "launches", input.name ?? "left");
+  NodeFS.mkdirSync(NodePath.join(launchDir, "tmp"), { recursive: true });
+  NodeFS.writeFileSync(
+    NodePath.join(launchDir, "launch.json"),
+    JSON.stringify({
+      threadId: input.owner ?? threadId,
+      relativePath: "cube.blend",
+      helperPid: input.helperPid,
+    }),
+  );
+  NodeFS.writeFileSync(NodePath.join(launchDir, "outcome"), "closing");
+  if (input.facts) {
+    const { restore, saved, changed, relativePath = "cube.blend", path } = input.facts;
+    NodeFS.writeFileSync(
+      NodePath.join(launchDir, "run.json"),
+      JSON.stringify({
+        restore,
+        endFile:
+          path === undefined
+            ? {
+                file: { kind: "workspace", relativePath },
+                path: NodePath.join(dir, relativePath),
+                since: 0,
+              }
+            : { file: { kind: "outside", path }, path, since: 0 },
+        saved,
+        clean: !changed,
+      }),
+    );
+  }
+  // Written as Blender quit, after any save of the file.
+  const quitCopy = NodePath.join(launchDir, "tmp", "quit.blend");
+  NodeFS.writeFileSync(quitCopy, "left behind");
+  const later = NodeFS.statSync(quitCopy).mtimeMs / 1000 + 60;
+  NodeFS.utimesSync(quitCopy, later, later);
+  if (input.waiting !== undefined) waitingCopy(hostedDir, input.waiting);
+  return { hostedDir, launchDir };
+};
+
+/** Once `file` exists in `dir`, checked as the watch starts, so one already there counts. */
+const fileAppears = (dir: string, file: string, ready = () => NodeFS.existsSync(file)) =>
+  Effect.promise(
+    () =>
+      new Promise<void>((resolve) => {
+        const check = () => {
+          if (!ready()) return;
+          watcher.close();
+          resolve();
+        };
+        const watcher = NodeFS.watch(dir, check);
+        check();
+      }),
+  );
+
+/** A service on `dir` whose Blenders never start: only startup and records are under test. */
+const idleService = (dir: string) => {
+  const bin = fakeTools(dir);
+  NodeFS.writeFileSync(NodePath.join(dir, "cube.blend"), "");
+  NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+  return serviceFor(
+    layerFor({
+      env: { PATH: bin },
+      helper: NodePath.join(bin, "helper"),
+      workspaceRoot: dir,
+      baseDir: dir,
+    }),
+  );
+};
+
+interface Cell {
+  readonly waiting: boolean;
+  readonly restore: "none" | "ok" | "failed";
+  readonly dirty: boolean;
+  readonly end: "same" | "other" | "outside" | "untitled";
+  readonly ending: "settle" | "crash";
+  readonly autosave?: boolean;
+  readonly revert?: boolean;
+}
+
+const END_KEYS = {
+  same: CUBE,
+  other: OTHER,
+  outside: "outside:/elsewhere/outside.blend",
+  untitled: "untitled",
+} as const;
+
+/**
+ * One run of a thread with or without a copy of cube.blend waiting: restored or not (or failing
+ * to), changed or not, ending on cube.blend or another file, by a settle or a crash. Returns
+ * the thread's copies after, by key, and its state.
+ */
+const runCell = Effect.fn(function* (cell: Cell) {
+  const name = `m-${cell.waiting ? "w" : "n"}-${cell.restore}-${cell.dirty ? "d" : "c"}-${cell.end}-${cell.ending}`;
+  const { dir, layer, hostedDir, crash } = yield* standIn(name, "matrix");
+  NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+  NodeFS.writeFileSync(
+    NodePath.join(dir, "matrix.json"),
+    JSON.stringify({
+      restore: cell.restore,
+      dirty: cell.dirty,
+      end: cell.end,
+      autosave: cell.autosave ?? true,
+      revert: cell.revert ?? false,
+    }),
+  );
+  if (cell.waiting) waitingCopy(hostedDir, "waiting copy");
+  const before = recoveryOf(hostedDir);
+  const service = yield* serviceFor(layer);
+  const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+  yield* service.threadState(threadId).pipe(
+    Stream.runForEach((state) => Queue.offer(states, state)),
+    Effect.forkScoped,
+  );
+  const until = (matches: (state: HostedBlenderThreadState) => boolean) =>
+    Queue.take(states).pipe(Effect.repeat({ until: matches }));
+  if (cell.restore !== "none") {
+    yield* service.reopen({ threadId, key: CUBE, restore: true });
+  } else if (cell.waiting) {
+    // Open as last saved: the waiting copy isn't restored.
+    yield* service.reopen({ threadId, key: CUBE, restore: false });
+  } else {
+    yield* service.open({ threadId, relativePath: "cube.blend" });
+  }
+  if (cell.restore === "failed") {
+    // A copy waiting shows its card first; this run's end is the card after it starts.
+    yield* until((state) => state.status === "starting");
+    yield* until((state) => state.status === "closed" || state.status === "crashed");
+  } else {
+    // T3 has read every state the add-on sent once it has seen one dirty, then its last.
+    let sawDirty = false;
+    yield* until((state) => {
+      if ("dirty" in state && state.dirty) sawDirty = true;
+      return sawDirty && state.status === "running" && state.dirty === cell.dirty;
+    });
+    if (cell.ending === "settle") {
+      yield* service.closeOnSettle({ threadId });
+    } else {
+      crash();
+    }
+    // Gone: a card, or none when nothing was kept.
+    yield* until((state) => state.status !== "running" && state.status !== "starting");
+  }
+  const copies = yield* service.keptCopies(threadId);
+  const threadDir = NodePath.join(
+    hostedDir,
+    "recovery",
+    Buffer.from(threadId).toString("base64url"),
+  );
+  const folders = NodeFS.existsSync(threadDir) ? NodeFS.readdirSync(threadDir) : [];
+  const misfiled = folders.filter((folder) => {
+    const record = JSON.parse(
+      NodeFS.readFileSync(NodePath.join(threadDir, folder, "record.json"), "utf8"),
+    );
+    const key =
+      record.file.kind === "workspace"
+        ? `workspace:${record.file.relativePath}`
+        : record.file.kind === "outside"
+          ? `outside:${record.file.path}`
+          : "untitled";
+    return folder !== NodeCrypto.createHash("sha256").update(key).digest("hex");
+  });
+  return {
+    service,
+    before,
+    misfiled,
+    copies: new Map(copies.map((copy) => [copy.key, copy])),
+    cube: recoveryOf(hostedDir),
+    end: recoveryOf(hostedDir, END_KEYS[cell.end]),
+  };
+});
+
+const CELLS: ReadonlyArray<Cell> = [false, true].flatMap((waiting) =>
+  (waiting ? (["none", "ok", "failed"] as const) : (["none"] as const)).flatMap((restore) =>
+    [false, true].flatMap((dirty) =>
+      (["same", "other", "untitled"] as const).flatMap((end) =>
+        (["settle", "crash"] as const).map((ending) => ({ waiting, restore, dirty, end, ending })),
+      ),
+    ),
+  ),
+);
+
+describe("One recovery copy per file", () => {
+  it.live(
+    "no run loses a copy, overwrites one with another file's, or names it after another file",
+    () =>
+      Effect.forEach(
+        CELLS,
+        (cell) =>
+          Effect.gen(function* () {
+            const label = JSON.stringify(cell);
+            const { before, copies, cube, end, misfiled } = yield* runCell(cell);
+            const snapshot = cell.ending === "settle" ? /^quit copy / : /^autosave$/;
+            // Every record is in its own file's folder, labelled with that file.
+            expect(misfiled, label).toEqual([]);
+            if (cell.restore === "failed") {
+              // The saved file was open, never the copy's work: everything stays as it was.
+              expect(cube, label).toEqual(before);
+              expect(copies.get(CUBE)?.restoreFailed, label).toBe(true);
+              expect(copies.size, label).toBe(1);
+              return;
+            }
+            if (cell.ending === "settle" && !cell.dirty) {
+              // Blender's last word was clean: nothing new is kept, and no copy is touched.
+              expect(cube, label).toEqual(before);
+              expect(copies.size, label).toBe(cell.waiting ? 1 : 0);
+              return;
+            }
+            if (cell.end === "same") {
+              // A newer copy of the same file replaces its older one.
+              expect(cube?.contents, label).toMatch(snapshot);
+              expect(cube?.record.kind, label).toBe(
+                cell.ending === "settle" ? "closed" : "crashed",
+              );
+              expect(copies.size, label).toBe(1);
+              return;
+            }
+            // Ending on another file never reads, relabels, replaces or deletes cube.blend's.
+            expect(cube, label).toEqual(before);
+            expect(end?.contents, label).toMatch(snapshot);
+            expect(copies.get(END_KEYS[cell.end])?.kind, label).toBe(
+              cell.ending === "settle" ? "closed" : "crashed",
+            );
+            expect(copies.size, label).toBe(cell.waiting ? 2 : 1);
+          }),
+        { discard: true },
+      ).pipe(Effect.scoped),
+  );
+
+  it.live("a clean look at a file keeps nothing, and the file opens normally after", () =>
+    Effect.gen(function* () {
+      const { copies, cube, service } = yield* runCell({
+        waiting: false,
+        restore: "none",
+        dirty: false,
+        end: "same",
+        ending: "settle",
+      });
+      expect(cube).toBeNull();
+      expect(copies.size).toBe(0);
+      expect((yield* firstState(service)).status).toBe("stopped");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a clean look at a file whose copy waits leaves that copy as it was", () =>
+    Effect.gen(function* () {
+      const { before, copies, cube } = yield* runCell({
+        waiting: true,
+        restore: "none",
+        dirty: false,
+        end: "same",
+        ending: "settle",
+      });
+      expect(cube).toEqual(before);
+      expect(cube?.contents).toBe("waiting copy");
+      expect(copies.get(CUBE)).toMatchObject({ kind: "closed", recovery: true });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a file left unsaved replaces its waiting copy with the newer one", () =>
+    Effect.gen(function* () {
+      const { copies, cube } = yield* runCell({
+        waiting: true,
+        restore: "none",
+        dirty: true,
+        end: "same",
+        ending: "settle",
+      });
+      expect(cube?.contents).toMatch(/^quit copy /);
+      expect(copies.get(CUBE)).toMatchObject({ kind: "closed", recovery: true });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("M15: a crash after a revert never offers an autosave from before it", () =>
+    Effect.gen(function* () {
+      const { before, cube } = yield* runCell({
+        waiting: true,
+        restore: "none",
+        dirty: false,
+        end: "same",
+        ending: "crash",
+        autosave: false,
+        revert: true,
+      });
+      expect(cube).toEqual(before);
+      expect(cube?.contents).toBe("waiting copy");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("M13: an edit after Blender's last report is kept, as its quit says", () =>
+    Effect.gen(function* () {
+      const { service, awaitStatus, hostedDir } = yield* standIn("quit-dirty", "quit-dirty");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitStatus("running");
+      yield* service.closeOnSettle({ threadId });
+      expect(yield* awaitStatus("closed")).toEqual({
+        status: "closed",
+        relativePath: "cube.blend",
+        recovery: true,
+      });
+      expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "M13: a file opened after Blender's last report is the one its quit copy is filed under",
+    () =>
+      Effect.gen(function* () {
+        const { dir, service, awaitStatus, hostedDir } = yield* standIn("quit-other", "quit-other");
+        NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+        yield* service.open({ threadId, relativePath: "cube.blend" });
+        yield* awaitStatus("running");
+        yield* service.closeOnSettle({ threadId });
+        expect(yield* awaitStatus("closed")).toEqual({
+          status: "closed",
+          relativePath: "other.blend",
+          recovery: true,
+        });
+        expect(recoveryOf(hostedDir, OTHER)?.contents).toMatch(/^quit copy /);
+        expect(recoveryOf(hostedDir)).toBeNull();
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("M14: saving a file opened since the last report never removes another file's copy", () =>
+    Effect.gen(function* () {
+      const { dir, layer, hostedDir } = yield* standIn("save-other", "save-other");
+      NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+      waitingCopy(hostedDir, "waiting copy");
+      const service = yield* serviceFor(layer);
+      yield* service.reopen({ threadId, key: CUBE, restore: false });
+      // Its add-on is connected once it has reported the file unsaved.
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "running" && state.dirty),
+        Stream.runHead,
+      );
+      yield* service.quit({ threadId, save: true });
+      const ended = yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status !== "running" && state.status !== "starting"),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
+      expect(card(ended)).toMatchObject({ status: "closed", relativePath: "cube.blend" });
+      expect(recoveryOf(hostedDir)?.contents).toBe("waiting copy");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "M9: a crash on a file outside the workspace, before any autosave, keeps the waiting copy",
+    () =>
+      Effect.gen(function* () {
+        const { before, copies, cube, end } = yield* runCell({
+          waiting: true,
+          restore: "none",
+          dirty: true,
+          end: "outside",
+          ending: "crash",
+          autosave: false,
+        });
+        expect(cube).toEqual(before);
+        expect(cube?.contents).toBe("waiting copy");
+        // The crash is told under the file it happened in, with nothing of it to restore.
+        expect(end?.record).toMatchObject({
+          file: { kind: "outside", path: "/elsewhere/outside.blend" },
+          kind: "crashed",
+          recovery: false,
+        });
+        expect([...copies.keys()]).toEqual([END_KEYS.outside, CUBE]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("M11: an agent edit on another file, which the add-on reports unsaved, is kept", () =>
+    Effect.gen(function* () {
+      const { before, copies, cube, end } = yield* runCell({
+        waiting: true,
+        restore: "none",
+        dirty: true,
+        end: "other",
+        ending: "settle",
+      });
+      expect(cube).toEqual(before);
+      expect(end?.contents).toMatch(/^quit copy /);
+      expect(end?.record).toMatchObject({
+        file: { kind: "workspace", relativePath: "other.blend" },
+        recovery: true,
+      });
+      expect([...copies.keys()]).toEqual([OTHER, CUBE]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+describe("Salvaging what a stopped server left", () => {
+  it.live("stops a live leftover helper and finishes before taking any request", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage-live");
+      const { hostedDir, launchDir } = leftover(dir, {});
+      // Stands in for a helper still running there: in the folder, naming it in its arguments.
+      const helper = NodeChildProcess.spawn(
+        python,
+        ["-c", "import time; time.sleep(600)", "--state-dir", launchDir],
+        { cwd: launchDir, stdio: "ignore" },
+      );
+      const exit = new Promise<NodeJS.Signals | null>((resolve) =>
+        helper.once("exit", (_code, signal) => resolve(signal)),
+      );
+      const exited = Effect.promise(() => exit);
+      leftover(dir, { helperPid: helper.pid! });
+      const service = yield* idleService(dir);
+      expect(yield* exited).toBe("SIGTERM");
+      // Already salvaged when the service is ready: open sees the copy waiting.
+      expect(yield* firstState(service)).toEqual({
+        status: "closed",
+        relativePath: "cube.blend",
+        recovery: true,
+      });
+      expect(recoveryOf(hostedDir)?.contents).toBe("left behind");
+      const refused = yield* service
+        .open({ threadId, relativePath: "cube.blend" })
+        .pipe(Effect.flip);
+      expect(refused.reason).toBe("recoveryPending");
+      expect(NodeFS.existsSync(launchDir)).toBe(false);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("waits for the leftover's whole process group before collecting its files", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage-group");
+      const { hostedDir, launchDir } = leftover(dir, {});
+      const childPidFile = NodePath.join(dir, "child.pid");
+      // A helper leading its own group, whose Blender ignores SIGTERM and outlives it.
+      const helper = NodeChildProcess.spawn(
+        python,
+        [
+          "-c",
+          [
+            "import subprocess, sys, time",
+            "subprocess.Popen([sys.executable, '-c', 'import os, signal, sys, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); open(sys.argv[1], \"w\").write(str(os.getpid())); time.sleep(600)', sys.argv[1], '--state-dir', sys.argv[2]])",
+            "time.sleep(600)",
+          ].join("\n"),
+          childPidFile,
+          launchDir,
+        ],
+        { cwd: launchDir, stdio: "ignore", detached: true },
+      );
+      yield* fileAppears(
+        dir,
+        childPidFile,
+        () => NodeFS.existsSync(childPidFile) && NodeFS.readFileSync(childPidFile, "utf8") !== "",
+      );
+      const childPid = Number(NodeFS.readFileSync(childPidFile, "utf8"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          for (const pid of [childPid, helper.pid!]) {
+            try {
+              process.kill(pid, "SIGKILL");
+            } catch {}
+          }
+        }),
+      );
+      leftover(dir, { helperPid: helper.pid! });
+      const service = yield* idleService(dir);
+      // Its files are collected only once nothing of that launch is still running.
+      const stat = NodeFS.existsSync(`/proc/${childPid}/stat`)
+        ? NodeFS.readFileSync(`/proc/${childPid}/stat`, "utf8")
+        : "";
+      expect(stat === "" || stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z")).toBe(true);
+      expect((yield* firstState(service)).status).toBe("closed");
+      expect(recoveryOf(hostedDir)?.contents).toBe("left behind");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("leaves a launch it couldn't stop for the next start, collecting nothing", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage-unkillable");
+      const { hostedDir, launchDir } = leftover(dir, {});
+      const readyFile = NodePath.join(dir, "ready");
+      const helper = NodeChildProcess.spawn(
+        python,
+        [
+          "-c",
+          "import signal, sys, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); open(sys.argv[1], 'w').close(); time.sleep(600)",
+          readyFile,
+          "--state-dir",
+          launchDir,
+        ],
+        { cwd: launchDir, stdio: "ignore", detached: true },
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(() => helper.kill("SIGKILL")));
+      yield* fileAppears(dir, readyFile);
+      leftover(dir, { helperPid: helper.pid! });
+      // Stands in for a Blender stuck in the kernel: SIGKILL doesn't take, SIGTERM is ignored.
+      const service = yield* idleService(dir).pipe(
+        Effect.provideService(HostedBlender.LeftoverSignal, (pid, signal) => {
+          if (signal !== "SIGKILL") process.kill(pid, signal);
+        }),
+      );
+      // Startup still completes, and takes nothing from a launch that may still be writing.
+      expect((yield* firstState(service)).status).toBe("stopped");
+      expect(recoveryOf(hostedDir)).toBeNull();
+      expect(NodeFS.readFileSync(NodePath.join(launchDir, "tmp", "quit.blend"), "utf8")).toBe(
+        "left behind",
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("stops several stubborn leftovers in one grace period", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage-many");
+      const ready = (file: string) =>
+        new Promise<void>((resolve) => {
+          const watcher = NodeFS.watch(dir, () => {
+            if (!NodeFS.existsSync(file)) return;
+            watcher.close();
+            resolve();
+          });
+        });
+      const helpers = ["one", "two"].map((name) => {
+        const { launchDir } = leftover(dir, { name });
+        const readyFile = NodePath.join(dir, `${name}.ready`);
+        const isReady = ready(readyFile);
+        const helper = NodeChildProcess.spawn(
+          python,
+          [
+            "-c",
+            "import signal, sys, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); open(sys.argv[1], 'w').close(); time.sleep(600)",
+            readyFile,
+            "--state-dir",
+            launchDir,
+          ],
+          { cwd: launchDir, stdio: "ignore", detached: true },
+        );
+        leftover(dir, { name, helperPid: helper.pid! });
+        return {
+          isReady,
+          exited: new Promise<void>((resolve) => helper.once("exit", () => resolve())),
+        };
+      });
+      yield* Effect.promise(() => Promise.all(helpers.map((helper) => helper.isReady)));
+      const started = yield* Clock.currentTimeMillis;
+      yield* idleService(dir);
+      yield* Effect.promise(() => Promise.all(helpers.map((helper) => helper.exited)));
+      // Each would take the 7-second grace if they were stopped one after another.
+      expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(10_000);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("never stops a process that merely reuses a leftover helper's pid", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage-pid");
+      // A process elsewhere, as one that took over the pid would be.
+      const stranger = NodeChildProcess.spawn(python, ["-c", "import time; time.sleep(600)"], {
+        cwd: dir,
+        stdio: "ignore",
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(() => stranger.kill("SIGKILL")));
+      leftover(dir, { helperPid: stranger.pid! });
+      yield* idleService(dir);
+      expect(stranger.exitCode).toBeNull();
+      expect(stranger.signalCode).toBeNull();
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps nothing of a run that ended with its file clean", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage-unchanged");
+      const { hostedDir } = leftover(dir, {
+        facts: { restore: "none", saved: false, changed: false },
+      });
+      expect((yield* firstState(yield* idleService(dir))).status).toBe("stopped");
+      expect(recoveryOf(hostedDir)).toBeNull();
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps the waiting copy a clean run didn't restore, though its snapshot is newer", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage-unrestored");
+      const { hostedDir } = leftover(dir, {
+        facts: { restore: "none", saved: false, changed: false },
+        waiting: "waiting copy",
+      });
+      expect((yield* firstState(yield* idleService(dir))).status).toBe("closed");
+      expect(recoveryOf(hostedDir)?.contents).toBe("waiting copy");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps the waiting copy when a clean run left nothing newer than its last save", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage-older");
+      const { hostedDir, launchDir } = leftover(dir, {
+        facts: { restore: "none", saved: false, changed: false },
+        waiting: "waiting copy",
+      });
+      const quitCopy = NodePath.join(launchDir, "tmp", "quit.blend");
+      const earlier = NodeFS.statSync(quitCopy).mtimeMs / 1000 - 120;
+      NodeFS.utimesSync(quitCopy, earlier, earlier);
+      expect((yield* firstState(yield* idleService(dir))).status).toBe("closed");
+      expect(recoveryOf(hostedDir)?.contents).toBe("waiting copy");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("keeps a run that ended on another file under that file, never touching this one's", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage-switched");
+      const { hostedDir } = leftover(dir, {
+        facts: { restore: "none", saved: false, changed: true, relativePath: "other.blend" },
+        waiting: "waiting copy",
+      });
+      expect(yield* firstState(yield* idleService(dir))).toEqual({
+        status: "closed",
+        relativePath: "other.blend",
+        recovery: true,
+        alsoKept: [CUBE],
+      });
+      expect(recoveryOf(hostedDir)?.contents).toBe("waiting copy");
+      expect(recoveryOf(hostedDir, OTHER)?.contents).toBe("left behind");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps the waiting copy after a restore that failed or never finished", () =>
+    Effect.gen(function* () {
+      for (const restore of ["failed", "pending"]) {
+        const dir = yield* tempDir(`salvage-${restore}`);
+        const { hostedDir } = leftover(dir, {
+          facts: { restore, saved: false, changed: true },
+          waiting: "waiting copy",
+        });
+        expect((yield* firstState(yield* idleService(dir))).status).toBe("closed");
+        expect(recoveryOf(hostedDir)?.contents).toBe("waiting copy");
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("clears an older copy once the run's last word was a confirmed save", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage-saved");
+      const { hostedDir } = leftover(dir, {
+        facts: { restore: "none", saved: true, changed: true },
+        waiting: "waiting copy",
+      });
+      expect((yield* firstState(yield* idleService(dir))).status).toBe("stopped");
+      expect(recoveryOf(hostedDir)).toBeNull();
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("replaces the waiting copy with a changed run's", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage-changed");
+      const { hostedDir } = leftover(dir, {
+        facts: { restore: "none", saved: false, changed: true },
+        waiting: "waiting copy",
+      });
+      expect((yield* firstState(yield* idleService(dir))).status).toBe("closed");
+      expect(recoveryOf(hostedDir)?.contents).toBe("left behind");
+    }).pipe(Effect.scoped),
+  );
+});
+
+describe("Endings and recovery", () => {
+  it.live("settling saves a recovery copy, quits without saving, and Reopen restores it", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, awaitDirty, saveCommands, launches, hostedDir } =
+        yield* standIn("settle", "");
+      yield* openReady;
+      yield* service.closeOnSettle({ threadId });
+      assert.deepStrictEqual(yield* awaitStatus("closed"), {
+        status: "closed",
+        relativePath: "cube.blend",
+        recovery: true,
+      });
+      // Never saved over the user's file: the copy is Blender's own, in T3's private folder.
+      expect(saveCommands()).toBe(0);
+      const recovery = recoveryOf(hostedDir);
+      expect(recovery?.contents).toMatch(/^quit copy /);
+      expect(NodeFS.readdirSync(NodePath.join(hostedDir, "launches"))).toEqual([]);
+
+      yield* service.reopen({ threadId, key: CUBE, restore: true });
+      yield* awaitDirty(true);
+      const reopened = launches().at(-1)!;
+      expect(reopened.slice(reopened.indexOf("--t3-recover"))).toEqual([
+        "--t3-recover",
+        recovery?.session,
+      ]);
+      // Blender opens the user's file; the copy is restored over it, so saves still go there.
+      expect(reopened).toContain(NodeFS.realpathSync(NodePath.join(hostedDir, "../../cube.blend")));
+
+      // Quitting without saving keeps nothing new, and removes the copy only by Discard.
+      yield* service.quit({ threadId, save: false });
+      expect(yield* awaitStatus("closed")).toMatchObject({ relativePath: "cube.blend" });
+      expect(recoveryOf(hostedDir)?.contents).toBe(recovery?.contents);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("reopens the file as saved when asked, and keeps the copy until it ends again", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, awaitDirty, launches, hostedDir } = yield* standIn(
+        "fresh",
+        "no-quit-copy",
+      );
+      yield* openReady;
+      yield* service.closeOnSettle({ threadId });
+      // Blender left no quit copy, so there's only the file as saved.
+      expect(yield* awaitStatus("closed")).toMatchObject({ recovery: false });
+      yield* service.dismiss({ threadId, key: CUBE });
+      yield* awaitStatus("stopped");
+      const missing = yield* service
+        .reopen({ threadId, key: CUBE, restore: true })
+        .pipe(Effect.flip);
+      expect(missing.reason).toBe("nothingToReopen");
+
+      NodeFS.mkdirSync(NodePath.join(hostedDir, "recovery"), { recursive: true });
+      yield* openReady;
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      yield* service.reopen({ threadId, key: CUBE, restore: false });
+      yield* awaitDirty(true);
+      expect(launches().at(-1)).not.toContain("--t3-recover");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("keeps the copy under the file Blender had open, and reopens that file", () =>
+    Effect.gen(function* () {
+      const { dir, service, awaitStatus, launches } = yield* standIn("opens-other", "opens-other");
+      NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitStatus("running");
+      yield* service.closeOnSettle({ threadId });
+      expect(yield* awaitStatus("closed")).toEqual({
+        status: "closed",
+        relativePath: "other.blend",
+        recovery: true,
+      });
+      yield* service.reopen({ threadId, key: OTHER, restore: true });
+      yield* awaitStatus("running");
+      expect(launches().at(-1)).toContain(NodeFS.realpathSync(NodePath.join(dir, "other.blend")));
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("keeps a file outside the workspace under its own name, and says where its copy is", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, hostedDir } = yield* standIn(
+        "opens-outside",
+        "opens-outside",
+      );
+      yield* openReady;
+      yield* service.closeOnSettle({ threadId });
+      expect(yield* awaitStatus("closed")).toEqual({
+        status: "closed",
+        outside: "/elsewhere/outside.blend",
+        recovery: true,
+      });
+      const key = "outside:/elsewhere/outside.blend";
+      const [copy] = yield* service.keptCopies(threadId);
+      expect(copy?.copyPath).toBe(recoveryOf(hostedDir, key)?.session);
+      expect(recoveryOf(hostedDir, key)?.contents).toMatch(/^quit copy /);
+      // T3 can't check where restoring it would save, so it offers no Reopen.
+      const refused = yield* service.reopen({ threadId, key, restore: true }).pipe(Effect.flip);
+      expect(refused.reason).toBe("notInWorkspace");
+      // Nothing was kept for the file it launched with.
+      expect(recoveryOf(hostedDir)).toBeNull();
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("keeps a restored copy whose save target isn't the reopened file, unsaved", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, hostedDir } = yield* standIn(
+        "restored-elsewhere",
+        "restored-elsewhere",
+      );
+      yield* openReady;
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      const kept = recoveryOf(hostedDir)?.contents;
+      yield* service.reopen({ threadId, key: CUBE, restore: true });
+      // Saving would write somewhere else, so it never reaches running: the copy stays.
+      expect(yield* awaitStatus("closed")).toMatchObject({ recovery: true, restoreFailed: true });
+      expect(recoveryOf(hostedDir)?.contents).toBe(kept);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("keeps a waiting recovery copy until it is reopened or dismissed", () =>
+    Effect.gen(function* () {
+      const { dir, service, openReady, awaitStatus, awaitDirty, hostedDir } = yield* standIn(
+        "pending",
+        "",
+      );
+      yield* openReady;
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      // Opening the same file would end in a newer copy of it, so its card comes first.
+      const refused = yield* service
+        .open({ threadId, relativePath: "cube.blend" })
+        .pipe(Effect.flip);
+      expect(refused.reason).toBe("recoveryPending");
+      // Another file keeps a copy of its own, so it opens, and its end leaves cube's alone.
+      NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+      const cube = recoveryOf(hostedDir)?.contents;
+      yield* service.open({ threadId, relativePath: "other.blend" });
+      yield* awaitDirty(true);
+      yield* service.closeOnSettle({ threadId });
+      expect(yield* awaitStatus("closed")).toMatchObject({ relativePath: "other.blend" });
+      expect(recoveryOf(hostedDir)?.contents).toBe(cube);
+      yield* service.dismiss({ threadId, key: OTHER });
+      expect(yield* awaitStatus("closed")).toEqual({
+        status: "closed",
+        relativePath: "cube.blend",
+        recovery: true,
+      });
+      // Dismissing a Blender that is running again does nothing, so a stale card can't end it.
+      yield* service.reopen({ threadId, key: CUBE, restore: true });
+      yield* awaitDirty(true);
+      yield* service.dismiss({ threadId, key: CUBE });
+      expect((yield* firstState(service)).status).toBe("running");
+      expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      yield* service.dismiss({ threadId, key: CUBE });
+      yield* awaitStatus("stopped");
+      expect(recoveryOf(hostedDir)).toBeNull();
+      yield* service.open({ threadId, relativePath: "other.blend" });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a thread that settles during Save and quit ends saved, with nothing to reopen", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, awaitDirty, saveCommands, hostedDir } =
+        yield* standIn("settle-saving", "saved-then-exit");
+      yield* openReady;
+      const saving = yield* Effect.forkChild(service.quit({ threadId, save: true }));
+      // Saved, Blender not yet gone: the thread settles in this window.
+      yield* awaitDirty(false);
+      yield* service.closeOnSettle({ threadId });
+      yield* Fiber.join(saving);
+      yield* awaitStatus("stopped");
+      expect(saveCommands()).toBe(1);
+      expect(recoveryOf(hostedDir)).toBeNull();
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("keeps the quit copy when the file was unsaved again after Save and quit saved it", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, hostedDir } = yield* standIn(
+        "saved-then-dirty",
+        "saved-then-dirty",
+      );
+      yield* openReady;
+      yield* service.quit({ threadId, save: true });
+      expect(yield* awaitStatus("closed")).toEqual({
+        status: "closed",
+        relativePath: "cube.blend",
+        recovery: true,
+      });
+      expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a shutdown stops a slow quit within its deadline, never touching the user's file", () =>
+    Effect.gen(function* () {
+      const { dir, layer, marker } = yield* standIn("slow-quit", "slow-quit");
+      const blendPath = NodePath.join(dir, "cube.blend");
+      NodeFS.writeFileSync(blendPath, "the user's file");
+      const started = yield* Effect.gen(function* () {
+        const first = yield* serviceFor(layer);
+        const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+        yield* first.threadState(threadId).pipe(
+          Stream.runForEach((state) => Queue.offer(states, state)),
+          Effect.forkScoped,
+        );
+        yield* first.open({ threadId, relativePath: "cube.blend" });
+        yield* Queue.take(states).pipe(
+          Effect.repeat({ until: (state) => state.status === "running" && state.dirty }),
+        );
+        return yield* Clock.currentTimeMillis;
+      }).pipe(Effect.scoped);
+      // The desktop app kills the server 5 seconds after asking it to stop.
+      expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(5_000);
+      // Blender acknowledged the quit, but was still writing its copy: stopped, not waited for.
+      expect(NodeFS.readFileSync(marker, "utf8")).toBe("killed");
+      expect(NodeFS.readFileSync(blendPath, "utf8")).toBe("the user's file");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a shutdown keeps one deadline, however late the add-on connects", () =>
+    Effect.gen(function* () {
+      const { layer, marker } = yield* standIn("late-slow", "late-slow-quit");
+      const started = yield* Effect.gen(function* () {
+        const first = yield* serviceFor(layer);
+        const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+        yield* first.threadState(threadId).pipe(
+          Stream.runForEach((state) => Queue.offer(states, state)),
+          Effect.forkScoped,
+        );
+        yield* first.open({ threadId, relativePath: "cube.blend" });
+        yield* Queue.take(states).pipe(
+          Effect.repeat({ until: (state) => state.status === "running" }),
+        );
+        // Shuts down at once: the add-on connects 3 seconds in, then takes 5 to quit.
+        return yield* Clock.currentTimeMillis;
+      }).pipe(Effect.scoped);
+      expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(5_000);
+      expect(NodeFS.readFileSync(marker, "utf8")).toBe("killed");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a settle that outlasts a failing save still quits Blender with its copy", () =>
+    Effect.gen(function* () {
+      const { dir, service, openReady, awaitStatus } = yield* standIn(
+        "late-fail",
+        "late-failing-save",
+      );
+      yield* openReady;
+      // The stand-in logs each save before it acknowledges it.
+      const savesLog = NodePath.join(dir, "saves.log");
+      const saving = new Promise<void>((resolve) => {
+        const watcher = NodeFS.watch(dir, () => {
+          if (!NodeFS.existsSync(savesLog)) return;
+          watcher.close();
+          resolve();
+        });
+      });
+      const quitting = yield* service
+        .quit({ threadId, save: true })
+        .pipe(Effect.flip, Effect.forkChild);
+      yield* Effect.promise(() => saving);
+      yield* service.closeOnSettle({ threadId });
+      expect((yield* Fiber.join(quitting)).reason).toBe("saveFailed");
+      expect(yield* awaitStatus("closed")).toMatchObject({ recovery: true });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a shutdown stops a Blender whose add-on never connects, within its deadline", () =>
+    Effect.gen(function* () {
+      const { layer } = yield* standIn("never-connects", "never-connects");
+      const started = yield* Effect.gen(function* () {
+        const first = yield* serviceFor(layer);
+        const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+        yield* first.threadState(threadId).pipe(
+          Stream.runForEach((state) => Queue.offer(states, state)),
+          Effect.forkScoped,
+        );
+        yield* first.open({ threadId, relativePath: "cube.blend" });
+        yield* Queue.take(states).pipe(
+          Effect.repeat({ until: (state) => state.status === "running" }),
+        );
+        return yield* Clock.currentTimeMillis;
+      }).pipe(Effect.scoped);
+      // The helper ignores its quit too, so only the shutdown's fast stop ends it in time.
+      expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(5_000);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "a Blender that crashes mid-save while its thread settles ends Crashed, autosave kept",
+    () =>
+      Effect.gen(function* () {
+        const { dir, service, openReady, awaitStatus, crash, loseConnection, hostedDir } =
+          yield* standIn("crash-saving", "held-save");
+        yield* openReady;
+        const quitting = yield* service
+          .quit({ threadId, save: true })
+          .pipe(Effect.flip, Effect.forkChild);
+        yield* fileAppears(dir, NodePath.join(dir, "saves.log"));
+        // The settle waits on the save; Blender dies before either finishes. Its connection
+        // drops while the helper still runs, and the save fails before the exit is reported.
+        yield* service.closeOnSettle({ threadId });
+        loseConnection();
+        expect((yield* Fiber.join(quitting)).reason).toBe("saveFailed");
+        crash();
+        expect(yield* awaitStatus("crashed")).toMatchObject({ recovery: true });
+        expect(recoveryOf(hostedDir)?.contents).toBe("autosave");
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("changes no capture during a Save and quit, and catches up if the save fails", () =>
+    Effect.gen(function* () {
+      const { dir, service, openReady, helperCommands, bind } = yield* standIn(
+        "saving-capture",
+        "held-save",
+      );
+      yield* openReady;
+      const attached = yield* service.attachViewer(threadId, { canOperate: false });
+      assert.strictEqual(attached._tag, "attached");
+      if (attached._tag !== "attached") return;
+      const viewer = attached.viewer;
+      yield* viewer.setVisible(false);
+      /** Once at least `count` logged commands match. */
+      const logged = (matches: (command: { readonly type: string }) => boolean, count = 1) =>
+        Effect.promise(
+          () =>
+            new Promise<void>((resolve) => {
+              const check = () => {
+                if (helperCommands().filter(matches).length < count) return false;
+                watcher.close();
+                resolve();
+                return true;
+              };
+              const watcher = NodeFS.watch(dir, check);
+              check();
+            }),
+        );
+      const savesLog = NodePath.join(dir, "saves.log");
+      const saving = new Promise<void>((resolve) => {
+        const watcher = NodeFS.watch(dir, () => {
+          if (!NodeFS.existsSync(savesLog)) return;
+          watcher.close();
+          resolve();
+        });
+      });
+      const quitting = yield* service
+        .quit({ threadId, save: true })
+        .pipe(Effect.flip, Effect.forkChild);
+      yield* Effect.promise(() => saving);
+      yield* viewer.setVisible(true);
+      // Commands reach the helper in order, so once this resize is logged a resume would be too.
+      yield* viewer.resize(802, 602);
+      yield* logged((command) => command.type === "resize");
+      const capture = () =>
+        helperCommands().filter((command) => command.type === "pause" || command.type === "resume");
+      expect(capture().at(-1)?.type).toBe("pause");
+      // The save fails and Blender stays open: capture follows the pane that is showing.
+      const resumes = capture().filter((command) => command.type === "resume").length;
+      bind();
+      expect((yield* Fiber.join(quitting)).reason).toBe("saveFailed");
+      yield* logged((command) => command.type === "resume", resumes + 1);
+      expect(capture().at(-1)?.type).toBe("resume");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("never resumes capture for a Blender that is ending", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, helperCommands } = yield* standIn(
+        "ending-capture",
+        "slow-quit",
+      );
+      yield* openReady;
+      const attached = yield* service.attachViewer(threadId, { canOperate: false });
+      assert.strictEqual(attached._tag, "attached");
+      if (attached._tag !== "attached") return;
+      yield* attached.viewer.setVisible(false);
+      // The settle waits on a quit Blender acknowledged; a pane shown meanwhile stays dark.
+      yield* service.closeOnSettle({ threadId });
+      yield* attached.viewer.setVisible(true);
+      yield* awaitStatus("closed");
+      const capture = helperCommands().filter(
+        (command) => command.type === "pause" || command.type === "resume",
+      );
+      expect(capture.at(-1)?.type).toBe("pause");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a file can't start again while a settle that keeps its copy finishes", () =>
+    Effect.gen(function* () {
+      let hold: Deferred.Deferred<void> | null = null;
+      const { service, openReady, awaitStatus } = yield* standIn("race", "", () =>
+        hold === null ? Effect.void : Deferred.await(hold),
+      );
+      yield* openReady;
+      // Opening the file again passes its first checks while it is still running...
+      const gate = yield* Deferred.make<void>();
+      hold = gate;
+      const opening = yield* service
+        .open({ threadId, relativePath: "cube.blend" })
+        .pipe(Effect.flip, Effect.forkChild);
+      // ...and is still validating when the settle finishes and keeps cube.blend's copy.
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      yield* Deferred.succeed(gate, undefined);
+      expect((yield* Fiber.join(opening)).reason).toBe("recoveryPending");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("keeps the launch folder for the next start when its copy can't be kept", () =>
+    Effect.gen(function* () {
+      const { layer, service, openReady, awaitStatus, hostedDir } = yield* standIn("disk", "");
+      yield* openReady;
+      // Stands in for a full disk: the recovery folder can't be made.
+      NodeFS.mkdirSync(hostedDir, { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(hostedDir, "recovery"), "");
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("stopped");
+      expect(NodeFS.readdirSync(NodePath.join(hostedDir, "launches"))).toHaveLength(1);
+      NodeFS.rmSync(NodePath.join(hostedDir, "recovery"));
+      const next = yield* serviceFor(layer);
+      expect(yield* firstState(next)).toEqual({
+        status: "closed",
+        relativePath: "cube.blend",
+        recovery: true,
+      });
+      expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a restore that fails is reported and keeps the copy it came from", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, hostedDir, launches } = yield* standIn(
+        "restore-fails",
+        "restore-fails",
+      );
+      yield* openReady;
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      const kept = recoveryOf(hostedDir)?.contents;
+      yield* service.reopen({ threadId, key: CUBE, restore: true });
+      expect(yield* awaitStatus("closed")).toEqual({
+        status: "closed",
+        relativePath: "cube.blend",
+        recovery: true,
+        restoreFailed: true,
+      });
+      expect(launches()).toHaveLength(2);
+      expect(recoveryOf(hostedDir)?.contents).toBe(kept);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("never saves a reopened Blender before its restore is confirmed", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, saveCommands, hostedDir } = yield* standIn(
+        "restore-silent",
+        "restore-silent",
+      );
+      yield* openReady;
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      const kept = recoveryOf(hostedDir)?.contents;
+      yield* service.reopen({ threadId, key: CUBE, restore: true });
+      // The add-on is connected and reporting, but hasn't said whether the copy came back.
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "starting" && state.dirty),
+        Stream.runHead,
+      );
+      const refused = yield* service.quit({ threadId, save: true }).pipe(Effect.flip);
+      expect(refused.reason).toBe("saveFailed");
+      expect(saveCommands()).toBe(0);
+      yield* service.quit({ threadId, save: false });
+      yield* awaitStatus("closed");
+      expect(recoveryOf(hostedDir)?.contents).toBe(kept);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a Quit with nothing running never removes a kept copy", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, hostedDir } = yield* standIn("stale-quit", "");
+      yield* openReady;
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      yield* service.quit({ threadId, save: false });
+      expect((yield* firstState(service)).status).toBe("closed");
+      expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("switching Hosted Blender off closes its Blender as a settle does, copy kept", () =>
+    Effect.gen(function* () {
+      const switches = yield* Queue.unbounded<HostedBlenderSetup.HostedBlenderReadiness>();
+      const { openReady, awaitStatus, saveCommands, hostedDir } = yield* standIn(
+        "switch-off",
+        "",
+        undefined,
+        { readinessChanges: Stream.fromQueue(switches) },
+      );
+      yield* openReady;
+      yield* Queue.offer(switches, { status: "notSetUp", missing: ["enabled"] });
+      expect(yield* awaitStatus("closed")).toEqual({
+        status: "closed",
+        relativePath: "cube.blend",
+        recovery: true,
+      });
+      // Never saved over the user's file: Blender quit without saving, into its copy.
+      expect(saveCommands()).toBe(0);
+      expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("M18: an open still validating when Hosted Blender is switched off never launches", () =>
+    Effect.gen(function* () {
+      let hold: Deferred.Deferred<void> | null = null;
+      const switches = yield* Queue.unbounded<HostedBlenderSetup.HostedBlenderReadiness>();
+      const { dir, service, openReady, awaitStatus, launches } = yield* standIn(
+        "switch-off-race",
+        "",
+        () => (hold === null ? Effect.void : Deferred.await(hold)),
+        { readinessChanges: Stream.fromQueue(switches) },
+      );
+      NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+      yield* openReady;
+      // Another thread's open passes its readiness check, then waits on its thread lookup...
+      const gate = yield* Deferred.make<void>();
+      hold = gate;
+      const opening = yield* service
+        .open({ threadId: otherThreadId, relativePath: "other.blend" })
+        .pipe(Effect.flip, Effect.forkChild);
+      // ...while Hosted Blender is switched off, which closes the Blender that was running.
+      yield* Queue.offer(switches, { status: "notSetUp", missing: ["enabled"] });
+      yield* awaitStatus("closed");
+      yield* Deferred.succeed(gate, undefined);
+      expect((yield* Fiber.join(opening)).reason).toBe("notSetUp");
+      expect(launches()).toHaveLength(1);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("an ending waits for a slow Blender's add-on, so its session is still kept", () =>
+    Effect.gen(function* () {
+      const { service, awaitStatus, bind } = yield* standIn("late", "late-control");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitStatus("running");
+      yield* service.closeOnSettle({ threadId });
+      bind();
+      expect(yield* awaitStatus("closed")).toMatchObject({ recovery: true });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a T3 restart saves every Blender's copy on the way down and offers Reopen after", () =>
+    Effect.gen(function* () {
+      const { layer, hostedDir, marker, launches } = yield* standIn("restart", "");
+      // The first server lives in a scope of its own, closed as a shutdown closes it.
+      yield* Effect.gen(function* () {
+        const first = yield* serviceFor(layer);
+        const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+        yield* first.threadState(threadId).pipe(
+          Stream.runForEach((state) => Queue.offer(states, state)),
+          Effect.forkScoped,
+        );
+        yield* first.open({ threadId, relativePath: "cube.blend" });
+        yield* Queue.take(states).pipe(
+          Effect.repeat({ until: (state) => state.status === "running" && state.dirty }),
+        );
+      }).pipe(Effect.scoped);
+      expect(NodeFS.readFileSync(marker, "utf8")).toBe("quit");
+      expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
+
+      const second = yield* serviceFor(layer);
+      assert.deepStrictEqual(yield* firstState(second), {
+        status: "closed",
+        relativePath: "cube.blend",
+        recovery: true,
+      });
+      yield* second.reopen({ threadId, key: CUBE, restore: true });
+      yield* second.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "running" && state.dirty),
+        Stream.runHead,
+      );
+      expect(launches().at(-1)).toContain("--t3-recover");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a crashed Blender stays stopped, offers its autosave, and restarts from disk", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, awaitDirty, crash, launches, hostedDir } =
+        yield* standIn("crash", "");
+      yield* openReady;
+      crash();
+      assert.deepStrictEqual(yield* awaitStatus("crashed"), {
+        status: "crashed",
+        relativePath: "cube.blend",
+        recovery: true,
+      });
+      expect(recoveryOf(hostedDir)?.contents).toBe("autosave");
+      // No restart loop: nothing launched since.
+      expect(launches()).toHaveLength(1);
+      expect((yield* firstState(service)).status).toBe("crashed");
+
+      yield* service.reopen({ threadId, key: CUBE, restore: false });
+      yield* awaitDirty(true);
+      expect(launches()).toHaveLength(2);
+      expect(launches().at(-1)).not.toContain("--t3-recover");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("restores the newest autosave when asked after a crash", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, awaitDirty, crash, launches, hostedDir } =
+        yield* standIn("crash-restore", "");
+      yield* openReady;
+      crash();
+      yield* awaitStatus("crashed");
+      yield* service.reopen({ threadId, key: CUBE, restore: true });
+      yield* awaitDirty(true);
+      expect(launches().at(-1)).toContain(recoveryOf(hostedDir)?.session);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("quits a Blender that ignores the quit, as a last resort, on shutdown", () =>
+    Effect.gen(function* () {
+      const { layer, hostedDir, marker } = yield* standIn("ignores", "ignores-quit");
+      yield* Effect.gen(function* () {
+        const first = yield* serviceFor(layer);
+        const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+        yield* first.threadState(threadId).pipe(
+          Stream.runForEach((state) => Queue.offer(states, state)),
+          Effect.forkScoped,
+        );
+        yield* first.open({ threadId, relativePath: "cube.blend" });
+        yield* Queue.take(states).pipe(
+          Effect.repeat({ until: (state) => state.status === "running" && state.dirty }),
+        );
+      }).pipe(Effect.scoped);
+      // The helper was asked to stop Blender itself once the add-on's quit went unanswered.
+      expect(NodeFS.readFileSync(marker, "utf8")).toBe("quit");
+      expect(recoveryOf(hostedDir)?.contents).toBeNull();
+      expect(NodeFS.readdirSync(NodePath.join(hostedDir, "launches"))).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("salvages the autosave of a Blender whose server died without ending it", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage");
+      const leftover = NodePath.join(dir, "userdata", "hosted-blender", "launches", "dead");
+      NodeFS.mkdirSync(NodePath.join(leftover, "tmp"), { recursive: true });
+      NodeFS.writeFileSync(
+        NodePath.join(leftover, "launch.json"),
+        JSON.stringify({ threadId, relativePath: "models/hero.blend" }),
+      );
+      NodeFS.writeFileSync(NodePath.join(leftover, "tmp", "hero_77_autosave.blend"), "autosave");
+      NodeFS.writeFileSync(NodePath.join(leftover, "tmp", "hero.crash.txt"), "");
+      const bin = fakeTools(dir);
+      const service = yield* serviceFor(
+        layerFor({
+          env: { PATH: bin },
+          helper: NodePath.join(bin, "helper"),
+          workspaceRoot: dir,
+          baseDir: dir,
+        }),
+      );
+      assert.deepStrictEqual(yield* firstState(service), {
+        status: "crashed",
+        relativePath: "models/hero.blend",
+        recovery: true,
+      });
+      const hostedDir = NodePath.join(dir, "userdata", "hosted-blender");
+      expect(recoveryOf(hostedDir, "workspace:models/hero.blend")?.contents).toBe("autosave");
+      expect(NodeFS.readdirSync(NodePath.join(hostedDir, "launches"))).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("lists every running Blender with its file and memory", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus } = yield* standIn("list", "");
+      const lists = yield* Queue.unbounded<
+        HostedBlender.HostedBlender["Service"] extends {
+          readonly runningBlenders: Stream.Stream<infer A>;
+        }
+          ? A
+          : never
+      >();
+      yield* service.runningBlenders.pipe(
+        Stream.runForEach((list) => Queue.offer(lists, list)),
+        Effect.forkScoped,
+      );
+      expect(yield* Queue.take(lists)).toEqual([]);
+      yield* openReady;
+      const listed = yield* Queue.take(lists).pipe(
+        Effect.repeat({
+          until: (list) =>
+            list[0]?.status === "running" && list[0].dirty && list[0].memoryBytes !== null,
+        }),
+      );
+      expect(listed).toEqual([
+        {
+          threadId,
+          status: "running",
+          relativePath: "cube.blend",
+          dirty: true,
+          memoryBytes: expect.any(Number),
+        },
+      ]);
+      yield* service.quit({ threadId, save: false });
+      yield* awaitStatus("stopped");
+      yield* Queue.take(lists).pipe(Effect.repeat({ until: (list) => list.length === 0 }));
     }).pipe(Effect.scoped),
   );
 });
@@ -702,6 +2348,35 @@ describe("The viewport window", () => {
     }).pipe(Effect.scoped),
   );
 });
+
+it.effect("keeps connecting to the add-on for the whole start window", () =>
+  Effect.gen(function* () {
+    const { service, awaitStatus, awaitDirty, bind, launches } = yield* standIn(
+      "late-connect",
+      "late-control",
+    );
+    yield* service.open({ threadId, relativePath: "cube.blend" });
+    yield* awaitStatus("running");
+    // Long past the old 30-second retry budget, but inside the 90-second start window.
+    yield* TestClock.adjust("40 seconds");
+    const t3 = launches()[0]!;
+    const socketPath = t3[t3.indexOf("--t3-control") + 1]!;
+    const appeared = Effect.promise(
+      () =>
+        new Promise<void>((resolve) => {
+          const watcher = NodeFS.watch(NodePath.dirname(socketPath), () => {
+            if (!NodeFS.existsSync(socketPath)) return;
+            watcher.close();
+            resolve();
+          });
+        }),
+    );
+    bind();
+    yield* appeared;
+    yield* TestClock.adjust("1 second");
+    yield* awaitDirty(true);
+  }).pipe(Effect.scoped),
+);
 
 type Viewer = HostedBlender.HostedBlenderViewer;
 type ViewerMessage = Extract<
@@ -1102,7 +2777,7 @@ describe("HostedBlender.open", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("reports a start that never shows Blender, until quit or another open clears it", () =>
+  it.live("reports a start that never shows Blender, until dismissed or opened again", () =>
     Effect.gen(function* () {
       const dir = yield* tempDir("failed");
       const bin = fakeTools(dir);
@@ -1127,8 +2802,21 @@ describe("HostedBlender.open", () => {
       yield* service.open({ threadId, relativePath: "cube.blend" });
       yield* awaitStatus("starting");
       yield* awaitStatus("failed");
-      yield* service.quit({ threadId, save: false });
+      yield* service.dismiss({ threadId });
       yield* awaitStatus("stopped");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("counts a file as open where Blender has it open now, as well as where it started", () =>
+    Effect.gen(function* () {
+      const { dir, service, awaitDirty } = yield* standIn("switched-open", "switches");
+      NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitDirty(true);
+      const elsewhere = yield* service
+        .open({ threadId: otherThreadId, relativePath: "other.blend" })
+        .pipe(Effect.flip);
+      expect(elsewhere.reason).toBe("openInAnotherThread");
     }).pipe(Effect.scoped),
   );
 
@@ -1600,6 +3288,550 @@ print("T3-RESULT", json.dumps(results))`,
   );
 });
 
+// Marks the file once, right after Blender first loads it, through the data API alone: like
+// agent code, that leaves no undo step and doesn't mark the file unsaved. Writes its pid too.
+const EDITING_STARTUP_SCRIPT = `import os
+import bpy
+from bpy.app.handlers import persistent
+
+@persistent
+def _edit(*_args):
+    folder = os.environ.get("HB_TEST_DIR")
+    if not folder or not bpy.data.filepath.endswith("cube.blend"):
+        return
+    with open(os.path.join(folder, "blender.pid"), "w") as pid:
+        pid.write(str(os.getpid()))
+    marker = os.path.join(folder, "edited")
+    if os.path.exists(marker):
+        return
+    bpy.context.scene.collection.objects.link(bpy.data.objects.new("T3Edit", None))
+    open(marker, "w").close()
+    # Recorded as an undo step, as an edit through Blender's UI or an agent call is, so
+    # Blender reports the file unsaved.
+    def _push():
+        window = bpy.context.window_manager.windows[0]
+        with bpy.context.temp_override(window=window):
+            bpy.ops.ed.undo_push(message="T3 test edit")
+    bpy.app.timers.register(_push, first_interval=0.2)
+
+def register():
+    bpy.app.handlers.load_post.append(_edit)
+
+def unregister():
+    bpy.app.handlers.load_post.remove(_edit)
+`;
+
+// Opens the file named in HB_TEST_DIR/open-file from inside Blender, as an agent's
+// bpy.ops.wm.open_mainfile does, then edits it through undo so it reads unsaved.
+const OPENING_STARTUP_SCRIPT = `import os
+import bpy
+
+def _edit():
+    bpy.context.scene.collection.objects.link(bpy.data.objects.new("T3Other", None))
+    with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+        bpy.ops.ed.undo_push(message="T3 test edit")
+
+def _poll():
+    # As a build before T3 marked its viewport window saved it: a plain lone 3D view.
+    unmark = os.path.join(os.environ.get("HB_TEST_DIR", ""), "unmark")
+    if os.path.exists(unmark):
+        os.remove(unmark)
+        for window in bpy.context.window_manager.windows:
+            if "t3_viewport" in window.screen:
+                del window.screen["t3_viewport"]
+        open(unmark + "ed", "w").close()
+    trigger = os.path.join(os.environ.get("HB_TEST_DIR", ""), "open-file")
+    if os.path.exists(trigger):
+        target = open(trigger).read()
+        os.remove(trigger)
+        with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+            bpy.ops.wm.open_mainfile(filepath=target)
+        bpy.app.timers.register(_edit, first_interval=0.5)
+    return 0.2
+
+def register():
+    bpy.app.timers.register(_poll, first_interval=1.0, persistent=True)
+
+def unregister():
+    pass
+`;
+
+const objectsIn = (file: string) =>
+  NodeChildProcess.execFileSync(
+    "blender",
+    [
+      "--background",
+      "--factory-startup",
+      file,
+      "--python-expr",
+      "import bpy; print('OBJECTS', sorted(o.name for o in bpy.data.objects))",
+    ],
+    { encoding: "utf8" },
+  )
+    .split("\n")
+    .find((line) => line.startsWith("OBJECTS"));
+
+// Makes every quit outlast T3's 3-second shutdown deadline: Blender runs exit_pre handlers
+// before it writes its quit copy.
+const SLOW_EXIT_STARTUP_SCRIPT = `import time
+import bpy
+from bpy.app.handlers import persistent
+
+@persistent
+def _slow(*_args):
+    time.sleep(5)
+
+def register():
+    bpy.app.handlers.exit_pre.append(_slow)
+
+def unregister():
+    bpy.app.handlers.exit_pre.remove(_slow)
+`;
+
+describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
+  it.live("a reopened Blender's viewport window fills the pane size asked for, and keeps it", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("real-reopen-size");
+      const workspace = NodePath.join(dir, "work");
+      NodeFS.mkdirSync(workspace, { recursive: true });
+      const blendPath = NodePath.join(workspace, "cube.blend");
+      NodeChildProcess.execFileSync("blender", [
+        "--background",
+        "--factory-startup",
+        "--python-expr",
+        `import bpy; bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(blendPath)})`,
+      ]);
+      const configHome = NodePath.join(dir, "config");
+      const startup = NodePath.join(configHome, "blender", "5.3", "scripts", "startup");
+      NodeFS.mkdirSync(startup, { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(startup, "t3_test_edit.py"), EDITING_STARTUP_SCRIPT);
+      const service = yield* serviceFor(
+        layerFor({
+          env: {
+            PATH: hostEnvironment.PATH,
+            XDG_RUNTIME_DIR: hostEnvironment.XDG_RUNTIME_DIR,
+            XDG_CONFIG_HOME: configHome,
+            HB_TEST_DIR: dir,
+          },
+          helper: helperBuild,
+          workspaceRoot: workspace,
+          baseDir: dir,
+        }),
+      );
+      const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+      yield* service.threadState(threadId).pipe(
+        Stream.runForEach((state) => Queue.offer(states, state)),
+        Effect.forkScoped,
+      );
+      const awaitState = (matches: (state: HostedBlenderThreadState) => boolean) =>
+        Queue.take(states).pipe(Effect.repeat({ until: matches }), Effect.map(card));
+      // The viewport window fills the size asked for while Blender was starting, and stays that
+      // size: a window that later leaves fullscreen shrinks the stream a moment after.
+      const fillsPane = Effect.gen(function* () {
+        const attached = yield* service.attachViewer(threadId, { canOperate: false });
+        assert.strictEqual(attached._tag, "attached");
+        if (attached._tag !== "attached") return;
+        yield* attached.viewer.resize(1046, 1336);
+        const sizes = Queue.take(attached.viewer.output).pipe(
+          Effect.repeat({
+            until: (output) => output._tag === "message" && output.message.type === "viewport",
+          }),
+          Effect.map((output) =>
+            output._tag === "message" && output.message.type === "viewport"
+              ? `${output.message.width}x${output.message.height}`
+              : "",
+          ),
+        );
+        // The size it settles at: the last one before 6 seconds pass with no change.
+        let settled = yield* sizes.pipe(Effect.timeoutOption("30 seconds"));
+        while (Option.isSome(settled)) {
+          const next = yield* sizes.pipe(Effect.timeoutOption("6 seconds"));
+          if (Option.isNone(next)) break;
+          settled = next;
+        }
+        expect(Option.getOrNull(settled)).toBe("1046x1336");
+      }).pipe(Effect.scoped);
+
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* fillsPane;
+      yield* awaitState((state) => state.status === "running");
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitState((state) => state.status === "closed");
+      yield* service.reopen({ threadId, key: CUBE, restore: true });
+      yield* fillsPane;
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "streams one fresh viewport window, filling the pane, after Blender opens a file saved from a hosted Blender, and after Reopen of its copy",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tempDir("real-open-stored");
+        const workspace = NodePath.join(dir, "work");
+        NodeFS.mkdirSync(workspace, { recursive: true });
+        for (const name of ["cube.blend", "other.blend"]) {
+          NodeChildProcess.execFileSync("blender", [
+            "--background",
+            "--factory-startup",
+            "--python-expr",
+            `import bpy; bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(NodePath.join(workspace, name))})`,
+          ]);
+        }
+        const configHome = NodePath.join(dir, "config");
+        const startup = NodePath.join(configHome, "blender", "5.3", "scripts", "startup");
+        NodeFS.mkdirSync(startup, { recursive: true });
+        NodeFS.writeFileSync(NodePath.join(startup, "t3_test_open.py"), OPENING_STARTUP_SCRIPT);
+        const service = yield* serviceFor(
+          layerFor({
+            env: {
+              PATH: hostEnvironment.PATH,
+              XDG_RUNTIME_DIR: hostEnvironment.XDG_RUNTIME_DIR,
+              XDG_CONFIG_HOME: configHome,
+              HB_TEST_DIR: dir,
+            },
+            helper: helperBuild,
+            workspaceRoot: workspace,
+            baseDir: dir,
+          }),
+        );
+        const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+        yield* service.threadState(threadId).pipe(
+          Stream.runForEach((state) => Queue.offer(states, state)),
+          Effect.forkScoped,
+        );
+        const awaitState = (matches: (state: HostedBlenderThreadState) => boolean) =>
+          Queue.take(states).pipe(Effect.repeat({ until: matches }), Effect.map(card));
+        // The size the stream settles at, asked for 1046x1336, after `then` runs.
+        const settledSize = (then: Effect.Effect<void> = Effect.void) =>
+          Effect.gen(function* () {
+            const attached = yield* service.attachViewer(threadId, { canOperate: false });
+            if (attached._tag !== "attached") return attached._tag;
+            yield* attached.viewer.resize(1046, 1336);
+            yield* then;
+            const sizes = Queue.take(attached.viewer.output).pipe(
+              Effect.repeat({
+                until: (output) => output._tag === "message" && output.message.type === "viewport",
+              }),
+              Effect.map((output) =>
+                output._tag === "message" && output.message.type === "viewport"
+                  ? `${output.message.width}x${output.message.height}`
+                  : "",
+              ),
+            );
+            let settled = yield* sizes.pipe(Effect.timeoutOption("30 seconds"));
+            while (Option.isSome(settled)) {
+              const next = yield* sizes.pipe(Effect.timeoutOption("6 seconds"));
+              if (Option.isNone(next)) break;
+              settled = next;
+            }
+            return Option.getOrElse(settled, () => "no frames");
+          }).pipe(Effect.scoped);
+
+        // other.blend, saved from a hosted Blender of an earlier build, keeps T3's viewport
+        // window in its UI, unmarked.
+        yield* service.open({ threadId, relativePath: "other.blend" });
+        yield* awaitState((state) => state.status === "running");
+        NodeFS.writeFileSync(NodePath.join(dir, "unmark"), "");
+        yield* fileAppears(dir, NodePath.join(dir, "unmarked"));
+        yield* service.quit({ threadId, save: true });
+        yield* awaitState((state) => state.status === "stopped");
+
+        yield* service.open({ threadId, relativePath: "cube.blend" });
+        yield* awaitState((state) => state.status === "running");
+        expect(yield* settledSize()).toBe("1046x1336");
+        const opened = Effect.sync(() =>
+          NodeFS.writeFileSync(
+            NodePath.join(dir, "open-file"),
+            NodePath.join(workspace, "other.blend"),
+          ),
+        );
+        expect(yield* settledSize(opened)).toBe("1046x1336");
+
+        yield* service.closeOnSettle({ threadId });
+        yield* awaitState((state) => state.status === "closed");
+        yield* service.reopen({ threadId, key: OTHER, restore: true });
+        expect(yield* settledSize()).toBe("1046x1336");
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "a master's Reopen of its copy fills the pane, the viewer attached from its first frame",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tempDir("real-master-reopen");
+        const workspace = NodePath.join(dir, "work");
+        NodeFS.mkdirSync(workspace, { recursive: true });
+        NodeChildProcess.execFileSync("blender", [
+          "--background",
+          "--factory-startup",
+          "--python-expr",
+          `import bpy; bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(NodePath.join(workspace, "cube.blend"))})`,
+        ]);
+        const configHome = NodePath.join(dir, "config");
+        const startup = NodePath.join(configHome, "blender", "5.3", "scripts", "startup");
+        NodeFS.mkdirSync(startup, { recursive: true });
+        NodeFS.writeFileSync(NodePath.join(startup, "t3_test_edit.py"), EDITING_STARTUP_SCRIPT);
+        const switches = yield* Queue.unbounded<HostedBlenderSetup.HostedBlenderReadiness>();
+        const host = {
+          env: {
+            PATH: hostEnvironment.PATH,
+            XDG_RUNTIME_DIR: hostEnvironment.XDG_RUNTIME_DIR,
+            XDG_CONFIG_HOME: configHome,
+            HB_TEST_DIR: dir,
+          },
+          helper: helperBuild,
+          workspaceRoot: workspace,
+          baseDir: dir,
+          readinessChanges: Stream.fromQueue(switches),
+        };
+        const service = yield* serviceFor(layerFor(host));
+        const masterState = (status: string) =>
+          service.masterState(threadId).pipe(
+            Stream.filter((state) => state.status === status),
+            Stream.runHead,
+            Effect.map(Option.getOrThrow),
+          );
+        // The size the master's stream settles at, asked for 1046x1336 from its first frame.
+        const settledSize = Effect.gen(function* () {
+          const attached = yield* service.attachViewer(threadId, {
+            canOperate: false,
+            role: "master",
+          });
+          if (attached._tag !== "attached") return attached._tag;
+          yield* attached.viewer.resize(1046, 1336);
+          const sizes = Queue.take(attached.viewer.output).pipe(
+            Effect.repeat({
+              until: (output) => output._tag === "message" && output.message.type === "viewport",
+            }),
+            Effect.map((output) =>
+              output._tag === "message" && output.message.type === "viewport"
+                ? `${output.message.width}x${output.message.height}`
+                : "",
+            ),
+          );
+          let settled = yield* sizes.pipe(Effect.timeoutOption("30 seconds"));
+          while (Option.isSome(settled)) {
+            const next = yield* sizes.pipe(Effect.timeoutOption("6 seconds"));
+            if (Option.isNone(next)) break;
+            settled = next;
+          }
+          return Option.getOrElse(settled, () => "no frames");
+        }).pipe(Effect.scoped);
+
+        yield* service.openMaster({ threadId, relativePath: "cube.blend" });
+        yield* masterState("running");
+        expect(NodeFS.existsSync(NodePath.join(dir, "edited"))).toBe(true);
+        // Switched off, the master closes into its copy; switched on again, Reopen restores it.
+        yield* Queue.offer(switches, { status: "notSetUp", missing: ["enabled"] });
+        const closed = yield* masterState("closed");
+        yield* Queue.offer(switches, readinessFor(host));
+        const key = "copies" in closed ? closed.copies[0].key : "";
+        yield* service.reopen({ threadId, key, restore: true, role: "master" });
+        expect(yield* settledSize).toBe("1046x1336");
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "settles into a recovery copy that Reopen restores and saves to the user's file, and crashes into Restart",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tempDir("real-endings");
+        const workspace = NodePath.join(dir, "work");
+        NodeFS.mkdirSync(workspace, { recursive: true });
+        const blendPath = NodePath.join(workspace, "cube.blend");
+        NodeChildProcess.execFileSync("blender", [
+          "--background",
+          "--factory-startup",
+          "--python-expr",
+          `import bpy; bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(blendPath)})`,
+        ]);
+        const configHome = NodePath.join(dir, "config");
+        const startup = NodePath.join(configHome, "blender", "5.3", "scripts", "startup");
+        NodeFS.mkdirSync(startup, { recursive: true });
+        NodeFS.writeFileSync(NodePath.join(startup, "t3_test_edit.py"), EDITING_STARTUP_SCRIPT);
+        const service = yield* serviceFor(
+          layerFor({
+            env: {
+              PATH: hostEnvironment.PATH,
+              XDG_RUNTIME_DIR: hostEnvironment.XDG_RUNTIME_DIR,
+              XDG_CONFIG_HOME: configHome,
+              HB_TEST_DIR: dir,
+            },
+            helper: helperBuild,
+            workspaceRoot: workspace,
+            baseDir: dir,
+          }),
+        );
+        const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+        yield* service.threadState(threadId).pipe(
+          Stream.runForEach((state) => Queue.offer(states, state)),
+          Effect.forkScoped,
+        );
+        const awaitState = (matches: (state: HostedBlenderThreadState) => boolean) =>
+          Queue.take(states).pipe(Effect.repeat({ until: matches }), Effect.map(card));
+
+        yield* service.open({ threadId, relativePath: "cube.blend" });
+        yield* awaitState((state) => state.status === "running");
+        expect(NodeFS.existsSync(NodePath.join(dir, "edited"))).toBe(true);
+
+        // Settling quits without saving; the edit survives only in the recovery copy.
+        yield* service.closeOnSettle({ threadId });
+        const closed = yield* awaitState((state) => state.status === "closed");
+        assert.deepStrictEqual(closed, {
+          status: "closed",
+          relativePath: "cube.blend",
+          recovery: true,
+        });
+        expect(objectsIn(blendPath)).not.toContain("T3Edit");
+
+        // Reopen restores it as unsaved changes to the user's own file, which saving writes.
+        yield* service.reopen({ threadId, key: CUBE, restore: true });
+        yield* awaitState((state) => state.status === "running" && state.dirty);
+        yield* service.quit({ threadId, save: true });
+        yield* awaitState((state) => state.status === "stopped");
+        expect(objectsIn(blendPath)).toContain("T3Edit");
+
+        // A crash leaves it stopped, with Restart opening the file as saved.
+        yield* service.open({ threadId, relativePath: "cube.blend" });
+        yield* awaitState((state) => state.status === "running");
+        // The pid Blender itself wrote, in a folder only this test uses.
+        process.kill(
+          Number(NodeFS.readFileSync(NodePath.join(dir, "blender.pid"), "utf8")),
+          "SIGSEGV",
+        );
+        const crashed = yield* awaitState((state) => state.status === "crashed");
+        expect(crashed).toMatchObject({ status: "crashed", relativePath: "cube.blend" });
+        yield* service.reopen({ threadId, key: CUBE, restore: false });
+        yield* awaitState((state) => state.status === "running");
+        // Quitting without saving keeps nothing new and removes only by Discard.
+        yield* service.quit({ threadId, save: false });
+        expect(yield* awaitState((state) => state.status === "crashed")).toMatchObject({
+          relativePath: "cube.blend",
+        });
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "a slow quit: settling waits for its copy, a shutdown stops it in time; restores run no scripts, and a failed one keeps the copy",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tempDir("real-slow-exit");
+        const workspace = NodePath.join(dir, "work");
+        NodeFS.mkdirSync(workspace, { recursive: true });
+        const blendPath = NodePath.join(workspace, "cube.blend");
+        // The file carries a script that would run on load if scripts were allowed.
+        NodeChildProcess.execFileSync("blender", [
+          "--background",
+          "--factory-startup",
+          "--python-expr",
+          [
+            "import bpy",
+            "text = bpy.data.texts.new('t3_marker.py')",
+            `text.write('import os\\nopen(os.path.join(os.environ["HB_TEST_DIR"], "script-ran"), "w").close()\\n')`,
+            "text.use_module = True",
+            `bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(blendPath)})`,
+          ].join("; "),
+        ]);
+        const configHome = NodePath.join(dir, "config");
+        const settings = NodePath.join(configHome, "blender", "5.3");
+        const startup = NodePath.join(settings, "scripts", "startup");
+        NodeFS.mkdirSync(startup, { recursive: true });
+        NodeFS.writeFileSync(NodePath.join(startup, "t3_test_edit.py"), EDITING_STARTUP_SCRIPT);
+        NodeFS.writeFileSync(NodePath.join(startup, "t3_test_slow.py"), SLOW_EXIT_STARTUP_SCRIPT);
+        // Preferences that would let it run: only T3's own setting may keep it off.
+        NodeChildProcess.execFileSync(
+          "blender",
+          [
+            "--background",
+            "--factory-startup",
+            "--python-expr",
+            "import bpy; bpy.context.preferences.filepaths.use_scripts_auto_execute = True; bpy.ops.wm.save_userpref()",
+          ],
+          {
+            env: {
+              ...Object.fromEntries(
+                Object.entries(hostEnvironment).filter(([key]) => !key.startsWith("BLENDER_USER_")),
+              ),
+              BLENDER_USER_RESOURCES: settings,
+              TMPDIR: dir,
+            },
+            stdio: "ignore",
+          },
+        );
+        const layer = layerFor({
+          env: {
+            PATH: hostEnvironment.PATH,
+            XDG_RUNTIME_DIR: hostEnvironment.XDG_RUNTIME_DIR,
+            XDG_CONFIG_HOME: configHome,
+            HB_TEST_DIR: dir,
+          },
+          helper: helperBuild,
+          workspaceRoot: workspace,
+          baseDir: dir,
+        });
+        const watch = Effect.fn(function* (service: HostedBlender.HostedBlender["Service"]) {
+          const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+          yield* service.threadState(threadId).pipe(
+            Stream.runForEach((state) => Queue.offer(states, state)),
+            Effect.forkScoped,
+          );
+          return (matches: (state: HostedBlenderThreadState) => boolean) =>
+            Queue.take(states).pipe(Effect.repeat({ until: matches }), Effect.map(card));
+        });
+
+        const hostedDir = NodePath.join(dir, "userdata", "hosted-blender");
+        const before = NodeFS.readFileSync(blendPath);
+
+        // T3 stops while Blender is still writing its quit copy: it is stopped in time, and
+        // the user's file is as it was.
+        const started = yield* Effect.gen(function* () {
+          const first = yield* serviceFor(layer);
+          const awaitState = yield* watch(first);
+          yield* first.open({ threadId, relativePath: "cube.blend" });
+          yield* awaitState((state) => state.status === "running");
+          return yield* Clock.currentTimeMillis;
+        }).pipe(Effect.scoped);
+        expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(5_000);
+        expect(NodeFS.readFileSync(blendPath).equals(before)).toBe(true);
+        expect(objectsIn(blendPath)).not.toContain("T3Edit");
+
+        // Settling waits for the same slow quit, so its copy keeps the edit.
+        const service = yield* serviceFor(layer);
+        const awaitState = yield* watch(service);
+        yield* service.dismiss({ threadId, key: CUBE });
+        NodeFS.rmSync(NodePath.join(dir, "edited"), { force: true });
+        yield* service.open({ threadId, relativePath: "cube.blend" });
+        yield* awaitState((state) => state.status === "running");
+        yield* service.closeOnSettle({ threadId });
+        expect(yield* awaitState((state) => state.status === "closed")).toEqual({
+          status: "closed",
+          relativePath: "cube.blend",
+          recovery: true,
+        });
+        const session = recoveryOf(hostedDir)!.session;
+        expect(objectsIn(session)).toContain("T3Edit");
+
+        // Restoring it never runs the file's script.
+        yield* service.reopen({ threadId, key: CUBE, restore: true });
+        yield* awaitState((state) => state.status === "running" && state.dirty);
+        expect(NodeFS.existsSync(NodePath.join(dir, "script-ran"))).toBe(false);
+
+        // A copy Blender can't read is reported and kept, never replaced by the saved file.
+        yield* service.closeOnSettle({ threadId });
+        yield* awaitState((state) => state.status === "closed");
+        NodeFS.writeFileSync(session, "not a blend file");
+        yield* service.reopen({ threadId, key: CUBE, restore: true });
+        expect(yield* awaitState((state) => state.status === "closed")).toEqual({
+          status: "closed",
+          relativePath: "cube.blend",
+          recovery: true,
+          restoreFailed: true,
+        });
+        expect(NodeFS.readFileSync(session, "utf8")).toBe("not a blend file");
+      }).pipe(Effect.scoped),
+  );
+});
+
 // Records Blender's command line, then shows the viewport window and waits to be asked to quit.
 const ARGS_HELPER = String.raw`
 import json, os, struct, sys
@@ -1629,8 +3861,7 @@ def control():
     server.bind(t3[1])
     server.listen(1)
     connection, _ = server.accept()
-    def state(filepath, **extra):
-        dirty = os.environ.get("STANDIN_DIRTY") == "1"
+    def state(filepath, dirty=os.environ.get("STANDIN_DIRTY") == "1", **extra):
         connection.sendall((json.dumps({"type": "state", "filepath": filepath, "dirty": dirty,
                                         "agentListener": listener[0], **extra}) + "\n").encode())
     after = os.environ.get("STANDIN_AFTER")
@@ -1639,7 +3870,8 @@ def control():
         listener[0] = "ready"
         state(os.environ.get("STANDIN_OTHER", "/elsewhere/other.blend"))
     else:
-        state(blend)
+        # As the add-on does once a restore T3 asked for has run.
+        state(blend, **({"restore": "ok"} if "--t3-recover" in t3 else {}))
     for line in connection.makefile():
         with open(os.environ["STANDIN_ARGS"] + ".control", "a") as log:
             log.write(line)
@@ -1669,6 +3901,32 @@ def control():
             if after == "otherFile":
                 # Someone opens another file through Blender's own UI.
                 state(os.environ.get("STANDIN_OTHER", "/elsewhere/other.blend"))
+        command = json.loads(line)
+        if kind == "quit" and command.get("save"):
+            # As Blender does: saved, then quitting, reading no more commands (T3's stop
+            # included) while it writes its quit copy and exits.
+            import time
+            for reply in ({"type": "saving"}, {"type": "saved", "filepath": blend, "dirty": False}):
+                connection.sendall((json.dumps(reply) + "\n").encode())
+            if after == "offAfterSaved":
+                # The add-on ended the grant on saving; its next state says the listener is off,
+                # then (dirty again) marks that T3 has read both.
+                listener[0] = "off"
+                state(blend)
+                state(blend, dirty=True)
+                while not os.path.exists(os.environ["STANDIN_ARGS"] + ".hold"):
+                    time.sleep(0.02)
+            time.sleep(0.3)
+            event({"type": "exited", "process": "blender", "code": 0, "signal": None})
+            os._exit(0)
+        if kind == "stopAgentListener" and after == "holdOnStop":
+            # Quitting: its connection drops at once, but it is gone only once the test says.
+            connection.shutdown(socket.SHUT_RDWR)
+            import time
+            while not os.path.exists(os.environ["STANDIN_ARGS"] + ".hold"):
+                time.sleep(0.02)
+            event({"type": "exited", "process": "blender", "code": 0, "signal": None})
+            os._exit(0)
         if kind == "stopAgentListener" and after == "acting":
             listener[0] = "off"
             state(blend, agentActing=False, mcpVersion="1.0.3")
@@ -1678,8 +3936,14 @@ def control():
             connection.sendall((json.dumps({"type": "state", "filepath": blend, "dirty": True,
                                             "agentListener": "ready", "agentActing": True}) + "\n").encode())
             continue
+        if kind == "stopAgentListener" and os.environ.get("STANDIN_STAY_ON_STOP") == "1":
+            # As the add-on does: access ends, Blender stays open for what T3 asks next.
+            listener[0] = "off"
+            continue
         if kind == "stopAgentListener":
-            # Gone once it has heard the stop, so a test can wait for the stopped state.
+            # Gone once it has heard the stop, so a test can wait for the stopped state; it says
+            # Blender exited cleanly, as one quit from its own menu does (otherwise, a crash).
+            event({"type": "exited", "process": "blender", "code": 0, "signal": None})
             os._exit(0)
         if kind == "cancelQuit":
             cancelled = json.loads(line).get("id")
@@ -1698,8 +3962,20 @@ def control():
         if kind == "quitIfClean" and os.environ.get("STANDIN_QUIT_SILENT") == "1":
             # Busy: the quit waits in Blender, unanswered, until T3 cancels it.
             continue
+        if kind == "quit" and not command.get("save"):
+            # As the add-on does: its last word on the file, then Blender's quit copy.
+            connection.sendall((json.dumps({"type": "quitting", "filepath": blend,
+                                            "dirty": os.environ.get("STANDIN_DIRTY") == "1"}) + "\n").encode())
+            state_dir = sys.argv[sys.argv.index("--state-dir") + 1]
+            os.makedirs(os.path.join(state_dir, "tmp"), exist_ok=True)
+            open(os.path.join(state_dir, "tmp", "quit.blend"), "w").write("quit copy %d" % os.getpid())
+            event({"type": "exited", "process": "blender", "code": 0, "signal": None})
+            os._exit(0)
         if kind == "quitIfClean":
             def exit_now():
+                # The same last word as any quit, clean as it was found.
+                connection.sendall((json.dumps({"type": "quitting", "filepath": blend,
+                                                "dirty": False}) + "\n").encode())
                 with open(os.environ["STANDIN_ARGS"] + ".exits", "a") as log:
                     log.write("exit\n")
                 os._exit(0)
@@ -1715,14 +3991,29 @@ def control():
 threading.Thread(target=control, daemon=True).start()
 for line in sys.stdin:
     if '"quit"' in line:
+        # Asked to stop Blender, it takes until the test says, as a slow quit does.
+        if os.environ.get("STANDIN_AFTER") == "holdOnStop":
+            open(os.environ["STANDIN_ARGS"] + ".stopping", "w").close()
+            import time
+            while not os.path.exists(os.environ["STANDIN_ARGS"] + ".hold"):
+                time.sleep(0.02)
         break
 `;
 
 describe("Agent access at launch", () => {
   const launch = Effect.fn(function* (
     host: Pick<Host, "runtimeMode" | "interactionMode" | "agentPort" | "revocations">,
-    options: { readonly agentWorkingCopy?: boolean } = { agentWorkingCopy: true },
-    after?: "otherFile" | "otherFileFirst" | "untested" | "acting" | "staleActing",
+    options: { readonly agentWorkingCopy?: boolean; readonly edited?: boolean } = {
+      agentWorkingCopy: true,
+    },
+    after?:
+      | "otherFile"
+      | "otherFileFirst"
+      | "holdOnStop"
+      | "offAfterSaved"
+      | "untested"
+      | "acting"
+      | "staleActing",
     prepare?: (dir: string) => void,
   ) {
     const dir = yield* tempDir("agent-access");
@@ -1742,6 +4033,8 @@ describe("Agent access at launch", () => {
           XDG_RUNTIME_DIR: runtime,
           STANDIN_ARGS: argsLog,
           ...(after === undefined ? {} : { STANDIN_AFTER: after }),
+          // The agent edited the working copy, so Blender reports it unsaved.
+          ...(options.edited ? { STANDIN_DIRTY: "1" } : {}),
         },
         helper: NodePath.join(bin, "helper"),
         workspaceRoot: dir,
@@ -1749,7 +4042,10 @@ describe("Agent access at launch", () => {
         ...host,
       }),
     );
-    yield* service.open({ threadId, relativePath: "cube.blend" }, options);
+    yield* service.open(
+      { threadId, relativePath: "cube.blend" },
+      { agentWorkingCopy: options.agentWorkingCopy === true },
+    );
     yield* service.threadState(threadId).pipe(
       Stream.filter((state) => state.status === "running"),
       Stream.runHead,
@@ -1759,7 +4055,9 @@ describe("Agent access at launch", () => {
       NodeFS.existsSync(`${argsLog}.control`)
         ? NodeFS.readFileSync(`${argsLog}.control`, "utf8")
         : "";
-    return { service, args, controlLog };
+    const lastArgs = () => NodeFS.readFileSync(argsLog, "utf8").split("\n");
+    const release = () => NodeFS.writeFileSync(`${argsLog}.hold`, "");
+    return { service, args, controlLog, lastArgs, release, argsLog };
   });
   const launchArgs = Effect.fn(function* (
     host: Pick<Host, "runtimeMode" | "interactionMode" | "agentPort">,
@@ -1816,6 +4114,102 @@ describe("Agent access at launch", () => {
         Stream.runHead,
       );
       expect(controlLog().match(/stopAgentListener/g)).toHaveLength(1);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("ends the agent's access when T3 closes its Blender, never as a lost connection", () =>
+    Effect.gen(function* () {
+      const { service, controlLog, release, argsLog } = yield* launch(
+        { agentPort: 41234 },
+        { agentWorkingCopy: true, edited: true },
+        "holdOnStop",
+      );
+      expect((yield* service.agentListener(threadId))?.state).toBe("ready");
+      yield* service.closeOnSettle({ threadId });
+      // The stop goes out first; Blender's connection drops as it closes, and T3, which has
+      // seen that by the time it asks the helper to stop Blender, still calls it revoked.
+      yield* fileAppears(NodePath.dirname(argsLog), `${argsLog}.stopping`);
+      expect(controlLog()).toContain("stopAgentListener");
+      expect((yield* service.agentListener(threadId, { wait: false }))?.ended).toBe("revoked");
+      release();
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "closed"),
+        Stream.runHead,
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("Save and quit of the agent's Blender ends while Blender quits without waiting", () =>
+    Effect.gen(function* () {
+      const { service } = yield* launch({ agentPort: 41234 });
+      expect((yield* service.agentListener(threadId))?.state).toBe("ready");
+      yield* service.quit({ threadId, save: true });
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "stopped"),
+        Stream.runHead,
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("Save and quit ends the agent's access as revoked once Blender says it saved", () =>
+    Effect.gen(function* () {
+      const { service, release } = yield* launch(
+        { agentPort: 41234 },
+        { agentWorkingCopy: true },
+        "offAfterSaved",
+      );
+      expect((yield* service.agentListener(threadId))?.state).toBe("ready");
+      const quitting = yield* service.quit({ threadId, save: true }).pipe(Effect.forkChild);
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "running" && state.dirty),
+        Stream.runHead,
+      );
+      expect(yield* service.agentListener(threadId)).toMatchObject({
+        state: "off",
+        ended: "revoked",
+      });
+      release();
+      yield* Fiber.join(quitting);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a shutdown ends the agent's access as revoked, though the connection drops first", () =>
+    Effect.gen(function* () {
+      const seen = yield* Deferred.make<string | null | undefined>();
+      // The shutdown's fast stop ends the held stand-in.
+      yield* Effect.gen(function* () {
+        const launched = yield* launch({ agentPort: 41234 }, undefined, "holdOnStop");
+        expect((yield* launched.service.agentListener(threadId))?.state).toBe("ready");
+        // Read once T3 has seen the connection drop and asked the helper to stop Blender.
+        yield* fileAppears(NodePath.dirname(launched.argsLog), `${launched.argsLog}.stopping`).pipe(
+          Effect.andThen(launched.service.agentListener(threadId, { wait: false })),
+          Effect.flatMap((report) => Deferred.succeed(seen, report?.ended)),
+          Effect.forkDetach,
+        );
+      }).pipe(Effect.scoped);
+      expect(yield* Deferred.await(seen)).toBe("revoked");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("gives a reopened working copy no agent access: it was the person's to reopen", () =>
+    Effect.gen(function* () {
+      const { service, lastArgs } = yield* launch(
+        { agentPort: 41234 },
+        { agentWorkingCopy: true, edited: true },
+      );
+      expect(lastArgs()).toContain("--t3-mcp-listen");
+      yield* service.closeOnSettle({ threadId });
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "closed"),
+        Stream.runHead,
+      );
+      yield* service.reopen({ threadId, key: CUBE, restore: true });
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "running"),
+        Stream.runHead,
+      );
+      expect(lastArgs()).not.toContain("--t3-mcp-listen");
+      expect((yield* service.agentListener(threadId, { wait: false }))?.state).toBe("off");
     }).pipe(Effect.scoped),
   );
 
@@ -2010,6 +4404,8 @@ const masterHost = Effect.fn(function* (
     | "privatePort"
     | "sessions"
     | "tcpTables"
+    | "readinessChanges"
+    | "beforeThreadLookup"
   > & {
     /** Blender reports `other.blend` open, beside `cube.blend`, from its first word. */
     readonly otherFileFirst?: boolean;
@@ -2031,6 +4427,8 @@ const masterHost = Effect.fn(function* (
     readonly untested?: boolean;
     /** Lays out the home folder before the service starts, as the user's own Blender Lab. */
     readonly home?: (dir: string) => void;
+    /** Blender stays open when its agent's access ends, as the add-on does. */
+    readonly stayOnStop?: boolean;
   } = {},
 ) {
   const dir = yield* tempDir("master");
@@ -2044,33 +4442,33 @@ const masterHost = Effect.fn(function* (
   NodeFS.writeFileSync(NodePath.join(dir, "cube.blend"), "");
   NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
   const argsLog = NodePath.join(dir, "args.log");
-  const service = yield* serviceFor(
-    layerFor({
-      env: {
-        PATH: bin,
-        XDG_RUNTIME_DIR: runtime,
-        STANDIN_ARGS: argsLog,
-        ...(host.otherFileFirst
-          ? {
-              STANDIN_AFTER: "otherFileFirst",
-              STANDIN_OTHER: NodeFS.realpathSync(NodePath.join(dir, "other.blend")),
-            }
-          : {}),
-        ...(host.untested ? { STANDIN_AFTER: "untested" } : {}),
-        ...(host.dirty ? { STANDIN_DIRTY: "1" } : {}),
-        ...(host.unsaved ? { STANDIN_UNSAVED: "1" } : {}),
-        ...(host.slowQuit ? { STANDIN_SLOW_QUIT: "1" } : {}),
-        ...(host.quitSilent ? { STANDIN_QUIT_SILENT: "1" } : {}),
-        ...(host.cancelGate ? { STANDIN_CANCEL_GATE: NodePath.join(dir, "cancel-gate") } : {}),
-        ...(host.exitOnCancel ? { STANDIN_EXIT_ON_CANCEL: "1" } : {}),
-        ...(host.controlGate ? { STANDIN_CONTROL_GATE: NodePath.join(dir, "control-gate") } : {}),
-      },
-      helper: NodePath.join(bin, "helper"),
-      workspaceRoot: dir,
-      baseDir: dir,
-      ...host,
-    }),
-  );
+  const layer = layerFor({
+    env: {
+      PATH: bin,
+      XDG_RUNTIME_DIR: runtime,
+      STANDIN_ARGS: argsLog,
+      ...(host.otherFileFirst
+        ? {
+            STANDIN_AFTER: "otherFileFirst",
+            STANDIN_OTHER: NodeFS.realpathSync(NodePath.join(dir, "other.blend")),
+          }
+        : {}),
+      ...(host.untested ? { STANDIN_AFTER: "untested" } : {}),
+      ...(host.dirty ? { STANDIN_DIRTY: "1" } : {}),
+      ...(host.unsaved ? { STANDIN_UNSAVED: "1" } : {}),
+      ...(host.slowQuit ? { STANDIN_SLOW_QUIT: "1" } : {}),
+      ...(host.quitSilent ? { STANDIN_QUIT_SILENT: "1" } : {}),
+      ...(host.cancelGate ? { STANDIN_CANCEL_GATE: NodePath.join(dir, "cancel-gate") } : {}),
+      ...(host.exitOnCancel ? { STANDIN_EXIT_ON_CANCEL: "1" } : {}),
+      ...(host.stayOnStop ? { STANDIN_STAY_ON_STOP: "1" } : {}),
+      ...(host.controlGate ? { STANDIN_CONTROL_GATE: NodePath.join(dir, "control-gate") } : {}),
+    },
+    helper: NodePath.join(bin, "helper"),
+    workspaceRoot: dir,
+    baseDir: dir,
+    ...host,
+  });
+  const service = yield* serviceFor(layer);
   const read = (suffix: string) =>
     NodeFS.existsSync(`${argsLog}${suffix}`)
       ? NodeFS.readFileSync(`${argsLog}${suffix}`, "utf8")
@@ -2083,6 +4481,7 @@ const masterHost = Effect.fn(function* (
     );
   return {
     service,
+    layer,
     dir,
     masterStatus,
     openControl: () => NodeFS.writeFileSync(NodePath.join(dir, "control-gate"), ""),
@@ -2534,6 +4933,211 @@ const desktopHost = Effect.fn(function* (
         ? NodeFS.readFileSync(`${argsLog}.launches`, "utf8").split("\n").length - 1
         : 0,
   };
+});
+
+/** The master's one copy of cube.blend, under the master owner, and what it holds. */
+const masterCopyIn = (dir: string, blendPath: string) =>
+  recoveryOf(NodePath.join(dir, "userdata", "hosted-blender"), `outside:${blendPath}`, "t3:master");
+
+describe("Master Blenders' endings", () => {
+  const openRunning = Effect.fn(function* (
+    service: HostedBlender.HostedBlender["Service"],
+    id: ThreadId,
+  ) {
+    yield* service.openMaster({ threadId: id, relativePath: "cube.blend" });
+    // Its control connection is up once Blender's report arrives.
+    yield* service.masterState(id).pipe(
+      Stream.filter((state) => state.status === "running" && state.dirty),
+      Stream.runHead,
+    );
+  });
+
+  it.live(
+    "switching off closes a master into one copy, which every thread sees on its Master side, and a restart keeps",
+    () =>
+      Effect.gen(function* () {
+        const switches = yield* Queue.unbounded<HostedBlenderSetup.HostedBlenderReadiness>();
+        const host = yield* masterHost({
+          stayOnStop: true,
+          dirty: true,
+          readinessChanges: Stream.fromQueue(switches),
+        });
+        const { service, blendPath, dir } = host;
+        yield* openRunning(service, threadId);
+        yield* service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" });
+        yield* Queue.offer(switches, { status: "notSetUp", missing: ["enabled"] });
+        // Never saved over the user's file: Blender quit without saving, into its copy.
+        const closed = yield* host.masterStatus(threadId, "closed");
+        expect(closed).toMatchObject({
+          relativePath: "cube.blend",
+          copies: [{ kind: "closed", recovery: true, file: { relativePath: "cube.blend" } }],
+        });
+        expect(yield* host.masterStatus(otherThreadId, "closed")).toEqual(closed);
+        expect(masterCopyIn(dir, blendPath)?.contents).toMatch(/^quit copy /);
+        // One copy, kept once: neither thread holds one of its own.
+        expect(recoveryOf(NodePath.join(dir, "userdata", "hosted-blender"))).toBeNull();
+        // The working side lists only working files' copies.
+        expect(yield* service.keptCopies(threadId)).toEqual([]);
+
+        // After a restart, opening the master shows its card first, for any thread.
+        const next = yield* serviceFor(host.layer);
+        const refused = yield* next
+          .openMaster({ threadId: otherThreadId, relativePath: "cube.blend" })
+          .pipe(Effect.flip);
+        expect(refused.reason).toBe("recoveryPending");
+        expect((yield* firstMaster(next, otherThreadId)).status).toBe("closed");
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "Reopen restores the master's copy in a master Blender that other threads then join",
+    () =>
+      Effect.gen(function* () {
+        const switches = yield* Queue.unbounded<HostedBlenderSetup.HostedBlenderReadiness>();
+        const host = yield* masterHost({
+          stayOnStop: true,
+          dirty: true,
+          readinessChanges: Stream.fromQueue(switches),
+        });
+        const { service, blendPath, dir } = host;
+        yield* openRunning(service, threadId);
+        yield* Queue.offer(switches, { status: "notSetUp", missing: ["enabled"] });
+        const closed = yield* host.masterStatus(threadId, "closed");
+        const next = yield* serviceFor(host.layer);
+        // The thread that made this file its master since sees the same card.
+        yield* next
+          .openMaster({ threadId: otherThreadId, relativePath: "cube.blend" })
+          .pipe(Effect.flip);
+        const key = "copies" in closed ? closed.copies[0].key : "";
+        yield* next.reopen({ threadId: otherThreadId, key, restore: true, role: "master" });
+        yield* next.masterState(otherThreadId).pipe(
+          Stream.filter((state) => state.status === "running" && state.dirty),
+          Stream.runHead,
+        );
+        expect(host.args()).toContain("--t3-recover");
+        expect(host.args()).toContain(masterCopyIn(dir, blendPath)?.session);
+        // Not a working Blender: the thread's working side is untouched.
+        expect((yield* firstState(next)).status).toBe("stopped");
+        // Another thread just joins the running master, its copy live there.
+        yield* next.openMaster({ threadId, relativePath: "cube.blend" });
+        expect((yield* firstMaster(next, threadId)).status).toBe("running");
+        expect(host.launches()).toBe(2);
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("Discard from any thread removes the master's one copy", () =>
+    Effect.gen(function* () {
+      const switches = yield* Queue.unbounded<HostedBlenderSetup.HostedBlenderReadiness>();
+      const host = yield* masterHost({
+        stayOnStop: true,
+        dirty: true,
+        readinessChanges: Stream.fromQueue(switches),
+      });
+      const { service, blendPath, dir } = host;
+      yield* openRunning(service, threadId);
+      yield* service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" });
+      yield* Queue.offer(switches, { status: "notSetUp", missing: ["enabled"] });
+      const closed = yield* host.masterStatus(otherThreadId, "closed");
+      const key = "copies" in closed ? closed.copies[0].key : "";
+      yield* service.dismiss({ threadId: otherThreadId, key, role: "master" });
+      expect(masterCopyIn(dir, blendPath)).toBeNull();
+      expect((yield* firstMaster(service, threadId)).status).toBe("notOpen");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "a master that quits clean when its last thread leaves keeps nothing; a refusal records nothing",
+    () =>
+      Effect.gen(function* () {
+        const switches = yield* Queue.unbounded<HostedBlenderSetup.HostedBlenderReadiness>();
+        const clean = yield* masterHost({ stayOnStop: true, dirty: true });
+        yield* openRunning(clean.service, threadId);
+        const stopped = yield* watchMaster(clean.service, threadId);
+        yield* clean.service.releaseMaster(threadId);
+        yield* stopped;
+        expect(masterCopyIn(clean.dir, clean.blendPath)).toBeNull();
+
+        // Refused for unsaved changes, it stays open; a later close still keeps its copy.
+        const kept = yield* masterHost({
+          stayOnStop: true,
+          dirty: true,
+          unsaved: true,
+          readinessChanges: Stream.fromQueue(switches),
+        });
+        yield* openRunning(kept.service, threadId);
+        yield* kept.service.releaseMaster(threadId);
+        expect((yield* firstMaster(kept.service, threadId)).status).toBe("running");
+        yield* Queue.offer(switches, { status: "notSetUp", missing: ["enabled"] });
+        yield* kept.masterStatus(threadId, "closed");
+        expect(masterCopyIn(kept.dir, kept.blendPath)?.contents).toMatch(/^quit copy /);
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("Running Blenders lists a master by its key, which Quit takes with no thread", () =>
+    Effect.gen(function* () {
+      const host = yield* masterHost({ stayOnStop: true, dirty: true });
+      const { service } = host;
+      yield* openRunning(service, threadId);
+      const [listed] = yield* service.runningBlenders.pipe(
+        Stream.filter((list) => list.length === 1),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
+      expect(listed?.master).toBe(`master:${host.blendPath}`);
+      const stopped = yield* watchMaster(service, threadId);
+      // Asked by a thread that never used it: the key alone names it.
+      yield* service.quit({
+        threadId: ThreadId.make("thread-elsewhere"),
+        save: false,
+        role: "master",
+        ...(listed?.master === undefined ? {} : { master: listed.master }),
+      });
+      yield* stopped;
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "an open waiting in a master's queue when Hosted Blender is switched off never launches",
+    () =>
+      Effect.gen(function* () {
+        let hold: Deferred.Deferred<void> | null = null;
+        const switches = yield* Queue.unbounded<HostedBlenderSetup.HostedBlenderReadiness>();
+        const host = yield* masterHost({
+          dirty: true,
+          readinessChanges: Stream.fromQueue(switches),
+          beforeThreadLookup: () => (hold === null ? Effect.void : Deferred.await(hold)),
+        });
+        const { service } = host;
+        yield* openRunning(service, threadId);
+        const gate = yield* Deferred.make<void>();
+        hold = gate;
+        const opening = yield* service
+          .openMaster({ threadId: otherThreadId, relativePath: "other.blend" })
+          .pipe(Effect.flip, Effect.forkChild);
+        yield* Queue.offer(switches, { status: "notSetUp", missing: ["enabled"] });
+        yield* host.masterStatus(threadId, "closed");
+        yield* Deferred.succeed(gate, undefined);
+        expect((yield* Fiber.join(opening)).reason).toBe("notSetUp");
+        expect(host.launches()).toBe(1);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("restart salvage keeps a master's launch as the master's one copy", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage-master");
+      const blendPath = NodePath.join(NodeFS.realpathSync(dir), "cube.blend");
+      const { hostedDir } = leftover(dir, {
+        owner: "t3:master",
+        facts: { restore: "none", saved: false, changed: true, path: blendPath },
+      });
+      yield* idleService(dir);
+      expect(recoveryOf(hostedDir, `outside:${blendPath}`, "t3:master")?.contents).toBe(
+        "left behind",
+      );
+      // No thread holds a copy of its own.
+      expect(recoveryOf(hostedDir)).toBeNull();
+    }).pipe(Effect.scoped),
+  );
 });
 
 describe("Move into T3", () => {

@@ -3362,13 +3362,16 @@
   "d1634d41846e72cb": "Japonais",
   "c77caac5b764ef8c": "Anglais (Dvorak)",
   "7b15925473b02c07": "Anglais (Colemak)",
+  "7c6bc1129dc9f48e": "Scène sans titre",
+  "cd078f4497dfcd36": "Impossible de redémarrer Blender",
+  "ad3ce6044792509a": "Impossible de rouvrir Blender",
+  "90e3c64eab32945e": "Supprimer l’enregistrement automatique de {name} ?",
+  "01201ecb830d7c68": "Abandonner les modifications non enregistrées de {name} ?",
   "a1628cec6e798a98": "l’assistant d’écran masqué de T3 Code",
   "759aa5a1a95bc013": "un encodeur H.264",
   "f5a8efdb194519df": "le plugin OpenGL de GStreamer",
-  "119259d2fa66fadf": "Impossible de quitter Blender",
   "d6fcf229c9306851": "Capturer et annoter",
   "32cf9ac006229af1": "Menu Blender",
-  "e2d3b41b3731a6c1": "Enregistrer les modifications de {name} avant de quitter ?",
   "9287e12fbeade687": "Un autre appareil a pris le contrôle de Blender",
   "d2b10ff67d190925": "Vue Blender",
   "2151790bc5e65b31": "Non disponible sur cet hôte",
@@ -3376,6 +3379,90 @@
   "7050870331ac8b9a": "Aucun Hosted Blender en cours d’exécution",
   "fb2c65328a8a2e17": "Ouvrez un fichier .blend dans l’aperçu de fichier et choisissez Ouvrir dans Hosted Blender.",
   "3f25b97ec987231e": "Blender n’a pas pu ouvrir le fichier sur l’écran masqué. Vérifiez que Blender l’ouvre et que GStreamer dispose d’un encodeur H.264, puis rouvrez-le dans Hosted Blender.",
+  "c9d23ccb15073177": "Blender a planté",
+  "9f406050b6efb934": "Blender a été fermé",
+  "0693a88b1530f8eb": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " se trouve hors de ce projet, T3 Code ne peut donc pas le rouvrir. Ses modifications non enregistrées sont conservées dans ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "95b2d0bdafc5b01d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " se trouve hors de ce projet, T3 Code ne peut donc pas le rouvrir."
+  ],
+  "0181fc8af235ad77": [
+    "T3 Code a conservé les modifications non enregistrées d’une scène sans titre dans ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "c3528aaa534d9a33": "Blender avait une scène sans titre ouverte, que T3 Code ne peut pas rouvrir.",
+  "df374db2c12ff019": [
+    "Blender n’a pas pu restaurer la copie de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". La copie est conservée : réessayez, ouvrez le fichier tel qu’enregistré en dernier ou supprimez la copie."
+  ],
+  "ff3775198cef1512": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " s’est arrêté de façon inattendue. Redémarrer ouvre le fichier tel qu’enregistré en dernier, ou restaurez son enregistrement automatique le plus récent."
+  ],
+  "945cdcba38a31b0c": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " s’est arrêté de façon inattendue. Redémarrer ouvre le fichier tel qu’enregistré en dernier."
+  ],
+  "a1705e3412c3634e": [
+    "T3 Code a fermé ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " lorsque ce fil a été réglé ou que T3 Code s’est arrêté, et a conservé ses modifications non enregistrées. Rouvrir les restaure."
+  ],
+  "891e3d7d231af485": [
+    "T3 Code a fermé ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " lorsque ce fil a été réglé ou que T3 Code s’est arrêté."
+  ],
+  "bd90fd96c98e9c6f": "Redémarrer",
+  "220f0a0fa43d9f59": "Restaurer l’enregistrement automatique",
+  "182049c015041be2": "Rouvrir",
+  "eb23e8b7b8458cfa": "Ouvrir la dernière version enregistrée",
+  "97585565390197f6": "Abandonner",
+  "930be3d3ed674427": "Également conservés :",
+  "d6c851db16c7dfd8": "Le fichier tel qu’enregistré en dernier est conservé. Cette action est irréversible.",
   "7dfc4caecd0ca4da": "Ouvrir les paramètres Blender",
   "22e7ff1b5896ba7b": "Hosted Blender nécessite un serveur Linux. Vous pouvez toujours ouvrir les fichiers 3D dans l’aperçu de fichier.",
   "ccb9bcd7825f2f99": "La version de Linux de ce serveur fournit des versions de labwc et GStreamer trop anciennes pour Hosted Blender. Vous pouvez toujours ouvrir les fichiers 3D dans l’aperçu de fichier.",
@@ -3410,9 +3497,6 @@
   "8884c1281f2a2db4": "Molette de la souris",
   "295182c176fc7bd0": "Pavé tactile",
   "8b290ab856b8f02b": "Quitter Blender",
-  "32504fe5e26d8233": "Les modifications que Blender n’a pas enregistrées sont perdues si vous quittez sans enregistrer.",
-  "9ceb68fb844584c9": "Quitter sans enregistrer",
-  "e21dfc1887d124ec": "Enregistrer et quitter",
   "6b30f7f4ebd659d7": "Trop de personnes regardent ce Blender. Réessayez plus tard.",
   "1681e6f089782b9d": "Ce navigateur ne peut pas lire le flux Blender.",
   "7579927020ad5107": "Vous avez le contrôle",
@@ -3424,6 +3508,11 @@
   "156c7543e861dda6": "Pas d’accès au GPU : Blender sera lent",
   "907a0f7ed16a709d": "Impossible d’ouvrir dans Hosted Blender",
   "7b0cb06d256e6b28": "Ouvrir dans Hosted Blender",
+  "119259d2fa66fadf": "Impossible de quitter Blender",
+  "e2d3b41b3731a6c1": "Enregistrer les modifications de {name} avant de quitter ?",
+  "32504fe5e26d8233": "Les modifications que Blender n’a pas enregistrées sont perdues si vous quittez sans enregistrer.",
+  "9ceb68fb844584c9": "Quitter sans enregistrer",
+  "e21dfc1887d124ec": "Enregistrer et quitter",
   "004649901eabfebd": "Travaille dans Blender",
   "614e5ad58a795fb5": "Arrêter",
   "49cc06e79f21f85a": "{seconds} s",
@@ -7924,6 +8013,11 @@
   "3943d8479dc44551": "Interroger l’état d’alimentation de l’hôte quand aucun client n’est au premier plan.",
   "d13f97c11d2f322b": "Tout réinitialiser",
   "cc310b2ec0179edf": "Configurer l’activité en arrière-plan",
+  "a0f6aecb07b533ff": "Blender en cours d’exécution ({count})",
+  "b04a15f0adaa16b9": "Aucun Blender hébergé n’est en cours d’exécution",
+  "201b5d40d08e74d0": "Le Blender hébergé de chaque fil apparaît ici tant qu’il s’exécute.",
+  "75daeb1e9b041511": "Fil inconnu",
+  "0eda0be3d24af58c": "Quitter",
   "e116ed85458b6613": "Préfixe fixe",
   "575ae567e3b6ca3d": "Préfixe sémantique",
   "6675de66f9b3f71d": "Instructions personnalisées",
@@ -11527,7 +11621,6 @@
       }
     }
   ],
-  "97585565390197f6": "Abandonner",
   "c0fce4a3555c5c17": "Connexion",
   "0d1eba54ff075d77": "L’utiliser",
   "035dc7d3b0f3e526": "Titres des fils et autres textes générés",
@@ -12283,6 +12376,8 @@
   "f2b07faba1229ce7": "Intervalle de vérification de l’état",
   "5c9dc9970db79fe2": "actualiser disponibilité versions état d’authentification modèles sondes en arrière-plan secondes désactivé",
   "056ba6a180d114b5": "autoriser désactiver activer ouvrir piloter aperçu outils sessions remplacement par projet",
+  "dd6b767f08eff9f7": "Blender en cours d’exécution",
+  "ec2bc06507d0d9af": "hébergé blender quitter mémoire 3d fil",
   "37d76dab21a26b2a": "blender hosted configuration installer vérifier labwc gstreamer encodeur gpu écran masqué linux agent commandes",
   "f74fb1f1e951cb67": "blender hosted agents mcp démarrer autoriser",
   "3cf7f8ed35b33c5f": "blender lab mcp serveur chemin programme installer uv pipx",

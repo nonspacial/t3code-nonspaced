@@ -366,12 +366,15 @@ import {
   DeviceShutdownInput,
 } from "./device.ts";
 import {
+  HostedBlenderDismissInput,
   HostedBlenderError,
   HostedBlenderFindHitsInput,
   HostedBlenderMasterState,
   HostedBlenderHits,
   HostedBlenderOpenInput,
   HostedBlenderQuitInput,
+  HostedBlenderReopenInput,
+  HostedBlenderRunningList,
   HostedBlenderSetViewInput,
   HostedBlenderInstallResult,
   HostedBlenderSetupError,
@@ -610,6 +613,9 @@ export const WS_METHODS = {
   hostedBlenderOpen: "hostedBlender.open",
   hostedBlenderQuit: "hostedBlender.quit",
   hostedBlenderSubscribeThread: "hostedBlender.subscribeThread",
+  hostedBlenderReopen: "hostedBlender.reopen",
+  hostedBlenderDismiss: "hostedBlender.dismiss",
+  hostedBlenderSubscribeRunning: "hostedBlender.subscribeRunning",
   hostedBlenderCaptureView: "hostedBlender.captureView",
   hostedBlenderFindHits: "hostedBlender.findHits",
   hostedBlenderSetView: "hostedBlender.setView",
@@ -2195,6 +2201,23 @@ const WsHostedBlenderSubscribeThreadRpc = Rpc.make(WS_METHODS.hostedBlenderSubsc
   stream: true,
 });
 
+const WsHostedBlenderReopenRpc = Rpc.make(WS_METHODS.hostedBlenderReopen, {
+  payload: HostedBlenderReopenInput,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+const WsHostedBlenderDismissRpc = Rpc.make(WS_METHODS.hostedBlenderDismiss, {
+  payload: HostedBlenderDismissInput,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+const WsHostedBlenderSubscribeRunningRpc = Rpc.make(WS_METHODS.hostedBlenderSubscribeRunning, {
+  payload: Schema.Struct({}),
+  success: HostedBlenderRunningList,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
 /** The thread's master file, and whether a master Blender or the desktop Blender has it open. */
 const WsHostedBlenderSubscribeMasterRpc = Rpc.make(WS_METHODS.hostedBlenderSubscribeMaster, {
   payload: HostedBlenderSubscribeInput,
@@ -2837,6 +2860,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsHostedBlenderOpenRpc,
   WsHostedBlenderQuitRpc,
   WsHostedBlenderSubscribeThreadRpc,
+  WsHostedBlenderReopenRpc,
+  WsHostedBlenderDismissRpc,
+  WsHostedBlenderSubscribeRunningRpc,
   WsHostedBlenderCaptureViewRpc,
   WsHostedBlenderFindHitsRpc,
   WsHostedBlenderSetViewRpc,

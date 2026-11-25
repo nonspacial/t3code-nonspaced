@@ -1,5 +1,6 @@
 import {
   HostedBlenderToolError,
+  type HostedBlenderKeptCopy,
   type HostedBlenderToolStatusResult,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -74,13 +75,39 @@ const refuseInPlanMode = Effect.fnUntraced(function* (threadId: ThreadId, tool: 
   }
 });
 
+/** A kept copy, under its own file. */
+const keptEntry = (
+  role: "working" | "master",
+  copy: HostedBlenderKeptCopy,
+  inWorkspace: (relativePath: string) => string,
+) => {
+  const file =
+    copy.file.kind === "workspace"
+      ? inWorkspace(copy.file.relativePath)
+      : copy.file.kind === "outside"
+        ? copy.file.path
+        : undefined;
+  return {
+    role,
+    status: copy.kind,
+    ...(file === undefined ? {} : { file }),
+    recovery: copy.recovery,
+  };
+};
+
 const workingStatus = Effect.fnUntraced(function* (threadId: ThreadId) {
   const hostedBlender = yield* HostedBlender.HostedBlender;
   const path = yield* Path.Path;
   const state = Option.getOrUndefined(yield* Stream.runHead(hostedBlender.threadState(threadId)));
   if (state?.status === "failed") return [{ role: "working", status: "failed" }] as const;
-  if (state?.status !== "starting" && state?.status !== "running") return [] as const;
   const root = yield* threadWorkspaceRoot(threadId);
+  const inWorkspace = (relativePath: string) =>
+    root === undefined ? relativePath : path.join(root, relativePath);
+  // Each working file's waiting copy, under its own file, whether or not a Blender runs.
+  const kept = (yield* hostedBlender.keptCopies(threadId)).map((copy) =>
+    keptEntry("working", copy, inWorkspace),
+  );
+  if (state?.status !== "starting" && state?.status !== "running") return kept;
   const listener = yield* hostedBlender.agentListener(threadId, { wait: false });
   const reported = listener?.openFile;
   // The file Blender has open now, which may no longer be the one it started with, under
@@ -89,9 +116,7 @@ const workingStatus = Effect.fnUntraced(function* (threadId: ThreadId) {
     reported === null
       ? undefined
       : reported === undefined
-        ? root === undefined
-          ? state.relativePath
-          : path.join(root, state.relativePath)
+        ? inWorkspace(state.relativePath)
         : yield* underConfiguredRoot(reported, root);
   return [
     {
@@ -106,6 +131,7 @@ const workingStatus = Effect.fnUntraced(function* (threadId: ThreadId) {
         ? { agentAccessRefused: "untestedBlenderLab" as const }
         : {}),
     },
+    ...kept,
   ] as const;
 });
 
@@ -138,6 +164,21 @@ const handlers = {
       );
       if (master?.status === "failed") {
         return { blenders: [...working, { role: "master", status: "failed" }] };
+      }
+      // The master's one copy, kept for whichever threads use that file.
+      if (master?.status === "closed" || master?.status === "crashed") {
+        const root = yield* threadWorkspaceRoot(threadId);
+        const path = yield* Path.Path;
+        return {
+          blenders: [
+            ...working,
+            ...master.copies.map((copy) =>
+              keptEntry("master", copy, (relativePath) =>
+                root === undefined ? relativePath : path.join(root, relativePath),
+              ),
+            ),
+          ],
+        } satisfies HostedBlenderToolStatusResult;
       }
       if (master?.status !== "starting" && master?.status !== "running") {
         return { blenders: working };

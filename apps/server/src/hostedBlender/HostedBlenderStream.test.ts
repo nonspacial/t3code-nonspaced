@@ -33,8 +33,13 @@ const serve = (
     const blender = HostedBlender.HostedBlender.of({
       open: () => Effect.void,
       quit: () => Effect.void,
+      reopen: () => Effect.void,
+      dismiss: () => Effect.void,
+      keptCopies: () => Effect.succeed([]),
+      closeOnSettle: () => Effect.void,
       agentListener: () => Effect.succeed(null),
       threadState: () => Stream.empty,
+      runningBlenders: Stream.empty,
       attachViewer,
       captureView: () => Effect.die("unused"),
       findHits: () => Effect.die("unused"),

@@ -18,7 +18,7 @@ Hosted Blender is off until you set it up. Until then, the pane says **Setup nee
 
 Without a GPU, or without access to it, hosted Blender still works, but Blender is slow; Settings and the pane's status strip say so.
 
-Switching Hosted Blender off stops new hosted Blenders from starting. One that is already running keeps running until you quit it.
+Switching Hosted Blender off stops new hosted Blenders from starting and closes the ones running, as a settled thread does: each keeps a copy of its unsaved changes, which the pane offers once you switch it on again.
 
 ## Open a file
 
@@ -28,7 +28,7 @@ If Blender can't open the file, the pane says Blender didn't start. Check that t
 
 Each thread has one hosted Blender with one file open. To open a different file, quit Blender first. A file open in another thread's hosted Blender can't be opened again until that one quits. Only files inside the thread's project or worktree can be opened.
 
-Once a file is open, a link to that `.blend` in the chat opens the Blender pane. Links to other `.blend` files open the file preview.
+Once a file is open, a link to that `.blend` in the chat opens the Blender pane, as it does for any file a closed or crashed Blender kept a copy of. Links to other `.blend` files open the file preview.
 
 ## Agents in a hosted Blender
 
@@ -51,7 +51,7 @@ Only the working copy the agent started takes its calls. A file you opened from 
 The file you asked the agent to change is the master. Once the agent's change is proven in its working copy, it copies the change back into the master itself, through whichever Blender has the master open:
 
 - your desktop Blender, if it has the master open and runs Blender Lab's MCP add-on, through your own `blender` MCP setup;
-- otherwise a master Blender: a hosted Blender T3 Code starts for the master. Threads working on the same master share it, and it quits when the last of them settles or is archived. If it has unsaved changes then, it stays open in that thread's **Master** view until you save or quit it, and that thread can't switch to another master meanwhile.
+- otherwise a master Blender: a hosted Blender T3 Code starts for the master. Threads working on the same master share it, and it quits when the last of them settles or is archived. If it has unsaved changes then, it stays open in that thread's **Master** view until you save or quit it, and that thread can't switch to another master meanwhile. When T3 Code stops or Hosted Blender is switched off, a master Blender closes like any other and keeps one copy of its unsaved changes, which every thread using that master sees on its **Master** side and can reopen or discard.
 
 The agent replaces only the objects it changed, and stops to ask you if any of them changed in the master meanwhile, such as when another agent copied back first. Agents take turns: each marks the master while it copies back, so a second agent waits. Each copy back can be undone in that Blender, and is saved; a desktop Blender shows it straight away. The agent tells you what it copied back.
 
@@ -92,6 +92,18 @@ One device is in control at a time. While someone else is, the pane offers **Tak
 
 Closing the pane leaves Blender running; open it again from the file preview or a link. To stop Blender, choose **Quit Blender** from the pane's menu. If the file has unsaved changes, you can save them first or quit without saving. If the save fails, Blender keeps running so nothing is lost.
 
+## When Blender closes
+
+When a thread settles, is archived or is deleted, its hosted Blender closes, and so does every hosted Blender when T3 Code stops or restarts. If the file Blender has open then has unsaved changes, Blender keeps a copy of the session, those changes included, in T3 Code's own folder, as the copy of that file; a file you only looked at keeps nothing. Your file is never saved over.
+
+The pane then offers **Reopen**, which opens the file with those unsaved changes restored, ready to save or discard as you would in Blender. **Open as last saved** opens the file as it is on disk instead. A thread keeps one copy per file: a later session of the same file replaces it only if that session ends with unsaved changes, saving that file removes it, and **Discard** removes it; nothing you do in another file touches it. An edit that Blender doesn't mark as unsaved, such as one by a script of your own that bypasses undo, isn't kept (the agent's edits are always marked). While a file's copy waits, opening that file in hosted Blender shows its copy first, and other files open as usual. If the thread kept copies of several files, the pane lists them under **Also kept**; choose one to see it. Copies are still there after T3 Code restarts. A copy of a file outside the project, or of an untitled scene, can't be reopened from T3 Code: the pane says where the copy is, so you can open it in your own Blender, and offers **Discard**. T3 Code gives Blender a few seconds to keep its copy when T3 Code stops; a Blender that takes longer is stopped. Your file is never damaged that way, but that session's unsaved changes can be lost. If the file is missing afterwards, its previous version is beside it as `.blend1`. If Blender can't restore the copy, the pane says so and keeps it.
+
+If Blender crashes, it stays stopped and the pane says so. **Restart** opens the file as last saved; if Blender autosaved since your last save, **Restore autosave** opens that instead. Blender autosaves on the schedule in its own settings (every 2 minutes by default). If T3 Code itself stops without closing Blender, the pane shows the crash the next time it starts.
+
+## Running Blenders
+
+**Settings → Blender** lists every hosted Blender running on the connected environment under **Running Blenders**, with its thread, file and memory use. **Quit** stops one, asking first whether to save a file with unsaved changes.
+
 ## Point the agent at something
 
 **Screenshot & annotate** in the pane's toolbar has Blender take a picture of the 3D view in its viewport window and freezes it so you can draw on it, mark regions and write or dictate a comment, as in the [3D preview](3d-previews.md#point-the-agent-at-part-of-a-model). Add to chat puts it in the composer with the screenshot, titled with the file and whether it's a working copy or the master, such as "hero.wip-a1b2.blend · Working copy". The agent also gets the camera the picture was taken from and, for each mark, the object Blender finds under it and the 3D point it covers. If Blender can't take the picture, as in Cycles' rendered view, the frame you were watching is frozen instead, without the camera or what the marks cover. Very large viewports are pictured at a smaller size.
@@ -121,7 +133,7 @@ Setting up hosted Blender happens in **Settings › Blender** on the web or desk
 
 ## Its settings
 
-The first time a hosted Blender starts, T3 Code copies your newest Blender settings (from `~/.config/blender`) into a copy of its own, so your preferences and add-ons come along. Links in your settings folder aren't copied, and changes a hosted Blender makes stay in its copy. Each hosted Blender keeps its own temporary files and add-on ports, so it never clashes with a Blender you're running. Python scripts embedded in `.blend` files follow your **Auto Run Python Scripts** preference only in Full access threads; in every other mode they never run.
+The first time a hosted Blender starts, T3 Code copies your newest Blender settings (from `~/.config/blender`) into a copy of its own, so your preferences and add-ons come along. Links in your settings folder aren't copied, and changes a hosted Blender makes stay in its copy. Each hosted Blender keeps its own temporary files (even if your settings name a temporary folder) and add-on ports, so it never clashes with a Blender you're running. Python scripts embedded in `.blend` files follow your **Auto Run Python Scripts** preference only in Full access threads; in every other mode they never run.
 
 ## Where it works
 

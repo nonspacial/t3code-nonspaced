@@ -3542,6 +3542,9 @@ export const layerWsRpc = (
         [WS_METHODS.hostedBlenderQuit]: (input) => hostedBlender.quit(input),
         [WS_METHODS.hostedBlenderSubscribeThread]: (input) =>
           hostedBlender.threadState(input.threadId),
+        [WS_METHODS.hostedBlenderReopen]: (input) => hostedBlender.reopen(input),
+        [WS_METHODS.hostedBlenderDismiss]: (input) => hostedBlender.dismiss(input),
+        [WS_METHODS.hostedBlenderSubscribeRunning]: () => hostedBlender.runningBlenders,
         [WS_METHODS.hostedBlenderCaptureView]: (input) =>
           hostedBlender.captureView(input.threadId, input.role),
         [WS_METHODS.hostedBlenderFindHits]: (input) => hostedBlender.findHits(input),

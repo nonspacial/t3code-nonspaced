@@ -16,6 +16,8 @@ import {
 
 import { useBlenderRoleStore } from "./blenderRole";
 
+import { keptCopyOf, showKeptCopy } from "./keptCopies";
+
 export const isBlendFile = (relativePath: string) => relativePath.toLowerCase().endsWith(".blend");
 
 const workspaceRelative = (path: string, workspaceRoot: string | undefined) => {
@@ -25,15 +27,22 @@ const workspaceRelative = (path: string, workspaceRoot: string | undefined) => {
   return relative.replace(/^(\.\/)+/, "");
 };
 
-/** A `.blend` link shows the Blender pane only when that file is open in the thread's Blender. */
+/**
+ * A `.blend` link shows the Blender pane only when that file is open in the thread's Blender, or
+ * a closed or crashed one kept a copy of it, whose card the pane then shows.
+ */
 export const hostedBlenderOpensLink = (
   path: string,
   workspaceRoot: string | undefined,
   state: HostedBlenderThreadState | HostedBlenderMasterState | null,
-): boolean =>
-  state !== null &&
-  (state.status === "starting" || state.status === "running") &&
-  state.relativePath === workspaceRelative(path, workspaceRoot);
+): boolean => {
+  if (state === null) return false;
+  const relativePath = workspaceRelative(path, workspaceRoot);
+  if (state.status === "starting" || state.status === "running") {
+    return state.relativePath === relativePath;
+  }
+  return keptCopyOf(state, relativePath) !== undefined;
+};
 
 /**
  * Opens a chat link to a `.blend` in the Blender pane, or in the file preview otherwise. Reading
@@ -75,6 +84,7 @@ export async function openBlendLink(input: {
     input.openFile();
     return;
   }
+  showKeptCopy(input.threadRef, state, workspaceRelative(input.path, input.workspaceRoot));
   const moved = input.view
     ? await (input.setView ?? setHostedBlenderView)(
         input.threadRef,

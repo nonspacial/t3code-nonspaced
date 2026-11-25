@@ -18,6 +18,8 @@ import {
 } from "@t3tools/client-runtime/hosted-blender/stream";
 import type {
   EnvironmentId,
+  HostedBlenderKeptCopy,
+  HostedBlenderMasterState,
   HostedBlenderRequirement,
   HostedBlenderRole,
   HostedBlenderRunningState,
@@ -100,14 +102,14 @@ import { useBlenderAnnotation } from "./BlenderAnnotationEditor";
 import { BlenderRoleSwitch, DesktopUncheckedNotice, MasterCard } from "./BlenderMaster";
 import { useBlenderRoleStore } from "./blenderRole";
 import { attachBlenderInput, type BlenderInput } from "./blenderInput";
+import { useKeptCopySelection } from "./keptCopies";
+import { fileName, useQuitHostedBlender } from "./useQuitHostedBlender";
 
 interface StreamStats {
   readonly frameSize: { readonly width: number; readonly height: number } | null;
   readonly rate: HostedBlenderFrameRate | null;
   readonly server: HostedBlenderStreamStats | null;
 }
-
-const fileName = (relativePath: string) => relativePath.slice(relativePath.lastIndexOf("/") + 1);
 
 // Per device: the keyboard and mouse belong to the device, not the account.
 const KEYBOARD_LAYOUT_KEY = "t3code:hosted-blender:keyboard-layout";
@@ -190,6 +192,8 @@ export function BlenderPanel(props: BlenderPanelProps) {
         master
         notice={master.desktopUnchecked === true ? <DesktopUncheckedNotice /> : null}
       />
+    ) : master?.status === "closed" || master?.status === "crashed" ? (
+      <ReopenCard threadRef={props.threadRef} state={master} master />
     ) : master?.status === "notOpen" || master?.status === "failed" ? (
       <MasterCard threadRef={props.threadRef} state={master} />
     ) : (
@@ -251,6 +255,9 @@ function WorkingBlender(
           }
         />
       );
+    case "closed":
+    case "crashed":
+      return <ReopenCard threadRef={props.threadRef} state={state} />;
     case "starting":
     case "running":
       return <RunningBlender {...props} state={state} switcher={props.switcher} />;
@@ -291,6 +298,7 @@ function StateCard(props: {
   readonly title: ReactNode;
   readonly description?: ReactNode;
   readonly action?: ReactNode;
+  readonly footer?: ReactNode;
 }) {
   return (
     <Empty className="h-full">
@@ -298,8 +306,227 @@ function StateCard(props: {
         <EmptyTitle>{props.title}</EmptyTitle>
         {props.description ? <EmptyDescription>{props.description}</EmptyDescription> : null}
       </EmptyHeader>
-      {props.action ? <EmptyContent>{props.action}</EmptyContent> : null}
+      {props.action ? (
+        <EmptyContent className="flex-row flex-wrap justify-center">{props.action}</EmptyContent>
+      ) : null}
+      {props.footer ? (
+        <EmptyContent>
+          <div className="flex flex-wrap items-center justify-center gap-1 text-muted-foreground text-xs">
+            {props.footer}
+          </div>
+        </EmptyContent>
+      ) : null}
     </Empty>
+  );
+}
+
+const keptName = (copy: HostedBlenderKeptCopy, untitled: string) =>
+  copy.file.kind === "workspace"
+    ? fileName(copy.file.relativePath)
+    : copy.file.kind === "outside"
+      ? fileName(copy.file.path)
+      : untitled;
+
+/**
+ * What a closed or crashed Blender left for one file: it stays stopped until someone reopens
+ * it. The thread's copies of other files are a click away, so none is out of reach.
+ */
+function ReopenCard(props: {
+  readonly threadRef: ScopedThreadRef;
+  readonly state:
+    | Extract<HostedBlenderThreadState, { status: "closed" | "crashed" }>
+    | Extract<HostedBlenderMasterState, { status: "closed" | "crashed" }>;
+  /** The master's one copy, which Reopen restores in the master Blender. */
+  readonly master?: boolean;
+}) {
+  const gt = useGT();
+  const m = useMessages();
+  const environmentId = props.threadRef.environmentId;
+  const canOperate = useAtomValue(hostedBlenderEnvironment.reopen.permissionAtom(environmentId));
+  const reopen = useAtomCommand(hostedBlenderEnvironment.reopen, { reportFailure: false });
+  const dismiss = useAtomCommand(hostedBlenderEnvironment.dismiss, { reportFailure: false });
+  const [pending, setPending] = useState(false);
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+  const selected = useKeptCopySelection(
+    (selection) => selection.byThread[scopedThreadKey(props.threadRef)],
+  );
+  const select = useKeptCopySelection((selection) => selection.select);
+  const { copies } = props.state;
+  const copy = copies.find((kept) => kept.key === selected) ?? copies[0];
+  const untitled = gt("Untitled scene");
+  const name = keptName(copy, untitled);
+  const crashed = copy.kind === "crashed";
+  // T3 opens only workspace files, so only there can it check where a restore would save.
+  const reopenable = copy.file.kind === "workspace";
+  const run = async (action: "restore" | "fresh" | "dismiss") => {
+    setPending(true);
+    const input = {
+      threadId: props.threadRef.threadId,
+      key: copy.key,
+      ...(props.master ? { role: "master" as const } : {}),
+    };
+    const result =
+      action === "dismiss"
+        ? await dismiss({ environmentId, input })
+        : await reopen({ environmentId, input: { ...input, restore: action === "restore" } });
+    setPending(false);
+    setConfirmingDiscard(false);
+    if (result._tag === "Failure") {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: crashed ? gt("Couldn't restart Blender") : gt("Couldn't reopen Blender"),
+          description: formatEnvironmentQueryError(result.cause, m),
+        }),
+      );
+    }
+  };
+  const { recovery, restoreFailed, copyPath } = copy;
+  const others = copies.filter((kept) => kept !== copy);
+  return (
+    <>
+      <StateCard
+        title={crashed ? <T>Blender crashed</T> : <T>Blender was closed</T>}
+        description={
+          copy.file.kind === "outside" ? (
+            recovery ? (
+              <T>
+                <Var>{name}</Var> is outside this project, so T3 Code can't reopen it. Its unsaved
+                changes are kept at <Var>{copyPath}</Var>.
+              </T>
+            ) : (
+              <T>
+                <Var>{name}</Var> is outside this project, so T3 Code can't reopen it.
+              </T>
+            )
+          ) : copy.file.kind === "untitled" ? (
+            recovery ? (
+              <T>
+                T3 Code kept the unsaved changes to an untitled scene at <Var>{copyPath}</Var>.
+              </T>
+            ) : (
+              <T>Blender had an untitled scene open, which T3 Code can't reopen.</T>
+            )
+          ) : restoreFailed ? (
+            <T>
+              Blender couldn't restore the copy of <Var>{name}</Var>. The copy is kept: try again,
+              open the file as last saved, or discard the copy.
+            </T>
+          ) : crashed ? (
+            recovery ? (
+              <T>
+                <Var>{name}</Var> stopped unexpectedly. Restart opens the file as last saved, or
+                restore its newest autosave.
+              </T>
+            ) : (
+              <T>
+                <Var>{name}</Var> stopped unexpectedly. Restart opens the file as last saved.
+              </T>
+            )
+          ) : recovery ? (
+            <T>
+              T3 Code closed <Var>{name}</Var> when this thread settled or T3 Code stopped, and kept
+              its unsaved changes. Reopen restores them.
+            </T>
+          ) : (
+            <T>
+              T3 Code closed <Var>{name}</Var> when this thread settled or T3 Code stopped.
+            </T>
+          )
+        }
+        action={
+          canOperate ? (
+            <>
+              {!reopenable ? null : crashed ? (
+                <>
+                  <Button size="sm" disabled={pending} onClick={() => void run("fresh")}>
+                    <T>Restart</T>
+                  </Button>
+                  {recovery ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={pending}
+                      onClick={() => void run("restore")}
+                    >
+                      <T>Restore autosave</T>
+                    </Button>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  <Button size="sm" disabled={pending} onClick={() => void run("restore")}>
+                    <T>Reopen</T>
+                  </Button>
+                  {recovery ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={pending}
+                      onClick={() => void run("fresh")}
+                    >
+                      <T>Open as last saved</T>
+                    </Button>
+                  ) : null}
+                </>
+              )}
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={pending}
+                onClick={() => (recovery ? setConfirmingDiscard(true) : void run("dismiss"))}
+              >
+                {recovery ? <T>Discard</T> : <T>Dismiss</T>}
+              </Button>
+            </>
+          ) : null
+        }
+        footer={
+          others.length > 0 ? (
+            <>
+              <T>Also kept:</T>
+              {others.map((other) => (
+                <Button
+                  key={other.key}
+                  size="xs"
+                  variant="link"
+                  onClick={() => select(props.threadRef, other.key)}
+                >
+                  {keptName(other, untitled)}
+                </Button>
+              ))}
+            </>
+          ) : null
+        }
+      />
+      <AlertDialog open={confirmingDiscard} onOpenChange={setConfirmingDiscard}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {crashed
+                ? gt("Discard the autosave of {name}?", { name })
+                : gt("Discard the unsaved changes to {name}?", { name })}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              <T>The file as last saved is kept. This can't be undone.</T>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" size="sm" />}>
+              <T>Cancel</T>
+            </AlertDialogClose>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={pending}
+              onClick={() => void run("dismiss")}
+            >
+              <T>Discard</T>
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+    </>
   );
 }
 
@@ -468,9 +695,6 @@ function BlenderToolbar(props: {
     hostedBlenderEnvironment.quit.permissionAtom(props.threadRef.environmentId),
   );
   const m = useMessages();
-  const quit = useAtomCommand(hostedBlenderEnvironment.quit, { reportFailure: false });
-  const [confirming, setConfirming] = useState(false);
-  const [quitting, setQuitting] = useState(false);
   const [keyboardLayout, setKeyboardLayout] = useLocalStorage<KeyboardLayoutSetting, string>(
     KEYBOARD_LAYOUT_KEY,
     "auto",
@@ -483,28 +707,7 @@ function BlenderToolbar(props: {
   );
   const name = fileName(props.state.relativePath);
   const { canOperate, controller } = props.control;
-  const quitBlender = async (save: boolean) => {
-    setQuitting(true);
-    const result = await quit({
-      environmentId: props.threadRef.environmentId,
-      input: {
-        threadId: props.threadRef.threadId,
-        save,
-        ...(props.master ? { role: "master" as const } : {}),
-      },
-    });
-    setQuitting(false);
-    setConfirming(false);
-    if (result._tag === "Failure") {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: gt("Couldn't quit Blender"),
-          description: formatEnvironmentQueryError(result.cause, m),
-        }),
-      );
-    }
-  };
+  const quit = useQuitHostedBlender(props.threadRef, name, props.master ? { role: "master" } : {});
   return (
     <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
       {props.switcher}
@@ -613,44 +816,14 @@ function BlenderToolbar(props: {
             ) : null}
             {canQuit && canOperate ? <MenuSeparator /> : null}
             {canQuit ? (
-              <MenuItem
-                disabled={quitting}
-                onClick={() => (props.state.dirty ? setConfirming(true) : void quitBlender(false))}
-              >
+              <MenuItem disabled={quit.quitting} onClick={() => quit.request(props.state.dirty)}>
                 <T>Quit Blender</T>
               </MenuItem>
             ) : null}
           </MenuPopup>
         </Menu>
       ) : null}
-      <AlertDialog open={confirming} onOpenChange={setConfirming}>
-        <AlertDialogPopup>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {gt("Save changes to {name} before quitting?", { name })}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              <T>Changes Blender hasn't saved are lost if you quit without saving.</T>
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogClose render={<Button variant="outline" size="sm" />}>
-              <T>Cancel</T>
-            </AlertDialogClose>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={quitting}
-              onClick={() => void quitBlender(false)}
-            >
-              <T>Quit without saving</T>
-            </Button>
-            <Button size="sm" disabled={quitting} onClick={() => void quitBlender(true)}>
-              <T>Save and quit</T>
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogPopup>
-      </AlertDialog>
+      {quit.dialog}
     </div>
   );
 }

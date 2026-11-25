@@ -3362,13 +3362,16 @@
   "d1634d41846e72cb": "Japanska",
   "c77caac5b764ef8c": "Engelska (Dvorak)",
   "7b15925473b02c07": "Engelska (Colemak)",
+  "7c6bc1129dc9f48e": "Namnlös scen",
+  "cd078f4497dfcd36": "Det gick inte att starta om Blender",
+  "ad3ce6044792509a": "Det gick inte att öppna Blender igen",
+  "90e3c64eab32945e": "Ta bort den automatiska sparningen av {name}?",
+  "01201ecb830d7c68": "Ta bort de osparade ändringarna i {name}?",
   "a1628cec6e798a98": "T3 Codes hjälpprogram för dold skärm",
   "759aa5a1a95bc013": "en H.264-kodare",
   "f5a8efdb194519df": "GStreamers OpenGL-insticksmodul",
-  "119259d2fa66fadf": "Det gick inte att avsluta Blender",
   "d6fcf229c9306851": "Skärmbild och anteckning",
   "32cf9ac006229af1": "Blender-meny",
-  "e2d3b41b3731a6c1": "Spara ändringarna i {name} innan du avslutar?",
   "9287e12fbeade687": "En annan enhet tog kontrollen över Blender",
   "d2b10ff67d190925": "Blender-vyport",
   "2151790bc5e65b31": "Inte tillgängligt på den här värden",
@@ -3376,6 +3379,90 @@
   "7050870331ac8b9a": "Ingen Hosted Blender körs",
   "fb2c65328a8a2e17": "Öppna en .blend-fil i filförhandsvisningen och välj Öppna i Hosted Blender.",
   "3f25b97ec987231e": "Blender kunde inte öppna filen på den dolda skärmen. Kontrollera att Blender kan öppna den och att GStreamer har en H.264-kodare, och öppna den sedan i Hosted Blender igen.",
+  "c9d23ccb15073177": "Blender kraschade",
+  "9f406050b6efb934": "Blender stängdes",
+  "0693a88b1530f8eb": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ligger utanför det här projektet, så T3 Code kan inte öppna den igen. Dess osparade ändringar finns kvar i ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "95b2d0bdafc5b01d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ligger utanför det här projektet, så T3 Code kan inte öppna den igen."
+  ],
+  "0181fc8af235ad77": [
+    "T3 Code behöll de osparade ändringarna i en namnlös scen i ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "c3528aaa534d9a33": "Blender hade en namnlös scen öppen, som T3 Code inte kan öppna igen.",
+  "df374db2c12ff019": [
+    "Blender kunde inte återställa kopian av ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Kopian behålls: försök igen, öppna filen som den senast sparades eller ta bort kopian."
+  ],
+  "ff3775198cef1512": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " stannade oväntat. Starta om öppnar filen som den senast sparades, eller återställ den senaste automatiska sparningen."
+  ],
+  "945cdcba38a31b0c": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " stannade oväntat. Starta om öppnar filen som den senast sparades."
+  ],
+  "a1705e3412c3634e": [
+    "T3 Code stängde ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " när den här tråden avslutades eller T3 Code stoppades, och behöll de osparade ändringarna. Öppna igen återställer dem."
+  ],
+  "891e3d7d231af485": [
+    "T3 Code stängde ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " när den här tråden avslutades eller T3 Code stoppades."
+  ],
+  "bd90fd96c98e9c6f": "Starta om",
+  "220f0a0fa43d9f59": "Återställ automatisk sparning",
+  "182049c015041be2": "Öppna igen",
+  "eb23e8b7b8458cfa": "Öppna senast sparade",
+  "97585565390197f6": "Kasta",
+  "930be3d3ed674427": "Sparas också:",
+  "d6c851db16c7dfd8": "Filen som den senast sparades behålls. Det går inte att ångra.",
   "7dfc4caecd0ca4da": "Öppna Blender-inställningar",
   "22e7ff1b5896ba7b": "Hosted Blender kräver en Linux-server. Du kan fortfarande öppna 3D-filer i filförhandsvisningen.",
   "ccb9bcd7825f2f99": "Den här serverns Linux-version levererar för gamla versioner av labwc och GStreamer för Hosted Blender. Du kan fortfarande öppna 3D-filer i filförhandsvisningen.",
@@ -3410,9 +3497,6 @@
   "8884c1281f2a2db4": "Mushjul",
   "295182c176fc7bd0": "Styrplatta",
   "8b290ab856b8f02b": "Avsluta Blender",
-  "32504fe5e26d8233": "Ändringar som Blender inte har sparat går förlorade om du avslutar utan att spara.",
-  "9ceb68fb844584c9": "Avsluta utan att spara",
-  "e21dfc1887d124ec": "Spara och avsluta",
   "6b30f7f4ebd659d7": "För många tittar på den här Blender. Försök igen senare.",
   "1681e6f089782b9d": "Den här webbläsaren kan inte spela upp Blender-strömmen.",
   "7579927020ad5107": "Du har kontrollen",
@@ -3424,6 +3508,11 @@
   "156c7543e861dda6": "Ingen GPU-åtkomst: Blender blir långsam",
   "907a0f7ed16a709d": "Det gick inte att öppna i Hosted Blender",
   "7b0cb06d256e6b28": "Öppna i Hosted Blender",
+  "119259d2fa66fadf": "Det gick inte att avsluta Blender",
+  "e2d3b41b3731a6c1": "Spara ändringarna i {name} innan du avslutar?",
+  "32504fe5e26d8233": "Ändringar som Blender inte har sparat går förlorade om du avslutar utan att spara.",
+  "9ceb68fb844584c9": "Avsluta utan att spara",
+  "e21dfc1887d124ec": "Spara och avsluta",
   "004649901eabfebd": "Arbetar i Blender",
   "614e5ad58a795fb5": "Stoppa",
   "49cc06e79f21f85a": "{seconds} s",
@@ -7929,6 +8018,11 @@
   "3943d8479dc44551": "Kontrollera värdens strömstatus när ingen klient i förgrunden är aktiv.",
   "d13f97c11d2f322b": "Återställ alla",
   "cc310b2ec0179edf": "Konfigurera bakgrundsaktivitet",
+  "a0f6aecb07b533ff": "Blender som körs ({count})",
+  "b04a15f0adaa16b9": "Inga värdbaserade Blender körs",
+  "201b5d40d08e74d0": "Varje tråds värdbaserade Blender visas här medan den körs.",
+  "75daeb1e9b041511": "Okänd tråd",
+  "0eda0be3d24af58c": "Avsluta",
   "e116ed85458b6613": "Statiskt prefix",
   "575ae567e3b6ca3d": "Semantiskt prefix",
   "6675de66f9b3f71d": "Anpassade instruktioner",
@@ -11535,7 +11629,6 @@
       }
     }
   ],
-  "97585565390197f6": "Kasta",
   "c0fce4a3555c5c17": "Anslut",
   "0d1eba54ff075d77": "Använd den",
   "035dc7d3b0f3e526": "Trådtitlar och annan genererad text",
@@ -12291,6 +12384,8 @@
   "f2b07faba1229ce7": "Intervall för hälsokontroll",
   "5c9dc9970db79fe2": "uppdatera tillgänglighet versioner autentiseringsstatus modeller bakgrundskontroller sekunder av",
   "056ba6a180d114b5": "tillåt inaktivera aktivera öppna styr förhandsvisning verktyg sessioner projekt åsidosätt",
+  "dd6b767f08eff9f7": "Blender som körs",
+  "ec2bc06507d0d9af": "värdbaserad blender avsluta minne 3d tråd",
   "37d76dab21a26b2a": "blender hosted konfiguration installera kontrollera labwc gstreamer kodare gpu dold skärm linux agent kommandon",
   "f74fb1f1e951cb67": "blender hosted agenter mcp starta tillåt",
   "3cf7f8ed35b33c5f": "blender lab mcp server sökväg program installera uv pipx",

@@ -53,6 +53,7 @@ describe("helperArguments", () => {
         blendPath: "/work/models/hero.blend",
         controlSocket: "/run/user/1000/t3hb-1/control.sock",
         mcpPort: 41234,
+        recover: null,
         width: 1280,
         height: 720,
       }),
@@ -81,6 +82,24 @@ describe("helperArguments", () => {
       "--t3-mcp-port",
       "41234",
     ]);
+  });
+
+  it("asks the control add-on to restore a recovery copy over the file it opens", () => {
+    const argv = helperArguments({
+      stateDir: "/state/thread-1",
+      userResources: "/state/user-resources",
+      blender: "/usr/bin/blender",
+      addonPath: "/state/thread-1/t3_control.py",
+      blendPath: "/work/models/hero.blend",
+      controlSocket: "/run/user/1000/t3hb-1/control.sock",
+      mcpPort: 41234,
+      recover: "/state/recovery/thread-1/session.blend",
+      width: 1280,
+      height: 720,
+    });
+    // Blender still opens the user's file, so that stays the file it saves to.
+    expect(argv).toContain("/work/models/hero.blend");
+    expect(argv.slice(-2)).toEqual(["--t3-recover", "/state/recovery/thread-1/session.blend"]);
   });
 });
 

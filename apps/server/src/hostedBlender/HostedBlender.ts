@@ -1,20 +1,28 @@
+// @effect-diagnostics nodeBuiltinImport:off - names recovery folders by a hash of their file.
+import * as NodeCrypto from "node:crypto";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
   HostedBlenderError,
+  type HostedBlenderDismissInput,
   HostedBlenderFindHitsInput,
+  type HostedBlenderKeptCopy,
+  HostedBlenderKeptFile,
   HostedBlenderHits,
   type HostedBlenderMasterState,
   type HostedBlenderRole,
   type HostedBlenderOpenInput,
   type HostedBlenderQuitInput,
+  type HostedBlenderReopenInput,
+  type HostedBlenderRunningList,
   type HostedBlenderRunningState,
   HostedBlenderSetViewInput,
   type HostedBlenderStreamServerMessage,
   type HostedBlenderViewerMessage,
   type HostedBlenderThreadState,
+  ThreadId,
+  TrimmedNonEmptyString,
   HostedBlenderViewCapture,
   HostedBlenderViewProjection,
-  type ThreadId,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
@@ -74,6 +82,16 @@ import {
   HelperPacketReader,
   isHelperPacketError,
 } from "./HelperProtocol.ts";
+import {
+  type BlenderExit,
+  cleanupOf,
+  endingOf,
+  fileKeyOf,
+  type KeptFile,
+  keptFileOf,
+  type RestoreState,
+  snapshotOf,
+} from "./Recovery.ts";
 import { BitrateControl } from "./Bitrate.ts";
 import { sendHoldingSlot } from "./ControlSlot.ts";
 import { ViewerFlow } from "./ViewerFlow.ts";
@@ -83,18 +101,40 @@ const INITIAL_SIZE = { width: 1280, height: 720 };
 const MEMORY_SAMPLE_INTERVAL = Duration.seconds(5);
 const KEYFRAME_REQUEST_INTERVAL_MS = 250;
 const QUIT_TIMEOUT = Duration.seconds(20);
+// The desktop app kills the server 5 seconds after asking it to stop. Blenders get this long
+// to finish their quit copies, and the rest is left for stopping them.
+const SHUTDOWN_QUIT_TIMEOUT = Duration.millis(4000);
+const SHUTDOWN_STOP_TIMEOUT = Duration.millis(400);
+// A helper asked to stop gives Blender 5 seconds before killing it.
+const LEFTOVER_STOP_TIMEOUT = Duration.seconds(7);
+
+/** How startup signals a leftover launch's processes; tests stand in for what the kernel does. */
+export const LeftoverSignal = Context.Reference<(pid: number, signal: NodeJS.Signals) => void>(
+  "t3/hostedBlender/LeftoverSignal",
+  {
+    defaultValue: () => (pid, signal) => {
+      try {
+        process.kill(pid, signal);
+      } catch {
+        // Already gone.
+      }
+    },
+  },
+);
 // A desktop Blender that doesn't answer by then counts as one T3 couldn't ask.
 const DESKTOP_PROBE_DEADLINE = Duration.seconds(8);
-const CONTROL_RETRY_INTERVAL = Duration.millis(200);
 // A start that shows no viewport window by then has failed (a broken file, no encoder).
 const START_TIMEOUT = Duration.seconds(90);
+const CONTROL_RETRY_INTERVAL = Duration.millis(200);
 // The add-on starts the agent listener only once this connection is up, so it waits as long as a
-// start does: a slow file still gets its listener while T3 is listening for it.
+// start does: a slow file still gets its listener while T3 is listening for it. The ending of a
+// slow Blender also waits on it, to keep its session.
 export const CONTROL_CONNECT_ATTEMPTS = Math.ceil(
   Duration.toMillis(START_TIMEOUT) / Duration.toMillis(CONTROL_RETRY_INTERVAL),
 );
 const HELPER_QUIT_TIMEOUT = Duration.seconds(10);
 const CONTROL_REPLY_TIMEOUT = Duration.seconds(5);
+const CONTROL_DRAIN_TIMEOUT = Duration.seconds(1);
 
 // T3's control add-on speaks JSON lines on its private socket; see controlAddon.ts.
 const ControlMessage = Schema.Union([
@@ -103,6 +143,8 @@ const ControlMessage = Schema.Union([
     type: Schema.Literal("state"),
     filepath: Schema.String,
     dirty: Schema.Boolean,
+    /** How the restore T3 asked for went, once it has run. */
+    restore: Schema.optional(Schema.Literals(["ok", "failed"])),
     agentListener: Schema.optional(
       Schema.Literals(["off", "starting", "ready", "failed", "untested"]),
     ),
@@ -110,9 +152,18 @@ const ControlMessage = Schema.Union([
     agentActing: Schema.optional(Schema.Boolean),
     /** The installed Blender Lab extension's version, when the launch asked for its listener. */
     mcpVersion: Schema.optional(Schema.NullOr(Schema.String)),
+    /** When Blender last loaded a file (open, revert, recover), epoch ms. */
+    loadedAt: Schema.optional(Schema.Number),
+  }),
+  /** The file and its unsaved bit as Blender began to quit without saving: the run's last word. */
+  Schema.Struct({
+    type: Schema.Literal("quitting"),
+    filepath: Schema.String,
+    dirty: Schema.Boolean,
   }),
   Schema.Struct({ type: Schema.Literal("saving") }),
-  Schema.Struct({ type: Schema.Literal("saved") }),
+  /** The file saved, and whether it was unsaved again once the agent's access ended. */
+  Schema.Struct({ type: Schema.Literal("saved"), filepath: Schema.String, dirty: Schema.Boolean }),
   Schema.Struct({ type: Schema.Literal("quitFailed"), reason: Schema.Literal("saveFailed") }),
   /** `quitIfClean` found unsaved changes, so Blender stays open. */
   Schema.Struct({ type: Schema.Literal("quitRefused"), id: Schema.optional(Schema.Int) }),
@@ -170,6 +221,73 @@ const encodeControlCommand = Schema.encodeSync(
   Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("quit"), save: Schema.Boolean })),
 );
 
+/**
+ * What a hosted Blender left for one file of its thread, kept on disk across restarts beside
+ * the copy it describes, and written with it.
+ */
+const RecoveryRecord = Schema.Struct({
+  threadId: ThreadId,
+  file: HostedBlenderKeptFile,
+  kind: Schema.Literals(["closed", "crashed"]),
+  /** Its session file (`session.blend` beside the record) holds a copy to restore. */
+  recovery: Schema.Boolean,
+  /** When the copy was kept, epoch ms; the pane lists the newest first. */
+  keptAt: Schema.Number,
+});
+type RecoveryRecord = typeof RecoveryRecord.Type;
+const RecoveryRecordJson = Schema.fromJsonString(RecoveryRecord);
+const decodeRecoveryRecord = Schema.decodeUnknownOption(RecoveryRecordJson);
+const encodeRecoveryRecord = Schema.encodeSync(RecoveryRecordJson);
+// The single record a thread kept before copies were kept per file.
+const decodeLegacyRecord = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      threadId: ThreadId,
+      kind: Schema.Literals(["closed", "crashed"]),
+      relativePath: TrimmedNonEmptyString,
+      recovery: Schema.Boolean,
+    }),
+  ),
+);
+
+/**
+ * Written into each launch folder, so one a stopped server left behind can be salvaged. The
+ * helper runs in the folder and names it in its arguments, so a live one is told apart from a
+ * reused pid.
+ */
+const LaunchRecord = Schema.fromJsonString(
+  Schema.Struct({
+    threadId: ThreadId,
+    relativePath: TrimmedNonEmptyString,
+    helperPid: Schema.optional(Schema.Int),
+  }),
+);
+const decodeLaunchRecord = Schema.decodeUnknownOption(LaunchRecord);
+const encodeLaunchRecord = Schema.encodeSync(LaunchRecord);
+
+const EndFile = Schema.Struct({
+  file: HostedBlenderKeptFile,
+  /** Its absolute path; null for an untitled scene. */
+  path: Schema.NullOr(Schema.String),
+  /** When Blender opened it, epoch ms (0 for the file it launched with). */
+  since: Schema.Number,
+});
+type EndFile = typeof EndFile.Type;
+
+/** What salvage needs to apply the same cleanup a run's own end would. */
+const RunFacts = Schema.fromJsonString(
+  Schema.Struct({
+    restore: Schema.Literals(["none", "pending", "ok", "failed"]),
+    /** The file Blender has open, which its end keeps a copy of. */
+    endFile: EndFile,
+    /** Blender's last word on that file was a confirmed save. */
+    saved: Schema.Boolean,
+    /** Blender last reported that file clean. */
+    clean: Schema.Boolean,
+  }),
+);
+const decodeRunFacts = Schema.decodeUnknownOption(RunFacts);
+const encodeRunFacts = Schema.encodeSync(RunFacts);
 // Requests about the person's viewport window, each answered by one `reply`.
 const ControlRequest = Schema.Union([
   /** `screenshot` is a file name for the render, in the control socket's private folder. */
@@ -253,6 +371,24 @@ export class HostedBlender extends Context.Service<
       options?: { readonly wait?: boolean; readonly role?: HostedBlenderRole },
     ) => Effect.Effect<AgentListenerReport | null>;
     readonly quit: (input: HostedBlenderQuitInput) => Effect.Effect<void, HostedBlenderError>;
+    /** Reopens a kept copy's file, restoring the copy if asked. */
+    readonly reopen: (input: HostedBlenderReopenInput) => Effect.Effect<void, HostedBlenderError>;
+    /**
+     * Discards one kept copy, or clears a failed start. Nothing changes while the thread's
+     * Blender runs.
+     */
+    readonly dismiss: (input: HostedBlenderDismissInput) => Effect.Effect<void>;
+    /** Every copy the thread keeps, newest first, running Blender or not. */
+    readonly keptCopies: (
+      threadId: ThreadId,
+    ) => Effect.Effect<ReadonlyArray<HostedBlenderKeptCopy>>;
+    /**
+     * Saves a recovery copy and quits the thread's Blender, without waiting for it: the thread
+     * settled, was archived or was deleted.
+     */
+    readonly closeOnSettle: (input: { readonly threadId: ThreadId }) => Effect.Effect<void>;
+    /** Every hosted Blender on this server, for Settings. */
+    readonly runningBlenders: Stream.Stream<HostedBlenderRunningList>;
     readonly threadState: (threadId: ThreadId) => Stream.Stream<HostedBlenderThreadState>;
     /** `canOperate`: the viewer may take control (`terminal:operate`). */
     readonly attachViewer: (
@@ -358,6 +494,37 @@ interface Instance {
   fiber: Fiber.Fiber<void> | null;
   /** Set by `quit`, so stopping a Blender that is still starting doesn't read as a failed start. */
   quitting: boolean;
+  /** Set when T3 quits it for its thread or a shutdown, which keeps a recovery copy. */
+  ending: boolean;
+  blenderExit: BlenderExit | null;
+  /** The recovery copy or autosave this run restored over the file. */
+  recover: string | null;
+  /** The add-on's last word on `endFile` was a confirmed save, so nothing is left to recover. */
+  saved: boolean;
+  /** Save and quit saved, so T3 quit it; work recorded after that is kept as on a close. */
+  saveConfirmed: boolean;
+  /** The file Blender has open, whose copy this run's end keeps. */
+  endFile: EndFile;
+  /** Blender last reported `endFile` clean, before it began quitting. */
+  clean: boolean;
+  /** The add-on said it is quitting without saving. */
+  quitHeard: boolean;
+  /** The load time Blender last reported. */
+  loadedAt: number | undefined;
+  /** What T3 had asked when the helper exited; later asks can't make a crash look closed. */
+  exitIntent: { readonly ending: boolean; readonly quitting: boolean } | null;
+  /** The add-on said it is saving or writing its quit copy; stopping it now could cut that short. */
+  acknowledged: boolean;
+  /** Stopped as a shutdown runs out of time: the helper gets no grace. */
+  stopNow: boolean;
+  /** Its thread settled: T3 is closing it, though the quit itself may not have begun. */
+  closeRequested: boolean;
+  /** `pending` until the add-on reports the restore of `recover`. */
+  restore: RestoreState;
+  /** Blender showed its viewport window. */
+  shown: boolean;
+  controlReady: Deferred.Deferred<void>;
+  stateDir: string | null;
   readonly agentWorkingCopy: boolean;
   agentListener: AgentListenerState;
   /** Done once the listener is ready, failed or off. */
@@ -385,6 +552,10 @@ interface Instance {
   /** Answered when the add-on has dropped the quit T3 gave up on. */
   quitCancelled: { readonly id: number; readonly done: Deferred.Deferred<void> } | null;
   openFile: string | null | undefined;
+  /** The real path of the file Blender has open now, which no other hosted Blender may open. */
+  openRealPath: string | null;
+  /** The workspace's real path, which the open file is named under. */
+  readonly workspaceRoot: string;
   mcpVersion: string | null;
   /** The agent is acting through Blender Lab, as the add-on reports it; for the pane's badge. */
   agentActing: boolean;
@@ -406,8 +577,21 @@ interface Instance {
 }
 
 const masterKey = (blendPath: string) => `master:${blendPath}`;
+/**
+ * A master Blender is one session its threads share, so its copy has one owner of its own,
+ * kept under the master file's real path, whichever threads used it.
+ */
+const MASTER_OWNER = ThreadId.make("t3:master");
+const masterFileOf = (blendPath: string): KeptFile =>
+  blendPath === "" ? { kind: "untitled" } : { kind: "outside", path: blendPath };
 
-type PublishedState = HostedBlenderRunningState | { readonly status: "failed" };
+type PublishedState =
+  | HostedBlenderRunningState
+  | { readonly status: "failed" }
+  | {
+      readonly status: "closed" | "crashed";
+      readonly copies: readonly [HostedBlenderKeptCopy, ...HostedBlenderKeptCopy[]];
+    };
 
 const sameState = (a: HostedBlenderThreadState, b: HostedBlenderThreadState) =>
   JSON.stringify(a) === JSON.stringify(b);
@@ -431,15 +615,27 @@ const make = Effect.gen(function* () {
     | ProjectService.ProjectService
   >();
   const serviceScope = yield* Effect.scope;
+  const signalProcess = yield* LeftoverSignal;
+  // Runs live here, so on shutdown they are ended with recovery copies before it closes.
+  const runScope = yield* Scope.fork(serviceScope);
   let screenshots = 0;
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
   let nextViewerId = 0;
   let nextShownAt = 0;
 
   const instances = new Map<string, Instance>();
+  // Hosted Blender was switched off in Settings; see the readiness subscription below.
+  let switchedOff = false;
   const states = yield* SubscriptionRef.make<ReadonlyMap<string, PublishedState>>(new Map());
+  const running = yield* SubscriptionRef.make<HostedBlenderRunningList>([]);
   // Threads whose last start failed, until they open a file again.
   const failedStarts = new Set<string>();
+  // What each thread's Blenders left, one record per file (by `fileKeyOf`), until a newer copy
+  // of that file, a confirmed save of it, or Discard. Mirrors the records under `recovery/`.
+  const records = new Map<string, Map<string, RecoveryRecord>>();
+  // Copies whose last restore failed, by `copyId`; the copy is kept and the pane says so.
+  const failedRestores = new Set<string>();
+  const copyId = (threadId: string, key: string) => `${threadId}\n${key}`;
   /** Each thread's master file, by its checked real path, and what T3 last saw of it. */
   const threadMasters = new Map<
     ThreadId,
@@ -465,7 +661,53 @@ const make = Effect.gen(function* () {
   /** Master files claimed while the desktop Blender is asked, before their Blender starts. */
   const reserved = new Set<string>();
   const rootDir = path.join(config.stateDir, "hosted-blender");
+  const launchesDir = path.join(rootDir, "launches");
+  // Thread ids are opaque, so each gets a folder name that can't leave `recovery/`.
+  const recoveryDir = (threadId: string) =>
+    path.join(rootDir, "recovery", Buffer.from(threadId).toString("base64url"));
+  // A file's key can be a long path, so its folder is named by the key's hash.
+  const copyDir = (threadId: string, key: string) =>
+    path.join(recoveryDir(threadId), NodeCrypto.createHash("sha256").update(key).digest("hex"));
+  const sessionPath = (threadId: string, key: string) =>
+    path.join(copyDir(threadId, key), "session.blend");
 
+  /** The thread's copies, newest first, as the pane and the agent see them. */
+  const copiesOf = (threadId: string): Array<HostedBlenderKeptCopy> =>
+    Array.from(records.get(threadId)?.values() ?? [])
+      .toSorted((a, b) => b.keptAt - a.keptAt)
+      .map((record) => {
+        const key = fileKeyOf(record.file);
+        return {
+          key,
+          kind: record.kind,
+          file: record.file,
+          recovery: record.recovery,
+          ...(failedRestores.has(copyId(threadId, key)) ? { restoreFailed: true } : {}),
+          // T3 reopens only workspace files; the person can find any other copy here.
+          ...(record.recovery && record.file.kind !== "workspace"
+            ? { copyPath: sessionPath(threadId, key) }
+            : {}),
+        };
+      });
+
+  const publishRunning = () =>
+    Effect.suspend(() =>
+      SubscriptionRef.set(
+        running,
+        Array.from(instances.values(), (instance) => ({
+          threadId: instance.threadId,
+          status: instance.status,
+          relativePath: instance.relativePath,
+          dirty: instance.dirty,
+          memoryBytes: instance.memoryBytes,
+          // A master may have no thread left, so Quit names it by its own key.
+          ...(instance.role === "master" ? { master: instance.key } : {}),
+        })),
+      ),
+    );
+
+  // A running Blender outranks what an earlier one left to reopen, and that outranks a failed
+  // start, so a restore that fails to start still offers its recovery copy.
   const masterStateOf = (threadId: ThreadId): HostedBlenderMasterState => {
     const known = threadMasters.get(threadId);
     if (known === undefined) return { status: "none" };
@@ -478,6 +720,24 @@ const make = Effect.gen(function* () {
         dirty: instance.dirty,
         ...(instance.agentActing ? { agentActing: true } : {}),
         ...(instance.desktopUnchecked ? { desktopUnchecked: true } : {}),
+      };
+    }
+    // The master's one copy, shown to each thread under its own name for the file.
+    const key = fileKeyOf(masterFileOf(known.blendPath));
+    const record = records.get(MASTER_OWNER)?.get(key);
+    if (record !== undefined) {
+      return {
+        status: record.kind,
+        relativePath: known.relativePath,
+        copies: [
+          {
+            key,
+            kind: record.kind,
+            file: { kind: "workspace", relativePath: known.relativePath },
+            recovery: record.recovery,
+            ...(failedRestores.has(copyId(MASTER_OWNER, key)) ? { restoreFailed: true } : {}),
+          },
+        ],
       };
     }
     if (failedMasters.has(known.blendPath)) {
@@ -500,6 +760,12 @@ const make = Effect.gen(function* () {
             threadId,
             { status: "failed" },
           ]),
+          ...Array.from(records.keys()).flatMap((threadId): Array<[string, PublishedState]> => {
+            const [newest, ...rest] = copiesOf(threadId);
+            return newest === undefined
+              ? []
+              : [[threadId, { status: newest.kind, copies: [newest, ...rest] }]];
+          }),
           ...Array.from(instances.values())
             .filter((instance) => instance.role === "working")
             .map((instance): [string, PublishedState] => [
@@ -522,7 +788,320 @@ const make = Effect.gen(function* () {
           ),
         ),
       ),
+    ).pipe(Effect.andThen(publishRunning()));
+
+  // Each write goes through a temporary name, so a crash mid-write never leaves half a file.
+  // Runs inside keepRecord's span.
+  const writeAtomically = Effect.fnUntraced(function* (
+    target: string,
+    write: (to: string) => Effect.Effect<void, PlatformError>,
+  ) {
+    const partial = `${target}.partial`;
+    yield* write(partial);
+    yield* fileSystem.rename(partial, target);
+  });
+
+  const writeRecord = Effect.fnUntraced(function* (record: RecoveryRecord) {
+    const key = fileKeyOf(record.file);
+    yield* writeAtomically(path.join(copyDir(record.threadId, key), "record.json"), (to) =>
+      fileSystem.writeFileString(to, encodeRecoveryRecord(record)),
     );
+    const kept = records.get(record.threadId) ?? new Map<string, RecoveryRecord>();
+    kept.set(key, record);
+    records.set(record.threadId, kept);
+  });
+
+  /**
+   * Keeps the snapshot Blender left in `tmpDir` of the file it ended on as that file's copy,
+   * with what it is of, replacing only an older copy of that same file. With no snapshot, an
+   * earlier copy of the file stays as it was; with none either, the card still says how it
+   * ended. No other file's copy is read or touched.
+   */
+  const keepCopy = Effect.fn("HostedBlender.keepCopy")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly endFile: EndFile;
+    readonly kind: RecoveryRecord["kind"];
+    readonly tmpDir: string;
+  }) {
+    const { file, since } = input.endFile;
+    const key = fileKeyOf(file);
+    const names = yield* fileSystem
+      .readDirectory(input.tmpDir)
+      .pipe(Effect.orElseSucceed(() => []));
+    const mtimeOf = (target: string) =>
+      fileSystem.stat(target).pipe(
+        Effect.map((info) =>
+          info.type === "File"
+            ? Option.match(info.mtime, { onNone: () => 0, onSome: (date) => date.getTime() })
+            : -1,
+        ),
+        Effect.orElseSucceed(() => -1),
+      );
+    const files = yield* Effect.forEach(names, (name) =>
+      mtimeOf(path.join(input.tmpDir, name)).pipe(Effect.map((mtimeMs) => ({ name, mtimeMs }))),
+    );
+    const snapshot = snapshotOf(files, {
+      stem:
+        file.kind === "untitled"
+          ? null
+          : path.basename(file.kind === "workspace" ? file.relativePath : file.path, ".blend"),
+      since,
+    });
+    const existing = records.get(input.threadId)?.get(key);
+    if (snapshot === undefined && existing !== undefined) return;
+    yield* fileSystem.makeDirectory(copyDir(input.threadId, key), { recursive: true });
+    if (snapshot === undefined) {
+      yield* fileSystem.remove(sessionPath(input.threadId, key), { force: true });
+    } else {
+      yield* writeAtomically(sessionPath(input.threadId, key), (to) =>
+        fileSystem.copyFile(path.join(input.tmpDir, snapshot), to),
+      );
+      failedRestores.delete(copyId(input.threadId, key));
+    }
+    yield* writeRecord({
+      threadId: input.threadId,
+      file,
+      kind: input.kind,
+      recovery: snapshot !== undefined,
+      keptAt: yield* Clock.currentTimeMillis,
+    });
+  });
+
+  const forgetCopy = Effect.fn("HostedBlender.forgetCopy")(function* (
+    threadId: string,
+    key: string,
+  ) {
+    failedRestores.delete(copyId(threadId, key));
+    const kept = records.get(threadId);
+    if (!kept?.delete(key)) return false;
+    if (kept.size === 0) records.delete(threadId);
+    yield* fileSystem
+      .remove(copyDir(threadId, key), { recursive: true, force: true })
+      .pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("couldn't remove a hosted Blender's recovery copy", { cause }),
+        ),
+      );
+    return true;
+  });
+
+  /** Saved beside the launch as they change, so salvage can apply the same cleanup. */
+  const writeRunFacts = (instance: Instance) =>
+    instance.stateDir === null
+      ? Effect.void
+      : writeAtomically(path.join(instance.stateDir, "run.json"), (to) =>
+          fileSystem.writeFileString(
+            to,
+            encodeRunFacts({
+              restore: instance.restore,
+              endFile: instance.endFile,
+              saved: instance.saved,
+              clean: instance.clean,
+            }),
+          ),
+        ).pipe(Effect.ignore);
+
+  /** Applies a run's cleanup, its end or salvaged; a failure leaves the launch for later. */
+  const applyCleanup = Effect.fnUntraced(function* (
+    run: {
+      readonly threadId: ThreadId;
+      readonly endFile: EndFile;
+      readonly tmpDir: string;
+    },
+    cleanup: ReturnType<typeof cleanupOf>,
+  ) {
+    if (cleanup.action === "keep") {
+      yield* keepCopy({ ...run, kind: cleanup.kind });
+    } else if (cleanup.action === "forget") {
+      yield* forgetCopy(run.threadId, fileKeyOf(run.endFile.file));
+    }
+  });
+
+  // Only a helper running in this launch folder, with the folder in its arguments, is ours.
+  const leftoverHelperAlive = (pid: number, launchDir: string) =>
+    Effect.all([
+      fileSystem.readLink(`/proc/${pid}/cwd`),
+      fileSystem.readFileString(`/proc/${pid}/cmdline`),
+      fileSystem.realPath(launchDir),
+    ]).pipe(
+      Effect.map(
+        ([cwd, cmdline, real]) =>
+          cwd === real && cmdline.split("\0").some((arg) => arg === launchDir || arg === real),
+      ),
+      Effect.orElseSucceed(() => false),
+    );
+
+  // /proc/<pid>/stat is "pid (comm) state ppid pgrp ..."; comm may hold spaces and parens.
+  const processGroupOf = (pid: string) =>
+    fileSystem.readFileString(`/proc/${pid}/stat`).pipe(
+      Effect.map((stat) => {
+        const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+        return fields[0] === "Z" ? null : Number(fields[2]);
+      }),
+      Effect.orElseSucceed(() => null),
+    );
+
+  /**
+   * The live processes of a leftover launch: the helper, and the members of its process group
+   * (it leads one) whose arguments name the launch folder, as Blender's and labwc's do.
+   */
+  const leftoverProcesses = Effect.fnUntraced(function* (helperPid: number, launchDir: string) {
+    const real = yield* fileSystem.realPath(launchDir).pipe(Effect.orElseSucceed(() => launchDir));
+    const pids = (yield* fileSystem
+      .readDirectory("/proc")
+      .pipe(Effect.orElseSucceed(() => []))).filter((entry) => /^\d+$/.test(entry));
+    const members = yield* Effect.forEach(pids, (pid) =>
+      Effect.gen(function* () {
+        if ((yield* processGroupOf(pid)) !== helperPid) return null;
+        const cmdline = yield* fileSystem
+          .readFileString(`/proc/${pid}/cmdline`)
+          .pipe(Effect.orElseSucceed(() => ""));
+        return cmdline.includes(launchDir) || cmdline.includes(real) ? Number(pid) : null;
+      }),
+    );
+    const live = members.filter((pid) => pid !== null);
+    // Not its group's leader, the helper is still ours when it runs in the folder.
+    if (!live.includes(helperPid) && (yield* leftoverHelperAlive(helperPid, launchDir))) {
+      live.push(helperPid);
+    }
+    return live;
+  });
+
+  // A helper from a server that died stops Blender itself once asked. Whatever of its launch
+  // outlasts the grace is killed. True once nothing of it is running, so its files can be
+  // collected; a launch still running after that (Blender stuck in the kernel) is left alone.
+  const stopLeftover = Effect.fnUntraced(function* (helperPid: number, launchDir: string) {
+    const running = yield* leftoverProcesses(helperPid, launchDir);
+    if (running.length === 0) return true;
+    const asked = running.includes(helperPid) ? [helperPid] : running;
+    yield* Effect.sync(() => asked.forEach((pid) => signalProcess(pid, "SIGTERM")));
+    const gone = (timeout: Duration.Input) =>
+      leftoverProcesses(helperPid, launchDir).pipe(
+        Effect.repeat({
+          while: (left) => left.length > 0,
+          schedule: Schedule.spaced("100 millis"),
+        }),
+        Effect.timeoutOption(timeout),
+      );
+    if (Option.isSome(yield* gone(LEFTOVER_STOP_TIMEOUT))) return true;
+    const left = yield* leftoverProcesses(helperPid, launchDir);
+    yield* Effect.sync(() => left.forEach((pid) => signalProcess(pid, "SIGKILL")));
+    return Option.isSome(yield* gone(Duration.seconds(1)));
+  });
+
+  /** Keeps what a launch a stopped server left behind holds, then removes it. */
+  const salvage = Effect.fn("HostedBlender.salvage")(
+    function* (launchDir: string) {
+      const launch = decodeLaunchRecord(
+        yield* fileSystem
+          .readFileString(path.join(launchDir, "launch.json"))
+          .pipe(Effect.orElseSucceed(() => "")),
+      );
+      if (Option.isSome(launch)) {
+        const read = (name: string) =>
+          fileSystem
+            .readFileString(path.join(launchDir, name))
+            .pipe(Effect.orElseSucceed(() => ""));
+        const { threadId, relativePath } = launch.value;
+        // Without facts, the file it launched with, and nothing known to be saved.
+        const facts: typeof RunFacts.Type = Option.getOrElse(
+          decodeRunFacts(yield* read("run.json")),
+          () => ({
+            restore: "none" as const,
+            endFile: { file: { kind: "workspace" as const, relativePath }, path: null, since: 0 },
+            saved: false,
+            clean: false,
+          }),
+        );
+        // T3 was closing it, or it stopped with the server: a crash, for all T3 knows.
+        const ending = (yield* read("outcome")) === "closing" ? "closed" : "crashed";
+        yield* applyCleanup(
+          {
+            threadId,
+            endFile: facts.endFile,
+            tmpDir: path.join(launchDir, "tmp"),
+          },
+          cleanupOf({ ...facts, ending }),
+        );
+      }
+      yield* fileSystem.remove(launchDir, { recursive: true, force: true });
+    },
+    // A launch that can't be salvaged stays for the next start to try again.
+    Effect.catch((cause) => Effect.logWarning("couldn't salvage a hosted Blender", { cause })),
+  );
+
+  // What earlier runs of this server left: their records, and the launch folders of Blenders a
+  // stopped server didn't finish ending. This completes before the service takes any request.
+  const restoreRecords = Effect.gen(function* () {
+    const recoveryRoot = path.join(rootDir, "recovery");
+    const readText = (file: string) =>
+      fileSystem.readFileString(file).pipe(Effect.orElseSucceed(() => ""));
+    for (const entry of yield* fileSystem
+      .readDirectory(recoveryRoot)
+      .pipe(Effect.orElseSucceed(() => []))) {
+      const threadDir = path.join(recoveryRoot, entry);
+      // A thread's one record from before copies were kept per file becomes its file's copy.
+      const legacy = decodeLegacyRecord(yield* readText(path.join(threadDir, "record.json")));
+      if (Option.isSome(legacy) && recoveryDir(legacy.value.threadId) === threadDir) {
+        const { threadId, relativePath, kind, recovery } = legacy.value;
+        const file = { kind: "workspace" as const, relativePath };
+        const key = fileKeyOf(file);
+        yield* fileSystem.makeDirectory(copyDir(threadId, key), { recursive: true });
+        if (recovery) {
+          yield* fileSystem.rename(
+            path.join(threadDir, "session.blend"),
+            sessionPath(threadId, key),
+          );
+        }
+        yield* writeRecord({ threadId, file, kind, recovery, keptAt: 0 });
+        yield* fileSystem.remove(path.join(threadDir, "record.json"));
+      }
+      for (const copy of yield* fileSystem
+        .readDirectory(threadDir)
+        .pipe(Effect.orElseSucceed(() => []))) {
+        const record = decodeRecoveryRecord(
+          yield* readText(path.join(threadDir, copy, "record.json")),
+        );
+        if (
+          Option.isSome(record) &&
+          copyDir(record.value.threadId, fileKeyOf(record.value.file)) ===
+            path.join(threadDir, copy)
+        ) {
+          const kept = records.get(record.value.threadId) ?? new Map<string, RecoveryRecord>();
+          kept.set(fileKeyOf(record.value.file), record.value);
+          records.set(record.value.threadId, kept);
+        }
+      }
+    }
+    const leftovers = (yield* fileSystem
+      .readDirectory(launchesDir)
+      .pipe(Effect.orElseSucceed(() => []))).map((entry) => path.join(launchesDir, entry));
+    // Every leftover's Blender is stopped at once, so several cost one grace period.
+    const quiet = yield* Effect.forEach(
+      leftovers,
+      (launchDir) =>
+        fileSystem.readFileString(path.join(launchDir, "launch.json")).pipe(
+          Effect.map((text) => Option.getOrUndefined(decodeLaunchRecord(text))?.helperPid),
+          Effect.orElseSucceed(() => undefined),
+          Effect.flatMap((helperPid) =>
+            helperPid === undefined ? Effect.succeed(true) : stopLeftover(helperPid, launchDir),
+          ),
+        ),
+      { concurrency: "unbounded" },
+    );
+    for (const [index, launchDir] of leftovers.entries()) {
+      if (quiet[index]) {
+        yield* salvage(launchDir);
+      } else {
+        // Its copy may still be being written; the next start tries again.
+        yield* Effect.logWarning("a hosted Blender from before outlived being stopped", {
+          launchDir,
+        });
+      }
+    }
+  });
+  yield* restoreRecords;
+  yield* publishNow();
 
   const broadcast = (instance: Instance, message: HostedBlenderStreamServerMessage) =>
     Effect.forEach(
@@ -687,6 +1266,10 @@ const make = Effect.gen(function* () {
   // keyframe.
   const applyCapture = (instance: Instance) =>
     Effect.suspend(() => {
+      // A Blender being saved, closed or quit is left as it is; a failed save catches up.
+      if (instance.quitting || instance.closeRequested || instance.pendingSave !== null) {
+        return Effect.void;
+      }
       const wanted = instance.viewers.some((viewer) => viewer.visible);
       if (wanted === instance.capturing) return Effect.void;
       instance.capturing = wanted;
@@ -736,6 +1319,9 @@ const make = Effect.gen(function* () {
         instance.viewport = { width: event.width, height: event.height };
         return yield* broadcast(instance, { type: "viewport", ...instance.viewport });
       case "exited":
+        if (event.process === "blender") {
+          instance.blenderExit = { code: event.code, signal: event.signal };
+        }
         // labwc or Blender is gone; the helper has nothing left to show.
         return yield* instance.helper({ type: "quit" });
       case "error":
@@ -754,10 +1340,26 @@ const make = Effect.gen(function* () {
     }
   });
 
+  // Running once Blender shows its viewport window and any restore asked for has succeeded.
   const markRunning = Effect.fnUntraced(function* (instance: Instance) {
-    if (instance.status === "running") return;
+    instance.shown = true;
+    if (instance.status === "running" || instance.restore === "pending") return;
+    if (instance.restore === "failed") return;
     instance.status = "running";
     yield* publishNow();
+  });
+
+  const updateRestore = Effect.fnUntraced(function* (instance: Instance, result: "ok" | "failed") {
+    if (instance.restore !== "pending") return;
+    instance.restore = result;
+    yield* writeRunFacts(instance);
+    if (result === "ok") {
+      if (instance.shown) yield* markRunning(instance);
+      return;
+    }
+    // The file as saved is open instead; quitting it keeps the copy for another try.
+    failedRestores.add(copyId(ownerOf(instance), fileKeyOf(instance.endFile.file)));
+    yield* quitWithoutSaving(instance).pipe(Effect.forkIn(serviceScope));
   });
 
   const setAgentListener = Effect.fnUntraced(function* (
@@ -860,6 +1462,59 @@ const make = Effect.gen(function* () {
     }
   });
 
+  /** T3 is ending this Blender: a settle close, a quit, a save that will quit, or a shutdown. */
+  const closingByT3 = (instance: Instance) =>
+    instance.quitting ||
+    instance.closeRequested ||
+    instance.ending ||
+    instance.pendingSave !== null;
+
+  /**
+   * Records what Blender says of the file it has open, which the run's end keeps a copy of:
+   * the file, whether it is unsaved, and whether its last word was a confirmed save.
+   */
+  const noteFile = Effect.fnUntraced(function* (
+    instance: Instance,
+    filepath: string,
+    dirty: boolean,
+    options: { readonly loadedAt?: number | undefined; readonly saved?: boolean } = {},
+  ) {
+    const openFile = filepath === "" ? null : filepath;
+    const facts = () =>
+      `${fileKeyOf(instance.endFile.file)}:${instance.endFile.since}:${instance.saved}:${instance.clean}`;
+    const before = facts();
+    // Before anything that waits, so the run's end always sees the file this names.
+    const switched = openFile !== instance.openFile;
+    if (switched) {
+      instance.openFile = openFile;
+      const file =
+        instance.role === "master"
+          ? masterFileOf(filepath)
+          : keptFileOf(filepath, instance.workspaceRoot, path.relative);
+      if (fileKeyOf(file) !== fileKeyOf(instance.endFile.file)) {
+        instance.endFile = { file, path: openFile, since: yield* Clock.currentTimeMillis };
+        instance.saved = false;
+      }
+    }
+    // Any load, the same file's revert included: an autosave from before it is not its work.
+    if (options.loadedAt !== undefined && options.loadedAt !== instance.loadedAt) {
+      instance.loadedAt = options.loadedAt;
+      instance.endFile = { ...instance.endFile, since: options.loadedAt };
+    }
+    if (dirty) instance.saved = false;
+    if (options.saved !== undefined) instance.saved = options.saved;
+    instance.clean = !dirty;
+    if (switched) {
+      instance.openRealPath =
+        openFile === null
+          ? null
+          : yield* fileSystem.realPath(openFile).pipe(Effect.orElseSucceed(() => openFile));
+    }
+    if (before !== facts()) {
+      yield* writeRunFacts(instance);
+    }
+  });
+
   const handleControlLine = Effect.fnUntraced(function* (instance: Instance, line: string) {
     const message = decodeControlMessage(line);
     if (Option.isNone(message)) return;
@@ -868,7 +1523,24 @@ const make = Effect.gen(function* () {
         instance.pid = message.value.pid;
         return;
       case "state": {
-        instance.openFile = message.value.filepath === "" ? null : message.value.filepath;
+        if (message.value.restore !== undefined) {
+          // Blender restores the path the copy was saved from; saving must not write elsewhere
+          // than the file it reopened (a workspace moved, say), so then the copy is kept unsaved.
+          const target = message.value.filepath;
+          const saves =
+            target === instance.blendPath ||
+            (target !== "" &&
+              (yield* fileSystem.realPath(target).pipe(Effect.orElseSucceed(() => ""))) ===
+                instance.blendPath);
+          yield* updateRestore(instance, message.value.restore === "ok" && saves ? "ok" : "failed");
+        }
+        // Its quit pushes an undo step for the quit copy, so a report after "quitting" is always
+        // unsaved and says nothing about the person's work; "quitting" itself carried the facts.
+        if (!instance.quitHeard) {
+          yield* noteFile(instance, message.value.filepath, message.value.dirty, {
+            loadedAt: message.value.loadedAt,
+          });
+        }
         if (message.value.mcpVersion !== undefined) instance.mcpVersion = message.value.mcpVersion;
         // Only the working copy T3 opened may reach the agent, so the file is checked before
         // any listener state is taken; the add-on closes it too.
@@ -888,6 +1560,13 @@ const make = Effect.gen(function* () {
         instance.agentActing = agentActing;
         return yield* publishNow();
       }
+      case "quitting":
+        instance.acknowledged = true;
+        if (!instance.quitHeard) {
+          instance.quitHeard = true;
+          yield* noteFile(instance, message.value.filepath, message.value.dirty);
+        }
+        return;
       case "quitRefused":
         if (instance.quitRefused !== null && instance.quitRefused.id === message.value.id) {
           yield* Deferred.succeed(instance.quitRefused.done, undefined);
@@ -898,9 +1577,20 @@ const make = Effect.gen(function* () {
           yield* Deferred.succeed(instance.quitCancelled.done, undefined);
         }
         return;
-      case "saving":
       case "saved":
+        instance.saveConfirmed = true;
+        // A confirmed save only if nothing was left unsaved, recorded with the file saved
+        // before the save is answered, so salvage after a restart reads the same.
+        yield* noteFile(instance, message.value.filepath, message.value.dirty, {
+          saved: !message.value.dirty,
+        });
+        // The add-on ended the grant before saying so; Blender quits next.
+        yield* revokeAgentListener(instance);
+        if (instance.saveReplies) yield* Queue.offer(instance.saveReplies, "saved");
+        return;
+      case "saving":
       case "quitFailed":
+        instance.acknowledged = message.value.type === "saving";
         if (instance.saveReplies) yield* Queue.offer(instance.saveReplies, message.value.type);
         return;
       case "reply": {
@@ -926,6 +1616,7 @@ const make = Effect.gen(function* () {
       const closed = yield* Deferred.make<void>();
       yield* Effect.addFinalizer(() => Deferred.succeed(closed, undefined));
       instance.control = { write: (line) => writer.write(line).pipe(Effect.ignore), closed };
+      yield* Deferred.succeed(instance.controlReady, undefined);
       // Its last thread left before T3 could ask it to quit; ask now.
       if (instance.retryQuit) yield* retryQuit(instance).pipe(Effect.forkIn(serviceScope));
       // Revoked before the add-on could hear it; a grant waits for its first state.
@@ -956,10 +1647,13 @@ const make = Effect.gen(function* () {
             // Nothing more will answer the requests still waiting.
             instance.requests.clear();
             instance.control = null;
-            instance.controlLost = true;
+            // A Blender T3 is closing drops this connection as it goes; that isn't a loss the
+            // agent should work around, and its access already ended with the close.
+            const closing = closingByT3(instance);
+            if (!closing) instance.controlLost = true;
             // The add-on closes its listener when this connection drops, and nothing reopens it.
             if (!instance.agentListenerRevoked && instance.agentListener !== "off") {
-              instance.agentAccessEnded = "connectionLost";
+              instance.agentAccessEnded = closing ? "revoked" : "connectionLost";
             }
             instance.agentListenerRevoked = true;
             const wasActing = instance.agentActing;
@@ -972,15 +1666,19 @@ const make = Effect.gen(function* () {
       ),
   );
 
+  // Settings lists every Blender's memory, so it is sampled whether or not anyone watches.
   const sampleMemory = Effect.fnUntraced(function* (instance: Instance) {
-    if (instance.pid === null || !instance.capturing) return;
+    if (instance.pid === null) return;
     const status = yield* fileSystem
       .readFileString(`/proc/${instance.pid}/status`)
       .pipe(Effect.orElseSucceed(() => ""));
     const kilobytes = /^VmRSS:\s+(\d+)\s+kB$/m.exec(status)?.[1];
-    instance.memoryBytes = kilobytes === undefined ? null : Number(kilobytes) * 1024;
+    const memoryBytes = kilobytes === undefined ? null : Number(kilobytes) * 1024;
+    if (memoryBytes === instance.memoryBytes) return;
+    instance.memoryBytes = memoryBytes;
+    yield* publishRunning();
     const stats = statsMessage(instance);
-    if (stats) yield* broadcast(instance, stats);
+    if (stats && instance.viewers.length > 0) yield* broadcast(instance, stats);
   });
 
   // Links are skipped, so nothing in the copy leads back to the desktop Blender's files.
@@ -1127,10 +1825,48 @@ const make = Effect.gen(function* () {
   const run = Effect.fn("HostedBlender.run")(
     function* (instance: Instance, tools: { readonly helper: string; readonly blender: string }) {
       yield* Effect.annotateCurrentSpan({ threadId: instance.threadId });
-      // Everything a launch writes (labwc config, Blender's TMPDIR) goes when it ends.
-      const launchesDir = path.join(rootDir, "launches");
+      // Everything a launch writes (labwc config, Blender's TMPDIR) goes when it ends, once
+      // what it leaves to reopen is kept. Until then, the next start can still salvage it.
       yield* fileSystem.makeDirectory(launchesDir, { recursive: true });
-      const stateDir = yield* fileSystem.makeTempDirectoryScoped({ directory: launchesDir });
+      const stateDir = yield* fileSystem.makeTempDirectory({ directory: launchesDir });
+      instance.stateDir = stateDir;
+      const launchRecord = { threadId: ownerOf(instance), relativePath: instance.relativePath };
+      // Runs once the helper and Blender have stopped: a closed or crashed Blender's quit copy
+      // or newest autosave of the file it ended on is kept as that file's copy. A restore that
+      // never succeeded leaves the copy it came from alone.
+      yield* Effect.addFinalizer(() =>
+        Effect.gen(function* () {
+          const intent = instance.exitIntent ?? instance;
+          yield* applyCleanup(
+            {
+              threadId: ownerOf(instance),
+              endFile: instance.endFile,
+              tmpDir: path.join(stateDir, "tmp"),
+            },
+            cleanupOf({
+              restore: instance.restore,
+              saved: instance.saved,
+              clean: instance.clean,
+              ending: endingOf({
+                wasRunning: instance.status === "running",
+                ending: intent.ending || (instance.saveConfirmed && !instance.saved),
+                quitting: intent.quitting,
+                blenderExit: instance.blenderExit,
+              }),
+            }),
+          );
+          yield* fileSystem.remove(stateDir, { recursive: true, force: true });
+        }).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("couldn't keep a hosted Blender's recovery copy", { cause }),
+          ),
+        ),
+      );
+      yield* writeRunFacts(instance);
+      yield* fileSystem.writeFileString(
+        path.join(stateDir, "launch.json"),
+        encodeLaunchRecord(launchRecord),
+      );
       const addonPath = path.join(stateDir, "t3_control.py");
       yield* fileSystem.writeFileString(addonPath, CONTROL_ADDON_SOURCE);
       const userResources = yield* ensureUserResources;
@@ -1193,6 +1929,7 @@ const make = Effect.gen(function* () {
               blendPath: instance.blendPath,
               controlSocket,
               mcpPort,
+              recover: instance.recover,
               mcpListen: agentPort !== null,
               ...(mcpSnapshot === null ? {} : { mcpSnapshot }),
               // Plan mode is read-only, whatever the runtime mode. A master serves threads of
@@ -1215,17 +1952,28 @@ const make = Effect.gen(function* () {
           ),
         ),
         // Asked to quit, the helper stops Blender and labwc and removes its runtime itself;
-        // killing its process group would take its labwc watchdog down first.
+        // killing its process group would take its labwc watchdog down first. Out of time on
+        // shutdown, it gets a moment, then the group is killed.
         (child) =>
           Stream.run(
             Stream.encodeText(Stream.make(encodeHelperCommand({ type: "quit" }))),
             child.stdin,
           ).pipe(
             Effect.andThen(child.exitCode),
-            Effect.timeout(HELPER_QUIT_TIMEOUT),
-            Effect.catch(() => child.kill()),
+            Effect.timeout(instance.stopNow ? SHUTDOWN_STOP_TIMEOUT : HELPER_QUIT_TIMEOUT),
+            Effect.catch(() =>
+              child.kill(
+                instance.stopNow
+                  ? { killSignal: "SIGKILL", forceKillAfter: SHUTDOWN_STOP_TIMEOUT }
+                  : undefined,
+              ),
+            ),
             Effect.ignore,
           ),
+      );
+      yield* fileSystem.writeFileString(
+        path.join(stateDir, "launch.json"),
+        encodeLaunchRecord({ ...launchRecord, helperPid: handle.pid }),
       );
       const stdinLock = yield* Semaphore.make(1);
       instance.helper = (command) =>
@@ -1282,8 +2030,15 @@ const make = Effect.gen(function* () {
         handle.exitCode,
         Deferred.await(gaveUp).pipe(Effect.as("gave up" as const)),
       );
+      instance.exitIntent = { ending: instance.ending, quitting: instance.quitting };
       if (exitCode !== 0) {
         yield* Effect.logWarning("hosted Blender's hidden display exited", { exitCode });
+      }
+      // The add-on's last lines (the file it had open, a save) can still be unread when the
+      // helper exits; its connection closes once they are, and the cleanup needs them.
+      const control = instance.control;
+      if (control !== null) {
+        yield* Deferred.await(control.closed).pipe(Effect.timeoutOption(CONTROL_DRAIN_TIMEOUT));
       }
     },
     Effect.scoped,
@@ -1311,6 +2066,10 @@ const make = Effect.gen(function* () {
         ),
       ),
   );
+
+  /** Whose copies a run's end keeps: its thread's, or every master's one owner. */
+  const ownerOf = (instance: Instance) =>
+    instance.role === "master" ? MASTER_OWNER : instance.threadId;
 
   const threadRoot = (threadId: ThreadId) =>
     threadWorkspaceRoot(threadId).pipe(Effect.provideContext(lookupContext));
@@ -1346,7 +2105,7 @@ const make = Effect.gen(function* () {
       .stat(real[1])
       .pipe(Effect.mapError(() => new HostedBlenderError({ reason: "fileNotFound" })));
     if (stat.type !== "File") return yield* new HostedBlenderError({ reason: "fileNotFound" });
-    return { tools, relativePath: resolved.relativePath, blendPath: real[1] };
+    return { tools, relativePath: resolved.relativePath, blendPath: real[1], root: real[0] };
   });
 
   // Runs inside open's or openMaster's span; the instance's own work has HostedBlender.run.
@@ -1385,9 +2144,20 @@ const make = Effect.gen(function* () {
       readonly relativePath: string;
       readonly blendPath: string;
       readonly agentWorkingCopy: boolean;
+      /** The workspace's real path, which the open file is named under. */
+      readonly workspaceRoot: string;
+      /** A recovery copy or autosave to restore over the file. */
+      readonly recover: string | null;
     },
     tools: { readonly helper: string; readonly blender: string },
   ) {
+    // Checked as the launch is reserved, with no wait since: a switch-off scan either sees it
+    // or it never starts.
+    if (switchedOff) return yield* new HostedBlenderError({ reason: "notSetUp" });
+    const launchFile: KeptFile =
+      input.role === "master"
+        ? masterFileOf(input.blendPath)
+        : { kind: "workspace", relativePath: input.relativePath };
     const instance: Instance = {
       key: input.role === "master" ? masterKey(input.blendPath) : input.threadId,
       role: input.role,
@@ -1418,6 +2188,23 @@ const make = Effect.gen(function* () {
       lastRequestId: 0,
       fiber: null,
       quitting: false,
+      ending: false,
+      blenderExit: null,
+      recover: input.recover,
+      saved: false,
+      saveConfirmed: false,
+      endFile: { file: launchFile, path: input.blendPath, since: 0 },
+      clean: false,
+      quitHeard: false,
+      loadedAt: undefined,
+      exitIntent: null,
+      acknowledged: false,
+      stopNow: false,
+      closeRequested: false,
+      restore: input.recover === null ? "none" : "pending",
+      shown: false,
+      controlReady: yield* Deferred.make<void>(),
+      stateDir: null,
       agentWorkingCopy: input.agentWorkingCopy,
       agentListener: "starting",
       agentListenerSettled: yield* Deferred.make<void>(),
@@ -1434,6 +2221,8 @@ const make = Effect.gen(function* () {
       quitCancelled: null,
       agentSession: undefined,
       openFile: undefined,
+      openRealPath: input.blendPath,
+      workspaceRoot: input.workspaceRoot,
       mcpVersion: null,
       agentActing: false,
       session: new SessionControl(null),
@@ -1447,9 +2236,9 @@ const make = Effect.gen(function* () {
     instances.set(instance.key, instance);
     yield* publishNow();
     // Started now, so a quit straight after still runs its cleanup; a fiber interrupted before
-    // it starts never does.
+    // it starts never does. Beside the other runs, so a shutdown ends it with its copy.
     instance.fiber = yield* run(instance, tools).pipe(
-      Effect.forkIn(serviceScope, { startImmediately: true }),
+      Effect.forkIn(runScope, { startImmediately: true }),
     );
     return instance;
   });
@@ -1461,28 +2250,7 @@ const make = Effect.gen(function* () {
     yield* Effect.annotateCurrentSpan({ threadId });
     const file = yield* checkedBlend(threadId, relativePath);
     yield* claimLock.withPermits(1)(
-      Effect.gen(function* () {
-        const existing = instances.get(threadId);
-        if (existing) {
-          if (existing.relativePath === file.relativePath) return;
-          return yield* new HostedBlenderError({ reason: "otherFileOpen" });
-        }
-        // One file is open in at most one hosted Blender, whichever thread opened it.
-        if ((yield* claimedBy(file.blendPath)) !== undefined) {
-          return yield* new HostedBlenderError({ reason: "openInAnotherThread" });
-        }
-        failedStarts.delete(threadId);
-        yield* startInstance(
-          {
-            role: "working",
-            threadId,
-            relativePath: file.relativePath,
-            blendPath: file.blendPath,
-            agentWorkingCopy: options?.agentWorkingCopy === true,
-          },
-          file.tools,
-        );
-      }),
+      startWorking(threadId, file, null, false, options?.agentWorkingCopy === true),
     );
   });
 
@@ -1497,13 +2265,288 @@ const make = Effect.gen(function* () {
     return master?.masterThreads.has(threadId as ThreadId) ? master : undefined;
   };
 
+  /** The thread's working Blender on `file`; runs inside open's or reopen's span. */
+  const startWorking = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    file: Effect.Success<ReturnType<typeof checkedBlend>>,
+    recover: string | null,
+    /** Reopen may start while the file's copy waits; open may not, since its end replaces it. */
+    allowPendingRecovery: boolean,
+    /** An agent's `blender_start`: only then may the agent's listener be granted. */
+    agentWorkingCopy: boolean,
+  ) {
+    // Checked together, with no wait before the launch is reserved.
+    const existing = instances.get(threadId);
+    if (existing) {
+      if (existing.relativePath === file.relativePath) return;
+      return yield* new HostedBlenderError({ reason: "otherFileOpen" });
+    }
+    // Its end would keep a newer copy of the same file; other files' copies are never touched.
+    const key = fileKeyOf({ kind: "workspace", relativePath: file.relativePath });
+    if (!allowPendingRecovery && records.get(threadId)?.get(key)?.recovery === true) {
+      return yield* new HostedBlenderError({ reason: "recoveryPending" });
+    }
+    // One file is open in at most one hosted Blender, whichever thread opened it.
+    if ((yield* claimedBy(file.blendPath)) !== undefined) {
+      return yield* new HostedBlenderError({ reason: "openInAnotherThread" });
+    }
+    failedStarts.delete(threadId);
+    yield* startInstance(
+      {
+        role: "working",
+        threadId,
+        relativePath: file.relativePath,
+        blendPath: file.blendPath,
+        agentWorkingCopy,
+        workspaceRoot: file.root,
+        recover,
+      },
+      file.tools,
+    );
+  });
+
+  /** The master copy a thread's Master side shows: its master file's, while none runs. */
+  const masterCopyOf = (threadId: ThreadId) => {
+    const known = threadMasters.get(threadId);
+    if (known === undefined) return undefined;
+    const key = fileKeyOf(masterFileOf(known.blendPath));
+    const record = records.get(MASTER_OWNER)?.get(key);
+    return record === undefined ? undefined : { known, key, record };
+  };
+
+  const reopen: HostedBlender["Service"]["reopen"] = Effect.fn("HostedBlender.reopen")(function* ({
+    threadId,
+    key,
+    restore,
+    role,
+  }) {
+    yield* Effect.annotateCurrentSpan({ threadId, restore, role });
+    if (role === "master") {
+      const copy = masterCopyOf(threadId);
+      if (copy === undefined || copy.key !== key) {
+        return yield* new HostedBlenderError({ reason: "nothingToReopen" });
+      }
+      failedRestores.delete(copyId(MASTER_OWNER, key));
+      // Restored in the master Blender, which this thread joins; others then join it as usual.
+      return yield* openMasterFile(
+        { threadId, relativePath: copy.known.relativePath },
+        undefined,
+        restore && copy.record.recovery ? sessionPath(MASTER_OWNER, key) : null,
+      );
+    }
+    if (instances.has(threadId)) return;
+    const record = records.get(threadId)?.get(key);
+    if (record === undefined) return yield* new HostedBlenderError({ reason: "nothingToReopen" });
+    // T3 opens only workspace files, so only there can it check where a restore would save.
+    if (record.file.kind !== "workspace") {
+      return yield* new HostedBlenderError({ reason: "notInWorkspace" });
+    }
+    const file = yield* checkedBlend(threadId, record.file.relativePath);
+    failedRestores.delete(copyId(threadId, key));
+    // The record stays until this Blender ends too, so a restore that fails keeps its copy.
+    yield* claimLock.withPermits(1)(
+      startWorking(
+        threadId,
+        file,
+        restore && record.recovery ? sessionPath(threadId, key) : null,
+        true,
+        // Reopening is the person's, from the pane: like any file they open, it never listens
+        // for the agent, which calls blender_start again to get its copy back.
+        false,
+      ),
+    );
+  });
+
+  const dismiss: HostedBlender["Service"]["dismiss"] = Effect.fn("HostedBlender.dismiss")(
+    function* ({ threadId, key, role }) {
+      yield* Effect.annotateCurrentSpan({ threadId, role });
+      if (role === "master") {
+        const copy = masterCopyOf(threadId);
+        if (copy === undefined || copy.key !== key) return;
+        if (instances.has(masterKey(copy.known.blendPath))) return;
+        if (yield* forgetCopy(MASTER_OWNER, copy.key)) yield* publishNow();
+        return;
+      }
+      if (instances.has(threadId)) return;
+      const changed =
+        key === undefined ? failedStarts.delete(threadId) : yield* forgetCopy(threadId, key);
+      if (changed) yield* publishNow();
+    },
+  );
+
+  const keptCopies: HostedBlender["Service"]["keptCopies"] = (threadId) =>
+    Effect.sync(() => copiesOf(threadId));
+
+  // Last resort: the helper stops Blender with SIGTERM, then SIGKILL.
+  const forceQuit = Effect.fn("HostedBlender.forceQuit")(function* (instance: Instance) {
+    instance.quitting = true;
+    if (instance.fiber) yield* Fiber.interrupt(instance.fiber);
+  });
+
+  /**
+   * How an ending waits: until `until` (epoch ms). Settling never stops a Blender that said it is
+   * saving or writing its quit copy; a shutdown has one deadline for everything, then stops it.
+   */
+  interface Deadline {
+    readonly until: number;
+    readonly shutdown: boolean;
+  }
+
+  const deadlineIn = (timeout: Duration.Input, shutdown: boolean) =>
+    Clock.currentTimeMillis.pipe(
+      Effect.map((now): Deadline => ({ until: now + Duration.toMillis(timeout), shutdown })),
+    );
+
+  const within = <A, E>(effect: Effect.Effect<A, E>, deadline: Deadline) =>
+    Clock.currentTimeMillis.pipe(
+      Effect.flatMap((now) => effect.pipe(Effect.timeoutOption(Math.max(0, deadline.until - now)))),
+    );
+
+  const pastDeadline = Effect.fnUntraced(function* (instance: Instance, deadline: Deadline) {
+    if (!deadline.shutdown && instance.acknowledged) return yield* Deferred.await(instance.ended);
+    // Saves go through a temporary file, so stopping Blender never damages the user's file.
+    instance.stopNow = deadline.shutdown;
+    yield* forceQuit(instance);
+  });
+
+  const awaitEnded = Effect.fnUntraced(function* (instance: Instance, deadline: Deadline) {
+    const ended = yield* within(Deferred.await(instance.ended), deadline);
+    if (Option.isNone(ended)) yield* pastDeadline(instance, deadline);
+  });
+
+  /** Asks the add-on to quit without saving, waiting until the deadline for it to connect. */
+  const sendQuitWithoutSaving = Effect.fnUntraced(function* (
+    instance: Instance,
+    deadline: Deadline,
+  ) {
+    const connected = yield* within(Deferred.await(instance.controlReady), deadline).pipe(
+      Effect.raceFirst(Deferred.await(instance.ended).pipe(Effect.as(Option.none()))),
+    );
+    const control = instance.control;
+    if (Option.isNone(connected) || control === null) return false;
+    yield* control
+      .write(`${encodeControlCommand({ type: "quit", save: false })}\n`)
+      .pipe(Effect.raceFirst(Deferred.await(control.closed)));
+    return true;
+  });
+
+  const quitWithoutSaving = Effect.fn("HostedBlender.quitWithoutSaving")(function* (
+    instance: Instance,
+  ) {
+    instance.quitting = true;
+    yield* revokeAgentListener(instance);
+    // Quitting a Blender still starting has nothing of its session to keep.
+    if (instance.control === null) return yield* forceQuit(instance);
+    const deadline = yield* deadlineIn(QUIT_TIMEOUT, false);
+    if (!(yield* sendQuitWithoutSaving(instance, deadline))) return yield* forceQuit(instance);
+    yield* awaitEnded(instance, deadline);
+  });
+
+  /** Quits without saving, so Blender writes its quit copy, which the run keeps to reopen. */
+  const end = Effect.fn("HostedBlender.end")(function* (instance: Instance, given: Deadline) {
+    yield* Effect.annotateCurrentSpan({ threadId: instance.threadId, shutdown: given.shutdown });
+    // Gone already: how it ended was settled when the helper exited.
+    if (instance.exitIntent !== null) return yield* Deferred.await(instance.ended);
+    // A Blender T3 is closing is no longer the agent's, whatever happens to the close. Marked
+    // first, so a connection dropping during the stop reads as this close, not a loss.
+    instance.closeRequested = true;
+    yield* revokeAgentListener(instance);
+    let deadline = given;
+    // A Save and quit already under way decides first; only a failed one leaves work to keep.
+    // Settling waits for its answer however long the save takes (an unacknowledged one answers
+    // within seconds); a shutdown keeps its one deadline.
+    const pending = instance.pendingSave;
+    if (pending !== null) {
+      let saved: boolean;
+      if (deadline.shutdown) {
+        const answered = yield* within(Deferred.await(pending), deadline);
+        if (Option.isNone(answered)) return yield* pastDeadline(instance, deadline);
+        saved = answered.value;
+      } else {
+        saved = yield* Deferred.await(pending);
+      }
+      if (saved) return yield* awaitEnded(instance, deadline);
+      // Blender stays open after a failed save; the recovery quit gets a deadline of its own.
+      if (!deadline.shutdown) deadline = yield* deadlineIn(QUIT_TIMEOUT, false);
+      // A save lost with its connection usually means Blender is gone (a crash): its run ends
+      // on its own and keeps what it left as such.
+      const control = instance.control;
+      if (control === null || (yield* Deferred.isDone(control.closed))) {
+        const ended = yield* within(Deferred.await(instance.ended), deadline);
+        if (Option.isSome(ended)) return;
+      }
+    }
+    if (!instance.ending) {
+      instance.ending = true;
+      instance.quitting = true;
+      instance.acknowledged = false;
+      if (instance.stateDir !== null) {
+        // If the server stops before this run ends, the next start still reads it as closed.
+        yield* fileSystem
+          .writeFileString(path.join(instance.stateDir, "outcome"), "closing")
+          .pipe(Effect.ignore);
+      }
+      // A Blender still starting has until the deadline to connect, so its session is kept.
+      if (!(yield* sendQuitWithoutSaving(instance, deadline))) {
+        return yield* pastDeadline(instance, deadline);
+      }
+    }
+    yield* awaitEnded(instance, deadline);
+  });
+
+  const closeOnSettle: HostedBlender["Service"]["closeOnSettle"] = Effect.fn(
+    "HostedBlender.closeOnSettle",
+  )(function* ({ threadId }) {
+    yield* Effect.annotateCurrentSpan({ threadId });
+    const instance = instanceFor(threadId, undefined);
+    if (instance === undefined) return;
+    yield* closeInstance(instance);
+  });
+
+  /** Ends it as a settle does, without waiting: a working Blender or a master. */
+  const closeInstance = Effect.fnUntraced(function* (instance: Instance) {
+    instance.closeRequested = true;
+    const deadline = yield* deadlineIn(QUIT_TIMEOUT, false);
+    yield* end(instance, deadline).pipe(Effect.forkIn(serviceScope));
+  });
+
+  // Switching Hosted Blender off closes every hosted Blender as a settle does, copies kept.
+  // Set before the scan, which an open checks as it reserves its launch, so none slips past.
+  yield* setup.readiness.pipe(
+    Stream.map(
+      (readiness) => readiness.status === "notSetUp" && readiness.missing.includes("enabled"),
+    ),
+    Stream.changes,
+    Stream.runForEach((off) => {
+      switchedOff = off;
+      return off ? Effect.forEach([...instances.values()], closeInstance) : Effect.void;
+    }),
+    Effect.forkIn(serviceScope),
+  );
+
+  // Added after `runScope`, so on shutdown every Blender gets to save its copy first, all
+  // within one deadline.
+  yield* Effect.addFinalizer(() =>
+    Effect.gen(function* () {
+      const deadline = yield* deadlineIn(SHUTDOWN_QUIT_TIMEOUT, true);
+      yield* Effect.forEach(instances.values(), (instance) => end(instance, deadline), {
+        concurrency: "unbounded",
+        discard: true,
+      });
+    }),
+  );
+
   const quit: HostedBlender["Service"]["quit"] = Effect.fn("HostedBlender.quit")(function* ({
     threadId,
     save,
     role,
+    master,
   }) {
     yield* Effect.annotateCurrentSpan({ threadId, save, role });
-    const instance = instanceFor(threadId, role);
+    // A master by its own key, from the Running Blenders list: it may have no thread left.
+    const byKey = master === undefined ? undefined : instances.get(master);
+    const instance = byKey?.role === "master" ? byKey : instanceFor(threadId, role);
+    // Nothing running: a stale Quit never touches what an ended Blender kept. Discard does.
     if (instance === undefined) {
       const known = role === "master" ? threadMasters.get(threadId) : undefined;
       const cleared =
@@ -1519,22 +2562,8 @@ const make = Effect.gen(function* () {
   // Runs inside quit's or releaseMaster's span.
   const quitInstance = Effect.fnUntraced(function* (instance: Instance, save: boolean) {
     const control = instance.control;
-    const forceQuit = Effect.gen(function* () {
-      instance.quitting = true;
-      if (instance.fiber) yield* Fiber.interrupt(instance.fiber);
-    });
     const saveFailed = new HostedBlenderError({ reason: "saveFailed" });
-    if (!save) {
-      // Quit without saving: Blender may be stopped however it takes.
-      if (control === null) return yield* forceQuit;
-      instance.quitting = true;
-      yield* control
-        .write(`${encodeControlCommand({ type: "quit", save })}\n`)
-        .pipe(Effect.raceFirst(Deferred.await(control.closed)));
-      const ended = yield* Deferred.await(instance.ended).pipe(Effect.timeoutOption(QUIT_TIMEOUT));
-      if (Option.isNone(ended)) yield* forceQuit;
-      return;
-    }
+    if (!save) return yield* quitWithoutSaving(instance);
     // Save and quit never stops Blender before the add-on says the file is saved. A save
     // already asked for answers every caller, until Blender exits or it fails.
     let pending = instance.pendingSave;
@@ -1543,26 +2572,35 @@ const make = Effect.gen(function* () {
       const started = yield* Deferred.make<boolean>();
       pending = started;
       instance.pendingSave = started;
-      const clear = Effect.sync(() => {
-        if (instance.pendingSave === started) instance.pendingSave = null;
+      const clear = Effect.suspend(() => {
+        if (instance.pendingSave !== started) return Effect.void;
+        instance.pendingSave = null;
+        // Blender stays open after a failed save: capture follows the panes again.
+        return applyCapture(instance);
       });
       yield* saveThenQuit(instance, control).pipe(
         // Only a failure clears it, before answering, so a retry starts a new save.
         Effect.tap((saved) => (saved ? Effect.void : clear)),
         Effect.flatMap((saved) => Deferred.succeed(started, saved)),
         Effect.onInterrupt(() => clear.pipe(Effect.andThen(Deferred.succeed(started, false)))),
-        Effect.forkIn(serviceScope),
+        // Beside the runs, so a shutdown's endings still see the save through.
+        Effect.forkIn(runScope),
       );
     }
     if (!(yield* Deferred.await(pending))) return yield* saveFailed;
+    // Saved, Blender quits: the agent's access ends with it.
+    yield* revokeAgentListener(instance);
     instance.quitting = true;
     const ended = yield* Deferred.await(instance.ended).pipe(Effect.timeoutOption(QUIT_TIMEOUT));
-    if (Option.isNone(ended)) yield* forceQuit;
+    if (Option.isNone(ended)) yield* forceQuit(instance);
   });
 
   const saveThenQuit = Effect.fn("HostedBlender.saveThenQuit")(
     function* (instance: Instance, connection: ControlConnection) {
       const replies = yield* Queue.unbounded<SaveReply>();
+      // Until T3 has confirmed a restore, saving could write the copy somewhere else, or write
+      // the file as saved over the copy's changes: checked right before the save goes out.
+      if (instance.restore === "pending" || instance.restore === "failed") return false;
       instance.saveReplies = replies;
       return yield* requestSave({
         connection,
@@ -1680,6 +2718,9 @@ const make = Effect.gen(function* () {
     };
   });
 
+  const runningBlenders: HostedBlender["Service"]["runningBlenders"] = SubscriptionRef.changes(
+    running,
+  ).pipe(Stream.changesWith((a, b) => JSON.stringify(a) === JSON.stringify(b)));
   // Each request runs inside its caller's span (captureView, findHits, setView).
   const ask = Effect.fnUntraced(function* <A>(
     instance: Instance | undefined,
@@ -1943,34 +2984,49 @@ const make = Effect.gen(function* () {
     fileSystem.realPath(file).pipe(Effect.orElseSucceed(() => file));
 
   const openMaster: HostedBlender["Service"]["openMaster"] = Effect.fn("HostedBlender.openMaster")(
-    function* ({ threadId, relativePath }, options) {
-      yield* Effect.annotateCurrentSpan({ threadId, agent: options?.agentSession !== undefined });
-      const file = yield* checkedBlend(threadId, relativePath);
-      return yield* inThreadQueue(threadId)(
-        Effect.gen(function* () {
-          const previous = threadMasters.get(threadId);
-          if (previous !== undefined && previous.blendPath !== file.blendPath) {
-            yield* leave(threadId);
-            // The pane reaches a master only through its thread; one with unsaved work stays.
-            if (threadMasters.get(threadId)?.blendPath === previous.blendPath) {
-              return yield* new HostedBlenderError({ reason: "masterUnsaved" });
-            }
-          }
-          const known = threadMasters.get(threadId) ?? {
-            blendPath: file.blendPath,
-            relativePath: file.relativePath,
-            desktop: null,
-            desktopDirty: false,
-            desktopPath: null,
-            agentSession: null,
-          };
-          if (options?.agentSession !== undefined) known.agentSession = options.agentSession;
-          threadMasters.set(threadId, known);
-          return yield* inMasterQueue(file.blendPath)(joinMaster(threadId, file));
-        }),
-      );
+    function* (input, options) {
+      yield* Effect.annotateCurrentSpan({
+        threadId: input.threadId,
+        agent: options?.agentSession !== undefined,
+      });
+      return yield* openMasterFile(input, options, undefined);
     },
   );
+
+  /**
+   * `recover` restores the master's copy as Reopen does; `undefined` is an ordinary open, which
+   * a waiting copy of the master file shows first.
+   */
+  const openMasterFile = Effect.fnUntraced(function* (
+    { threadId, relativePath }: { readonly threadId: ThreadId; readonly relativePath: string },
+    options: { readonly agentSession?: string } | undefined,
+    recover: string | null | undefined,
+  ) {
+    const file = yield* checkedBlend(threadId, relativePath);
+    return yield* inThreadQueue(threadId)(
+      Effect.gen(function* () {
+        const previous = threadMasters.get(threadId);
+        if (previous !== undefined && previous.blendPath !== file.blendPath) {
+          yield* leave(threadId);
+          // The pane reaches a master only through its thread; one with unsaved work stays.
+          if (threadMasters.get(threadId)?.blendPath === previous.blendPath) {
+            return yield* new HostedBlenderError({ reason: "masterUnsaved" });
+          }
+        }
+        const known = threadMasters.get(threadId) ?? {
+          blendPath: file.blendPath,
+          relativePath: file.relativePath,
+          desktop: null,
+          desktopDirty: false,
+          desktopPath: null,
+          agentSession: null,
+        };
+        if (options?.agentSession !== undefined) known.agentSession = options.agentSession;
+        threadMasters.set(threadId, known);
+        return yield* inMasterQueue(file.blendPath)(joinMaster(threadId, file, recover));
+      }),
+    );
+  });
 
   /**
    * Joins the thread to the master Blender for `file`, starting one if the desktop Blender doesn't
@@ -1980,8 +3036,22 @@ const make = Effect.gen(function* () {
   const joinMaster = Effect.fnUntraced(function* (
     threadId: ThreadId,
     file: Effect.Success<ReturnType<typeof checkedBlend>>,
+    recover: string | null | undefined = undefined,
   ) {
+    // Switched off while it waited in the master's queue.
+    if (switchedOff) return yield* new HostedBlenderError({ reason: "notSetUp" });
     const existing = instances.get(masterKey(file.blendPath));
+    // A master not running whose copy waits shows that copy first; a running one is joined, its
+    // copy live in it.
+    if (
+      existing === undefined &&
+      recover === undefined &&
+      records.get(MASTER_OWNER)?.get(fileKeyOf(masterFileOf(file.blendPath)))?.recovery === true
+    ) {
+      // The thread's Master side now shows that card.
+      yield* publishNow();
+      return yield* new HostedBlenderError({ reason: "recoveryPending" });
+    }
     // A quit it may still carry out: nobody is handed this master until that is settled.
     if (existing?.quitCancelled != null) {
       return yield* new HostedBlenderError({ reason: "masterBusy" });
@@ -2026,6 +3096,8 @@ const make = Effect.gen(function* () {
               relativePath: file.relativePath,
               blendPath: file.blendPath,
               agentWorkingCopy: false,
+              workspaceRoot: file.root,
+              recover: recover ?? null,
             },
             file.tools,
           );
@@ -2310,8 +3382,13 @@ const make = Effect.gen(function* () {
     open,
     agentListener,
     quit,
+    reopen,
+    dismiss,
+    keptCopies,
+    closeOnSettle,
     threadState,
     attachViewer,
+    runningBlenders,
     captureView,
     findHits,
     setView,

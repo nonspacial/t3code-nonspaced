@@ -63,7 +63,7 @@ const BlenderMasterOpenTool = Tool.make("blender_master_open", {
 
 const BlenderStatusTool = Tool.make("blender_status", {
   description:
-    "List this thread's hosted Blenders (working copy and master): the open file, whether it is starting, running or failed, unsaved changes, and whether your MCP entry reaches it.",
+    "List this thread's hosted Blenders (working copy and master): the file, its status, any recovery copy, unsaved changes, and whether your MCP entry reaches it.",
   // No `parameters`: an explicit empty struct is not a valid MCP input schema.
   success: HostedBlenderToolStatusResult,
   failure: HostedBlenderToolFailure,

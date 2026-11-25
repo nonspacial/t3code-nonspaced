@@ -2,6 +2,9 @@
 //! clicks, keys and resizes, hides its cursor and locks the pointer while the left button is held
 //! (as Blender does during a grab), and writes every input it receives to a log, one per line.
 //!
+//! F9 replaces its window with a new one that asks for fullscreen, as Blender replaces its
+//! windows when it loads a file; labwc's rule then takes it out of fullscreen, at another size.
+//!
 //! usage: test_client TITLE LOG_PATH
 
 use std::fs::File;
@@ -24,10 +27,15 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 use xkbcommon::xkb;
 
 const BTN_LEFT: u32 = 272;
+const KEY_F9: u32 = 67;
 const COLOURS: [u32; 4] = [0xff20_4080, 0xff80_2040, 0xff40_8020, 0xffc0_c0c0];
 
 struct Client {
     log: File,
+    title: String,
+    wm: xdg_wm_base::XdgWmBase,
+    xdg: xdg_surface::XdgSurface,
+    toplevel: xdg_toplevel::XdgToplevel,
     compositor: wl_compositor::WlCompositor,
     shm: wl_shm::WlShm,
     surface: wl_surface::WlSurface,
@@ -83,6 +91,22 @@ impl Client {
         self.log(format!("draw {width}x{height}"));
     }
 
+    /// A new window in place of the old one, as Blender's file load does.
+    fn replace_window(&mut self, qh: &QueueHandle<Client>) {
+        self.toplevel.destroy();
+        self.xdg.destroy();
+        self.surface.destroy();
+        self.surface = self.compositor.create_surface(qh, ());
+        self.xdg = self.wm.get_xdg_surface(&self.surface, qh, ());
+        self.toplevel = self.xdg.get_toplevel(qh, ());
+        self.toplevel.set_title(self.title.clone());
+        self.toplevel.set_fullscreen(None);
+        self.size = (320, 240);
+        self.colour += 1;
+        self.surface.commit();
+        self.log("replaced".into());
+    }
+
     fn show_cursor(&self, pointer: &wl_pointer::WlPointer) {
         pointer.set_cursor(self.enter_serial, Some(&self.cursor_surface), 0, 0);
     }
@@ -105,11 +129,15 @@ fn main() {
     let surface = compositor.create_surface(&qh, ());
     let xdg = wm.get_xdg_surface(&surface, &qh, ());
     let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_title(title);
+    toplevel.set_title(title.clone());
     surface.commit();
     let cursor_surface = compositor.create_surface(&qh, ());
     let mut client = Client {
         log,
+        title,
+        wm,
+        xdg,
+        toplevel,
         shm: globals.bind(&qh, 1..=1, ()).unwrap(),
         constraints: globals.bind(&qh, 1..=1, ()).unwrap(),
         relative: globals.bind(&qh, 1..=1, ()).unwrap(),
@@ -369,7 +397,9 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
                     .map(|xkb| xkb::keysym_get_name(xkb.key_get_one_sym((key + 8).into())))
                     .unwrap_or_default();
                 client.log(format!("key {key} {} {name}", u8::from(pressed)));
-                if pressed {
+                if pressed && key == KEY_F9 {
+                    client.replace_window(qh);
+                } else if pressed {
                     client.colour += 1;
                     client.draw(qh);
                 }

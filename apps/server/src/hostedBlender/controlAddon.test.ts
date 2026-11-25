@@ -54,6 +54,7 @@ context = types.SimpleNamespace(
     preferences=types.SimpleNamespace(
         addons=addons,
         is_dirty=True,
+        filepaths=types.SimpleNamespace(temporary_directory=""),
         edit=types.SimpleNamespace(
             undo_steps=state.get("undoSteps", 32), use_global_undo=state.get("globalUndo", True)
         ),
@@ -363,6 +364,184 @@ elif _then == "saveAs":
     _on_save_post()
 elif _then == "revert":
     _on_load_post()
+elif _then == "loadTime":
+    # Any load, a revert of the same file included, says when it happened.
+    _before = _snapshot().get("loadedAt")
+    _on_load_post()
+    _steps.append(dict(loadedBefore=_before, loadedAfter=type(_snapshot().get("loadedAt")).__name__))
+elif _then in ("saveAndQuit", "failedSaveAndQuit", "pendingSaveAndQuit", "quitWithoutSaving"):
+    # Save and quit as T3 asks for it: Blender's own operators stood in for.
+    import contextlib, types
+    if _then == "pendingSaveAndQuit":
+        # The agent's deferred call that can write is still pending when Save and quit saves.
+        _Guard.deferred.append({"writes": True, "check": None})
+    _windows = bpy.context.window_manager.windows
+    _windows[:] = [types.SimpleNamespace(as_pointer=lambda: 0)]
+    bpy.context.temp_override = lambda **_kwargs: contextlib.nullcontext()
+    def _save_mainfile():
+        if _then == "failedSaveAndQuit":
+            raise RuntimeError("cannot write")
+        return {"FINISHED"}
+    def _quit_blender():
+        # What the agent's listener was when Blender began to quit, and what T3 had heard.
+        _addons.log("quit", _snapshot()["agentListener"], "${MCP}" in _addons.registered)
+        _t3.setblocking(False)
+        heard = b""
+        try:
+            while True:
+                chunk = _t3.recv(65536)
+                if not chunk:
+                    break
+                heard += chunk
+        except BlockingIOError:
+            pass
+        _addons.log("heard", [
+            [message["type"], message.get("filepath"), message.get("dirty")]
+            for message in map(json.loads, heard.decode().splitlines())
+            if message["type"] in ("saved", "quitting")
+        ])
+    def _undo_push(message):
+        # A real undo step marks the file unsaved.
+        bpy.data.is_dirty = True
+        _addons.log("undo_push", message)
+        return {"FINISHED"}
+    bpy.ops.wm = types.SimpleNamespace(save_mainfile=_save_mainfile, quit_blender=_quit_blender)
+    bpy.ops.ed = types.SimpleNamespace(undo_push=_undo_push)
+    _t3.sendall(
+        b'{"type": "quit", "save": false}\n'
+        if _then == "quitWithoutSaving"
+        else b'{"type": "quit", "save": true}\n'
+    )
+    _tick()
+elif _then in (
+    "replaceViewport", "stuckViewport", "ownChanged", "lateMarked", "loadInSession", "ownClosed",
+    "childClosed", "reusedAddress",
+):
+    # The file was saved with T3's viewport window open, one from a build before T3 marked it
+    # (a plain lone 3D view), and the user's own window of another editor: after any load the
+    # add-on swaps T3's for its own, and leaves the user's alone.
+    import contextlib, types
+    class _Area:
+        def __init__(self, kind):
+            self.type = kind; self.width = 100; self.height = 100
+            self.regions = [types.SimpleNamespace(type="WINDOW")]
+            self.spaces = types.SimpleNamespace(active=None)
+    class _Screen(dict):
+        def __init__(self, kind):
+            super().__init__(); self.areas = [_Area(kind)]
+    class _Window:
+        def __init__(self, kind, marked=False, pointer=None):
+            self.screen = _Screen(kind)
+            self.pointer = pointer
+            if marked:
+                self.screen["t3_viewport"] = True
+        def as_pointer(self): return id(self) if self.pointer is None else self.pointer
+    _windows = bpy.context.window_manager.windows
+    _users = _Window("IMAGE_EDITOR")
+    _saved = _Window("VIEW_3D", marked=True)
+    _legacy = _Window("VIEW_3D")
+    _windows[:] = [_Window("VIEW_3D"), _users, _saved, _legacy]
+    _opened = []
+    _closes = []
+    _current = [None]
+    def _override(**kwargs):
+        _current[0] = kwargs.get("window")
+        return contextlib.nullcontext()
+    def _close():
+        _closes.append(_current[0])
+        if _then != "stuckViewport":
+            _windows.remove(_current[0])
+        if _then == "childClosed" and _current[0] is _saved:
+            # Its child window closes with it.
+            _windows.remove(_legacy)
+    def _dupli(_mode):
+        window = _Window("VIEW_3D"); _windows.append(window); _opened.append(window)
+    bpy.context.temp_override = _override
+    bpy.ops.wm = types.SimpleNamespace(
+        window_close=_close, recover_auto_save=lambda **_kwargs: {"FINISHED"}
+    )
+    bpy.ops.screen = types.SimpleNamespace(area_dupli=_dupli)
+    if RECOVER_PATH is not None:
+        _recover()
+    # The timer runs until it returns None; a stuck close must not keep it going.
+    _runs = 0
+    _late = _Window("VIEW_3D", marked=True)
+    while _open_viewport_window() is not None and _runs < 10:
+        _runs += 1
+        if _then == "lateMarked" and _runs == 1:
+            # A marked window seen only after the first pass isn't the copy's to replace.
+            _windows.append(_late)
+    if _then == "lateMarked":
+        _steps.append(dict(lateKept=_late in _windows))
+    if _then == "reusedAddress":
+        # A later load brings back a marked window at an address a closed one had.
+        _windows[:] = [_Window("VIEW_3D"), _Window("VIEW_3D", marked=True, pointer=id(_saved))]
+        _opened.clear()
+        _on_load_post()
+        _runs = 0
+        while _open_viewport_window() is not None and _runs < 10:
+            _runs += 1
+        _steps.append(dict(
+            viewports=len([window for window in _windows[1:] if _lone_3d_view(window)]),
+            fresh=len(_opened),
+        ))
+    if _then == "loadInSession":
+        # The person (or the agent) opens a file saved from a hosted Blender: Blender gives
+        # every window a new struct with the file's screens.
+        _users = _Window("IMAGE_EDITOR")
+        _windows[:] = [_Window("VIEW_3D"), _Window("VIEW_3D", marked=True), _Window("VIEW_3D"), _users]
+        _opened.clear()
+        _closes.clear()
+        _on_load_post()
+        _runs = 0
+        while _open_viewport_window() is not None and _runs < 10:
+            _runs += 1
+        lone = [window for window in _windows[1:] if _lone_3d_view(window)]
+        _steps.append(dict(
+            viewports=len(lone),
+            tracked=_viewport() is not None and _viewport()[0] is lone[0],
+            fresh=len(_opened),
+        ))
+    if _then in ("ownChanged", "ownClosed"):
+        # The person turns T3's window into another editor, or closes it: it's no longer T3's
+        # viewport, and Blender's own tick, with nothing else asking, replaces it.
+        _first = _opened[0]
+        if _then == "ownChanged":
+            _first.screen.areas[0].type = "IMAGE_EDITOR"
+        else:
+            _windows.remove(_first)
+        _changed = _viewport()
+        bpy.app.registered.clear()
+        _tick()
+        _scheduled = [function for function in bpy.app.registered if function is _open_viewport_window]
+        for function in _scheduled:
+            bpy.app.registered.remove(function)
+            _passes = 0
+            while function() is not None and _passes < 10:
+                _passes += 1
+        _steps.append(dict(
+            stillOwn=_changed is not None and _changed[0] is _first,
+            scheduled=len(_scheduled),
+            reopened=_viewport() is not None and _viewport()[0] is _opened[-1],
+            fresh=len(_opened),
+            # One T3 viewport window, the one streamed: the old one is gone.
+            oldGone=_first not in _windows,
+            marked=len([window for window in _windows if window.screen.get("t3_viewport")]),
+        ))
+    _steps.append(dict(
+        _report(),
+        windows=len(_windows),
+        fresh=len(_opened),
+        usersKept=_users in _windows,
+        closes=len(_closes),
+        runs=_runs,
+        marked=all(window.screen.get("t3_viewport") for window in _opened),
+    ))
+    _tick()
+    _steps.append(_report())
+    # A file opened after that still ends the agent's access.
+    bpy.data.filepath = "/work/other.blend"
+    _on_load_post()
 if _then is not None:
     _steps.append(_report())
     _press_start()
@@ -584,7 +763,27 @@ const runAddon = (input: {
   readonly pressStartBeforeGrant?: boolean;
   /** Another file is open by the time T3's grant arrives. */
   readonly fileBeforeGrant?: boolean;
-  readonly then?: "revoke" | "drop" | "otherFile" | "saveAs" | "revert";
+  /** Launched to restore a recovery copy, as Reopen does. */
+  readonly recover?: boolean;
+  readonly then?:
+    | "stuckViewport"
+    | "ownChanged"
+    | "lateMarked"
+    | "loadInSession"
+    | "revoke"
+    | "drop"
+    | "otherFile"
+    | "saveAs"
+    | "revert"
+    | "replaceViewport"
+    | "saveAndQuit"
+    | "pendingSaveAndQuit"
+    | "quitWithoutSaving"
+    | "loadTime"
+    | "ownClosed"
+    | "childClosed"
+    | "reusedAddress"
+    | "failedSaveAndQuit";
   /** The installed extension's manifest version; 1.0.3 by default. */
   readonly mcpVersion?: string;
   /** Its whole manifest, in place of one with `mcpVersion`. */
@@ -669,6 +868,7 @@ const runAddon = (input: {
       "--t3-mcp-port",
       String(port),
       ...(input.listen ? ["--t3-mcp-listen"] : []),
+      ...(input.recover ? ["--t3-recover", NodePath.join(dir, "session.blend")] : []),
       ...(input.installed.includes(MCP)
         ? ["--t3-mcp-snapshot", NodePath.join(dir, "bl_ext/t3_blender_lab")]
         : []),
@@ -734,6 +934,175 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       send: [],
     });
     expect(result.steps).toEqual([pending, pending, pending, pending]);
+  });
+
+  it("ends the grant once Save and quit has saved, before Blender begins to quit", () => {
+    const saved = runAddon({ installed: [MCP], enabled: [MCP], listen: true, then: "saveAndQuit" });
+    expect(saved.calls).toContainEqual(["quit", "off", false]);
+    // A save that fails leaves Blender open, and the agent's access with it.
+    const failed = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      then: "failedSaveAndQuit",
+    });
+    expect(failed.calls.some((call: ReadonlyArray<unknown>) => call[0] === "quit")).toBe(false);
+    expect(after(failed)).toEqual({ listener: "ready", listening: failed.port, enabled: true });
+  });
+
+  const heardOf = (result: { readonly calls: ReadonlyArray<ReadonlyArray<unknown>> }) =>
+    result.calls.find((call) => call[0] === "heard")?.[1];
+
+  it("says in its save result which file it saved, and that pending agent work left it unsaved", () => {
+    const pending = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      then: "pendingSaveAndQuit",
+    });
+    expect(heardOf(pending)).toEqual([["saved", "/work/hero.wip-1a2b3c4d.blend", true]]);
+    const plain = runAddon({ installed: [MCP], enabled: [MCP], listen: true, then: "saveAndQuit" });
+    expect(heardOf(plain)).toEqual([["saved", "/work/hero.wip-1a2b3c4d.blend", false]]);
+  });
+
+  it("says which file it quits and whether it was unsaved, before its quit's own undo step", () => {
+    const quit = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      then: "quitWithoutSaving",
+    });
+    expect(heardOf(quit)).toEqual([["quitting", "/work/hero.wip-1a2b3c4d.blend", false]]);
+    expect(quit.calls).toContainEqual(["undo_push", "T3 recovery copy"]);
+  });
+
+  it("reports when Blender loaded a file, a revert of the same file included", () => {
+    const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, then: "loadTime" });
+    expect(result.steps.find((step: object) => "loadedAfter" in step)).toEqual({
+      loadedBefore: null,
+      loadedAfter: "float",
+    });
+  });
+
+  it("keeps the grant when it replaces a viewport window a recovery copy brought back", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      recover: true,
+      then: "replaceViewport",
+    });
+    const ready = { listener: "ready", listening: result.port, enabled: true };
+    // T3's saved window swapped for one fresh, marked window; the user's own view kept; the
+    // agent's listener untouched.
+    expect(result.steps.slice(-4)).toEqual([
+      { ...ready, windows: 3, fresh: 1, usersKept: true, closes: 2, runs: 1, marked: true },
+      ready,
+      off,
+      off,
+    ]);
+  });
+
+  it("stops trying to close a saved viewport window that won't close", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      recover: true,
+      then: "stuckViewport",
+    });
+    expect(result.steps.at(-4)).toMatchObject({ closes: 2, usersKept: true, fresh: 1 });
+    expect(result.steps.at(-4).runs).toBeLessThan(10);
+  });
+
+  it("replaces every viewport window a file brought back, marked or from an earlier build", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      then: "replaceViewport",
+    });
+    // Streamed instead of T3's otherwise: the hidden display takes the first one it finds.
+    expect(result.steps.at(-4)).toMatchObject({ windows: 3, fresh: 1, closes: 2, usersKept: true });
+  });
+
+  it("leaves exactly one viewport window, its own, after a file is opened in the session", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      then: "loadInSession",
+    });
+    expect(result.steps.find((step: { viewports?: number }) => "viewports" in step)).toEqual({
+      viewports: 1,
+      tracked: true,
+      fresh: 1,
+    });
+  });
+
+  it("stops taking a window for its viewport once it no longer holds a lone 3D view", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      then: "ownChanged",
+    });
+    expect(result.steps.find((step: { stillOwn?: boolean }) => "stillOwn" in step)).toEqual({
+      stillOwn: false,
+      scheduled: 1,
+      reopened: true,
+      fresh: 2,
+      oldGone: true,
+      marked: 1,
+    });
+  });
+
+  it("goes on to open its viewport window when closing one window took another with it", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      then: "childClosed",
+    });
+    expect(result.steps.at(-4)).toMatchObject({ windows: 3, fresh: 1, usersKept: true });
+  });
+
+  it("replaces a window a later load brings back, at whatever address", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      then: "reusedAddress",
+    });
+    expect(result.steps.find((step: object) => "viewports" in step)).toEqual({
+      viewports: 1,
+      fresh: 1,
+    });
+  });
+
+  it("replaces its viewport window when the person closes it", () => {
+    const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, then: "ownClosed" });
+    expect(result.steps.find((step: { stillOwn?: boolean }) => "stillOwn" in step)).toEqual({
+      stillOwn: false,
+      scheduled: 1,
+      reopened: true,
+      fresh: 2,
+      oldGone: true,
+      marked: 1,
+    });
+  });
+
+  it("replaces only the windows a recovery copy brought back, not one marked after", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      recover: true,
+      then: "lateMarked",
+    });
+    expect(result.steps.find((step: { lateKept?: boolean }) => "lateKept" in step)).toEqual({
+      lateKept: true,
+    });
   });
 
   it("never starts it when T3 revokes before it grants", () => {

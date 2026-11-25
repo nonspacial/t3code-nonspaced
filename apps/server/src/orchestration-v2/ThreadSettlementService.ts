@@ -801,6 +801,7 @@ export const make = Effect.gen(function* () {
       const settled = yield* projections.getThread(threadId);
       if (settled.deletedAt !== null || settled.settledOverride !== "settled") return;
       yield* terminals.closeOnSettle({ threadId });
+      yield* hostedBlender.closeOnSettle({ threadId });
       // A master Blender quits once the last thread using it settles.
       yield* releaseMaster(threadId);
       const worktreePath = settled.worktreePath;
@@ -868,7 +869,9 @@ export const make = Effect.gen(function* () {
         return cleanUpSettledThread(event.threadId).pipe(Effect.andThen(enqueueFullSweep()));
       case "thread.archived":
       case "thread.deleted":
-        return releaseMaster(event.threadId).pipe(Effect.andThen(enqueueFullSweep()));
+        return hostedBlender
+          .closeOnSettle({ threadId: event.threadId })
+          .pipe(Effect.andThen(releaseMaster(event.threadId)), Effect.andThen(enqueueFullSweep()));
       case "thread.pull-request-link-updated":
       case "thread.pull-request-synced":
       case "thread.issue-synced":

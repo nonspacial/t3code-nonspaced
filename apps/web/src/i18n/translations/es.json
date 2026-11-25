@@ -3362,13 +3362,16 @@
   "d1634d41846e72cb": "Japonés",
   "c77caac5b764ef8c": "Inglés (Dvorak)",
   "7b15925473b02c07": "Inglés (Colemak)",
+  "7c6bc1129dc9f48e": "Escena sin título",
+  "cd078f4497dfcd36": "No se pudo reiniciar Blender",
+  "ad3ce6044792509a": "No se pudo volver a abrir Blender",
+  "90e3c64eab32945e": "¿Descartar el guardado automático de {name}?",
+  "01201ecb830d7c68": "¿Descartar los cambios sin guardar de {name}?",
   "a1628cec6e798a98": "el asistente de pantalla oculta de T3 Code",
   "759aa5a1a95bc013": "un codificador H.264",
   "f5a8efdb194519df": "el plugin OpenGL de GStreamer",
-  "119259d2fa66fadf": "No se pudo cerrar Blender",
   "d6fcf229c9306851": "Capturar y anotar",
   "32cf9ac006229af1": "Menú de Blender",
-  "e2d3b41b3731a6c1": "¿Guardar los cambios de {name} antes de salir?",
   "9287e12fbeade687": "Otro dispositivo tomó el control de Blender",
   "d2b10ff67d190925": "Viewport de Blender",
   "2151790bc5e65b31": "No disponible en este host",
@@ -3376,6 +3379,90 @@
   "7050870331ac8b9a": "No hay ningún Hosted Blender en ejecución",
   "fb2c65328a8a2e17": "Abre un archivo .blend en la vista previa de archivos y elige Abrir en Hosted Blender.",
   "3f25b97ec987231e": "Blender no pudo abrir el archivo en la pantalla oculta. Comprueba que Blender lo abre y que GStreamer tiene un codificador H.264, y vuelve a abrirlo en Hosted Blender.",
+  "c9d23ccb15073177": "Blender se cerró inesperadamente",
+  "9f406050b6efb934": "Blender se cerró",
+  "0693a88b1530f8eb": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " está fuera de este proyecto, así que T3 Code no puede volver a abrirlo. Sus cambios sin guardar se conservan en ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "95b2d0bdafc5b01d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " está fuera de este proyecto, así que T3 Code no puede volver a abrirlo."
+  ],
+  "0181fc8af235ad77": [
+    "T3 Code conservó los cambios sin guardar de una escena sin título en ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "c3528aaa534d9a33": "Blender tenía abierta una escena sin título, que T3 Code no puede volver a abrir.",
+  "df374db2c12ff019": [
+    "Blender no pudo restaurar la copia de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". La copia se conserva: vuelve a intentarlo, abre el archivo tal como se guardó por última vez o descarta la copia."
+  ],
+  "ff3775198cef1512": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " se detuvo inesperadamente. Reiniciar abre el archivo tal como se guardó por última vez, o restaura su guardado automático más reciente."
+  ],
+  "945cdcba38a31b0c": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " se detuvo inesperadamente. Reiniciar abre el archivo tal como se guardó por última vez."
+  ],
+  "a1705e3412c3634e": [
+    "T3 Code cerró ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " cuando este hilo se resolvió o T3 Code se detuvo, y conservó sus cambios sin guardar. Volver a abrir los restaura."
+  ],
+  "891e3d7d231af485": [
+    "T3 Code cerró ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " cuando este hilo se resolvió o T3 Code se detuvo."
+  ],
+  "bd90fd96c98e9c6f": "Reiniciar",
+  "220f0a0fa43d9f59": "Restaurar guardado automático",
+  "182049c015041be2": "Volver a abrir",
+  "eb23e8b7b8458cfa": "Abrir lo último guardado",
+  "97585565390197f6": "Descartar",
+  "930be3d3ed674427": "También se conservan:",
+  "d6c851db16c7dfd8": "Se conserva el archivo tal como se guardó por última vez. Esto no se puede deshacer.",
   "7dfc4caecd0ca4da": "Abrir los ajustes de Blender",
   "22e7ff1b5896ba7b": "Hosted Blender necesita un servidor Linux. Aún puedes abrir archivos 3D en la vista previa de archivos.",
   "ccb9bcd7825f2f99": "La versión de Linux de este servidor trae labwc y GStreamer demasiado antiguos para Hosted Blender. Aún puedes abrir archivos 3D en la vista previa de archivos.",
@@ -3410,9 +3497,6 @@
   "8884c1281f2a2db4": "Rueda del ratón",
   "295182c176fc7bd0": "Panel táctil",
   "8b290ab856b8f02b": "Salir de Blender",
-  "32504fe5e26d8233": "Los cambios que Blender no haya guardado se pierden si sales sin guardar.",
-  "9ceb68fb844584c9": "Salir sin guardar",
-  "e21dfc1887d124ec": "Guardar y salir",
   "6b30f7f4ebd659d7": "Hay demasiadas personas viendo este Blender. Inténtalo más tarde.",
   "1681e6f089782b9d": "Este navegador no puede reproducir la transmisión de Blender.",
   "7579927020ad5107": "Tienes el control",
@@ -3424,6 +3508,11 @@
   "156c7543e861dda6": "Sin acceso a la GPU: Blender irá lento",
   "907a0f7ed16a709d": "No se pudo abrir en Hosted Blender",
   "7b0cb06d256e6b28": "Abrir en Hosted Blender",
+  "119259d2fa66fadf": "No se pudo cerrar Blender",
+  "e2d3b41b3731a6c1": "¿Guardar los cambios de {name} antes de salir?",
+  "32504fe5e26d8233": "Los cambios que Blender no haya guardado se pierden si sales sin guardar.",
+  "9ceb68fb844584c9": "Salir sin guardar",
+  "e21dfc1887d124ec": "Guardar y salir",
   "004649901eabfebd": "Trabajando en Blender",
   "614e5ad58a795fb5": "Detener",
   "49cc06e79f21f85a": "{seconds} s",
@@ -7923,6 +8012,11 @@
   "3943d8479dc44551": "Consulta el estado de energía del host cuando no hay ningún cliente activo en primer plano.",
   "d13f97c11d2f322b": "Restablecer todo",
   "cc310b2ec0179edf": "Configurar la actividad en segundo plano",
+  "a0f6aecb07b533ff": "Blenders en ejecución ({count})",
+  "b04a15f0adaa16b9": "No hay ningún Blender alojado en ejecución",
+  "201b5d40d08e74d0": "El Blender alojado de cada hilo aparece aquí mientras se ejecuta.",
+  "75daeb1e9b041511": "Hilo desconocido",
+  "0eda0be3d24af58c": "Salir",
   "e116ed85458b6613": "Prefijo fijo",
   "575ae567e3b6ca3d": "Prefijo semántico",
   "6675de66f9b3f71d": "Instrucciones personalizadas",
@@ -11522,7 +11616,6 @@
       }
     }
   ],
-  "97585565390197f6": "Descartar",
   "c0fce4a3555c5c17": "Conectar",
   "0d1eba54ff075d77": "Usarlo",
   "035dc7d3b0f3e526": "Títulos de hilos y otros textos generados",
@@ -12278,6 +12371,8 @@
   "f2b07faba1229ce7": "Intervalo de comprobación de estado",
   "5c9dc9970db79fe2": "actualizar disponibilidad versiones estado de autenticación modelos sondeos en segundo plano segundos desactivado",
   "056ba6a180d114b5": "permitir desactivar activar abrir controlar herramientas de vista previa sesiones proyecto anulación",
+  "dd6b767f08eff9f7": "Blenders en ejecución",
+  "ec2bc06507d0d9af": "alojado blender salir memoria 3d hilo",
   "37d76dab21a26b2a": "blender hosted configuración instalar comprobar labwc gstreamer codificador gpu pantalla oculta linux agente comandos",
   "f74fb1f1e951cb67": "blender hosted agentes mcp iniciar permitir",
   "3cf7f8ed35b33c5f": "blender lab mcp servidor ruta programa instalar uv pipx",

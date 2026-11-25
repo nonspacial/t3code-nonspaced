@@ -10,6 +10,7 @@ import {
   type HostedBlenderMasterState,
   type HostedBlenderOpenInput,
   type HostedBlenderQuitInput,
+  type HostedBlenderKeptCopy,
   type HostedBlenderThreadState,
   ProviderInstanceId,
   ThreadId,
@@ -79,6 +80,8 @@ const layerFor = (input: {
   readonly ended?: HostedBlender.AgentAccessEnded;
   readonly openFile?: string | null;
   readonly workspace?: string;
+  /** The thread's kept copies; by default those of a closed or crashed `state`. */
+  readonly copies?: ReadonlyArray<HostedBlenderKeptCopy>;
   readonly master?: HostedBlenderMasterState;
   readonly opened?:
     | { readonly _tag: "desktop" }
@@ -91,6 +94,8 @@ const layerFor = (input: {
       Layer.mergeAll(
         Layer.mock(HostedBlender.HostedBlender)({
           threadState: () => Stream.succeed(input.state),
+          keptCopies: () =>
+            Effect.succeed(input.copies ?? ("copies" in input.state ? input.state.copies : [])),
           masterState: () => Stream.succeed(input.master ?? { status: "none" }),
           openMaster: (open, options) =>
             Effect.sync(() => {
@@ -302,6 +307,129 @@ describe("hosted Blender MCP tools", () => {
           listener: "off",
           ended: "otherFile",
           openFile: "/home/user/acme/app/models/bracket-4.blend",
+        }),
+      ),
+    ),
+  );
+
+  it.effect.each(["crashed", "closed"] as const)(
+    "reports a %s working Blender, and whether its recovery copy can be restored",
+    (status) =>
+      Effect.gen(function* () {
+        const result = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
+        expect(result.structuredContent).toEqual({
+          blenders: [
+            {
+              role: "working",
+              status,
+              file: `${workspace}/models/hero.wip-41cbc0de.blend`,
+              recovery: true,
+            },
+          ],
+        });
+      }).pipe(
+        Effect.provide(
+          layerFor({
+            state: {
+              status,
+              copies: [
+                {
+                  key: "workspace:models/hero.wip-41cbc0de.blend",
+                  kind: status,
+                  file: { kind: "workspace", relativePath: "models/hero.wip-41cbc0de.blend" },
+                  recovery: true,
+                },
+              ],
+            },
+          }),
+        ),
+      ),
+  );
+
+  it.effect(
+    "lists the master's one copy under the master role, and working copies under theirs",
+    () =>
+      Effect.gen(function* () {
+        const result = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
+        expect((result.structuredContent as { blenders: ReadonlyArray<object> }).blenders).toEqual([
+          {
+            role: "working",
+            status: "closed",
+            file: `${workspace}/models/part.blend`,
+            recovery: true,
+          },
+          {
+            role: "master",
+            status: "crashed",
+            file: `${workspace}/models/hero.blend`,
+            recovery: true,
+          },
+        ]);
+      }).pipe(
+        Effect.provide(
+          layerFor({
+            state: {
+              status: "closed",
+              copies: [
+                {
+                  key: "workspace:models/part.blend",
+                  kind: "closed",
+                  file: { kind: "workspace", relativePath: "models/part.blend" },
+                  recovery: true,
+                },
+              ],
+            },
+            master: {
+              status: "crashed",
+              relativePath: "models/hero.blend",
+              copies: [
+                {
+                  key: "outside:/real/models/hero.blend",
+                  kind: "crashed",
+                  file: { kind: "workspace", relativePath: "models/hero.blend" },
+                  recovery: true,
+                },
+              ],
+            },
+          }),
+        ),
+      ),
+  );
+
+  it.effect("lists each file's waiting copy under its own file, beside the running Blender", () =>
+    Effect.gen(function* () {
+      const result = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
+      const blenders = (result.structuredContent as { blenders: ReadonlyArray<object> }).blenders;
+      expect(blenders.slice(1)).toEqual([
+        {
+          role: "working",
+          status: "crashed",
+          file: `${workspace}/models/other.blend`,
+          recovery: true,
+        },
+        { role: "working", status: "closed", file: "/elsewhere/outside.blend", recovery: true },
+        { role: "working", status: "closed", recovery: false },
+      ]);
+    }).pipe(
+      Effect.provide(
+        layerFor({
+          state: running,
+          copies: [
+            {
+              key: "workspace:models/other.blend",
+              kind: "crashed",
+              file: { kind: "workspace", relativePath: "models/other.blend" },
+              recovery: true,
+            },
+            {
+              key: "outside:/elsewhere/outside.blend",
+              kind: "closed",
+              file: { kind: "outside", path: "/elsewhere/outside.blend" },
+              recovery: true,
+              copyPath: "/state/copy.blend",
+            },
+            { key: "untitled", kind: "closed", file: { kind: "untitled" }, recovery: false },
+          ],
         }),
       ),
     ),

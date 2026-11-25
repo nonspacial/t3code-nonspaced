@@ -266,7 +266,16 @@ pub struct Encoder {
     t0: Instant,
     caps: Option<gst::Caps>,
     last: Option<gst::Buffer>,
+    kbps: u32,
+    output: SharedOutput,
+    output_closed: Arc<AtomicBool>,
+    errors: Arc<dyn Fn(String) + Send + Sync>,
+    /// Set when the pipeline reports an error: nothing flows through it again.
+    failed: Arc<AtomicBool>,
 }
+
+/// A running pipeline, and the elements the encoder drives.
+type Pipeline = (gst::Pipeline, gst_app::AppSrc, gst::Element);
 
 impl Encoder {
     pub fn new(
@@ -274,55 +283,12 @@ impl Encoder {
         kbps: u32,
         output: SharedOutput,
         output_closed: Arc<AtomicBool>,
-        errors: impl Fn(String) + Send + 'static,
+        errors: impl Fn(String) + Send + Sync + 'static,
     ) -> Result<Encoder, String> {
-        let pipeline = gst::parse::launch(&kind.pipeline_description(kbps))
-            .map_err(|error| error.to_string())?
-            .downcast::<gst::Pipeline>()
-            .map_err(|_| "not a pipeline".to_string())?;
-        let src = pipeline
-            .by_name("src")
-            .and_then(|element| element.downcast::<gst_app::AppSrc>().ok())
-            .ok_or("missing appsrc")?;
-        let sink = pipeline
-            .by_name("sink")
-            .and_then(|element| element.downcast::<gst_app::AppSink>().ok())
-            .ok_or("missing appsink")?;
-        let encoder = pipeline.by_name("enc").ok_or("missing encoder")?;
-        sink.set_callbacks(
-            gst_app::AppSinkCallbacks::builder()
-                .new_sample(move |sink| {
-                    let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-                    let Some(buffer) = sample.buffer() else {
-                        return Ok(gst::FlowSuccess::Ok);
-                    };
-                    let key = !buffer.flags().contains(gst::BufferFlags::DELTA_UNIT);
-                    let pts_us = buffer.pts().map(|pts| pts.useconds()).unwrap_or(0);
-                    let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                    let mut out = output.lock().unwrap();
-                    if control::write_video(&mut *out, key, pts_us, &map).is_err() {
-                        output_closed.store(true, Ordering::Relaxed);
-                        return Err(gst::FlowError::Eos);
-                    }
-                    Ok(gst::FlowSuccess::Ok)
-                })
-                .build(),
-        );
-        let bus = pipeline.bus().ok_or("missing bus")?;
-        std::thread::spawn(move || {
-            for message in bus.iter_timed(gst::ClockTime::NONE) {
-                match message.view() {
-                    gst::MessageView::Error(error) => {
-                        errors(format!("{}: {:?}", error.error(), error.debug()))
-                    }
-                    gst::MessageView::Eos(_) => break,
-                    _ => {}
-                }
-            }
-        });
-        pipeline
-            .set_state(gst::State::Playing)
-            .map_err(|error| error.to_string())?;
+        let errors: Arc<dyn Fn(String) + Send + Sync> = Arc::new(errors);
+        let failed = Arc::new(AtomicBool::new(false));
+        let (pipeline, src, encoder) =
+            launch(kind, kbps, &output, &output_closed, &errors, &failed)?;
         Ok(Encoder {
             kind,
             pipeline,
@@ -331,11 +297,47 @@ impl Encoder {
             t0: Instant::now(),
             caps: None,
             last: None,
+            kbps,
+            output,
+            output_closed,
+            errors,
+            failed,
         })
+    }
+
+    /// A pipeline that failed is replaced by a fresh one, so the stream goes on; its first
+    /// frame is a keyframe, at whatever size comes next.
+    fn recover(&mut self) {
+        if !self.failed.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let _ = self.pipeline.set_state(gst::State::Null);
+        match launch(
+            self.kind,
+            self.kbps,
+            &self.output,
+            &self.output_closed,
+            &self.errors,
+            &self.failed,
+        ) {
+            Ok((pipeline, src, encoder)) => {
+                self.pipeline = pipeline;
+                self.src = src;
+                self.encoder = encoder;
+                self.caps = None;
+                self.last = None;
+            }
+            // Tried again with the next frame.
+            Err(message) => {
+                (self.errors)(format!("the encoder could not restart: {message}"));
+                self.failed.store(true, Ordering::Release);
+            }
+        }
     }
 
     /// Queues a captured frame. Returns true when its caps (size or format) changed.
     pub fn push(&mut self, frame: &Frame) -> bool {
+        self.recover();
         let caps = frame.caps();
         let resized = self.caps.as_ref() != Some(&caps);
         if resized {
@@ -425,7 +427,8 @@ impl Encoder {
         }
     }
 
-    pub fn set_bitrate(&self, kbps: u32) {
+    pub fn set_bitrate(&mut self, kbps: u32) {
+        self.kbps = kbps.max(1);
         self.encoder
             .set_property("bitrate", self.kind.bitrate_value(kbps.max(1)));
     }
@@ -434,6 +437,69 @@ impl Encoder {
         let pts = gst::ClockTime::from_nseconds(self.t0.elapsed().as_nanos() as u64);
         buffer.get_mut().unwrap().set_pts(pts);
     }
+}
+
+fn launch(
+    kind: EncoderKind,
+    kbps: u32,
+    output: &SharedOutput,
+    output_closed: &Arc<AtomicBool>,
+    errors: &Arc<dyn Fn(String) + Send + Sync>,
+    failed: &Arc<AtomicBool>,
+) -> Result<Pipeline, String> {
+    let pipeline = gst::parse::launch(&kind.pipeline_description(kbps))
+        .map_err(|error| error.to_string())?
+        .downcast::<gst::Pipeline>()
+        .map_err(|_| "not a pipeline".to_string())?;
+    let src = pipeline
+        .by_name("src")
+        .and_then(|element| element.downcast::<gst_app::AppSrc>().ok())
+        .ok_or("missing appsrc")?;
+    let sink = pipeline
+        .by_name("sink")
+        .and_then(|element| element.downcast::<gst_app::AppSink>().ok())
+        .ok_or("missing appsink")?;
+    let encoder = pipeline.by_name("enc").ok_or("missing encoder")?;
+    let output = Arc::clone(output);
+    let output_closed = Arc::clone(output_closed);
+    sink.set_callbacks(
+        gst_app::AppSinkCallbacks::builder()
+            .new_sample(move |sink| {
+                let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                let Some(buffer) = sample.buffer() else {
+                    return Ok(gst::FlowSuccess::Ok);
+                };
+                let key = !buffer.flags().contains(gst::BufferFlags::DELTA_UNIT);
+                let pts_us = buffer.pts().map(|pts| pts.useconds()).unwrap_or(0);
+                let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+                let mut out = output.lock().unwrap();
+                if control::write_video(&mut *out, key, pts_us, &map).is_err() {
+                    output_closed.store(true, Ordering::Relaxed);
+                    return Err(gst::FlowError::Eos);
+                }
+                Ok(gst::FlowSuccess::Ok)
+            })
+            .build(),
+    );
+    let bus = pipeline.bus().ok_or("missing bus")?;
+    let errors = Arc::clone(errors);
+    let failed = Arc::clone(failed);
+    std::thread::spawn(move || {
+        for message in bus.iter_timed(gst::ClockTime::NONE) {
+            match message.view() {
+                gst::MessageView::Error(error) => {
+                    errors(format!("{}: {:?}", error.error(), error.debug()));
+                    failed.store(true, Ordering::Release);
+                }
+                gst::MessageView::Eos(_) => break,
+                _ => {}
+            }
+        }
+    });
+    pipeline
+        .set_state(gst::State::Playing)
+        .map_err(|error| error.to_string())?;
+    Ok((pipeline, src, encoder))
 }
 
 impl Drop for Encoder {
@@ -502,6 +568,78 @@ impl Settle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Counts the bytes the encoder writes, as the helper's stdout would carry them.
+    struct Counter(Arc<std::sync::atomic::AtomicUsize>);
+    impl Write for Counter {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.0.fetch_add(data.len(), Ordering::Relaxed);
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Pushes frames until some encoded output arrives, or a few seconds pass.
+    fn encodes(encoder: &mut Encoder, written: &std::sync::atomic::AtomicUsize) -> bool {
+        let pixels = vec![0x40u8; 64 * 32 * 4];
+        let start = written.load(Ordering::Relaxed);
+        for _ in 0..200 {
+            encoder.push(&Frame::System {
+                data: &pixels,
+                format: "BGRx",
+                width: 64,
+                height: 32,
+                stride: 64 * 4,
+            });
+            std::thread::sleep(Duration::from_millis(20));
+            if written.load(Ordering::Relaxed) > start {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn a_pipeline_that_fails_is_built_again_and_goes_on_encoding() {
+        gst::init().unwrap();
+        if gst::ElementFactory::find("x264enc").is_none() {
+            eprintln!("skipped: x264enc is not installed");
+            return;
+        }
+        let written = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let output: SharedOutput = Arc::new(Mutex::new(Box::new(Counter(Arc::clone(&written)))));
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&errors);
+        let mut encoder = Encoder::new(
+            EncoderKind::X264,
+            2000,
+            output,
+            Arc::new(AtomicBool::new(false)),
+            move |message| seen.lock().unwrap().push(message),
+        )
+        .unwrap();
+        assert!(encodes(&mut encoder, &written));
+        // As a stream stops for good (a renegotiation it couldn't follow): it reports the error,
+        // and nothing flows through that pipeline again.
+        encoder
+            .pipeline
+            .post_message(
+                gst::message::Error::builder(gst::StreamError::Failed, "streaming stopped").build(),
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while errors.lock().unwrap().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!errors.lock().unwrap().is_empty(), "the error was reported");
+        encoder.pipeline.set_state(gst::State::Null).unwrap();
+        assert!(
+            encodes(&mut encoder, &written),
+            "frames after the error are encoded"
+        );
+    }
 
     #[test]
     fn the_probe_is_a_one_second_test_encode() {
