@@ -13346,6 +13346,7 @@
   "d724abd4cc4a85e5": "Too old",
   "7b01b12da1a9fd17": "Slow",
   "a5fe3dee0a941705": "Not Blender Lab's",
+  "76b81a9f9a2687ed": "Didn't start",
   "7174ef3cfccc7a54": "Runs Blender on the hidden display and streams it.",
   "59e399ec181acb63": "T3 Code's own helper is missing from this install. Update or reinstall T3 Code.",
   "92a36f954d094a6f": [
@@ -13414,6 +13415,14 @@
       "v": "v"
     },
     " is a different project with the same name, not the Blender Lab MCP. Install the official one, or set its path below."
+  ],
+  "1f0242c77c342e9b": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " didn't answer when T3 Code started it, so agents get no Blender tools. Reinstall it, then check again."
   ],
   "9a397640135c1803": "Agents need the official Blender Lab MCP server. The pane works without it.",
   "7c26d4f38c0094aa": "The result is kept until you check again, such as after installing something.",

@@ -13343,6 +13343,7 @@
   "d724abd4cc4a85e5": "För gammal",
   "7b01b12da1a9fd17": "Långsam",
   "a5fe3dee0a941705": "Inte Blender Labs",
+  "76b81a9f9a2687ed": "Startade inte",
   "7174ef3cfccc7a54": "Kör Blender på den dolda skärmen och strömmar den.",
   "59e399ec181acb63": "T3 Codes eget hjälpprogram saknas i den här installationen. Uppdatera eller installera om T3 Code.",
   "92a36f954d094a6f": [
@@ -13411,6 +13412,14 @@
       "v": "v"
     },
     " är ett annat projekt med samma namn, inte MCP:n från Blender Lab. Installera den officiella eller ange dess sökväg nedan."
+  ],
+  "1f0242c77c342e9b": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " svarade inte när T3 Code startade det, så agenter får inga Blender-verktyg. Installera om det och kontrollera sedan igen."
   ],
   "9a397640135c1803": "Agenter behöver den officiella MCP-servern från Blender Lab. Panelen fungerar utan den.",
   "7c26d4f38c0094aa": "Resultatet sparas tills du kontrollerar igen, till exempel efter att du har installerat något.",

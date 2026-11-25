@@ -13336,6 +13336,7 @@
   "d724abd4cc4a85e5": "Antigo demais",
   "7b01b12da1a9fd17": "Lento",
   "a5fe3dee0a941705": "Não é o do Blender Lab",
+  "76b81a9f9a2687ed": "Não iniciou",
   "7174ef3cfccc7a54": "Executa o Blender na tela oculta e transmite a imagem.",
   "59e399ec181acb63": "O assistente do próprio T3 Code está ausente nesta instalação. Atualize ou reinstale o T3 Code.",
   "92a36f954d094a6f": [
@@ -13404,6 +13405,14 @@
       "v": "v"
     },
     " é outro projeto com o mesmo nome, não o MCP do Blender Lab. Instale o oficial ou defina o caminho abaixo."
+  ],
+  "1f0242c77c342e9b": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " não respondeu quando o T3 Code o iniciou, então os agentes ficam sem ferramentas do Blender. Reinstale-o e verifique de novo."
   ],
   "9a397640135c1803": "Os agentes precisam do servidor MCP oficial do Blender Lab. O painel funciona sem ele.",
   "7c26d4f38c0094aa": "O resultado é mantido até você verificar novamente, por exemplo depois de instalar algo.",

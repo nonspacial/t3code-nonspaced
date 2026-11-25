@@ -13335,6 +13335,7 @@
   "d724abd4cc4a85e5": "Zu alt",
   "7b01b12da1a9fd17": "Langsam",
   "a5fe3dee0a941705": "Nicht von Blender Lab",
+  "76b81a9f9a2687ed": "Startet nicht",
   "7174ef3cfccc7a54": "Führt Blender auf dem verborgenen Display aus und streamt es.",
   "59e399ec181acb63": "Das Hilfsprogramm von T3 Code fehlt in dieser Installation. Aktualisiere T3 Code oder installiere es neu.",
   "92a36f954d094a6f": [
@@ -13403,6 +13404,14 @@
       "v": "v"
     },
     " ist ein anderes Projekt mit demselben Namen, nicht das MCP von Blender Lab. Installiere das offizielle oder lege seinen Pfad unten fest."
+  ],
+  "1f0242c77c342e9b": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " hat nicht geantwortet, als T3 Code es gestartet hat, daher bekommen Agenten keine Blender-Werkzeuge. Installiere es neu und prüfe dann erneut."
   ],
   "9a397640135c1803": "Agenten benötigen den offiziellen MCP-Server von Blender Lab. Der Bereich funktioniert auch ohne ihn.",
   "7c26d4f38c0094aa": "Das Ergebnis bleibt erhalten, bis du erneut prüfst, etwa nach einer Installation.",

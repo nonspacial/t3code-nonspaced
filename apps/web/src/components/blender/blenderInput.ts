@@ -2,6 +2,7 @@ import {
   EVDEV_KEY_ESCAPE,
   evdevKeyCode,
   type HostedBlenderScrollPreference,
+  type ScrollEventLike,
   scrollInput,
   scrollKind,
 } from "@t3tools/client-runtime/hosted-blender/input";
@@ -29,6 +30,8 @@ export interface BlenderInputOptions {
    * gets where it was made: still held, so a drag goes on, or as a whole click if released.
    */
   readonly takePress?: TakePress;
+  /** The scrolls made while control was being taken, in order, each where it was made. */
+  readonly takeScrolls?: ReadonlyArray<TakeScroll>;
 }
 
 export interface TakePress {
@@ -37,6 +40,23 @@ export interface TakePress {
   readonly clientY: number;
   readonly released: boolean;
 }
+
+export interface TakeScroll {
+  readonly scroll: ScrollEventLike;
+  readonly clientX: number;
+  readonly clientY: number;
+}
+
+export const wheelScroll = (event: WheelEvent): ScrollEventLike => {
+  const legacy = event as WheelEvent & { wheelDeltaX?: number; wheelDeltaY?: number };
+  return {
+    deltaMode: event.deltaMode,
+    deltaX: event.deltaX,
+    deltaY: event.deltaY,
+    ...(legacy.wheelDeltaX === undefined ? {} : { wheelDeltaX: legacy.wheelDeltaX }),
+    ...(legacy.wheelDeltaY === undefined ? {} : { wheelDeltaY: legacy.wheelDeltaY }),
+  };
+};
 
 export interface BlenderInput {
   /** Blender captured the mouse (a grab or orbit), or let it go. */
@@ -182,16 +202,7 @@ export function attachBlenderInput(options: BlenderInputOptions): BlenderInput {
     event.stopPropagation();
   };
 
-  const onWheel = (event: WheelEvent) => {
-    event.preventDefault();
-    const legacy = event as WheelEvent & { wheelDeltaX?: number; wheelDeltaY?: number };
-    const scroll = {
-      deltaMode: event.deltaMode,
-      deltaX: event.deltaX,
-      deltaY: event.deltaY,
-      ...(legacy.wheelDeltaX === undefined ? {} : { wheelDeltaX: legacy.wheelDeltaX }),
-      ...(legacy.wheelDeltaY === undefined ? {} : { wheelDeltaY: legacy.wheelDeltaY }),
-    };
+  const sendScroll = (scroll: ScrollEventLike) => {
     for (const message of scrollInput(
       scroll,
       scrollKind(scroll, options.scrollPreference()),
@@ -199,6 +210,11 @@ export function attachBlenderInput(options: BlenderInputOptions): BlenderInput {
     )) {
       send(message);
     }
+  };
+
+  const onWheel = (event: WheelEvent) => {
+    event.preventDefault();
+    sendScroll(wheelScroll(event));
   };
 
   const onPointerLockChange = () => {
@@ -258,6 +274,12 @@ export function attachBlenderInput(options: BlenderInputOptions): BlenderInput {
       heldButtons.add(takeButton);
       lastButtons = take.bit;
     }
+  }
+  // Blender zooms toward the pointer, so each scroll goes where it was made.
+  for (const { scroll, clientX, clientY } of options.takeScrolls ?? []) {
+    position = pointAt(clientX, clientY);
+    flush();
+    sendScroll(scroll);
   }
 
   return {

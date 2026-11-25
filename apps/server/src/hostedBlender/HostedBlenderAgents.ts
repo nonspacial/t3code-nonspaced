@@ -1,5 +1,6 @@
 import type { ProviderDriverKind, ThreadId } from "@t3tools/contracts";
 import type { HostedBlenderMcpLaunch } from "@t3tools/provider-core/server/mcpSession";
+import { type BlenderMcpBuild, type BlenderMcpCapture, sameBuild } from "./blenderMcpStdio.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as NetService from "@t3tools/shared/Net";
 import * as Context from "effect/Context";
@@ -32,6 +33,33 @@ export interface HostedBlenderRevocation {
   readonly session: string | undefined;
 }
 
+/** A hosted Blender's role: the thread's own working one, or the master it copies back into. */
+export type HostedBlenderRole = "working" | "master";
+
+/**
+ * A thread's agent losing a way to its hosted Blenders: one role's access ended (`role`), or a
+ * provider session ended (`session`).
+ */
+export interface HostedBlenderRouteEnd {
+  readonly threadId: ThreadId;
+  readonly session?: string;
+  readonly role?: HostedBlenderRole;
+  /** With `role`: the grant that ended (a working Blender's launch, or a master relay). */
+  readonly grant?: string;
+}
+
+const captureOf = (readiness: HostedBlenderSetup.HostedBlenderReadiness | null) =>
+  readiness?.status === "ok" ? readiness.blenderMcpCapture : null;
+
+/**
+ * What `routeEnds` streams: one thread's ending, setup no longer vouching for the build whose
+ * tools sessions were shown (`staleBuild`), or agents switched off for every thread (null).
+ */
+export type HostedBlenderRouteEnded =
+  | HostedBlenderRouteEnd
+  | { readonly staleBuild: BlenderMcpBuild }
+  | null;
+
 /** The providers T3 adds the hosted Blender MCP to, the same two that get agentcast upstream. */
 const SUPPORTED_DRIVERS: ReadonlySet<string> = new Set(["claudeAgent", "codex"]);
 
@@ -52,12 +80,14 @@ export class HostedBlenderAgents extends Context.Service<
       readonly driver: ProviderDriverKind;
     }) => Effect.Effect<HostedBlenderMcpLaunch | undefined>;
     /**
-     * For the thread's hosted Blender starting now: the port the official add-on listens on for
-     * the thread's agent, or null to keep it off. It listens only while the thread's session
-     * holds the MCP and agents are allowed. T3's guard on the listener drops any connection from
-     * another OS user's process (see `agentGuard.ts`).
+     * For the thread's hosted Blender starting now: a private port, its own, that the official
+     * add-on listens on for the thread's agents, or null to keep it off. It listens only while the
+     * thread's session holds the MCP and agents are allowed. T3's guard on the listener drops any
+     * connection from another OS user's process (see `agentGuard.ts`).
      */
     readonly listenerPort: (threadId: ThreadId) => Effect.Effect<number | null>;
+    /** The official server's own answers, as setup read them from `command`. */
+    readonly blenderMcpCapture: (command: string) => Effect.Effect<BlenderMcpCapture | null>;
     /**
      * A loopback port for a master Blender's own listener, from the same registry as the threads'
      * ports, so no relay's port is ever also a listener's.
@@ -77,6 +107,17 @@ export class HostedBlenderAgents extends Context.Service<
     readonly revocations: Stream.Stream<HostedBlenderRevocation | null>;
     /** The thread's provider session ended and its MCP config is gone. */
     readonly sessionEnded: (threadId: ThreadId, session?: string) => Effect.Effect<void>;
+    /** One grant of the thread's Blender in this role ended: a working launch's, or a relay's. */
+    readonly agentAccessEnded: (
+      threadId: ThreadId,
+      role: HostedBlenderRole,
+      grant: string,
+    ) => Effect.Effect<void>;
+    /**
+     * Every way a thread's agent loses its hosted Blenders, from the moment of subscribing: each
+     * revocation, each role's access ending, and (null) setup's read of the server changing.
+     */
+    readonly routeEnds: Effect.Effect<Stream.Stream<HostedBlenderRouteEnded>, never, Scope.Scope>;
     /** "Allow agents to start hosted Blenders", read now. */
     readonly agentsAllowed: Effect.Effect<boolean>;
     /**
@@ -97,10 +138,11 @@ const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
-  const ports = new Map<ThreadId, { readonly hosted: number; readonly master: number }>();
+  const ports = new Map<ThreadId, number>();
   // Every port handed out, so two threads or roles never share one.
   const assignedPorts = new Set<number>();
   const revoked = yield* PubSub.unbounded<HostedBlenderRevocation | null>();
+  const routeEnded = yield* PubSub.unbounded<HostedBlenderRouteEnded>();
   let readiness: HostedBlenderSetup.HostedBlenderReadiness | null = null;
   const portLock = yield* Semaphore.make(1);
   const tmpDir = path.join(config.stateDir, "hosted-blender", "mcp-tmp");
@@ -125,7 +167,7 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const known = ports.get(threadId);
         if (known !== undefined) return known;
-        const assigned = { hosted: yield* freshPort, master: yield* freshPort };
+        const assigned = yield* freshPort;
         ports.set(threadId, assigned);
         return assigned;
       }),
@@ -139,14 +181,13 @@ const make = Effect.gen(function* () {
       // Passive: a session start never runs the setup check.
       const ready = readiness;
       if (ready?.status !== "ok" || ready.blenderMcp === null) return undefined;
-      const assigned = yield* portsFor(threadId);
+      const masterPort = yield* portsFor(threadId);
       yield* fileSystem.makeDirectory(tmpDir, { recursive: true });
       yield* fileSystem.chmod(tmpDir, 0o700);
       return {
         command: ready.blenderMcp,
         blenderPath: ready.blender,
-        hostedPort: assigned.hosted,
-        masterPort: assigned.master,
+        masterPort,
         tmpDir,
       } satisfies HostedBlenderMcpLaunch;
     },
@@ -162,11 +203,17 @@ const make = Effect.gen(function* () {
     "HostedBlenderAgents.listenerPort",
   )(function* (threadId) {
     const session = yield* mcpSessions.read(threadId);
-    const port =
-      session?.hostedBlender !== undefined && (yield* agentsAllowed)
-        ? session.hostedBlender.hostedPort
-        : null;
-    return port;
+    if (session?.hostedBlender === undefined || !(yield* agentsAllowed)) return null;
+    // Nothing outside T3 learns it: only the session's own Blender Lab server dials it.
+    return yield* portLock
+      .withPermits(1)(freshPort)
+      .pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Could not reserve a hosted Blender's agent port", { cause }).pipe(
+            Effect.as(null),
+          ),
+        ),
+      );
   });
 
   const masterListenerPort: HostedBlenderAgents["Service"]["masterListenerPort"] = Effect.fn(
@@ -184,9 +231,21 @@ const make = Effect.gen(function* () {
       const first = yield* Deferred.make<void>();
       yield* stream.pipe(
         Stream.runForEach((next) =>
-          Effect.sync(() => {
+          Effect.gen(function* () {
+            const before = captureOf(readiness);
             readiness = next;
-          }).pipe(Effect.andThen(Deferred.succeed(first, undefined))),
+            const after = captureOf(next);
+            // A server a session runs must be the build whose tools it was shown.
+            if (
+              before !== null &&
+              (after === null ||
+                after.command !== before.command ||
+                !sameBuild(after.build, before.build))
+            ) {
+              yield* PubSub.publish(routeEnded, { staleBuild: before.build });
+            }
+            yield* Deferred.succeed(first, undefined);
+          }),
         ),
         Effect.forkScoped,
       );
@@ -200,7 +259,9 @@ const make = Effect.gen(function* () {
     Stream.map((value) => value.hostedBlenderEnabled && value.hostedBlenderAllowAgents),
     Stream.changes,
     Stream.filter((allowed) => !allowed),
-    Stream.runForEach(() => PubSub.publish(revoked, null)),
+    Stream.runForEach(() =>
+      PubSub.publish(revoked, null).pipe(Effect.andThen(PubSub.publish(routeEnded, null))),
+    ),
     Effect.forkScoped,
   );
 
@@ -218,7 +279,23 @@ const make = Effect.gen(function* () {
     revocations: Stream.fromPubSub(revoked),
     sessionEnded: Effect.fn("HostedBlenderAgents.sessionEnded")(function* (threadId, session) {
       yield* PubSub.publish(revoked, { threadId, session });
+      yield* PubSub.publish(routeEnded, {
+        threadId,
+        ...(session === undefined ? {} : { session }),
+      });
     }),
+    agentAccessEnded: Effect.fn("HostedBlenderAgents.agentAccessEnded")(
+      function* (threadId, role, grant) {
+        yield* PubSub.publish(routeEnded, { threadId, role, grant });
+      },
+    ),
+    blenderMcpCapture: Effect.fn("HostedBlenderAgents.blenderMcpCapture")(function* (command) {
+      const ready = readiness;
+      return ready?.status === "ok" && ready.blenderMcp === command
+        ? ready.blenderMcpCapture
+        : null;
+    }),
+    routeEnds: PubSub.subscribe(routeEnded).pipe(Effect.map(Stream.fromSubscription)),
     agentsAllowed,
     followSetup,
   });

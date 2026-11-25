@@ -189,6 +189,14 @@ describe("evaluateSetup", () => {
       found: "/usr/bin/blender-mcp",
     });
     expect(lookalike.commands.join("\n")).toContain("blender_mcp.git");
+    // Found but silent when T3 started it to read its tools: agents get no Blender servers.
+    const silent = checked({
+      ...complete,
+      blenderMcp: { path: "/home/me/.local/bin/blender-mcp", official: true, answered: false },
+    });
+    expect(silent.ready).toBe(true);
+    expect(silent.checks.find((check) => check.item === "blenderMcp")?.status).toBe("failed");
+    expect(silent.commands.join("\n")).toContain("uv tool install");
     const noMcp = checked({ ...complete, blenderMcp: null });
     expect(noMcp.ready).toBe(true);
     expect(noMcp.checks.find((check) => check.item === "blenderMcp")?.status).toBe("missing");
@@ -269,6 +277,16 @@ describe("installPrompt", () => {
     expect(prompt).toContain("9876");
     // A provider without T3's secret card never gets a password through chat.
     expect(prompt).toContain("If you don't have `request_secret`, don't run sudo");
+  });
+
+  it("names an official Blender MCP that didn't answer as something to reinstall", () => {
+    const result = checked({
+      ...complete,
+      blenderMcp: { path: "/home/me/.local/bin/blender-mcp", official: true, answered: false },
+    });
+    expect(installPrompt(result, null)).toContain(
+      "the `blender-mcp` installed didn't answer when T3 Code started it",
+    );
   });
 
   it("names the distro only from os-release's checked ID and VERSION_ID", () => {

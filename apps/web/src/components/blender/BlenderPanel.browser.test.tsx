@@ -303,6 +303,85 @@ it("B6: a view-only pane swallows the middle and thumb buttons", async () => {
   ]);
 });
 
+/** One wheel notch over the middle of the pane, as Chromium reports it. */
+const wheelNotch = (
+  pane: { readonly viewport: HTMLElement; readonly inside: readonly [number, number] },
+  down = true,
+) => {
+  const event = new WheelEvent("wheel", {
+    bubbles: true,
+    cancelable: true,
+    clientX: pane.inside[0],
+    clientY: pane.inside[1],
+    deltaY: down ? 100 : -100,
+  });
+  Object.defineProperty(event, "wheelDeltaY", { value: down ? -120 : 120 });
+  pane.viewport.querySelector("canvas")!.dispatchEvent(event);
+  return event;
+};
+
+it("B15: a scroll over a view-only pane takes control and focus, and every notch zooms once granted", async () => {
+  using _app = startup();
+  const pane = await paneBesideComposer();
+  await using _screen = pane.screen;
+  await control({ canOperate: true, controller: "unclaimed" });
+  const notches = [wheelNotch(pane), wheelNotch(pane), wheelNotch(pane, false)];
+  expect(notches.map((event) => event.defaultPrevented)).toEqual([true, true, true]);
+  expect(stream.sent).toEqual([{ type: "takeControl", takeOver: false }]);
+  expect(document.activeElement).toBe(pane.viewport);
+  await control({ canOperate: true, controller: "you" });
+  // Where the pointer is, so the zoom goes there.
+  expect(stream.sent.slice(1)).toEqual([
+    { type: "pointer", x: expect.any(Number), y: expect.any(Number) },
+    { type: "scroll", axis: "vertical", source: "wheel", value: 15, steps: 1 },
+    { type: "scroll", axis: "vertical", source: "wheel", value: 15, steps: 1 },
+    { type: "scroll", axis: "vertical", source: "wheel", value: -15, steps: -1 },
+  ]);
+  // In control, a scroll reaches Blender once, as before.
+  expect(wheelNotch(pane).defaultPrevented).toBe(true);
+  expect(stream.sent.filter((message) => message.type === "scroll")).toHaveLength(4);
+  expect(document.activeElement).toBe(pane.viewport);
+});
+
+it("B15: a scroll takes nothing while another device is in control, the viewer can't operate, or no frame shows", async () => {
+  using _app = startup();
+  const pane = await paneBesideComposer();
+  await using _screen = pane.screen;
+  await control({ canOperate: true, controller: "another-viewer" });
+  expect(wheelNotch(pane).defaultPrevented).toBe(true);
+  await control({ canOperate: false, controller: "unclaimed" });
+  expect(wheelNotch(pane).defaultPrevented).toBe(true);
+  // Still connecting: the spinner shows and the canvas is hidden.
+  await act(() => stream.events?.onStatus("connecting"));
+  await control({ canOperate: true, controller: "unclaimed" });
+  expect(wheelNotch(pane).defaultPrevented).toBe(true);
+  expect(stream.sent).toEqual([]);
+  expect(document.activeElement).toBe(pane.composer);
+});
+
+it("B15: a scroll while a take over waits for its grant never reaches Blender", async () => {
+  using _app = startup();
+  const pane = await paneBesideComposer();
+  await using _screen = pane.screen;
+  await control({ canOperate: true, controller: "another-viewer" });
+  await pane.screen.getByText("Take over").click();
+  expect(wheelNotch(pane).defaultPrevented).toBe(true);
+  await control({ canOperate: true, controller: "you" });
+  expect(stream.sent).toEqual([{ type: "takeControl", takeOver: true }]);
+});
+
+it("B15: scrolls remembered for a take that never lands are dropped", async () => {
+  using _app = startup();
+  const pane = await paneBesideComposer();
+  await using _screen = pane.screen;
+  await control({ canOperate: true, controller: "unclaimed" });
+  wheelNotch(pane);
+  // Refused: someone else got there first.
+  await control({ canOperate: true, controller: "another-viewer" });
+  await control({ canOperate: true, controller: "you" });
+  expect(stream.sent.filter((message) => message.type === "scroll")).toEqual([]);
+});
+
 it("offers Take over while another device is in control, and says when control is lost", async () => {
   using _app = startup();
   await using screen = await render(
@@ -600,7 +679,11 @@ it("floats watch-only: no size for the display, no control, and the frame size f
     </div>,
   );
   await control({ canOperate: true, controller: "unclaimed" });
-  await screen.getByLabelText("Blender viewport").click();
+  const viewport = screen.getByLabelText("Blender viewport");
+  await viewport.click();
+  // The chat behind it still scrolls.
+  const scroll = wheelNotch({ viewport: viewport.element() as HTMLElement, inside: [0, 0] });
+  expect(scroll.defaultPrevented).toBe(false);
   expect(stream.sent).toEqual([]);
   expect(stream.sizes).toEqual([]);
   expect(stream.visible).toEqual([true]);
