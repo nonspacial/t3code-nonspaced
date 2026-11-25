@@ -5077,6 +5077,58 @@ describe("Master Blenders", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live(
+    "N8: a master blender_start only knows starts nothing, joins no other thread's master Blender, and settles into nothing",
+    () =>
+      Effect.gen(function* () {
+        const host = yield* masterHost();
+        const { service } = host;
+        yield* service.knowMaster({ threadId, relativePath: "cube.blend" });
+        // The Master side offers Open in T3 Code; no Blender started for it.
+        expect(yield* firstMaster(service, threadId)).toEqual({
+          status: "notOpen",
+          relativePath: "cube.blend",
+          desktop: null,
+          desktopDirty: false,
+        });
+        expect(host.launches()).toBe(0);
+        // Another thread's master Blender on the same file is not this thread's to keep.
+        yield* service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" });
+        yield* host.masterStatus(otherThreadId, "running");
+        expect((yield* firstMaster(service, threadId)).status).toBe("notOpen");
+        const stopped = yield* watchMaster(service, otherThreadId);
+        yield* service.releaseMaster(otherThreadId);
+        yield* stopped;
+        // Settled, it was only ever known: nothing starts, and nothing is kept.
+        yield* service.closeOnSettle({ threadId });
+        yield* service.releaseMaster(threadId);
+        expect(yield* firstMaster(service, threadId)).toEqual({ status: "none" });
+        expect(host.launches()).toBe(1);
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "N8: Open in T3 Code on a master only known chooses it and joins the running master Blender",
+    () =>
+      Effect.gen(function* () {
+        const host = yield* masterHost();
+        const { service } = host;
+        yield* service.knowMaster({ threadId, relativePath: "cube.blend" });
+        yield* service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" });
+        yield* host.masterStatus(otherThreadId, "running");
+        // The Master side's Open in T3 Code, as the preview button and the pane's card do.
+        yield* service.reopenMaster(threadId);
+        expect((yield* host.masterStatus(threadId, "running")).status).toBe("running");
+        expect(host.launches()).toBe(1);
+        // Chosen now, it keeps the master Blender open after the other thread leaves.
+        yield* service.releaseMaster(otherThreadId);
+        expect((yield* firstMaster(service, threadId)).status).toBe("running");
+        const stopped = yield* watchMaster(service, threadId);
+        yield* service.releaseMaster(threadId);
+        yield* stopped;
+      }).pipe(Effect.scoped),
+  );
+
   it.live("stays open with unsaved changes after the last thread leaves", () =>
     Effect.gen(function* () {
       const host = yield* masterHost({ dirty: true, unsaved: true });

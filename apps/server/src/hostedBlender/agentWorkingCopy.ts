@@ -226,6 +226,12 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
             )
       ).pipe(Effect.mapError((error) => new HostedBlenderToolError({ reason: error.message })));
     }
+    // The copy was made from it, so the pane's Master side can offer it; nothing opens.
+    if (!isCopy) {
+      yield* hostedBlender
+        .knowMaster({ threadId: input.threadId, relativePath: path.relative(realRoot, master) })
+        .pipe(Effect.ignore);
+    }
     // Answered only once Blender Lab's listener has come up on the thread's port.
     const listener = yield* hostedBlender.agentListener(input.threadId);
     if (listener?.state === "off") {

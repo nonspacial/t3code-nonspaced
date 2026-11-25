@@ -55,7 +55,7 @@ The file you asked the agent to change is the master. Once the agent's change is
 
 The agent replaces only the objects it changed, and stops to ask you if any of them changed in the master meanwhile, such as when another agent copied back first. Agents take turns: each marks the master while it copies back, so a second agent waits. Each copy back can be undone in that Blender, and is saved; a desktop Blender shows it straight away. The agent tells you what it copied back.
 
-Once a thread has a master, the pane's toolbar has a **Working copy** / **Master** switch, with a dot on each for whether its Blender is running. **Master** shows the master Blender, or, if none has the master open, offers **Open in T3 Code**. Quitting the master Blender from its menu quits it for every thread sharing it. Embedded scripts never run in a master Blender. On a phone, only the working copy shows for now.
+As soon as the agent starts its working copy, or the thread opens a master, the pane's toolbar has a **Working copy** / **Master** switch, with a dot on each for whether its Blender is running. **Master** shows the master Blender, or, if none has the master open, offers **Open in T3 Code**. Quitting the master Blender from its menu quits it for every thread sharing it. Embedded scripts never run in a master Blender. On a phone, only the working copy shows for now.
 
 ### Move into T3 Code
 

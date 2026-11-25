@@ -439,6 +439,12 @@ export class HostedBlender extends Context.Service<
     /** The thread's known master, opened again as `openMaster` would. */
     readonly reopenMaster: (threadId: ThreadId) => Effect.Effect<void, HostedBlenderError>;
     /**
+     * `blender_start` made the thread's working copy from `relativePath`, so that is its master,
+     * known but not chosen: nothing starts, no relay opens, and no master Blender counts it until
+     * an open chooses it. A master already chosen stays.
+     */
+    readonly knowMaster: (input: HostedBlenderOpenInput) => Effect.Effect<void, HostedBlenderError>;
+    /**
      * The thread stops using its master; the master Blender quits when no thread uses it. One
      * with unsaved changes stays open until someone quits it.
      */
@@ -676,6 +682,11 @@ const make = Effect.gen(function* () {
       desktopPath: string | null;
       /** The provider session whose agent copies back through it, while that stays current. */
       agentSession: string | null;
+      /**
+       * Opened by the person or an agent. Only known (its working copy was made from it), a
+       * master is never joined to, nor moved with, a master Blender another thread starts.
+       */
+      chosen: boolean;
     }
   >();
   // Masters whose last start failed, by real path, until they are opened again.
@@ -3195,7 +3206,9 @@ const make = Effect.gen(function* () {
           desktopDirty: false,
           desktopPath: null,
           agentSession: null,
+          chosen: true,
         };
+        known.chosen = true;
         if (options?.agentSession !== undefined) known.agentSession = options.agentSession;
         threadMasters.set(threadId, known);
         return yield* inMasterQueue(file.blendPath)(joinMaster(threadId, file, recover));
@@ -3290,7 +3303,10 @@ const make = Effect.gen(function* () {
     const instance = started.instance;
     instance.retryQuit = false;
     for (const [id, known] of threadMasters) {
-      if (known.blendPath !== file.blendPath || (id !== threadId && existing !== undefined)) {
+      if (
+        known.blendPath !== file.blendPath ||
+        (id !== threadId && (existing !== undefined || !known.chosen))
+      ) {
         continue;
       }
       known.desktop = null;
@@ -3427,6 +3443,33 @@ const make = Effect.gen(function* () {
       : Effect.succeed(known);
   };
 
+  const knowMaster: HostedBlender["Service"]["knowMaster"] = Effect.fn("HostedBlender.knowMaster")(
+    function* ({ threadId, relativePath }) {
+      yield* Effect.annotateCurrentSpan({ threadId });
+      yield* afterSalvage;
+      const file = yield* checkedBlend(threadId, relativePath);
+      yield* inThreadQueue(threadId)(
+        Effect.suspend(() => {
+          const previous = threadMasters.get(threadId);
+          // A master the person or an agent chose stays; switching is an open's.
+          if (previous?.blendPath === file.blendPath || previous?.chosen === true) {
+            return Effect.void;
+          }
+          threadMasters.set(threadId, {
+            blendPath: file.blendPath,
+            relativePath: file.relativePath,
+            desktop: null,
+            desktopDirty: false,
+            desktopPath: null,
+            agentSession: null,
+            chosen: false,
+          });
+          return publishNow();
+        }),
+      );
+    },
+  );
+
   const reopenMaster: HostedBlender["Service"]["reopenMaster"] = Effect.fn(
     "HostedBlender.reopenMaster",
   )(function* (threadId) {
@@ -3526,8 +3569,10 @@ const make = Effect.gen(function* () {
           // Published first, so a hosted open that fails leaves the pane offering to try again.
           yield* publishNow();
           // The threads that still chose this master go with it, the mover first if it did.
+          const mover = threadMasters.get(threadId);
+          if (mover?.blendPath === blendPath) mover.chosen = true;
           const movers = [...threadMasters]
-            .filter(([, other]) => other.blendPath === blendPath)
+            .filter(([, other]) => other.blendPath === blendPath && other.chosen)
             .map(([id]) => id)
             .toSorted((a) => (a === threadId ? -1 : 0));
           const first = movers[0];
@@ -3551,6 +3596,7 @@ const make = Effect.gen(function* () {
   return HostedBlender.of({
     openMaster,
     reopenMaster,
+    knowMaster,
     releaseMaster,
     moveIntoT3,
     masterState,

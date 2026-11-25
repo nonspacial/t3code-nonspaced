@@ -46,6 +46,8 @@ const layerFor = (input: {
   readonly mcpVersion?: string | null;
   readonly opened: Array<HostedBlenderOpenInput & { readonly agentWorkingCopy?: boolean }>;
   readonly openError?: HostedBlenderError;
+  /** The masters `blender_start` made known to the thread. */
+  readonly known?: Array<HostedBlenderOpenInput>;
 }) =>
   Layer.mergeAll(
     Layer.mock(HostedBlender.HostedBlender)({
@@ -57,6 +59,7 @@ const layerFor = (input: {
           : Effect.fail(input.openError),
       threadState: () => Stream.succeed(input.state ?? { status: "stopped" }),
       keptCopies: () => Effect.succeed([]),
+      knowMaster: (master) => Effect.sync(() => void input.known?.push(master)),
       agentListener: () =>
         Effect.succeed({
           state: input.listener ?? "ready",
@@ -85,8 +88,9 @@ describe("startAgentWorkingCopy", () => {
       const root = yield* tempWorkspace;
       const master = writeMaster(root, "models/hero.blend");
       const opened: Array<HostedBlenderOpenInput & { readonly agentWorkingCopy?: boolean }> = [];
+      const known: Array<HostedBlenderOpenInput> = [];
       const result = yield* startAgentWorkingCopy({ threadId, path: "models/hero.blend" }).pipe(
-        Effect.provide(layerFor({ root, opened })),
+        Effect.provide(layerFor({ root, opened, known })),
       );
       const copy = NodePath.join(root, "models", "hero.wip-3c4d5e6f.blend");
       assert.deepEqual(result, {
@@ -100,6 +104,8 @@ describe("startAgentWorkingCopy", () => {
       assert.deepEqual(opened, [
         { threadId, relativePath: "models/hero.wip-3c4d5e6f.blend", agentWorkingCopy: true },
       ]);
+      // N8: the copy's master is the thread's master from now on, so the pane can switch to it.
+      assert.deepEqual(known, [{ threadId, relativePath: "models/hero.blend" }]);
     }).pipe(Effect.scoped),
   );
 

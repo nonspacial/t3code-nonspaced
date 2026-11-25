@@ -9,7 +9,9 @@ adapters and the Blender process, and are easy to undo by accident.
 A working Blender belongs to one thread: it quits when that thread settles or is archived, when T3
 shuts down, or when the user or agent quits it. A master Blender is the one exception, shared by
 the threads that chose its master file and kept until the last of them leaves (and then only if
-it has nothing unsaved). Every other ending (T3 stopping, Hosted Blender switched off, a crash)
+it has nothing unsaved). `blender_start` only makes the thread's master known, so the pane can offer it: a
+known master is not a member of, moved with, or relayed to any master Blender until an open
+chooses it, so it never keeps one running or counts at settle. Every other ending (T3 stopping, Hosted Blender switched off, a crash)
 ends it like a working one, and its recovery copy belongs to the master, not a thread: one copy,
 under the master file's real path, that any thread whose master is that file reopens or discards.
 Only the person's own Quit without saving, which the quit request marks as a discard, ends a run
