@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
+import { HOSTED_STARTUP_GATE_SOURCE } from "./agentGuard.ts";
 import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
 
 const MCP = "bl_ext.user_default.mcp";
@@ -20,12 +21,17 @@ state = json.loads(os.environ["STUB_STATE"])
 class Prefs:
     def __init__(self): self.port = 9876; self.host = "0.0.0.0"; self.use_autostart = True
 class Addon:
-    def __init__(self): self.preferences = Prefs()
+    def __init__(self, module): self.module = module; self.preferences = Prefs()
+# Like Blender's collection: iterating gives Addon entries, each with its module name.
 class Addons(dict):
     def keys(self): return list(super().keys())
-addons = Addons({name: Addon() for name in state["enabled"]})
+    def __iter__(self): return iter(list(self.values()))
+    def remove(self, addon): self.pop(addon.module)
+addons = Addons({name: Addon(name) for name in state["enabled"]})
 context = types.SimpleNamespace(
-    preferences=types.SimpleNamespace(addons=addons, is_dirty=True),
+    preferences=types.SimpleNamespace(
+        addons=addons, is_dirty=True, edit=types.SimpleNamespace(undo_steps=state.get("undoSteps", 32))
+    ),
     window_manager=types.SimpleNamespace(windows=[]),
 )
 data = types.SimpleNamespace(filepath=state.get("filepath", "/work/hero.wip-1a2b3c4d.blend"), is_dirty=False)
@@ -74,6 +80,8 @@ blmcp = types.SimpleNamespace(server_start=_operator(_start), server_stop=_opera
 def _undo_push(message):
     import bpy, addon_utils
     addon_utils.log("undo_push", message)
+    if bpy.state.get("undoPushFails"):
+        return {"CANCELLED"}
     # As in Blender: data edits leave the file clean; an undo push marks it modified.
     bpy.data.is_dirty = True
     return {"FINISHED"}
@@ -99,17 +107,26 @@ def unregister():
 `,
   "bl_ext/user_default/mcp/deferred_tool.py":
     "pending = []\ndef has_pending(): return bool(pending)\n",
+  "t3_hosted_gate.py": HOSTED_STARTUP_GATE_SOURCE,
   // 1.0.3's accept and execute path, which poll() looks up by name on each call.
   "bl_ext/user_default/mcp/mcp_to_blender_server.py": String.raw`
 import json, socket, types
+from typing import NamedTuple
+from . import deferred_tool
 class _Client:
     def __init__(self, conn): self.conn = conn; self.buffer = bytearray()
+class _ExecResult(NamedTuple):
+    response: dict
+    check_fn: object = None
 _state = types.SimpleNamespace(sock=None, clients=[])
 def is_running(): return _state.sock is not None
 def _execute_code(code, strict_json):
     namespace = {"result": {}}
     exec(code, namespace)
-    return types.SimpleNamespace(response={"status": "ok", "result": namespace["result"]})
+    check = namespace.get("check_is_finished")
+    if callable(check):
+        return _ExecResult({}, check)
+    return _ExecResult({"status": "ok", "result": namespace["result"]})
 def _accept_clients():
     while True:
         try:
@@ -119,6 +136,13 @@ def _accept_clients():
         conn.setblocking(False)
         _state.clients.append(_Client(conn))
 def poll():
+    # Deferred work first, so a call made in this poll finishes in a later one, as in Blender.
+    for conn, check in deferred_tool.pending[:]:
+        done = check()
+        if done is not None:
+            deferred_tool.pending.remove((conn, check))
+            conn.sendall((json.dumps({"status": "ok", "result": done, **{k: v for k, v in done.items() if k == "t3UndoWarning"}}) + "\0").encode())
+            conn.close()
     _accept_clients()
     for client in _state.clients[:]:
         try:
@@ -129,12 +153,18 @@ def poll():
             continue
         request = json.loads(bytes(client.buffer[:client.buffer.index(b"\0")]))
         result = _execute_code(request["code"], request["strict_json"])
+        _state.clients.remove(client)
+        if result.check_fn is not None:
+            deferred_tool.pending.append((client.conn, result.check_fn))
+            continue
         client.conn.sendall((json.dumps(result.response) + "\0").encode())
         client.conn.close()
-        _state.clients.remove(client)
 def start(host, port):
     import addon_utils
     addon_utils.log("start", port)
+    if "_accept_clients" not in globals():
+        # 1.0.3's poll() would fail on every tick without it; a guard must never let this start.
+        addon_utils.log("start without _accept_clients")
     if is_running(): raise RuntimeError("Server is already running")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1" if host == "localhost" else host, port))
@@ -144,6 +174,9 @@ def start(host, port):
 def stop():
     if _state.sock is not None: _state.sock.close()
     _state.sock = None
+import os as _os
+if json.loads(_os.environ["STUB_STATE"]).get("brokenServer"):
+    del _accept_clients
 `,
   "addon_utils.py": String.raw`
 import importlib, json, os, types
@@ -160,7 +193,7 @@ def register(name):
 def enable(name, default_set=False):
     import bpy
     if default_set and name not in bpy.context.preferences.addons:
-        bpy.context.preferences.addons[name] = bpy.Addon()
+        bpy.context.preferences.addons[name] = bpy.Addon(name)
     log("enable", name, default_set)
     register(name)
 def disable(name, default_set=False):
@@ -223,6 +256,9 @@ if _scenario.get("connect", True):
         _steps.append(_report())
     if _scenario.get("fileBeforeGrant"):
         bpy.data.filepath = "/work/other.blend"
+    if _scenario.get("manifestBeforeGrant") is not None:
+        with open(os.path.join(os.environ["PYTHONPATH"], "bl_ext/user_default/mcp/blender_manifest.toml"), "w") as _m:
+            _m.write(_scenario["manifestBeforeGrant"])
     _t3.sendall("".join(json.dumps({"type": kind}) + "\n" for kind in _scenario.get("send", ["grantAgentListener"])).encode())
     _tick()
     _steps.append(_report())
@@ -245,12 +281,28 @@ if _then is not None:
     _steps.append(_report())
     _press_start()
     _steps.append(_report())
+_reloaded = None
 if _scenario.get("reload"):
-    # Reload Scripts runs Blender Lab's module afresh; then its own Start button.
+    # Blender 5.3's Reload Scripts: startup scripts (T3's gate) run again, then reset_all reloads
+    # each loaded add-on package and disables the ones no longer in the preferences.
     import importlib as _importlib
-    _server().stop()
-    _importlib.reload(_server())
-    bpy.ops.blmcp.server_start()
+    import t3_hosted_gate as _gate
+    _importlib.reload(_gate)
+    _top = sys.modules.get("${MCP}")
+    if _top is not None:
+        _importlib.reload(_top)
+        if "${MCP}" not in bpy.context.preferences.addons and "${MCP}" in _addons.registered:
+            _addons.disable("${MCP}")
+    _tick()
+    _steps.append(_report())
+if _scenario.get("unguardedListener"):
+    # Blender Lab's own functions back in place on a running listener.
+    _server()._accept_clients = lambda: None
+    _tick()
+    _steps.append(_report())
+if _scenario.get("startedOutsideGrant"):
+    _addons.enable("${MCP}", default_set=True)
+    _server().start("localhost", int(MCP_PORT))
     _tick()
     _steps.append(_report())
 _call = _scenario.get("call")
@@ -261,29 +313,36 @@ if _call is not None:
     _client.connect(("127.0.0.1", int(MCP_PORT)))
     _table = _call.get("table")
     if _table is not None:
-        # A /proc/net/tcp of T3's making: the kernel's format, with the uid the scenario asks.
+        # A /proc/net/tcp of the test's making, in the kernel's format: the client's row (its
+        # uid, state and inode as asked) and the row of Blender's own end.
         def _hex(address):
             raw = socket.inet_aton(address[0])
             if _table.get("mapped"):
                 raw = b"\0" * 10 + b"\xff\xff" + raw
             words = (_st.unpack("=I", raw[i:i + 4])[0] for i in range(0, len(raw), 4))
             return "".join("%08X" % word for word in words) + ":%04X" % address[1]
+        def _row(local, remote, state, uid, inode):
+            return "   0: %s %s %s 00000000:00000000 00:00000000 00000000 %5d        0 %d 1" % (
+                _hex(local), _hex(remote), state, uid, inode)
+        _peer = _client.getsockname()
+        _ours = ("127.0.0.1", int(MCP_PORT))
         _rows = ["  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode"]
-        if _table.get("row", True):
-            _rows.append("   0: %s %s 01 00000000:00000000 00:00000000 00000000 %5d        0 1 1" % (
-                _hex(_client.getsockname()),
-                _hex(("127.0.0.1", int(MCP_PORT))),
-                os.getuid() + _table.get("uidOffset", 0),
-            ))
+        for _ in range(_table.get("clientRows", 1)):
+            _rows.append(_row(_peer, _ours, _table.get("state", "01"),
+                              os.getuid() + _table.get("uidOffset", 0), _table.get("inode", 4242)))
+        if _table.get("ownRow", True):
+            _rows.append(_row(_ours, _peer, _table.get("ownState", "01"), os.getuid(), 4243))
         _fake = os.path.join(os.path.dirname(SOCKET_PATH), "tcp")
         with open(_fake, "w") as _out:
             _out.write("\n".join(_rows) + "\n")
         PROC_NET_TCP = (_fake,)
     _client.sendall((json.dumps({
         "type": "execute",
-        "code": "result = {'cube': 1}",
+        "code": _call.get("code", "result = {'cube': 1}"),
         "strict_json": _call.get("strictJson", False),
     }) + "\0").encode())
+    _server().poll()
+    _dirty_first = bpy.data.is_dirty
     _server().poll()
     _client.settimeout(5)
     try:
@@ -294,6 +353,7 @@ if _call is not None:
     _Guard.acting_until = 0.0
     _called = {
         "reply": json.loads(_reply.rstrip(b"\0")) if _reply else None,
+        "dirtyAfterFirstPoll": _dirty_first,
         "dirty": bpy.data.is_dirty,
         "acting": _acting,
         "actingAfter": _snapshot()["agentActing"],
@@ -339,18 +399,35 @@ const runAddon = (input: {
   readonly then?: "revoke" | "drop" | "otherFile" | "saveAs" | "revert";
   /** The installed extension's manifest version; 1.0.3 by default. */
   readonly mcpVersion?: string;
-  /** Reload Scripts, then the extension's own Start button, before any call. */
+  /** Its whole manifest, in place of one with `mcpVersion`. */
+  readonly manifest?: string;
+  /** The manifest the grant finds, written after launch. */
+  readonly manifestBeforeGrant?: string;
+  /** Blender 5.3's Reload Scripts, with T3's startup gate, after the grant. */
   readonly reload?: boolean;
+  /** Blender Lab's own functions back on its running listener. */
+  readonly unguardedListener?: boolean;
+  /** Blender Lab enabled and listening without T3's grant. */
+  readonly startedOutsideGrant?: boolean;
+  /** Blender Lab's server module lacks a function the guard wraps. */
+  readonly brokenServer?: boolean;
+  readonly undoSteps?: number;
+  readonly undoPushFails?: boolean;
   /**
    * An MCP call over real loopback TCP. With `table`, the add-on reads a /proc/net/tcp of
    * the test's making: the client's row, or none, owned by this account plus `uidOffset`.
    */
   readonly call?: {
     readonly strictJson?: boolean;
+    readonly code?: string;
     readonly table?: {
-      readonly row?: boolean;
+      readonly clientRows?: number;
       readonly uidOffset?: number;
       readonly mapped?: boolean;
+      readonly state?: string;
+      readonly inode?: number;
+      readonly ownRow?: boolean;
+      readonly ownState?: string;
     };
   };
 }) => {
@@ -362,7 +439,7 @@ const runAddon = (input: {
   }
   NodeFS.writeFileSync(
     NodePath.join(dir, "bl_ext/user_default/mcp/blender_manifest.toml"),
-    `id = "mcp"\nversion = "${input.mcpVersion ?? "1.0.3"}"\n`,
+    input.manifest ?? `id = "mcp"\nversion = "${input.mcpVersion ?? "1.0.3"}"\n`,
   );
   const addon = NodePath.join(dir, "t3_control.py");
   NodeFS.writeFileSync(addon, `${CONTROL_ADDON_SOURCE}\n${AFTER_REGISTER}`);
@@ -518,99 +595,182 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
 
   describe("its guard on Blender Lab's listener", () => {
     const ok = { status: "ok", result: { cube: 1 } };
+    const granted = { installed: [MCP], enabled: [MCP], listen: true } as const;
+    const withTable = (
+      table: NonNullable<NonNullable<Parameters<typeof runAddon>[0]["call"]>["table"]>,
+    ) => runAddon({ ...granted, call: { table } }).call.reply;
 
     it("takes a call from this account, found by its real loopback connection", () => {
-      const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, call: {} });
-      expect(result.call.reply).toEqual(ok);
+      expect(runAddon({ ...granted, call: {} }).call.reply).toEqual(ok);
     });
 
-    it("drops a connection another account owns", () => {
+    it("takes a call whose client row and Blender's own end are both live", () => {
+      expect(withTable({})).toEqual(ok);
+      expect(withTable({ mapped: true })).toEqual(ok);
+    });
+
+    it.each([
+      ["another account owns the client", { uidOffset: 1 }],
+      ["no row has the client", { clientRows: 0 }],
+      ["two rows claim the client", { clientRows: 2 }],
+      ["the client row is orphaned, with inode 0", { inode: 0 }],
+      ["the client row is closing (FIN_WAIT2)", { state: "05" }],
+      ["Blender's own end is gone by the second read", { ownRow: false }],
+      ["Blender's own end is no longer established", { ownState: "08" }],
+    ] as const)("drops a connection when %s", (_name, table) => {
+      expect(withTable(table)).toBeNull();
+    });
+
+    it("never starts a server module missing a function the guard wraps, and disables it", () => {
+      const result = runAddon({ ...granted, brokenServer: true });
+      expect(after(result)).toMatchObject({ listener: "failed", listening: null, enabled: false });
+      expect(bound(result)).toBe(false);
+      expect(result.inPrefs).toBe(false);
+    });
+
+    it("disables the extension when its listener can't start, and stays failed", () => {
+      const result = runAddon({ ...granted, portTaken: true });
+      expect(after(result)).toEqual({ listener: "failed", listening: null, enabled: false });
+      expect(result.inPrefs).toBe(false);
+    });
+
+    it("ends access on Blender 5.3's Reload Scripts, which T3's gate keeps Blender Lab out of", () => {
+      const result = runAddon({ ...granted, reload: true });
+      expect(after(result)).toEqual(off);
+      expect(result.inPrefs).toBe(false);
+    });
+
+    it("ends access when Blender Lab's own functions are back on a running listener", () => {
+      const result = runAddon({ ...granted, unguardedListener: true });
+      expect(after(result)).toEqual(off);
+    });
+
+    it("stops a Blender Lab listener started without T3's grant", () => {
       const result = runAddon({
         installed: [MCP],
         enabled: [MCP],
-        listen: true,
-        call: { table: { uidOffset: 1 } },
+        listen: false,
+        startedOutsideGrant: true,
       });
-      expect(result.call).toMatchObject({ reply: null, dirty: false, acting: false });
-    });
-
-    it("drops a connection whose owner can't be found", () => {
-      const result = runAddon({
-        installed: [MCP],
-        enabled: [MCP],
-        listen: true,
-        call: { table: { row: false } },
-      });
-      expect(result.call.reply).toBeNull();
-    });
-
-    it("reads an IPv4-mapped client from tcp6 rows", () => {
-      const result = runAddon({
-        installed: [MCP],
-        enabled: [MCP],
-        listen: true,
-        call: { table: { mapped: true } },
-      });
-      expect(result.call.reply).toEqual(ok);
-    });
-
-    it("ends access when Reload Scripts and its own Start button bring back an unguarded listener", () => {
-      const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, reload: true });
       expect(after(result)).toEqual(off);
       expect(result.inPrefs).toBe(false);
     });
 
     it("pushes an undo step after the agent's own code, which makes the file unsaved", () => {
-      const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, call: {} });
+      const result = runAddon({ ...granted, call: {} });
       expect(result.call.dirty).toBe(true);
       expect(result.calls).toContainEqual(["undo_push", "Agent edit"]);
     });
 
     it("pushes no undo step after Blender Lab's own read-only tool code", () => {
-      const result = runAddon({
-        installed: [MCP],
-        enabled: [MCP],
-        listen: true,
-        call: { strictJson: true },
-      });
+      const result = runAddon({ ...granted, call: { strictJson: true } });
       expect(result.call).toMatchObject({ reply: ok, dirty: false });
       expect(result.calls.some((call: ReadonlyArray<unknown>) => call[0] === "undo_push")).toBe(
         false,
       );
     });
 
-    it("says the agent is acting during a call, and not once it has passed", () => {
+    it("pushes a deferred call's undo step when its work finishes, not before", () => {
       const result = runAddon({
-        installed: [MCP],
-        enabled: [MCP],
-        listen: true,
-        call: { strictJson: true },
+        ...granted,
+        call: { code: "def check_is_finished():\n    return {'rendered': 1}\nresult = {}" },
       });
+      expect(result.call).toMatchObject({
+        reply: { status: "ok", result: { rendered: 1 } },
+        dirtyAfterFirstPoll: false,
+        dirty: true,
+      });
+    });
+
+    it("records nothing once the agent's code opened another file", () => {
+      const result = runAddon({
+        ...granted,
+        call: { code: "import bpy\nbpy.data.filepath = '/work/other.blend'\nresult = {}" },
+      });
+      expect(result.calls.some((call: ReadonlyArray<unknown>) => call[0] === "undo_push")).toBe(
+        false,
+      );
+    });
+
+    it.each([
+      ["undo is off", { undoSteps: 0 }, "Undo Steps is 0"],
+      ["Blender refuses the undo push", { undoPushFails: true }, "couldn't record an undo step"],
+    ] as const)("tells the agent when %s", (_name, options, says) => {
+      const result = runAddon({ ...granted, ...options, call: {} });
+      expect(result.call.reply.t3UndoWarning).toContain(says);
+    });
+
+    it("tells T3 the agent is acting before its code runs, and not once the call has passed", () => {
+      const result = runAddon({
+        ...granted,
+        call: {
+          strictJson: true,
+          code: "import __main__\nresult = {'told': __main__._State.sent['agentActing']}",
+        },
+      });
+      expect(result.call.reply.result).toEqual({ told: true });
       expect(result.call).toMatchObject({ acting: true, actingAfter: false });
     });
 
     it("never enables an untested version, and says which it is", () => {
-      const result = runAddon({
-        installed: [MCP],
-        enabled: [MCP],
-        listen: true,
-        mcpVersion: "1.1.0",
-      });
+      const result = runAddon({ ...granted, mcpVersion: "1.1.0" });
       expect(after(result)).toEqual({ listener: "untested", listening: null, enabled: false });
       expect(bound(result)).toBe(false);
       expect(result.mcpVersion).toBe("1.1.0");
     });
 
+    it.each([
+      ["only inside a table", '[build]\nversion = "1.0.3"\n'],
+      ["missing", 'id = "mcp"\n'],
+      ["not TOML", 'version = "1.0.3\n'],
+      ["not a string", "version = 103\n"],
+    ])("treats a manifest whose version is %s as untested", (_name, manifest) => {
+      expect(after(runAddon({ ...granted, manifest }))).toMatchObject({ listener: "untested" });
+    });
+
+    it("reads a top-level version written with single quotes", () => {
+      const result = runAddon({ ...granted, manifest: "  version = '1.0.3'\n" });
+      expect(after(result)).toMatchObject({ listener: "ready" });
+    });
+
+    it("checks the manifest the grant finds, not the one seen at launch", () => {
+      const result = runAddon({ ...granted, manifestBeforeGrant: 'version = "1.1.0"\n' });
+      expect(after(result)).toMatchObject({ listener: "untested" });
+    });
+
     it("ends an untested version's refusal like any other grant", () => {
-      const result = runAddon({
-        installed: [MCP],
-        enabled: [MCP],
-        listen: true,
-        mcpVersion: "0.9.0",
-        then: "revoke",
-      });
+      const result = runAddon({ ...granted, mcpVersion: "0.9.0", then: "revoke" });
       expect(result.steps.slice(-2)).toEqual([off, off]);
       expect(bound(result)).toBe(false);
+    });
+  });
+
+  describe("T3's startup gate in the hosted settings", () => {
+    it("drops Blender Lab from the settings before Blender enables add-ons, and nothing else", () => {
+      const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-gate-"));
+      dirs.push(dir);
+      NodeFS.mkdirSync(NodePath.join(dir, "bpy"));
+      NodeFS.writeFileSync(
+        NodePath.join(dir, "bpy/__init__.py"),
+        String.raw`
+import types
+class Addons(list):
+    def remove(self, addon): list.remove(self, addon)
+context = types.SimpleNamespace(preferences=types.SimpleNamespace(addons=Addons(
+    types.SimpleNamespace(module=name)
+    for name in ["bl_ext.lab_blender_org.mcp", "bl_ext.user_default.mcp", "node_wrangler", "bl_ext.x.mcp_tools"]
+)))
+`,
+      );
+      NodeFS.writeFileSync(
+        NodePath.join(dir, "gate.py"),
+        `${HOSTED_STARTUP_GATE_SOURCE}\nimport json\nprint(json.dumps([a.module for a in bpy.context.preferences.addons]))\n`,
+      );
+      const out = NodeChildProcess.execFileSync("python3", [NodePath.join(dir, "gate.py")], {
+        env: { ...process.env, PYTHONPATH: dir },
+        encoding: "utf8",
+      });
+      expect(JSON.parse(out)).toEqual(["node_wrangler", "bl_ext.x.mcp_tools"]);
     });
   });
 });

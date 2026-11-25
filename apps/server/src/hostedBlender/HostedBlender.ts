@@ -51,6 +51,7 @@ import {
   newestBlenderConfigVersion,
 } from "./BlenderLaunch.ts";
 import { SessionControl } from "../preview/SessionControl.ts";
+import { HOSTED_STARTUP_GATE_SOURCE } from "./agentGuard.ts";
 import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
 import { type ControlConnection, requestSave, type SaveReply } from "./ControlSave.ts";
 import { type AgentListenerState, awaitAgentListener } from "./agentListenerWait.ts";
@@ -640,6 +641,10 @@ const make = Effect.gen(function* () {
     instance.agentAccessEnded = reason;
     yield* setAgentListener(instance, "off");
     if (instance.control) yield* instance.control.write(STOP_AGENT_LISTENER);
+    if (instance.agentActing) {
+      instance.agentActing = false;
+      yield* publishNow();
+    }
   });
 
   const handleControlLine = Effect.fnUntraced(function* (instance: Instance, line: string) {
@@ -672,7 +677,8 @@ const make = Effect.gen(function* () {
             yield* instance.control.write(GRANT_AGENT_LISTENER);
           }
         }
-        const agentActing = message.value.agentActing === true;
+        // A report queued before T3 revoked access is stale: nothing acts after that.
+        const agentActing = message.value.agentActing === true && !instance.agentListenerRevoked;
         if (instance.dirty === message.value.dirty && instance.agentActing === agentActing) return;
         instance.dirty = message.value.dirty;
         instance.agentActing = agentActing;
@@ -774,24 +780,65 @@ const make = Effect.gen(function* () {
       }
     });
 
+  // Updating Blender Lab in the user's own Blender reaches hosted Blenders at their next start.
+  const refreshBlenderLab = Effect.fnUntraced(function* (from: string, to: string) {
+    const extensions = path.join(from, "extensions");
+    const repos = yield* fileSystem.readDirectory(extensions).pipe(Effect.orElseSucceed(() => []));
+    for (const repo of repos) {
+      const installed = path.join(extensions, repo, "mcp");
+      const info = yield* fileSystem.lstat(installed).pipe(Effect.option);
+      if (Option.isNone(info) || info.value.type !== "Directory") continue;
+      const manifest = (dir: string) =>
+        fileSystem.readFileString(path.join(dir, "blender_manifest.toml")).pipe(Effect.option);
+      const wanted = yield* manifest(installed);
+      if (Option.isNone(wanted)) continue;
+      const hosted = path.join(to, "extensions", repo, "mcp");
+      const current = yield* manifest(hosted);
+      if (Option.isSome(current) && current.value === wanted.value) continue;
+      const partial = `${hosted}.partial`;
+      yield* fileSystem.remove(partial, { recursive: true, force: true });
+      yield* copyWithoutLinks(installed, partial);
+      yield* fileSystem.remove(hosted, { recursive: true, force: true });
+      yield* fileSystem.rename(partial, hosted);
+    }
+  });
+
+  // Runs before Blender enables add-ons, so Blender Lab never registers from these settings.
+  const writeStartupGate = Effect.fnUntraced(function* (userResources: string) {
+    const startup = path.join(userResources, "scripts", "startup");
+    yield* fileSystem.makeDirectory(startup, { recursive: true });
+    const gate = path.join(startup, "t3_hosted_gate.py");
+    yield* fileSystem.writeFileString(`${gate}.partial`, HOSTED_STARTUP_GATE_SOURCE);
+    yield* fileSystem.rename(`${gate}.partial`, gate);
+  });
+
   /** T3's own copy of the user's newest Blender settings, made on first use. */
   const ensureUserResources = userResourcesLock.withPermits(1)(
     Effect.gen(function* () {
       const target = path.join(rootDir, "user-resources");
-      if (yield* fileSystem.exists(target)) return target;
       const configHome = environment.XDG_CONFIG_HOME || path.join(homeDirectory, ".config");
       const source = path.join(configHome, "blender");
       const version = newestBlenderConfigVersion(
         yield* fileSystem.readDirectory(source).pipe(Effect.orElseSucceed(() => [])),
       );
-      const partial = `${target}.partial`;
-      yield* fileSystem.remove(partial, { recursive: true, force: true });
-      if (version === undefined) {
-        yield* fileSystem.makeDirectory(partial, { recursive: true });
-      } else {
-        yield* copyWithoutLinks(path.join(source, version), partial);
+      if (!(yield* fileSystem.exists(target))) {
+        const partial = `${target}.partial`;
+        yield* fileSystem.remove(partial, { recursive: true, force: true });
+        if (version === undefined) {
+          yield* fileSystem.makeDirectory(partial, { recursive: true });
+        } else {
+          yield* copyWithoutLinks(path.join(source, version), partial);
+        }
+        yield* fileSystem.rename(partial, target);
       }
-      yield* fileSystem.rename(partial, target);
+      if (version !== undefined) {
+        yield* refreshBlenderLab(path.join(source, version), target).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("hosted Blender could not refresh Blender Lab's MCP", { cause }),
+          ),
+        );
+      }
+      yield* writeStartupGate(target);
       return target;
     }),
   );

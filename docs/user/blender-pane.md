@@ -42,7 +42,7 @@ While the agent is running something in Blender, the composer says **Working in 
 
 Each piece of code the agent runs in Blender is one undo step. Its edits count as unsaved changes, so Blender autosaves them, asks before quitting, and **Ctrl+Z** in the pane undoes them one call at a time.
 
-Only programs running under your own account on the server can reach the agent's connection to Blender; T3 Code drops any other. If your Blender's MCP extension is a version T3 Code hasn't tested, the agent gets no access and tells you whether to update the extension or T3 Code.
+Only programs running under your own account on the server can reach the agent's connection to Blender; T3 Code drops any other. If your Blender's MCP extension is a version T3 Code hasn't tested, the agent gets no access and tells you whether to update the extension or T3 Code. Update the extension in your own Blender: T3 Code copies it into hosted Blenders the next time one starts. If undo is off in your Blender (Undo Steps set to 0), the agent's edits can't be undone, and the agent is told so.
 
 Only the working copy the agent started takes its calls. A file you opened from the pane, even the working copy, doesn't; the agent quits it, saving first, and starts it again. Switching **Allow agents to start hosted Blenders** off, or the thread's agent session ending, closes the agent's connection to Blender at once, and so does opening another file in that Blender or saving the copy under another name (reverting it doesn't); Blender keeps running, and you can still watch and use it in the pane. The agent gets it back by quitting and starting the working copy again. If T3 loses its connection to that Blender, save your work in the pane before the agent restarts it.
 
@@ -56,7 +56,7 @@ Blender's display is sized to the pane of whoever is in control, or else to the 
 
 ### While the agent works
 
-If **Auto-show floating preview** is on in Settings → Browser, a hosted Blender pops up floating over the chat when the agent starts working in it during a turn, the way a device the agent opens does. The floating player only watches: choose **Open in right panel** to take control. Close it and it stays closed until the next turn. It doesn't appear if the Blender pane is already the panel's open tab or something else is already floating, and it closes when Blender quits. With the setting off, the pane opens only when you or a link opens it.
+If **Auto-show floating preview** is on in Settings → Browser, a hosted Blender pops up floating over the chat when a turn starts in its thread, the way a device the agent opens does. The floating player only watches: choose **Open in right panel** to take control. Close it and it stays closed until the next turn. It doesn't appear if the Blender pane is already the panel's open tab or something else is already floating, and it closes when Blender quits. With the setting off, the pane opens only when you or a link opens it.
 
 ## Taking control
 

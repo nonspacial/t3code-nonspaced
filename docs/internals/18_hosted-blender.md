@@ -27,17 +27,27 @@ own `blender` entry and their desktop Blender are never touched.
 ## The OS-account check, and why versions are pinned
 
 Blender Lab's listener is plain loopback TCP with no authentication, so any process on the machine
-could run Python in the user's Blender. Loopback TCP has no peer credentials either. The control add-on
-therefore replaces two internal functions of Blender Lab's server module
-([`agentGuard.ts`](../../apps/server/src/hostedBlender/agentGuard.ts)): accepting a connection
-looks up the client's end in `/proc/net/tcp` and `/proc/net/tcp6` and drops it unless its owner is
-Blender's own uid (a missing row also drops it), and running the agent's own code is followed by an
-undo push, which is what marks the file unsaved; Blender's data API alone leaves it clean. The same
-wrapper reports when the agent is acting, which drives the pane's badge and the floating player.
+could run Python in the user's Blender, and loopback TCP carries no peer credentials. The owner of a
+connection's client end is read from `/proc/net/tcp` and `/proc/net/tcp6`, by two implementations
+that must keep the same rules: the control add-on's, inside Blender
+([`agentGuard.ts`](../../apps/server/src/hostedBlender/agentGuard.ts)), and the server's, for
+connections T3 relays itself ([`loopbackPeer.ts`](../../apps/server/src/hostedBlender/loopbackPeer.ts)).
+A connection passes only when exactly one row is its client end, that row is established with a
+nonzero inode, and its uid is ours, and a second read still shows our own end established. Anything
+in doubt is refused: an orphaned or closing socket lists uid 0 and inode 0, which would otherwise
+read as root's.
 
-Because this reaches into Blender Lab's internals, the add-on reads the installed extension's
-manifest version and enables nothing unless it is in `TESTED_BLENDER_LAB_MCP_VERSIONS`. When
-Blender Lab releases a version, check that `_accept_clients`, `_Client`, `_state.clients` and
-`_execute_code(code, strict_json)` still mean what the guard assumes, and only then add it to the list.
-Reload Scripts runs the module again, stopped and without the guard, so the add-on ends access on
-its next tick.
+Blender Lab never registers from the hosted settings: T3 writes a startup script into its settings
+copy, and Blender runs startup scripts before it enables add-ons, at launch and on Reload Scripts.
+Only the control add-on's grant enables it, after replacing two functions its `poll()` looks up by
+name: accepting a connection applies the check above, and running the agent's own code is followed
+by an undo push, which is what marks the file unsaved (Blender's data API alone leaves it clean), and
+reports when the agent is acting. Any listener without a live grant and that guard in place is
+stopped, so Reload Scripts ends access.
+
+Because the guard reaches into Blender Lab's internals, the add-on reads the extension's manifest
+(a top-level string `version`, parsed as TOML) when it grants, and enables nothing unless the
+version is in `TESTED_BLENDER_LAB_MCP_VERSIONS`. When Blender Lab releases a version, check that
+`_accept_clients`, `_Client`, `_state` and `_execute_code(code, strict_json)` still mean what the
+guard assumes, and only then add it. T3's settings copy is made once, so the user's own copy of the
+extension is copied in again whenever its manifest changes.

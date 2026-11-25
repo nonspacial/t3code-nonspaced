@@ -39,6 +39,7 @@ class _State:
     authorized_file = None
     mcp_name = None
     mcp_version = None
+    mcp_file = None
     server = None
     client = None
     buffer = b""
@@ -367,12 +368,16 @@ def _tick():
             if command.get("type") == "hits":
                 break
         _check_authorized_file()
-        _check_guard()
-        snapshot = _snapshot()
-        if snapshot != _State.sent:
-            _State.sent = snapshot
-            _send(snapshot)
+    _check_guard()
+    _publish_state()
     return TICK
+
+
+def _publish_state():
+    snapshot = _snapshot()
+    if snapshot != _State.sent:
+        _State.sent = snapshot
+        _send(snapshot)
 
 
 ${AGENT_GUARD_SOURCE}
@@ -391,10 +396,11 @@ def _setup_mcp_addon():
     preferences = bpy.context.preferences
     for name in [name for name in preferences.addons.keys() if _is_mcp_addon(name)]:
         addon_utils.disable(name, default_set=True)
+    installed = [module for module in addon_utils.modules() if _is_mcp_addon(module.__name__)]
+    if installed:
+        _State.mcp_name = installed[0].__name__
+        _State.mcp_file = getattr(installed[0], "__file__", None)
     if MCP_LISTEN:
-        installed = [module for module in addon_utils.modules() if _is_mcp_addon(module.__name__)]
-        _State.mcp_name = installed[0].__name__ if installed else None
-        _State.mcp_version = _mcp_version(getattr(installed[0], "__file__", None)) if installed else None
         _State.authorized_file = os.path.realpath(bpy.data.filepath) if bpy.data.filepath else None
     try:
         preferences.is_dirty = False
@@ -411,6 +417,8 @@ def _grant_agent_listener():
     _check_authorized_file()
     if _State.grant != "granted":
         return
+    # Read now, from the manifest beside the module that will be enabled.
+    _State.mcp_version = _mcp_version(_State.mcp_file) if _State.mcp_name else None
     if _State.mcp_name is not None and _State.mcp_version not in TESTED_MCP_VERSIONS:
         # Never enabled: the guard may not hold on a version T3 hasn't tested.
         _State.agent_listener = "untested"
@@ -465,26 +473,34 @@ def _start_agent_listener():
     except Exception as error:  # noqa: BLE001 - a listener that can't start is reported, never a crash
         print("T3 control add-on: Blender Lab MCP did not start:", error, file=sys.stderr)
         ready = False
-    if not ready and server is not None and server.is_running():
+    if not ready:
         _stop_agent_listener()
+        _disable_mcp()
     _State.agent_listener = "ready" if ready else "failed"
     return None
 
 
+def _on_authorized_file():
+    current = os.path.realpath(bpy.data.filepath) if bpy.data.filepath else None
+    return current is not None and current == _State.authorized_file
+
+
 def _check_authorized_file():
     # Another file opened, or the copy saved under another name, is not what T3 authorized.
-    if _State.grant != "granted":
-        return
-    current = os.path.realpath(bpy.data.filepath) if bpy.data.filepath else None
-    if current is None or current != _State.authorized_file:
+    if _State.grant == "granted" and not _on_authorized_file():
         _end_grant()
 
 
 def _check_guard():
-    # Reload Scripts runs Blender Lab's module again, stopped and without the guard: access ends.
+    # Blender Lab listens only for a live grant, guarded. Reload Scripts (which runs its module
+    # again, unguarded) ends access; a listener started any other way is stopped.
     server = _mcp_server()
-    if _State.agent_listener == "ready" and not (_is_guarded(server) and server.is_running()):
+    running = server is not None and server.is_running()
+    if _State.agent_listener == "ready" and not (running and _is_guarded(server)):
         _end_grant()
+    elif running and not (_State.grant == "granted" and _State.agent_listener == "ready"):
+        _stop_agent_listener()
+        _disable_mcp()
 
 
 def _end_grant():
@@ -492,6 +508,10 @@ def _end_grant():
         return
     _State.grant = "ended"
     _stop_agent_listener()
+    _disable_mcp()
+
+
+def _disable_mcp():
     # Disabled and dropped from these settings, so neither its own Start button nor Reload
     # Scripts can reopen the port.
     if _State.mcp_name is not None:

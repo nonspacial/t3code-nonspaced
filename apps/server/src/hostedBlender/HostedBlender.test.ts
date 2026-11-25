@@ -25,6 +25,7 @@ import * as ServerConfig from "../config.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import { HOSTED_STARTUP_GATE_SOURCE } from "./agentGuard.ts";
 import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
 import * as HostedBlender from "./HostedBlender.ts";
 import * as HostedBlenderAgents from "./HostedBlenderAgents.ts";
@@ -1383,7 +1384,9 @@ print("T3-RESULT", json.dumps(results))`,
       expect(
         NodeFS.readFileSync(NodePath.join(userResources, "config", "nested", "note.txt"), "utf8"),
       ).toBe("kept");
-      expect(NodeFS.existsSync(NodePath.join(userResources, "scripts"))).toBe(false);
+      // The link to desktop scripts isn't followed; T3's own startup gate is all that's there.
+      expect(NodeFS.readdirSync(NodePath.join(userResources, "scripts"))).toEqual(["startup"]);
+      expect(NodeFS.readdirSync(NodePath.join(dir, "desktop-scripts"))).toEqual([]);
       // The viewport window opens after the stand-in's timer would have fired.
       expect(
         NodeFS.existsSync(
@@ -1568,13 +1571,18 @@ def control():
             continue
         if kind == "grantAgentListener" and listener[0] == "starting":
             listener[0] = "ready"
-            state(blend, agentActing=after == "acting", mcpVersion="1.0.3")
+            state(blend, agentActing=after in ("acting", "staleActing"), mcpVersion="1.0.3")
             if after == "otherFile":
                 # Someone opens another file through Blender's own UI.
                 state("/elsewhere/other.blend")
         if kind == "stopAgentListener" and after == "acting":
             listener[0] = "off"
             state(blend, agentActing=False, mcpVersion="1.0.3")
+            continue
+        if kind == "stopAgentListener" and after == "staleActing":
+            # A report Blender queued before it heard the stop, with a change T3 does publish.
+            connection.sendall((json.dumps({"type": "state", "filepath": blend, "dirty": True,
+                                            "agentListener": "ready", "agentActing": True}) + "\n").encode())
             continue
         if kind == "stopAgentListener":
             # Gone once it has heard the stop, so a test can wait for the stopped state.
@@ -1589,9 +1597,11 @@ describe("Agent access at launch", () => {
   const launch = Effect.fn(function* (
     host: Pick<Host, "runtimeMode" | "interactionMode" | "agentPort" | "revocations">,
     options: { readonly agentWorkingCopy?: boolean } = { agentWorkingCopy: true },
-    after?: "otherFile" | "otherFileFirst" | "untested" | "acting",
+    after?: "otherFile" | "otherFileFirst" | "untested" | "acting" | "staleActing",
+    prepare?: (dir: string) => void,
   ) {
     const dir = yield* tempDir("agent-access");
+    prepare?.(dir);
     const bin = fakeTools(dir);
     NodeFS.writeFileSync(NodePath.join(bin, "helper"), `#!${python}\n${ARGS_HELPER}`, {
       mode: 0o755,
@@ -1728,6 +1738,74 @@ describe("Agent access at launch", () => {
       expect(Option.getOrThrow(yield* acting(false))).not.toHaveProperty("agentActing");
       yield* service.quit({ threadId, save: false });
     }).pipe(Effect.scoped),
+  );
+
+  it.live("never takes the agent as acting from a report Blender sent before the revoke", () =>
+    Effect.gen(function* () {
+      const revoked = yield* Queue.unbounded<ThreadId | null>();
+      const { service } = yield* launch(
+        { agentPort: 41234, revocations: Stream.fromQueue(revoked) },
+        undefined,
+        "staleActing",
+      );
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "running" && state.agentActing === true),
+        Stream.runHead,
+      );
+      yield* Queue.offer(revoked, threadId);
+      const dirty = yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "running" && state.dirty),
+        Stream.runHead,
+      );
+      expect(Option.getOrThrow(dirty)).not.toHaveProperty("agentActing");
+      yield* service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "gates Blender Lab out of the hosted settings and refreshes it when the user's changed",
+    () =>
+      Effect.gen(function* () {
+        let hosted = "";
+        const { service } = yield* launch({}, {}, undefined, (dir) => {
+          const mine = NodePath.join(
+            dir,
+            ".config",
+            "blender",
+            "5.3",
+            "extensions",
+            "lab_blender_org",
+            "mcp",
+          );
+          NodeFS.mkdirSync(mine, { recursive: true });
+          NodeFS.writeFileSync(NodePath.join(mine, "blender_manifest.toml"), 'version = "1.0.4"\n');
+          NodeFS.writeFileSync(NodePath.join(mine, "__init__.py"), "# 1.0.4\n");
+          // T3's copy from before the user updated, with a setting of its own to keep.
+          const resources = NodePath.join(dir, "userdata", "hosted-blender", "user-resources");
+          hosted = NodePath.join(resources, "extensions", "lab_blender_org", "mcp");
+          NodeFS.mkdirSync(hosted, { recursive: true });
+          NodeFS.writeFileSync(
+            NodePath.join(hosted, "blender_manifest.toml"),
+            'version = "1.0.3"\n',
+          );
+          NodeFS.writeFileSync(NodePath.join(hosted, "stale.py"), "");
+          NodeFS.mkdirSync(NodePath.join(resources, "config"));
+          NodeFS.writeFileSync(NodePath.join(resources, "config", "kept.txt"), "kept");
+        });
+        expect(NodeFS.readFileSync(NodePath.join(hosted, "__init__.py"), "utf8")).toBe("# 1.0.4\n");
+        expect(NodeFS.existsSync(NodePath.join(hosted, "stale.py"))).toBe(false);
+        const resources = NodePath.dirname(NodePath.dirname(NodePath.dirname(hosted)));
+        expect(NodeFS.readFileSync(NodePath.join(resources, "config", "kept.txt"), "utf8")).toBe(
+          "kept",
+        );
+        expect(
+          NodeFS.readFileSync(
+            NodePath.join(resources, "scripts", "startup", "t3_hosted_gate.py"),
+            "utf8",
+          ),
+        ).toBe(HOSTED_STARTUP_GATE_SOURCE);
+        yield* service.quit({ threadId, save: false });
+      }).pipe(Effect.scoped),
   );
 
   it("waits for the control connection as long as Blender may take to start", () => {
