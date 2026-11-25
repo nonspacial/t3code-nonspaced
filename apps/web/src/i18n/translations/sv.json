@@ -3291,6 +3291,61 @@
   "984c25ffcae69300": "Lägg till backend",
   "08570ee0982df89d": "Parkopplar...",
   "3bbae7c96b6cbfc3": "Öppna app",
+  "473079352585294d": "Vilken Blender som visas",
+  "72ec28b225ed9811": "Det gick inte att öppna huvudfilen",
+  "70da4581cf87971c": "Det gick inte att flytta till T3 Code",
+  "d5da364f3ffb7fa7": "Arbetskopia",
+  "d3b2dad809961953": "Huvudfil",
+  "8fc9ef73a784da09": "En Blender på skrivbordet som T3 Code inte kunde kontrollera kan också ha den här filen öppen. Spara och stäng den där så att de inte skriver över varandra.",
+  "ab03a468cc62daf1": "Flytta till T3 Code",
+  "77b72b3b7ee97069": "Öppna i T3 Code",
+  "cb4451ab067ff47d": "Blender startade inte",
+  "731b80ac194beb4a": "Öppen i din Blender på skrivbordet",
+  "ca40a1f4300b4838": "Huvudfilen är inte öppen i T3 Code",
+  "10a2ab0021554b0a": [
+    "Blender kunde inte öppna ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " på den dolda skärmen. Kontrollera att Blender kan öppna den och öppna den sedan igen."
+  ],
+  "f5db5877ab70bfc8": [
+    "Flytta till T3 Code sparar ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " i din Blender på skrivbordet, med osparade ändringar, avslutar den Blendern och öppnar filen här. Ångrahistoriken går förlorad."
+  ],
+  "6484265e8c18d3dd": [
+    "Flytta till T3 Code sparar ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " i din Blender på skrivbordet, avslutar den Blendern och öppnar filen här. Ångrahistoriken går förlorad."
+  ],
+  "d77c7db5a642f111": [
+    "En Blender körs på skrivbordet, men T3 Code når inte dess MCP-tillägg och kan inte se om ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " är öppen där. Spara och stäng filen där innan du öppnar den här."
+  ],
+  "a0056043b004c957": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " är inte öppen i en huvud-Blender. Där kopierar agenter in sina beprövade ändringar."
+  ],
   "e69c6af74880ba75": "Engelska (USA)",
   "675e421e80618158": "Engelska (Storbritannien)",
   "27cface4ce8ec314": "Tyska",
@@ -3320,7 +3375,6 @@
   "b94f5fc6d71bc852": "Konfiguration krävs",
   "7050870331ac8b9a": "Ingen Hosted Blender körs",
   "fb2c65328a8a2e17": "Öppna en .blend-fil i filförhandsvisningen och välj Öppna i Hosted Blender.",
-  "cb4451ab067ff47d": "Blender startade inte",
   "3f25b97ec987231e": "Blender kunde inte öppna filen på den dolda skärmen. Kontrollera att Blender kan öppna den och att GStreamer har en H.264-kodare, och öppna den sedan i Hosted Blender igen.",
   "7dfc4caecd0ca4da": "Öppna Blender-inställningar",
   "22e7ff1b5896ba7b": "Hosted Blender kräver en Linux-server. Du kan fortfarande öppna 3D-filer i filförhandsvisningen.",

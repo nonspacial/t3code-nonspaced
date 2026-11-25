@@ -240,6 +240,15 @@ const McpToolUseExpect = Schema.Struct({
   /** First calls of these tools happen in this order. */
   order: Schema.optional(Schema.Array(Schema.String)),
   /**
+   * Regexes on the code the agent sends Blender Lab's `execute_blender_code`, in this order: each
+   * first matches after the one before it, later in the same request or in a later one.
+   */
+  codeOrder: Schema.optional(Schema.Array(Schema.String)),
+  /** Regexes every `execute_blender_code` request must match, as a check repeated in each. */
+  codeEvery: Schema.optional(Schema.Array(Schema.String)),
+  /** In each request that matches `mutation`, `guard` must match first, before the change. */
+  codeGuard: Schema.optional(Schema.Struct({ guard: Schema.String, mutation: Schema.String })),
+  /**
    * One `args`-style value per new top-level thread the agent asks for, by `t3_thread_launch` or a
    * `create_threads` entry. Each matches a different thread's request; no other thread is asked for.
    */
@@ -468,6 +477,17 @@ const toolResult = (id: string, content: unknown): Block => ({
 });
 const texts = (content: typeof Content.Type) =>
   typeof content === "string" ? [content] : content.flatMap((block) => block.text ?? []);
+/**
+ * Blender Lab's code tool on the Blender entries a hosted Blender session has, which T3 doesn't
+ * own. Listed for Claude cases with hosted Blender on, answered from the case's mocks.
+ */
+const BLENDER_CODE_TOOLS: ReadonlyArray<ApiTool> = ["blender-master", "blender"].map((server) => ({
+  name: `mcp__${server}__execute_blender_code`,
+  description: "Run Python in Blender. Put the answer in a `result` dict.",
+  input_schema: { type: "object", properties: { code: { type: "string" } }, required: ["code"] },
+}));
+const BLENDER_CODE_TOOL_NAMES = new Set(BLENDER_CODE_TOOLS.map((tool) => tool.name));
+
 const isT3Name = (name: string) => name.startsWith(T3_PREFIX) || name.startsWith("mcp__t3_code__");
 const hasTool = (tools: ReadonlyArray<ApiTool>, name: string) =>
   tools.some((tool) => tool.name === name);
@@ -762,9 +782,11 @@ export const buildBase = (
     throw new Error(`The template needs one ${RUNTIME_MARKER} block and a deferred tool list.`);
   }
   const nativeDeferred = deferredList.split("\n").filter((name) => name && !isT3Name(name));
+  const blenderCode = options.hostedBlender === true ? BLENDER_CODE_TOOLS : [];
   const names = [
     ...nativeDeferred,
     ...t3.filter((tool) => !alwaysLoaded.has(tool.name)).map((tool) => tool.name),
+    ...blenderCode.map((tool) => tool.name),
   ]
     .toSorted()
     .join("\n");
@@ -826,7 +848,11 @@ export const buildBase = (
     ],
     /** Tools ToolSearch loads: T3 tools from source, and native tools the template only names. */
     t3,
-    deferred: [...t3, ...nativeDeferred.map((name) => ({ name, ...nativeSchema(name) }))],
+    deferred: [
+      ...t3,
+      ...blenderCode,
+      ...nativeDeferred.map((name) => ({ name, ...nativeSchema(name) })),
+    ],
   };
 };
 
@@ -2278,6 +2304,10 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
     if (found.length === 0) return toolResult(call.id, "No matching deferred tools found");
     return loadTools(tools, call.id, found);
   }
+  if (BLENDER_CODE_TOOL_NAMES.has(call.name)) {
+    const mock = nextMock(sample, call.name, testCase.setup.mocks?.[call.name]);
+    return toolResult(call.id, mock ?? { status: "ok", result: {} });
+  }
   // T3 refuses a page call without exactly one source before any mocked result.
   const sources = [input.html, input.path].filter(
     (source) => source !== undefined && source !== null,
@@ -2614,6 +2644,44 @@ export const gradeSample = (
     const firsts = expect.order.map((tool) => calls.findIndex((call) => call.tool === tool));
     const inOrder = firsts.every((at, i) => at > (firsts[i - 1] ?? -1));
     add(`order ${expect.order.join(" > ")}`, inOrder);
+  }
+  const codes = calls
+    .filter((call) => call.tool.endsWith("__execute_blender_code"))
+    .map((call) => (isRecord(call.input) ? valueText(call.input.code) : ""));
+  if (expect.codeOrder !== undefined) {
+    // Where each pattern first matches, as [request, offset], after the previous pattern's match.
+    let after: readonly [number, number] = [0, -1];
+    let inOrder = true;
+    for (const pattern of expect.codeOrder) {
+      const at = codes.reduce<readonly [number, number] | undefined>((found, code, request) => {
+        if (found !== undefined || request < after[0]) return found;
+        const from = request === after[0] ? after[1] + 1 : 0;
+        const offset = code.slice(from).search(new RegExp(pattern));
+        return offset < 0 ? undefined : [request, from + offset];
+      }, undefined);
+      if (at === undefined) {
+        inOrder = false;
+        break;
+      }
+      after = at;
+    }
+    add(`codeOrder ${expect.codeOrder.join(" > ")}`, inOrder);
+  }
+  if (expect.codeGuard !== undefined) {
+    const { guard, mutation } = expect.codeGuard;
+    const guarded = codes.every((code) => {
+      const changes = code.search(new RegExp(mutation));
+      if (changes < 0) return true;
+      const checks = code.search(new RegExp(guard));
+      return checks >= 0 && checks < changes;
+    });
+    add(`codeGuard /${guard}/ before /${mutation}/`, guarded);
+  }
+  for (const pattern of expect.codeEvery ?? []) {
+    add(
+      `codeEvery /${pattern}/`,
+      codes.length > 0 && codes.every((code) => new RegExp(pattern).test(code)),
+    );
   }
   for (const [t, n] of Object.entries(expect.minCalls ?? {}))
     add(`minCalls ${t} >= ${n}`, count(t) >= n);

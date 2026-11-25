@@ -40,6 +40,22 @@ export function createHostedBlenderEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    masterState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:hosted-blender:master-state",
+      tag: WS_METHODS.hostedBlenderSubscribeMaster,
+    }),
+    openMaster: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:hosted-blender:open-master",
+      tag: WS_METHODS.hostedBlenderOpenMaster,
+      scheduler,
+      concurrency,
+    }),
+    moveIntoT3: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:hosted-blender:move-into-t3",
+      tag: WS_METHODS.hostedBlenderMoveIntoT3,
+      scheduler,
+      concurrency,
+    }),
     captureView: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:hosted-blender:capture-view",
       tag: WS_METHODS.hostedBlenderCaptureView,

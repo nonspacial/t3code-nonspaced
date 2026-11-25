@@ -18,10 +18,19 @@ import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as HostedBlenderSetup from "./HostedBlenderSetup.ts";
 
-class HostedBlenderPortError extends Schema.TaggedError<HostedBlenderPortError>()(
+export class HostedBlenderPortError extends Schema.TaggedError<HostedBlenderPortError>()(
   "HostedBlenderPortError",
   {},
 ) {}
+
+/**
+ * One thread's agent losing its hosted Blenders: the provider session (MCP credential) that
+ * ended, so a newer one keeps what it was granted since. No session ends the thread's access.
+ */
+export interface HostedBlenderRevocation {
+  readonly threadId: ThreadId;
+  readonly session: string | undefined;
+}
 
 /** The providers T3 adds the hosted Blender MCP to, the same two that get agentcast upstream. */
 const SUPPORTED_DRIVERS: ReadonlySet<string> = new Set(["claudeAgent", "codex"]);
@@ -50,12 +59,24 @@ export class HostedBlenderAgents extends Context.Service<
      */
     readonly listenerPort: (threadId: ThreadId) => Effect.Effect<number | null>;
     /**
+     * A loopback port for a master Blender's own listener, from the same registry as the threads'
+     * ports, so no relay's port is ever also a listener's.
+     */
+    readonly reservePrivatePort: Effect.Effect<
+      number,
+      HostedBlenderPortError | NetService.NetError
+    >;
+    /** The provider session holding the thread's Blender MCP while agents are allowed, or null. */
+    readonly currentSession: (threadId: ThreadId) => Effect.Effect<string | null>;
+    /** The port the thread's `blender-master` entry dials, on the same terms as `listenerPort`. */
+    readonly masterListenerPort: (threadId: ThreadId) => Effect.Effect<number | null>;
+    /**
      * Threads whose agents lost access to their hosted Blender: the thread's session ended, or
      * null when "Allow agents" was switched off for every thread.
      */
-    readonly revocations: Stream.Stream<ThreadId | null>;
+    readonly revocations: Stream.Stream<HostedBlenderRevocation | null>;
     /** The thread's provider session ended and its MCP config is gone. */
-    readonly sessionEnded: (threadId: ThreadId) => Effect.Effect<void>;
+    readonly sessionEnded: (threadId: ThreadId, session?: string) => Effect.Effect<void>;
     /** "Allow agents to start hosted Blenders", read now. */
     readonly agentsAllowed: Effect.Effect<boolean>;
     /**
@@ -79,7 +100,7 @@ const make = Effect.gen(function* () {
   const ports = new Map<ThreadId, { readonly hosted: number; readonly master: number }>();
   // Every port handed out, so two threads or roles never share one.
   const assignedPorts = new Set<number>();
-  const revoked = yield* PubSub.unbounded<ThreadId | null>();
+  const revoked = yield* PubSub.unbounded<HostedBlenderRevocation | null>();
   let readiness: HostedBlenderSetup.HostedBlenderReadiness | null = null;
   const portLock = yield* Semaphore.make(1);
   const tmpDir = path.join(config.stateDir, "hosted-blender", "mcp-tmp");
@@ -148,6 +169,15 @@ const make = Effect.gen(function* () {
     return port;
   });
 
+  const masterListenerPort: HostedBlenderAgents["Service"]["masterListenerPort"] = Effect.fn(
+    "HostedBlenderAgents.masterListenerPort",
+  )(function* (threadId) {
+    const session = yield* mcpSessions.read(threadId);
+    return session?.hostedBlender !== undefined && (yield* agentsAllowed)
+      ? session.hostedBlender.masterPort
+      : null;
+  });
+
   // Setup answers its current readiness on subscribe; sessions after this see it.
   const followSetup: HostedBlenderAgents["Service"]["followSetup"] = Effect.fnUntraced(
     function* (stream) {
@@ -175,11 +205,19 @@ const make = Effect.gen(function* () {
   );
 
   return HostedBlenderAgents.of({
+    reservePrivatePort: portLock.withPermits(1)(freshPort),
+    currentSession: Effect.fn("HostedBlenderAgents.currentSession")(function* (threadId) {
+      const session = yield* mcpSessions.read(threadId);
+      return session?.hostedBlender !== undefined && (yield* agentsAllowed)
+        ? session.providerSessionId
+        : null;
+    }),
     sessionLaunch,
     listenerPort,
+    masterListenerPort,
     revocations: Stream.fromPubSub(revoked),
-    sessionEnded: Effect.fn("HostedBlenderAgents.sessionEnded")(function* (threadId) {
-      yield* PubSub.publish(revoked, threadId);
+    sessionEnded: Effect.fn("HostedBlenderAgents.sessionEnded")(function* (threadId, session) {
+      yield* PubSub.publish(revoked, { threadId, session });
     }),
     agentsAllowed,
     followSetup,

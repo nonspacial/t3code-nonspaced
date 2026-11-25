@@ -3291,6 +3291,62 @@
   "984c25ffcae69300": "Add backend",
   "08570ee0982df89d": "Pairing...",
   "3bbae7c96b6cbfc3": "Open app",
+  "473079352585294d": "Which Blender to show",
+  "72ec28b225ed9811": "Couldn't open the master",
+  "70da4581cf87971c": "Couldn't move into T3 Code",
+  "d5da364f3ffb7fa7": "Working copy",
+  "d3b2dad809961953": "Master",
+  "8fc9ef73a784da09": "A desktop Blender T3 Code couldn't check may also have this file open. Save and close it there so the two don't overwrite each other.",
+  "ab03a468cc62daf1": "Move into T3 Code",
+  "77b72b3b7ee97069": "Open in T3 Code",
+  "cb4451ab067ff47d": "Blender didn't start",
+  "731b80ac194beb4a": "Open in your desktop Blender",
+  "ca40a1f4300b4838": "Master not open in T3 Code",
+  "10a2ab0021554b0a": [
+    "Blender couldn't open ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " on the hidden display. Check that Blender opens it, then open it again."
+  ],
+  "f5db5877ab70bfc8": [
+    "Move into T3 Code saves ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " in your desktop Blender, with its unsaved changes, quits that Blender and opens the file here. Its undo history is lost."
+  ],
+  "6484265e8c18d3dd": [
+    "Move into T3 Code saves ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " in your desktop Blender, quits that Blender and opens the file here. Its undo history is lost."
+  ],
+  "d77c7db5a642f111": [
+    "A desktop Blender is running, but T3 Code can't reach its MCP add-on to see whether it has",
+    " ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " open. Save and close the file there before opening it here."
+  ],
+  "a0056043b004c957": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " isn't open in a master Blender. Agents copy their proven changes into it there."
+  ],
   "e69c6af74880ba75": "English (US)",
   "675e421e80618158": "English (UK)",
   "27cface4ce8ec314": "German",
@@ -3320,7 +3376,6 @@
   "b94f5fc6d71bc852": "Setup needed",
   "7050870331ac8b9a": "No hosted Blender running",
   "fb2c65328a8a2e17": "Open a .blend file in the file preview and choose Open in hosted Blender.",
-  "cb4451ab067ff47d": "Blender didn't start",
   "3f25b97ec987231e": "Blender couldn't open the file on the hidden display. Check that Blender opens it and that GStreamer has an H.264 encoder, then open it in hosted Blender again.",
   "7dfc4caecd0ca4da": "Open Blender settings",
   "22e7ff1b5896ba7b": "Hosted Blender needs a Linux server. You can still open 3D files in the file preview.",

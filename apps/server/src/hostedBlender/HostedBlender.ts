@@ -3,6 +3,8 @@ import {
   HostedBlenderError,
   HostedBlenderFindHitsInput,
   HostedBlenderHits,
+  type HostedBlenderMasterState,
+  type HostedBlenderRole,
   type HostedBlenderOpenInput,
   type HostedBlenderQuitInput,
   type HostedBlenderRunningState,
@@ -15,12 +17,14 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as NetService from "@t3tools/shared/Net";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import { constUndefined } from "effect/Function";
 import * as FileSystem from "effect/FileSystem";
@@ -53,6 +57,9 @@ import {
 import { SessionControl } from "../preview/SessionControl.ts";
 import { HOSTED_STARTUP_GATE_SOURCE } from "./agentGuard.ts";
 import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
+import * as DesktopBlender from "./DesktopBlender.ts";
+import { isSameAccountPeer } from "./loopbackPeer.ts";
+import { forwardLoopbackPort } from "./portForward.ts";
 import { type ControlConnection, requestSave, type SaveReply } from "./ControlSave.ts";
 import { type AgentListenerState, awaitAgentListener } from "./agentListenerWait.ts";
 import { HeldInput } from "./HeldInput.ts";
@@ -76,6 +83,8 @@ const INITIAL_SIZE = { width: 1280, height: 720 };
 const MEMORY_SAMPLE_INTERVAL = Duration.seconds(5);
 const KEYFRAME_REQUEST_INTERVAL_MS = 250;
 const QUIT_TIMEOUT = Duration.seconds(20);
+// A desktop Blender that doesn't answer by then counts as one T3 couldn't ask.
+const DESKTOP_PROBE_DEADLINE = Duration.seconds(8);
 const CONTROL_RETRY_INTERVAL = Duration.millis(200);
 // A start that shows no viewport window by then has failed (a broken file, no encoder).
 const START_TIMEOUT = Duration.seconds(90);
@@ -105,6 +114,10 @@ const ControlMessage = Schema.Union([
   Schema.Struct({ type: Schema.Literal("saving") }),
   Schema.Struct({ type: Schema.Literal("saved") }),
   Schema.Struct({ type: Schema.Literal("quitFailed"), reason: Schema.Literal("saveFailed") }),
+  /** `quitIfClean` found unsaved changes, so Blender stays open. */
+  Schema.Struct({ type: Schema.Literal("quitRefused"), id: Schema.optional(Schema.Int) }),
+  /** A quit T3 gave up on won't be carried out. */
+  Schema.Struct({ type: Schema.Literal("quitCancelled"), id: Schema.Int }),
   /** The answer to the request with this `id`. */
   Schema.Struct({ type: Schema.Literal("reply"), id: Schema.Int, result: Schema.Unknown }),
 ]);
@@ -117,6 +130,13 @@ const encodeListenerCommand = Schema.encodeSync(
 const STOP_AGENT_LISTENER = `${encodeListenerCommand({ type: "stopAgentListener" })}\n`;
 // The add-on enables and starts Blender Lab only on this; a stop it heard first wins.
 const GRANT_AGENT_LISTENER = `${encodeListenerCommand({ type: "grantAgentListener" })}\n`;
+// Quits only if Blender, asked at that moment, has no unsaved changes. A quit T3 gave up on is
+// cancelled by its id, so a late one never closes a master someone has joined since.
+const encodeQuitRequest = Schema.encodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({ type: Schema.Literals(["quitIfClean", "cancelQuit"]), id: Schema.Int }),
+  ),
+);
 // Blender loads the file and the official add-on before its listener can come up.
 export const AGENT_LISTENER_TIMEOUT = Duration.sum(START_TIMEOUT, Duration.seconds(15));
 
@@ -164,6 +184,8 @@ const ControlRequest = Schema.Union([
     type: Schema.Literal("setView"),
     id: Schema.Int,
     ...HostedBlenderSetViewInput.fields.view.fields,
+    /** The file the link was made for; the add-on refuses if Blender has another open. */
+    filepath: Schema.String,
   }),
 ]);
 type ControlRequest = typeof ControlRequest.Type;
@@ -228,19 +250,48 @@ export class HostedBlender extends Context.Service<
      */
     readonly agentListener: (
       threadId: ThreadId,
-      options?: { readonly wait?: boolean },
+      options?: { readonly wait?: boolean; readonly role?: HostedBlenderRole },
     ) => Effect.Effect<AgentListenerReport | null>;
     readonly quit: (input: HostedBlenderQuitInput) => Effect.Effect<void, HostedBlenderError>;
     readonly threadState: (threadId: ThreadId) => Stream.Stream<HostedBlenderThreadState>;
     /** `canOperate`: the viewer may take control (`terminal:operate`). */
     readonly attachViewer: (
       threadId: string,
-      options: { readonly canOperate: boolean },
+      options: { readonly canOperate: boolean; readonly role?: HostedBlenderRole | undefined },
     ) => Effect.Effect<HostedBlenderAttachResult, never, Scope.Scope>;
     /** The person's viewport window's camera, for an annotation of the frame shown now. */
     readonly captureView: (
       threadId: ThreadId,
+      role?: HostedBlenderRole,
     ) => Effect.Effect<HostedBlenderViewCapture, HostedBlenderError>;
+    /**
+     * Makes `relativePath` the thread's master and joins the thread to the master Blender that
+     * has it, starting one if none does. A desktop Blender that has it open keeps it: the answer
+     * is `desktop`, and Move into T3 can take it from there. With `agentSession`, the thread's
+     * agent copies back through it, so its `blender-master` port reaches it.
+     */
+    readonly openMaster: (
+      input: HostedBlenderOpenInput,
+      /** The provider session whose agent asked; access lasts only while it is current. */
+      options?: { readonly agentSession?: string },
+    ) => Effect.Effect<
+      | { readonly _tag: "desktop" }
+      | { readonly _tag: "hosted"; readonly desktopUnchecked: boolean },
+      HostedBlenderError
+    >;
+    /** The thread's known master, opened again as `openMaster` would. */
+    readonly reopenMaster: (threadId: ThreadId) => Effect.Effect<void, HostedBlenderError>;
+    /**
+     * The thread stops using its master; the master Blender quits when no thread uses it. One
+     * with unsaved changes stays open until someone quits it.
+     */
+    readonly releaseMaster: (threadId: ThreadId) => Effect.Effect<void>;
+    /**
+     * Has the desktop Blender save and quit the thread's master, then opens it here for every
+     * thread that chose it. `relativePath` is the master the user saw; a changed one is refused.
+     */
+    readonly moveIntoT3: (input: HostedBlenderOpenInput) => Effect.Effect<void, HostedBlenderError>;
+    readonly masterState: (threadId: ThreadId) => Stream.Stream<HostedBlenderMasterState>;
     /** Casts each mark into the scene through a captured view. */
     readonly findHits: (
       input: HostedBlenderFindHitsInput,
@@ -262,7 +313,19 @@ interface ViewerEntry {
 }
 
 interface Instance {
+  /** Its key in `instances`: the thread for a working Blender, `master:<file>` for a master. */
+  readonly key: string;
+  readonly role: HostedBlenderRole;
+  /** A working Blender's thread; for a master, the thread that started it. */
   readonly threadId: ThreadId;
+  /** A master's threads, and those of them whose agents copy back through it. */
+  readonly masterThreads: Set<ThreadId>;
+  readonly agentThreads: Set<ThreadId>;
+  /** Each agent thread's `blender-master` port, relayed to this master's listener. */
+  readonly forwards: Map<
+    ThreadId,
+    { readonly scope: Scope.Closeable; readonly session: string | null }
+  >;
   readonly relativePath: string;
   /** The checked real path `open` resolved; `run` never resolves it again. */
   readonly blendPath: string;
@@ -308,6 +371,19 @@ interface Instance {
   agentListenerGrantSent: boolean;
   /** T3 lost its control connection: nothing can save through it any more. */
   controlLost: boolean;
+  /** Where Blender Lab listens once granted; a master's agents reach it through `forwards`. */
+  mcpPort: number | null;
+  readonly forwardLock: Semaphore.Semaphore;
+  /** Its last thread left while T3 couldn't ask it to quit; asked again once it can. */
+  retryQuit: boolean;
+  /** A desktop Blender T3 couldn't ask was running when this master started. */
+  desktopUnchecked: boolean;
+  /** Answered when the add-on won't quit a master with unsaved changes. */
+  quitRefused: { readonly id: number; readonly done: Deferred.Deferred<void> } | null;
+  /** A working copy's agent session, whose end ends its listener. */
+  agentSession: string | undefined;
+  /** Answered when the add-on has dropped the quit T3 gave up on. */
+  quitCancelled: { readonly id: number; readonly done: Deferred.Deferred<void> } | null;
   openFile: string | null | undefined;
   mcpVersion: string | null;
   /** The agent is acting through Blender Lab, as the add-on reports it; for the pane's badge. */
@@ -329,6 +405,8 @@ interface Instance {
   bitrateLead: string | null;
 }
 
+const masterKey = (blendPath: string) => `master:${blendPath}`;
+
 type PublishedState = HostedBlenderRunningState | { readonly status: "failed" };
 
 const sameState = (a: HostedBlenderThreadState, b: HostedBlenderThreadState) =>
@@ -345,6 +423,7 @@ const make = Effect.gen(function* () {
   const environment = yield* HostProcess.Environment;
   const homeDirectory = yield* HostProcess.HomeDirectory;
   const agents = yield* Effect.serviceOption(HostedBlenderAgents.HostedBlenderAgents);
+  const desktop = yield* Effect.serviceOption(DesktopBlender.DesktopBlender);
   const lookupContext = yield* Effect.context<
     | FileSystem.FileSystem
     | Path.Path
@@ -361,8 +440,56 @@ const make = Effect.gen(function* () {
   const states = yield* SubscriptionRef.make<ReadonlyMap<string, PublishedState>>(new Map());
   // Threads whose last start failed, until they open a file again.
   const failedStarts = new Set<string>();
+  /** Each thread's master file, by its checked real path, and what T3 last saw of it. */
+  const threadMasters = new Map<
+    ThreadId,
+    {
+      readonly blendPath: string;
+      readonly relativePath: string;
+      desktop: "open" | "noAddon" | null;
+      desktopDirty: boolean;
+      /** The desktop Blender's own path for the file, which may be another link to it. */
+      desktopPath: string | null;
+      /** The provider session whose agent copies back through it, while that stays current. */
+      agentSession: string | null;
+    }
+  >();
+  // Masters whose last start failed, by real path, until they are opened again.
+  const failedMasters = new Set<string>();
+  const masterStates = yield* SubscriptionRef.make<ReadonlyMap<ThreadId, HostedBlenderMasterState>>(
+    new Map(),
+  );
   const userResourcesLock = yield* Semaphore.make(1);
+  // File claims and master membership change one at a time: opens, joins and releases.
+  const claimLock = yield* Semaphore.make(1);
+  /** Master files claimed while the desktop Blender is asked, before their Blender starts. */
+  const reserved = new Set<string>();
   const rootDir = path.join(config.stateDir, "hosted-blender");
+
+  const masterStateOf = (threadId: ThreadId): HostedBlenderMasterState => {
+    const known = threadMasters.get(threadId);
+    if (known === undefined) return { status: "none" };
+    const instance = instances.get(masterKey(known.blendPath));
+    if (instance?.masterThreads.has(threadId)) {
+      return {
+        // Unavailable while a quit it may still carry out is unsettled.
+        status: instance.quitCancelled != null ? "starting" : instance.status,
+        relativePath: known.relativePath,
+        dirty: instance.dirty,
+        ...(instance.agentActing ? { agentActing: true } : {}),
+        ...(instance.desktopUnchecked ? { desktopUnchecked: true } : {}),
+      };
+    }
+    if (failedMasters.has(known.blendPath)) {
+      return { status: "failed", relativePath: known.relativePath };
+    }
+    return {
+      status: "notOpen",
+      relativePath: known.relativePath,
+      desktop: known.desktop,
+      desktopDirty: known.desktopDirty,
+    };
+  };
 
   const publishNow = () =>
     Effect.suspend(() =>
@@ -373,16 +500,27 @@ const make = Effect.gen(function* () {
             threadId,
             { status: "failed" },
           ]),
-          ...Array.from(instances.values(), (instance): [string, PublishedState] => [
-            instance.threadId,
-            {
-              status: instance.status,
-              relativePath: instance.relativePath,
-              dirty: instance.dirty,
-              ...(instance.agentActing ? { agentActing: true } : {}),
-            },
-          ]),
+          ...Array.from(instances.values())
+            .filter((instance) => instance.role === "working")
+            .map((instance): [string, PublishedState] => [
+              instance.threadId,
+              {
+                status: instance.status,
+                relativePath: instance.relativePath,
+                dirty: instance.dirty,
+                ...(instance.agentActing ? { agentActing: true } : {}),
+              },
+            ]),
         ]),
+      ).pipe(
+        Effect.andThen(
+          SubscriptionRef.set(
+            masterStates,
+            new Map(
+              Array.from(threadMasters.keys(), (threadId) => [threadId, masterStateOf(threadId)]),
+            ),
+          ),
+        ),
       ),
     );
 
@@ -627,7 +765,82 @@ const make = Effect.gen(function* () {
     state: AgentListenerState,
   ) {
     instance.agentListener = state;
+    // A master's agents are told it's ready only once their ports reach it.
+    if (instance.role === "master") yield* syncForwards(instance);
     if (state !== "starting") yield* Deferred.succeed(instance.agentListenerSettled, undefined);
+  });
+
+  /**
+   * A master's listener is reached only through the ports of the agent threads using it, each
+   * open while that thread may copy back and the listener is ready.
+   */
+  const syncForwards = Effect.fn("HostedBlender.syncForwards")((instance: Instance) =>
+    instance.forwardLock.withPermits(1)(
+      Effect.gen(function* () {
+        // Only the agent session that asked, while it is still the thread's, keeps its relay.
+        for (const threadId of instance.agentThreads) {
+          if (!(yield* sessionCurrent(threadId))) instance.agentThreads.delete(threadId);
+        }
+        const ready = instance.agentListener === "ready" && !instance.agentListenerRevoked;
+        // A relay serves the session it was opened for; a newer one gets a fresh relay.
+        for (const [threadId, relay] of instance.forwards) {
+          const session = threadMasters.get(threadId)?.agentSession ?? null;
+          if (ready && instance.agentThreads.has(threadId) && relay.session === session) continue;
+          instance.forwards.delete(threadId);
+          yield* Scope.close(relay.scope, Exit.void);
+        }
+        if (!ready || Option.isNone(agents) || instance.mcpPort === null) return;
+        for (const threadId of instance.agentThreads) {
+          if (instance.forwards.has(threadId)) continue;
+          const listenPort = yield* agents.value.masterListenerPort(threadId);
+          if (listenPort === null) continue;
+          const scope = yield* Scope.make();
+          const opened = yield* forwardLoopbackPort({
+            listenPort,
+            targetPort: instance.mcpPort,
+            // As Blender's add-on checks its own clients: only this OS account's connections.
+            accept: (socket) =>
+              runPromise(
+                isSameAccountPeer(socket).pipe(
+                  Effect.provideService(FileSystem.FileSystem, fileSystem),
+                ),
+              ),
+          }).pipe(Scope.provide(scope), Effect.isSuccess);
+          const session = threadMasters.get(threadId)?.agentSession ?? null;
+          if (opened) instance.forwards.set(threadId, { scope, session });
+          else yield* Scope.close(scope, Exit.void);
+        }
+      }),
+    ),
+  );
+
+  /** The agent session that asked for the thread's master is still the thread's. */
+  const sessionCurrent = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const session = threadMasters.get(threadId)?.agentSession ?? null;
+    if (session === null || Option.isNone(agents)) return false;
+    return (yield* agents.value.currentSession(threadId)) === session;
+  });
+
+  /** Granted once Blender has shown it has the launch file open, and a master an agent too. */
+  // Runs for every control line; it shares the instance's run span.
+  const maybeGrant = Effect.fnUntraced(function* (instance: Instance) {
+    if (
+      instance.agentListenerGranted &&
+      !instance.agentListenerGrantSent &&
+      !instance.agentListenerRevoked &&
+      instance.openFile === instance.blendPath &&
+      (instance.role === "working" || instance.agentThreads.size > 0) &&
+      instance.control
+    ) {
+      // A master listens only for an agent session still current; a stale one never starts it.
+      if (instance.role === "master") {
+        let current = false;
+        for (const threadId of instance.agentThreads) current ||= yield* sessionCurrent(threadId);
+        if (!current) return;
+      }
+      instance.agentListenerGrantSent = true;
+      yield* instance.control.write(GRANT_AGENT_LISTENER);
+    }
   });
 
   // Switching agents off, or the thread's session ending, closes the listener and every
@@ -666,16 +879,7 @@ const make = Effect.gen(function* () {
           if (listener !== undefined && !instance.agentListenerRevoked) {
             yield* setAgentListener(instance, listener);
           }
-          // Granted only once Blender has shown it has the launch file open.
-          if (
-            instance.agentListenerGranted &&
-            !instance.agentListenerGrantSent &&
-            !instance.agentListenerRevoked &&
-            instance.control
-          ) {
-            instance.agentListenerGrantSent = true;
-            yield* instance.control.write(GRANT_AGENT_LISTENER);
-          }
+          yield* maybeGrant(instance);
         }
         // A report queued before T3 revoked access is stale: nothing acts after that.
         const agentActing = message.value.agentActing === true && !instance.agentListenerRevoked;
@@ -684,6 +888,16 @@ const make = Effect.gen(function* () {
         instance.agentActing = agentActing;
         return yield* publishNow();
       }
+      case "quitRefused":
+        if (instance.quitRefused !== null && instance.quitRefused.id === message.value.id) {
+          yield* Deferred.succeed(instance.quitRefused.done, undefined);
+        }
+        return;
+      case "quitCancelled":
+        if (instance.quitCancelled?.id === message.value.id) {
+          yield* Deferred.succeed(instance.quitCancelled.done, undefined);
+        }
+        return;
       case "saving":
       case "saved":
       case "quitFailed":
@@ -712,6 +926,8 @@ const make = Effect.gen(function* () {
       const closed = yield* Deferred.make<void>();
       yield* Effect.addFinalizer(() => Deferred.succeed(closed, undefined));
       instance.control = { write: (line) => writer.write(line).pipe(Effect.ignore), closed };
+      // Its last thread left before T3 could ask it to quit; ask now.
+      if (instance.retryQuit) yield* retryQuit(instance).pipe(Effect.forkIn(serviceScope));
       // Revoked before the add-on could hear it; a grant waits for its first state.
       if (instance.agentListenerRevoked) yield* instance.control.write(STOP_AGENT_LISTENER);
       const decoder = new TextDecoder();
@@ -927,10 +1143,20 @@ const make = Effect.gen(function* () {
       yield* fileSystem.chmod(controlDir, 0o700);
       const controlSocket = path.join(controlDir, "control.sock");
       instance.controlDir = controlDir;
-      const agentPort =
-        Option.isSome(agents) && instance.agentWorkingCopy
-          ? yield* agents.value.listenerPort(instance.threadId)
-          : null;
+      // A master is shared, so its listener gets a private port its agents' ports relay to.
+      const agentPort = Option.isNone(agents)
+        ? null
+        : instance.role === "master"
+          ? (yield* agents.value.agentsAllowed)
+            ? yield* agents.value.reservePrivatePort
+            : null
+          : instance.agentWorkingCopy
+            ? yield* agents.value.listenerPort(instance.threadId)
+            : null;
+      if (agentPort !== null && instance.role === "working" && Option.isSome(agents)) {
+        instance.agentSession =
+          (yield* agents.value.currentSession(instance.threadId)) ?? undefined;
+      }
       if (agentPort === null) yield* setAgentListener(instance, "off");
       const mcpSnapshot =
         agentPort === null
@@ -944,6 +1170,7 @@ const make = Effect.gen(function* () {
             );
       instance.agentListenerGranted = agentPort !== null;
       const mcpPort = agentPort ?? (yield* net.reserveLoopbackPort());
+      instance.mcpPort = agentPort;
       const shell = yield* ThreadManagementService.ThreadManagementService.pipe(
         Effect.flatMap((threads) => threads.getThreadShell(instance.threadId)),
         Effect.orElseSucceed(() => null),
@@ -968,8 +1195,12 @@ const make = Effect.gen(function* () {
               mcpPort,
               mcpListen: agentPort !== null,
               ...(mcpSnapshot === null ? {} : { mcpSnapshot }),
-              // Plan mode is read-only, whatever the runtime mode.
-              autoRun: shell?.runtimeMode === "full-access" && shell.interactionMode !== "plan",
+              // Plan mode is read-only, whatever the runtime mode. A master serves threads of
+              // any mode, so its embedded scripts never run.
+              autoRun:
+                instance.role === "working" &&
+                shell?.runtimeMode === "full-access" &&
+                shell.interactionMode !== "plan",
               ...INITIAL_SIZE,
             }),
             {
@@ -1061,11 +1292,14 @@ const make = Effect.gen(function* () {
         Effect.catch((cause) => Effect.logWarning("hosted Blender failed", { cause })),
         Effect.ensuring(
           Effect.gen(function* () {
-            instances.delete(instance.threadId);
+            instances.delete(instance.key);
             yield* settle(instance.session.close());
             if (instance.status === "starting" && !instance.quitting) {
-              failedStarts.add(instance.threadId);
+              if (instance.role === "working") failedStarts.add(instance.threadId);
+              else failedMasters.add(instance.blendPath);
             }
+            instance.agentThreads.clear();
+            yield* syncForwards(instance);
             yield* Effect.forEach(
               instance.viewers,
               (viewer) => Queue.offer(viewer.queue, { _tag: "stopped" }),
@@ -1081,12 +1315,12 @@ const make = Effect.gen(function* () {
   const threadRoot = (threadId: ThreadId) =>
     threadWorkspaceRoot(threadId).pipe(Effect.provideContext(lookupContext));
 
-  const open: HostedBlender["Service"]["open"] = Effect.fn("HostedBlender.open")(function* (
-    { threadId, relativePath },
-    options,
-  ) {
-    yield* Effect.annotateCurrentSpan({ threadId });
-    // Opening is the pane's first use, by a caller allowed to start programs here.
+  /**
+   * A `.blend` the thread may open: inside its workspace, really (no symlink out), and a file.
+   * Opening is the pane's first use, by a caller allowed to start programs here.
+   */
+  // Runs inside open's or openMaster's span.
+  const checkedBlend = Effect.fnUntraced(function* (threadId: ThreadId, relativePath: string) {
     yield* setup.ensureChecked;
     const tools = yield* setup.readiness.pipe(Stream.runHead, Effect.map(Option.getOrNull));
     if (tools?.status !== "ok") {
@@ -1112,20 +1346,57 @@ const make = Effect.gen(function* () {
       .stat(real[1])
       .pipe(Effect.mapError(() => new HostedBlenderError({ reason: "fileNotFound" })));
     if (stat.type !== "File") return yield* new HostedBlenderError({ reason: "fileNotFound" });
+    return { tools, relativePath: resolved.relativePath, blendPath: real[1] };
+  });
 
-    const existing = instances.get(threadId);
-    if (existing) {
-      if (existing.relativePath === resolved.relativePath) return;
-      return yield* new HostedBlenderError({ reason: "otherFileOpen" });
+  // Runs inside open's or openMaster's span; the instance's own work has HostedBlender.run.
+  /** A file's device and inode, so a hard link to it is the same file. */
+  const fileIdentity = (file: string) =>
+    fileSystem.stat(file).pipe(
+      Effect.map((info) => (Option.isSome(info.ino) ? `${info.dev}:${info.ino.value}` : file)),
+      Effect.orElseSucceed(() => null),
+    );
+
+  /** A hosted Blender, other than `except`, launching on this file or with it open now. */
+  // Runs inside open's or openMaster's span.
+  const claimedBy = Effect.fnUntraced(function* (blendPath: string, except?: Instance) {
+    const wanted = yield* fileIdentity(blendPath);
+    for (const file of reserved) {
+      if (file === blendPath || (wanted !== null && (yield* fileIdentity(file)) === wanted)) {
+        return file;
+      }
     }
-    // One file is open in at most one hosted Blender, whichever thread opened it.
-    if ([...instances.values()].some((other) => other.blendPath === real[1])) {
-      return yield* new HostedBlenderError({ reason: "openInAnotherThread" });
+    for (const other of instances.values()) {
+      if (other === except) continue;
+      const files = new Set([other.blendPath]);
+      if (typeof other.openFile === "string") files.add(other.openFile);
+      for (const file of files) {
+        if (file === blendPath) return other;
+        if (wanted !== null && (yield* fileIdentity(file)) === wanted) return other;
+      }
     }
+    return undefined;
+  });
+
+  const startInstance = Effect.fnUntraced(function* (
+    input: {
+      readonly role: HostedBlenderRole;
+      readonly threadId: ThreadId;
+      readonly relativePath: string;
+      readonly blendPath: string;
+      readonly agentWorkingCopy: boolean;
+    },
+    tools: { readonly helper: string; readonly blender: string },
+  ) {
     const instance: Instance = {
-      threadId,
-      relativePath: resolved.relativePath,
-      blendPath: real[1],
+      key: input.role === "master" ? masterKey(input.blendPath) : input.threadId,
+      role: input.role,
+      threadId: input.threadId,
+      masterThreads: new Set(input.role === "master" ? [input.threadId] : []),
+      agentThreads: new Set(),
+      forwards: new Map(),
+      relativePath: input.relativePath,
+      blendPath: input.blendPath,
       ended: yield* Deferred.make<void>(),
       viewers: [],
       status: "starting",
@@ -1147,7 +1418,7 @@ const make = Effect.gen(function* () {
       lastRequestId: 0,
       fiber: null,
       quitting: false,
-      agentWorkingCopy: options?.agentWorkingCopy === true,
+      agentWorkingCopy: input.agentWorkingCopy,
       agentListener: "starting",
       agentListenerSettled: yield* Deferred.make<void>(),
       agentListenerRevoked: false,
@@ -1155,6 +1426,13 @@ const make = Effect.gen(function* () {
       agentListenerGranted: false,
       agentListenerGrantSent: false,
       controlLost: false,
+      mcpPort: null,
+      forwardLock: yield* Semaphore.make(1),
+      retryQuit: false,
+      desktopUnchecked: false,
+      quitRefused: null,
+      quitCancelled: null,
+      agentSession: undefined,
       openFile: undefined,
       mcpVersion: null,
       agentActing: false,
@@ -1166,22 +1444,80 @@ const make = Effect.gen(function* () {
       bitrate: new BitrateControl(),
       bitrateLead: null,
     };
-    failedStarts.delete(threadId);
-    instances.set(threadId, instance);
+    instances.set(instance.key, instance);
     yield* publishNow();
-    instance.fiber = yield* run(instance, tools).pipe(Effect.forkIn(serviceScope));
+    // Started now, so a quit straight after still runs its cleanup; a fiber interrupted before
+    // it starts never does.
+    instance.fiber = yield* run(instance, tools).pipe(
+      Effect.forkIn(serviceScope, { startImmediately: true }),
+    );
+    return instance;
   });
+
+  const open: HostedBlender["Service"]["open"] = Effect.fn("HostedBlender.open")(function* (
+    { threadId, relativePath },
+    options,
+  ) {
+    yield* Effect.annotateCurrentSpan({ threadId });
+    const file = yield* checkedBlend(threadId, relativePath);
+    yield* claimLock.withPermits(1)(
+      Effect.gen(function* () {
+        const existing = instances.get(threadId);
+        if (existing) {
+          if (existing.relativePath === file.relativePath) return;
+          return yield* new HostedBlenderError({ reason: "otherFileOpen" });
+        }
+        // One file is open in at most one hosted Blender, whichever thread opened it.
+        if ((yield* claimedBy(file.blendPath)) !== undefined) {
+          return yield* new HostedBlenderError({ reason: "openInAnotherThread" });
+        }
+        failedStarts.delete(threadId);
+        yield* startInstance(
+          {
+            role: "working",
+            threadId,
+            relativePath: file.relativePath,
+            blendPath: file.blendPath,
+            agentWorkingCopy: options?.agentWorkingCopy === true,
+          },
+          file.tools,
+        );
+      }),
+    );
+  });
+
+  /** The thread's working Blender, or the master Blender it uses. */
+  const instanceFor = (threadId: string, role: HostedBlenderRole | undefined) => {
+    if (role !== "master") {
+      const working = instances.get(threadId);
+      return working?.role === "working" ? working : undefined;
+    }
+    const known = threadMasters.get(threadId as ThreadId);
+    const master = known === undefined ? undefined : instances.get(masterKey(known.blendPath));
+    return master?.masterThreads.has(threadId as ThreadId) ? master : undefined;
+  };
 
   const quit: HostedBlender["Service"]["quit"] = Effect.fn("HostedBlender.quit")(function* ({
     threadId,
     save,
+    role,
   }) {
-    yield* Effect.annotateCurrentSpan({ threadId, save });
-    const instance = instances.get(threadId);
+    yield* Effect.annotateCurrentSpan({ threadId, save, role });
+    const instance = instanceFor(threadId, role);
     if (instance === undefined) {
-      if (!failedStarts.delete(threadId)) return;
+      const known = role === "master" ? threadMasters.get(threadId) : undefined;
+      const cleared =
+        role === "master"
+          ? known !== undefined && failedMasters.delete(known.blendPath)
+          : failedStarts.delete(threadId);
+      if (!cleared) return;
       return yield* publishNow();
     }
+    return yield* quitInstance(instance, save);
+  });
+
+  // Runs inside quit's or releaseMaster's span.
+  const quitInstance = Effect.fnUntraced(function* (instance: Instance, save: boolean) {
     const control = instance.control;
     const forceQuit = Effect.gen(function* () {
       instance.quitting = true;
@@ -1296,10 +1632,12 @@ const make = Effect.gen(function* () {
 
   const attachViewer: HostedBlender["Service"]["attachViewer"] = Effect.fn(
     "HostedBlender.attachViewer",
-  )(function* (threadId, { canOperate }) {
-    yield* Effect.annotateCurrentSpan({ threadId, canOperate });
-    const instance = instances.get(threadId);
-    if (instance === undefined) return { _tag: "stopped" as const };
+  )(function* (threadId, { canOperate, role }) {
+    yield* Effect.annotateCurrentSpan({ threadId, canOperate, role });
+    const instance = instanceFor(threadId, role);
+    // Nor a viewer: the master may still quit under it.
+    if (instance === undefined || instance.quitCancelled != null)
+      return { _tag: "stopped" as const };
     if (instance.viewers.length >= MAX_VIEWERS) return { _tag: "full" as const };
     const entry: ViewerEntry = {
       id: `viewer-${nextViewerId++}`,
@@ -1344,7 +1682,7 @@ const make = Effect.gen(function* () {
 
   // Each request runs inside its caller's span (captureView, findHits, setView).
   const ask = Effect.fnUntraced(function* <A>(
-    threadId: ThreadId,
+    instance: Instance | undefined,
     body: ControlRequestBody,
     result: Schema.Decoder<A>,
     options: {
@@ -1355,7 +1693,6 @@ const make = Effect.gen(function* () {
     } = {},
   ) {
     const { slot } = options;
-    const instance = instances.get(threadId);
     if (instance === undefined || instance.status !== "running") {
       return yield* new HostedBlenderError({ reason: "notRunning" });
     }
@@ -1400,9 +1737,9 @@ const make = Effect.gen(function* () {
 
   const captureView: HostedBlender["Service"]["captureView"] = Effect.fn(
     "HostedBlender.captureView",
-  )(function* (threadId) {
-    yield* Effect.annotateCurrentSpan({ threadId });
-    const instance = instances.get(threadId);
+  )(function* (threadId, role) {
+    yield* Effect.annotateCurrentSpan({ threadId, role });
+    const instance = instanceFor(threadId, role);
     if (instance === undefined || instance.controlDir === null) {
       return yield* new HostedBlenderError({ reason: "notRunning" });
     }
@@ -1410,7 +1747,7 @@ const make = Effect.gen(function* () {
     if (instance.capture === null) {
       const capture = yield* Deferred.make<HostedBlenderViewCapture, HostedBlenderError>();
       instance.capture = capture;
-      yield* renderScreenshot(threadId, instance.controlDir, capture).pipe(
+      yield* renderScreenshot(instance, instance.controlDir, capture).pipe(
         Effect.ensuring(
           Effect.sync(() => {
             if (instance.capture === capture) instance.capture = null;
@@ -1432,7 +1769,7 @@ const make = Effect.gen(function* () {
    * Blender is done with it, whoever stopped waiting.
    */
   const renderScreenshot = Effect.fnUntraced(function* (
-    threadId: ThreadId,
+    instance: Instance,
     controlDir: string,
     capture: Deferred.Deferred<HostedBlenderViewCapture, HostedBlenderError>,
   ) {
@@ -1442,7 +1779,7 @@ const make = Effect.gen(function* () {
     const outcome = yield* Effect.gen(function* () {
       // Blender renders the viewport region with the camera it reports, so the two always agree.
       const view = yield* ask(
-        threadId,
+        instance,
         { type: "view", screenshot: path.basename(file) },
         AddonViewCapture,
         { untimed: true },
@@ -1472,34 +1809,39 @@ const make = Effect.gen(function* () {
   });
 
   const findHits: HostedBlender["Service"]["findHits"] = Effect.fn("HostedBlender.findHits")(
-    function* ({ threadId, projection, marks }) {
-      yield* Effect.annotateCurrentSpan({ threadId, marks: marks.length });
-      const instance = instances.get(threadId);
+    function* ({ threadId, projection, marks, role }) {
+      yield* Effect.annotateCurrentSpan({ threadId, marks: marks.length, role });
+      const instance = instanceFor(threadId, role);
       if (instance === undefined) return yield* new HostedBlenderError({ reason: "notRunning" });
-      return yield* ask(threadId, { type: "hits", ...projection, marks }, HostedBlenderHits, {
+      return yield* ask(instance, { type: "hits", ...projection, marks }, HostedBlenderHits, {
         slot: instance.hitsLock,
       });
     },
   );
 
   const setView: HostedBlender["Service"]["setView"] = Effect.fn("HostedBlender.setView")(
-    function* ({ threadId, relativePath, view }) {
-      yield* Effect.annotateCurrentSpan({ threadId });
-      // The link was routed here on the client's last word on the file; Blender may have moved on.
-      const instance = instances.get(threadId);
-      if (instance !== undefined && instance.relativePath !== relativePath) {
-        return yield* new HostedBlenderError({ reason: "otherFileOpen" });
-      }
-      yield* ask(threadId, { type: "setView", ...view }, Schema.Literal(true));
+    function* ({ threadId, relativePath, view, role }) {
+      yield* Effect.annotateCurrentSpan({ threadId, role });
+      // The link was routed here on the client's last word on the file; Blender may have moved on,
+      // so the add-on compares the file it has open now as it moves the camera.
+      const instance = instanceFor(threadId, role);
+      const root = yield* threadRoot(threadId);
+      const filepath = yield* realPathOr(path.resolve(root ?? "/", relativePath));
+      const moved = yield* ask(
+        instance,
+        { type: "setView", ...view, filepath },
+        Schema.Union([Schema.Literal(true), Schema.Literal("otherFile")]),
+      );
+      if (moved === "otherFile") return yield* new HostedBlenderError({ reason: "otherFileOpen" });
     },
   );
 
   const agentListener: HostedBlender["Service"]["agentListener"] = Effect.fn(
     "HostedBlender.agentListener",
   )(function* (threadId, options) {
-    const instance = instances.get(threadId);
+    const instance = instanceFor(threadId, options?.role);
     if (instance === undefined) return null;
-    const state =
+    const listener =
       options?.wait === false
         ? instance.agentListener
         : yield* awaitAgentListener({
@@ -1510,9 +1852,22 @@ const make = Effect.gen(function* () {
             timeout: AGENT_LISTENER_TIMEOUT,
             revoke: revokeAgentListener(instance),
           });
+    // A master's listener reaches this thread only through its own port.
+    const state =
+      instance.role === "working" || listener !== "ready"
+        ? listener
+        : !instance.agentThreads.has(threadId)
+          ? "off"
+          : instance.forwards.has(threadId)
+            ? "ready"
+            : "failed";
     return {
       state,
-      ended: agentAccessEndedFor(instance.controlLost, instance.agentAccessEnded),
+      ended: agentAccessEndedFor(
+        instance.controlLost,
+        instance.agentAccessEnded ??
+          (instance.role === "master" && state === "off" ? "revoked" : null),
+      ),
       openFile: instance.openFile,
       mcpVersion: instance.mcpVersion,
     };
@@ -1520,20 +1875,438 @@ const make = Effect.gen(function* () {
 
   if (Option.isSome(agents)) {
     yield* agents.value.revocations.pipe(
-      Stream.runForEach((threadId) =>
-        Effect.forEach(
-          [...instances.values()].filter(
-            (instance) => threadId === null || instance.threadId === threadId,
-          ),
-          (instance) => revokeAgentListener(instance),
-          { discard: true },
-        ),
+      Stream.runForEach((revocation) =>
+        Effect.gen(function* () {
+          // Only what the ended session was granted: a newer session keeps its own.
+          const ended = (session: string | null | undefined) =>
+            revocation === null ||
+            revocation.session === undefined ||
+            session === undefined ||
+            session === revocation.session;
+          const forThread = (threadId: ThreadId) =>
+            revocation === null || threadId === revocation.threadId;
+          // An ended session's request is forgotten wherever it waits: desktop, stopped or joined.
+          for (const [id, known] of threadMasters) {
+            if (forThread(id) && ended(known.agentSession)) known.agentSession = null;
+          }
+          yield* Effect.forEach(
+            [...instances.values()],
+            (instance) => {
+              if (revocation === null) return revokeAgentListener(instance);
+              if (instance.role === "working") {
+                return forThread(instance.threadId) && ended(instance.agentSession)
+                  ? revokeAgentListener(instance)
+                  : Effect.void;
+              }
+              // One thread's access to a shared master ends, its relay at once; others keep theirs.
+              // A relay opened for the ended session closes even when a newer grant is recorded;
+              // the sync then opens a fresh one for that grant.
+              const known = threadMasters.get(revocation.threadId);
+              const relay = instance.forwards.get(revocation.threadId);
+              const stale = relay !== undefined && ended(relay.session);
+              if (known?.agentSession == null) instance.agentThreads.delete(revocation.threadId);
+              if (stale) instance.forwards.delete(revocation.threadId);
+              return (stale ? Scope.close(relay.scope, Exit.void) : Effect.void).pipe(
+                Effect.andThen(syncForwards(instance)),
+              );
+            },
+            { discard: true },
+          );
+        }),
       ),
       Effect.forkIn(serviceScope),
     );
   }
 
+  /**
+   * Each master file has one queue: joins, leaves, quit decisions and moves for it run one at a
+   * time, and a thread's own choice of master changes one at a time too.
+   */
+  const masterQueues = yield* KeyedLock.make<string>();
+  const threadQueues = yield* KeyedLock.make<ThreadId>();
+  const inMasterQueue =
+    (blendPath: string) =>
+    <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      masterQueues.withLock(blendPath, effect);
+  const inThreadQueue =
+    (threadId: ThreadId) =>
+    <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      threadQueues.withLock(threadId, effect);
+
+  /** The same file, by device and inode where they can be read. */
+  const sameFile = Effect.fnUntraced(function* (a: string, b: string) {
+    const [left, right] = yield* Effect.all([fileIdentity(a), fileIdentity(b)]);
+    return left !== null ? left === right : (yield* realPathOr(a)) === (yield* realPathOr(b));
+  });
+
+  const realPathOr = (file: string) =>
+    fileSystem.realPath(file).pipe(Effect.orElseSucceed(() => file));
+
+  const openMaster: HostedBlender["Service"]["openMaster"] = Effect.fn("HostedBlender.openMaster")(
+    function* ({ threadId, relativePath }, options) {
+      yield* Effect.annotateCurrentSpan({ threadId, agent: options?.agentSession !== undefined });
+      const file = yield* checkedBlend(threadId, relativePath);
+      return yield* inThreadQueue(threadId)(
+        Effect.gen(function* () {
+          const previous = threadMasters.get(threadId);
+          if (previous !== undefined && previous.blendPath !== file.blendPath) {
+            yield* leave(threadId);
+            // The pane reaches a master only through its thread; one with unsaved work stays.
+            if (threadMasters.get(threadId)?.blendPath === previous.blendPath) {
+              return yield* new HostedBlenderError({ reason: "masterUnsaved" });
+            }
+          }
+          const known = threadMasters.get(threadId) ?? {
+            blendPath: file.blendPath,
+            relativePath: file.relativePath,
+            desktop: null,
+            desktopDirty: false,
+            desktopPath: null,
+            agentSession: null,
+          };
+          if (options?.agentSession !== undefined) known.agentSession = options.agentSession;
+          threadMasters.set(threadId, known);
+          return yield* inMasterQueue(file.blendPath)(joinMaster(threadId, file));
+        }),
+      );
+    },
+  );
+
+  /**
+   * Joins the thread to the master Blender for `file`, starting one if the desktop Blender doesn't
+   * have the file. A Blender that starts takes every thread that chose the file, as a Move does.
+   */
+  // Runs inside openMaster's or moveIntoT3's span, in the master's queue.
+  const joinMaster = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    file: Effect.Success<ReturnType<typeof checkedBlend>>,
+  ) {
+    const existing = instances.get(masterKey(file.blendPath));
+    // A quit it may still carry out: nobody is handed this master until that is settled.
+    if (existing?.quitCancelled != null) {
+      return yield* new HostedBlenderError({ reason: "masterBusy" });
+    }
+    // Copy back writes into a master; no other Blender may have its file, by any name. The file
+    // is held while the desktop Blender is asked, outside the lock other opens wait on.
+    yield* claimLock.withPermits(1)(
+      Effect.gen(function* () {
+        if ((yield* claimedBy(file.blendPath, existing)) !== undefined) {
+          return yield* new HostedBlenderError({ reason: "openInAnotherThread" });
+        }
+        if (existing === undefined) reserved.add(file.blendPath);
+      }),
+    );
+    const start = Effect.gen(function* () {
+      if (existing !== undefined) return { instance: existing, desktopUnchecked: false };
+      const probe = Option.isNone(desktop)
+        ? Option.some<DesktopBlender.DesktopBlenderProbe>({ _tag: "none" })
+        : yield* desktop.value.probe.pipe(Effect.timeoutOption(DESKTOP_PROBE_DEADLINE));
+      // The desktop Blender keeps a master it has open, under any name for the same file.
+      if (
+        Option.isSome(probe) &&
+        probe.value._tag === "open" &&
+        (yield* sameFile(probe.value.filepath, file.blendPath))
+      ) {
+        for (const known of threadMasters.values()) {
+          if (known.blendPath !== file.blendPath) continue;
+          known.desktop = "open";
+          known.desktopDirty = probe.value.dirty;
+          known.desktopPath = probe.value.filepath;
+        }
+        return undefined;
+      }
+      failedMasters.delete(file.blendPath);
+      const instance = yield* claimLock.withPermits(1)(
+        Effect.suspend(() => {
+          reserved.delete(file.blendPath);
+          return startInstance(
+            {
+              role: "master",
+              threadId,
+              relativePath: file.relativePath,
+              blendPath: file.blendPath,
+              agentWorkingCopy: false,
+            },
+            file.tools,
+          );
+        }),
+      );
+      // A desktop Blender nobody could ask, or one that didn't answer in time.
+      instance.desktopUnchecked = Option.isNone(probe) || probe.value._tag === "noAddon";
+      return { instance, desktopUnchecked: instance.desktopUnchecked };
+    }).pipe(Effect.ensuring(Effect.sync(() => reserved.delete(file.blendPath))));
+    const started = yield* start;
+    if (started === undefined) {
+      yield* publishNow();
+      return { _tag: "desktop" as const };
+    }
+    const instance = started.instance;
+    instance.retryQuit = false;
+    for (const [id, known] of threadMasters) {
+      if (known.blendPath !== file.blendPath || (id !== threadId && existing !== undefined)) {
+        continue;
+      }
+      known.desktop = null;
+      instance.masterThreads.add(id);
+      // Granted only to the agent session that asked, while it is still the thread's.
+      if (yield* sessionCurrent(id)) instance.agentThreads.add(id);
+    }
+    yield* maybeGrant(instance);
+    yield* syncForwards(instance);
+    yield* publishNow();
+    return { _tag: "hosted" as const, desktopUnchecked: instance.desktopUnchecked };
+  });
+
+  type QuitOutcome = "quit" | "refused" | "uncertain";
+
+  /**
+   * Asks Blender to quit only if it has nothing unsaved, as its own quit would check. `uncertain`
+   * when it can't be asked or doesn't answer: the process is kept.
+   */
+  // Runs inside the master's queue.
+  const quitIfClean = Effect.fnUntraced(function* (instance: Instance) {
+    const control = instance.control;
+    // An earlier quit still unresolved in Blender stands for this one too: it isn't asked twice.
+    if (control === null || instance.quitCancelled != null) return "uncertain" as QuitOutcome;
+    instance.lastRequestId += 1;
+    const id = instance.lastRequestId;
+    const refused = yield* Deferred.make<void>();
+    instance.quitRefused = { id, done: refused };
+    instance.quitting = true;
+    const ended = Deferred.await(instance.ended).pipe(Effect.as<QuitOutcome>("quit"));
+    // The write is part of the attempt: a stalled socket counts against its deadline.
+    const outcome = yield* control
+      .write(`${encodeQuitRequest({ type: "quitIfClean", id })}\n`)
+      .pipe(
+        Effect.andThen(
+          Effect.raceFirst(ended, Deferred.await(refused).pipe(Effect.as<QuitOutcome>("refused"))),
+        ),
+        Effect.timeoutOption(QUIT_TIMEOUT),
+      );
+    instance.quitRefused = null;
+    if (Option.isSome(outcome)) {
+      if (outcome.value !== "quit") instance.quitting = false;
+      return outcome.value;
+    }
+    // No answer in time: the request may still be waiting in a busy Blender. The leave ends
+    // here; the master stays unavailable until Blender drops the quit, exits, or its connection
+    // closes, so a late quit can't close it under a thread that joins meanwhile.
+    const cancelled = yield* Deferred.make<void>();
+    instance.quitCancelled = { id, done: cancelled };
+    yield* publishNow();
+    // A stalled write must not hold the race up.
+    yield* control
+      .write(`${encodeQuitRequest({ type: "cancelQuit", id })}\n`)
+      .pipe(Effect.forkIn(serviceScope));
+    yield* Effect.raceFirst(
+      Deferred.await(instance.ended),
+      Effect.raceFirst(Deferred.await(cancelled), Deferred.await(control.closed)),
+    ).pipe(
+      Effect.andThen(
+        Effect.suspend(() => {
+          if (instance.quitCancelled?.done === cancelled) instance.quitCancelled = null;
+          instance.quitting = false;
+          return publishNow();
+        }),
+      ),
+      Effect.forkIn(serviceScope),
+    );
+    return "uncertain" as QuitOutcome;
+  });
+
+  /**
+   * The last thread leaving a master: quits it if clean. It is kept for that thread on unsaved
+   * changes, and asked again once T3 can reach it if it couldn't be asked.
+   */
+  // Runs in the master's queue.
+  const decideQuit = Effect.fnUntraced(function* (instance: Instance, threadId: ThreadId) {
+    const outcome = yield* quitIfClean(instance);
+    instance.retryQuit = outcome === "uncertain";
+    if (outcome === "quit" && threadMasters.get(threadId)?.blendPath === instance.blendPath) {
+      threadMasters.delete(threadId);
+    }
+    yield* publishNow();
+  });
+
+  /** In the master's queue, finished even when the caller stops waiting. */
+  const leave = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const known = threadMasters.get(threadId);
+    if (known === undefined) return;
+    const step = inMasterQueue(known.blendPath)(
+      Effect.gen(function* () {
+        known.agentSession = null;
+        const instance = instances.get(masterKey(known.blendPath));
+        if (instance === undefined || !instance.masterThreads.has(threadId)) {
+          if (threadMasters.get(threadId) === known) threadMasters.delete(threadId);
+          return yield* publishNow();
+        }
+        instance.agentThreads.delete(threadId);
+        yield* syncForwards(instance);
+        if (instance.masterThreads.size > 1) {
+          instance.masterThreads.delete(threadId);
+          if (threadMasters.get(threadId) === known) threadMasters.delete(threadId);
+          return yield* publishNow();
+        }
+        yield* decideQuit(instance, threadId);
+      }),
+    );
+    // Takes its place in the queue now, as called, and finishes even if the caller goes.
+    yield* Fiber.join(yield* step.pipe(Effect.forkIn(serviceScope, { startImmediately: true })));
+  });
+
+  /** Blender that couldn't be asked to quit is asked again once T3 reaches it. */
+  // Runs in the instance's run span, when its control connection comes up.
+  const retryQuit = Effect.fnUntraced(function* (instance: Instance) {
+    yield* inMasterQueue(instance.blendPath)(
+      Effect.suspend(() => {
+        const [only] = instance.masterThreads;
+        return instance.retryQuit && instance.masterThreads.size === 1 && only !== undefined
+          ? decideQuit(instance, only)
+          : Effect.void;
+      }),
+    );
+  });
+
+  const releaseMaster: HostedBlender["Service"]["releaseMaster"] = Effect.fn(
+    "HostedBlender.releaseMaster",
+  )(function* (threadId) {
+    yield* inThreadQueue(threadId)(leave(threadId));
+  });
+
+  const knownMaster = (threadId: ThreadId) => {
+    const known = threadMasters.get(threadId);
+    return known === undefined
+      ? Effect.fail(new HostedBlenderError({ reason: "noMaster" }))
+      : Effect.succeed(known);
+  };
+
+  const reopenMaster: HostedBlender["Service"]["reopenMaster"] = Effect.fn(
+    "HostedBlender.reopenMaster",
+  )(function* (threadId) {
+    const known = yield* knownMaster(threadId);
+    yield* openMaster({ threadId, relativePath: known.relativePath });
+  });
+
+  /** What the desktop Blender has now, for every thread that chose this master. */
+  // Runs in the master's queue, inside moveIntoT3's span.
+  const recheckDesktop = Effect.fnUntraced(function* (blendPath: string) {
+    if (Option.isNone(desktop)) return undefined;
+    const probe = yield* desktop.value.probe.pipe(Effect.timeoutOption(DESKTOP_PROBE_DEADLINE));
+    const open =
+      Option.isSome(probe) &&
+      probe.value._tag === "open" &&
+      (yield* sameFile(probe.value.filepath, blendPath))
+        ? probe.value
+        : undefined;
+    // Its path and unsaved changes go together, and both go when it no longer has the file.
+    for (const known of threadMasters.values()) {
+      if (known.blendPath !== blendPath) continue;
+      known.desktop =
+        open !== undefined
+          ? "open"
+          : Option.isSome(probe) && probe.value._tag === "noAddon"
+            ? "noAddon"
+            : null;
+      known.desktopPath = open?.filepath ?? null;
+      known.desktopDirty = open?.dirty ?? false;
+    }
+    yield* publishNow();
+    return open;
+  });
+
+  const moveIntoT3: HostedBlender["Service"]["moveIntoT3"] = Effect.fn("HostedBlender.moveIntoT3")(
+    function* ({ threadId, relativePath }) {
+      yield* Effect.annotateCurrentSpan({ threadId });
+      const known = yield* knownMaster(threadId);
+      // The user clicked Move for the master they saw; a different one since is refused.
+      if (known.relativePath !== relativePath) {
+        return yield* new HostedBlenderError({ reason: "masterChanged" });
+      }
+      if (Option.isNone(desktop)) {
+        return yield* new HostedBlenderError({ reason: "desktopUnreachable" });
+      }
+      const blendPath = known.blendPath;
+      yield* inMasterQueue(blendPath)(
+        Effect.gen(function* () {
+          // Checked in its turn: a leave queued first may have dropped the thread's choice.
+          const current = threadMasters.get(threadId);
+          if (current !== known || current.relativePath !== relativePath) {
+            return yield* new HostedBlenderError({ reason: "masterChanged" });
+          }
+          // What the desktop Blender has right now, not what T3 saw when it offered the move.
+          const open = yield* recheckDesktop(blendPath);
+          if (open === undefined) {
+            return yield* new HostedBlenderError({
+              reason: known.desktop === "noAddon" ? "desktopUnreachable" : "desktopOtherFile",
+            });
+          }
+          // Blender saves by replacing the entry it opened, so under another name for the
+          // master, a symlink included, its save would land beside the master rather than in
+          // it. The entry is its folder, resolved, and its own name, not resolved.
+          const target = path.join(
+            yield* realPathOr(path.dirname(open.filepath)),
+            path.basename(open.filepath),
+          );
+          if (target !== blendPath) {
+            return yield* new HostedBlenderError({ reason: "desktopAlias" });
+          }
+          yield* desktop.value.saveAndQuit(target).pipe(
+            Effect.tapError(() => recheckDesktop(blendPath)),
+            Effect.mapError(
+              (error) =>
+                new HostedBlenderError({
+                  reason:
+                    error.reason === "otherFile"
+                      ? "desktopOtherFile"
+                      : error.reason === "didNotQuit"
+                        ? "desktopDidNotQuit"
+                        : "desktopUnreachable",
+                }),
+            ),
+          );
+          for (const other of threadMasters.values()) {
+            if (other.blendPath !== blendPath) continue;
+            other.desktop = null;
+            other.desktopPath = null;
+            other.desktopDirty = false;
+          }
+          // Handed off: what's at the master's name now is the file Blender saved.
+          const saved = yield* fileSystem.stat(blendPath).pipe(Effect.option);
+          if (Option.isNone(saved) || saved.value.type !== "File") {
+            yield* publishNow();
+            return yield* new HostedBlenderError({ reason: "desktopDidNotQuit" });
+          }
+          // Published first, so a hosted open that fails leaves the pane offering to try again.
+          yield* publishNow();
+          // The threads that still chose this master go with it, the mover first if it did.
+          const movers = [...threadMasters]
+            .filter(([, other]) => other.blendPath === blendPath)
+            .map(([id]) => id)
+            .toSorted((a) => (a === threadId ? -1 : 0));
+          const first = movers[0];
+          if (first === undefined) return;
+          const file = yield* checkedBlend(first, threadMasters.get(first)!.relativePath);
+          const opened = yield* joinMaster(first, file);
+          if (opened._tag === "desktop") {
+            return yield* new HostedBlenderError({ reason: "desktopDidNotQuit" });
+          }
+        }),
+      );
+    },
+  );
+
+  const masterState: HostedBlender["Service"]["masterState"] = (threadId) =>
+    SubscriptionRef.changes(masterStates).pipe(
+      Stream.map((all): HostedBlenderMasterState => all.get(threadId) ?? { status: "none" }),
+      Stream.changesWith((a, b) => JSON.stringify(a) === JSON.stringify(b)),
+    );
+
   return HostedBlender.of({
+    openMaster,
+    reopenMaster,
+    releaseMaster,
+    moveIntoT3,
+    masterState,
     open,
     agentListener,
     quit,

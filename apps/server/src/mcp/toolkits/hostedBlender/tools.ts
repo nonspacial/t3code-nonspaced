@@ -1,5 +1,7 @@
 import {
   HostedBlenderToolError,
+  HostedBlenderToolMasterOpenInput,
+  HostedBlenderToolMasterOpenResult,
   HostedBlenderToolQuitInput,
   HostedBlenderToolStartInput,
   HostedBlenderToolStartResult,
@@ -44,9 +46,24 @@ const BlenderStartTool = Tool.make("blender_start", {
   .annotate(Tool.OpenWorld, false)
   .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenWithoutHostedBlender);
 
+const BlenderMasterOpenTool = Tool.make("blender_master_open", {
+  description:
+    "Open the master before copying proven changes back into it. Returns the MCP server to copy back through: `blender` if the user's desktop Blender has it open, else `blender-master`, the master Blender T3 starts and shares between threads.",
+  parameters: HostedBlenderToolMasterOpenInput,
+  success: HostedBlenderToolMasterOpenResult,
+  failure: HostedBlenderToolFailure,
+  dependencies,
+})
+  .annotate(Tool.Title, "Open master in Blender")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenWithoutHostedBlender);
+
 const BlenderStatusTool = Tool.make("blender_status", {
   description:
-    "List this thread's hosted Blenders: the open file, whether it is starting, running or failed, unsaved changes, and whether `blender-hosted` reaches it.",
+    "List this thread's hosted Blenders (working copy and master): the open file, whether it is starting, running or failed, unsaved changes, and whether your MCP entry reaches it.",
   // No `parameters`: an explicit empty struct is not a valid MCP input schema.
   success: HostedBlenderToolStatusResult,
   failure: HostedBlenderToolFailure,
@@ -75,6 +92,7 @@ const BlenderQuitTool = Tool.make("blender_quit", {
 
 export const HostedBlenderToolkit = Toolkit.make(
   BlenderStartTool,
+  BlenderMasterOpenTool,
   BlenderStatusTool,
   BlenderQuitTool,
 );

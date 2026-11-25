@@ -8,6 +8,8 @@ import {
   type EnvironmentId,
   HOSTED_BLENDER_STREAM_PATH,
   HostedBlenderError,
+  type HostedBlenderMasterState,
+  type HostedBlenderRole,
   type HostedBlenderSetupState,
   type HostedBlenderThreadState,
   type ScopedThreadRef,
@@ -38,6 +40,22 @@ export function useHostedBlenderState(
     threadRef === null
       ? null
       : hostedBlenderEnvironment.threadState({
+          environmentId: threadRef.environmentId,
+          input: { threadId: threadRef.threadId },
+        }),
+    resolve,
+  ).data;
+}
+
+/** The thread's master file and where it is open, or null until the server answers. */
+export function useHostedBlenderMasterState(
+  threadRef: ScopedThreadRef | null,
+): HostedBlenderMasterState | null {
+  const resolve = useMessages();
+  return useEnvironmentQuery(
+    threadRef === null
+      ? null
+      : hostedBlenderEnvironment.masterState({
           environmentId: threadRef.environmentId,
           input: { threadId: threadRef.threadId },
         }),
@@ -91,6 +109,17 @@ export function readHostedBlenderState(
   return readLatest(appAtomRegistry, atom, "5 seconds");
 }
 
+/** Reads the thread's master once, for a click; null when the server doesn't answer. */
+export function readHostedBlenderMasterState(
+  threadRef: ScopedThreadRef,
+): Promise<HostedBlenderMasterState | null> {
+  const atom = hostedBlenderEnvironment.masterState({
+    environmentId: threadRef.environmentId,
+    input: { threadId: threadRef.threadId },
+  });
+  return readLatest(appAtomRegistry, atom, "5 seconds");
+}
+
 /**
  * An atom's latest value, or null when it fails or none comes in time. A subscription's
  * values stay `waiting` for as long as its stream runs, so waiting values count.
@@ -119,13 +148,19 @@ export async function setHostedBlenderView(
   threadRef: ScopedThreadRef,
   relativePath: string,
   view: ModelView,
+  role: HostedBlenderRole = "working",
 ): Promise<"moved" | "otherFile" | "failed"> {
   const result = await runAtomCommand(
     appAtomRegistry,
     hostedBlenderEnvironment.setView,
     {
       environmentId: threadRef.environmentId,
-      input: { threadId: threadRef.threadId, relativePath, view },
+      input: {
+        threadId: threadRef.threadId,
+        relativePath,
+        view,
+        ...(role === "master" ? { role } : {}),
+      },
     },
     { reportFailure: false },
   );

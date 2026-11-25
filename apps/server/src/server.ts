@@ -115,6 +115,7 @@ import * as PreviewAgentActivity from "./preview/PreviewAgentActivity.ts";
 import * as DesktopBrowserChannel from "./preview/DesktopBrowserChannel.ts";
 import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
 import * as HiddenDisplayBinary from "./hostedBlender/HiddenDisplayBinary.ts";
+import * as DesktopBlender from "./hostedBlender/DesktopBlender.ts";
 import * as HostedBlender from "./hostedBlender/HostedBlender.ts";
 import * as HostedBlenderAgents from "./hostedBlender/HostedBlenderAgents.ts";
 import * as HostedBlenderSetup from "./hostedBlender/HostedBlenderSetup.ts";
@@ -577,6 +578,8 @@ const layerHostedBlenderSetup = HostedBlenderSetup.layer.pipe(
 
 const layerHostedBlender = HostedBlender.layer.pipe(
   Layer.provideMerge(layerHostedBlenderSetup),
+  // Read when a master opens and asked to save and quit by Move into T3; never otherwise.
+  Layer.provide(DesktopBlender.layer),
   Layer.provide(WorkspacePaths.layer),
   Layer.provide(NetService.layer),
 );
@@ -710,7 +713,12 @@ const layerOrchestrationApplication = Layer.merge(
 
 const layerThreadSettlementWorker = Layer.effectDiscard(
   ThreadSettlementService.make.pipe(Effect.flatMap((service) => service.start())),
-).pipe(Layer.provide(layerPullRequestService), Layer.provide(ProjectionStoreV2.layer));
+).pipe(
+  Layer.provide(layerPullRequestService),
+  Layer.provide(ProjectionStoreV2.layer),
+  // The same memoized instance the WebSocket handlers and stream route use.
+  Layer.provide(layerHostedBlender),
+);
 
 const layerIdleCompactionWorker = Layer.effectDiscard(
   IdleCompactionService.make.pipe(Effect.flatMap((service) => service.start())),

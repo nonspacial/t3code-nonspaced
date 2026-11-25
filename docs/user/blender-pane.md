@@ -1,6 +1,6 @@
 # Blender pane
 
-A hosted Blender is a Blender that T3 Code runs for a thread on the computer it's connected to. It draws to a hidden display rather than your screen, and the Blender pane shows it live in the side panel. It's separate from any Blender you run yourself: T3 Code never opens, closes or changes your own Blender or its settings.
+A hosted Blender is a Blender that T3 Code runs for a thread on the computer it's connected to. It draws to a hidden display rather than your screen, and the Blender pane shows it live in the side panel. It's separate from any Blender you run yourself: T3 Code never opens, closes or changes your own Blender or its settings, except when you choose [Move into T3 Code](#move-into-t3-code).
 
 Hosted Blender is off until you set it up. Until then, the pane says **Setup needed**.
 
@@ -45,6 +45,21 @@ Each piece of code the agent runs in Blender is one undo step, plus one more whe
 Only programs running under your own account on the server can reach the agent's connection to Blender; T3 Code drops any other. If your Blender's MCP extension is a version T3 Code hasn't tested, the agent gets no access and tells you whether to update the extension or T3 Code. Update the extension in your own Blender: T3 Code copies it into hosted Blenders the next time one starts. If undo is off in your Blender (Undo Steps set to 0, or Global Undo off for edits in Object Mode), the agent's edits can't be undone, and the agent is told so.
 
 Only the working copy the agent started takes its calls. A file you opened from the pane, even the working copy, doesn't; the agent quits it, saving first, and starts it again. Switching **Allow agents to start hosted Blenders** off, or the thread's agent session ending, closes the agent's connection to Blender at once, and so does opening another file in that Blender or saving the copy under another name (reverting it doesn't); Blender keeps running, and you can still watch and use it in the pane. The agent gets it back by quitting and starting the working copy again. If T3 loses its connection to that Blender, save your work in the pane before the agent restarts it.
+
+## The master and copying back
+
+The file you asked the agent to change is the master. Once the agent's change is proven in its working copy, it copies the change back into the master itself, through whichever Blender has the master open:
+
+- your desktop Blender, if it has the master open and runs Blender Lab's MCP add-on, through your own `blender` MCP setup;
+- otherwise a master Blender: a hosted Blender T3 Code starts for the master. Threads working on the same master share it, and it quits when the last of them settles or is archived. If it has unsaved changes then, it stays open in that thread's **Master** view until you save or quit it, and that thread can't switch to another master meanwhile.
+
+The agent replaces only the objects it changed, and stops to ask you if any of them changed in the master meanwhile, such as when another agent copied back first. Agents take turns: each marks the master while it copies back, so a second agent waits. Each copy back can be undone in that Blender, and is saved; a desktop Blender shows it straight away. The agent tells you what it copied back.
+
+Once a thread has a master, the pane's toolbar has a **Working copy** / **Master** switch, with a dot on each for whether its Blender is running. **Master** shows the master Blender, or, if none has the master open, offers **Open in T3 Code**. Quitting the master Blender from its menu quits it for every thread sharing it. Embedded scripts never run in a master Blender. On a phone, only the working copy shows for now.
+
+### Move into T3 Code
+
+If your desktop Blender has the master open, the pane's **Master** side offers **Move into T3 Code**. T3 Code has your desktop Blender save the file, with any unsaved changes, and quit, then opens the file in a master Blender. Undo history from your desktop Blender is lost. T3 Code opens the file only once your desktop Blender has saved it and quit; if you save it under another name first, nothing moves. Every thread that chose that master moves with it. This needs Blender Lab's MCP add-on running in your desktop Blender on its usual port; without it, T3 Code can't tell what your Blender has open, so it only warns you, before opening the file and above a master Blender it opened that way. A desktop Blender with a different file open is left alone.
 
 ## Watching
 

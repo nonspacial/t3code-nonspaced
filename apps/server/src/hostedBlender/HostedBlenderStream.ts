@@ -45,7 +45,8 @@ const makeHandler = Effect.fnUntraced(function* (blender: HostedBlender.HostedBl
   const sessions = yield* SessionStore.SessionStore;
   const stream = Effect.scoped(
     Effect.gen(function* () {
-      const attached = yield* blender.attachViewer(threadId, { canOperate });
+      const role = url.value.searchParams.get("role") === "master" ? "master" : "working";
+      const attached = yield* blender.attachViewer(threadId, { canOperate, role });
       const incoming = NodeHttpServerRequest.toIncomingMessage(request);
       // H.264 is already compressed; without deflate every pending write stays in the socket
       // buffer bounded below.
