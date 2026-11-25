@@ -343,7 +343,7 @@ it("B15: a scroll over a view-only pane takes control and focus, and every notch
   expect(document.activeElement).toBe(pane.viewport);
 });
 
-it("B15: a scroll takes nothing while another device is in control or the viewer can't operate", async () => {
+it("B15: a scroll takes nothing while another device is in control, the viewer can't operate, or no frame shows", async () => {
   using _app = startup();
   const pane = await paneBesideComposer();
   await using _screen = pane.screen;
@@ -351,8 +351,23 @@ it("B15: a scroll takes nothing while another device is in control or the viewer
   expect(wheelNotch(pane).defaultPrevented).toBe(true);
   await control({ canOperate: false, controller: "unclaimed" });
   expect(wheelNotch(pane).defaultPrevented).toBe(true);
+  // Still connecting: the spinner shows and the canvas is hidden.
+  await act(() => stream.events?.onStatus("connecting"));
+  await control({ canOperate: true, controller: "unclaimed" });
+  expect(wheelNotch(pane).defaultPrevented).toBe(true);
   expect(stream.sent).toEqual([]);
   expect(document.activeElement).toBe(pane.composer);
+});
+
+it("B15: a scroll while a take over waits for its grant never reaches Blender", async () => {
+  using _app = startup();
+  const pane = await paneBesideComposer();
+  await using _screen = pane.screen;
+  await control({ canOperate: true, controller: "another-viewer" });
+  await pane.screen.getByText("Take over").click();
+  expect(wheelNotch(pane).defaultPrevented).toBe(true);
+  await control({ canOperate: true, controller: "you" });
+  expect(stream.sent).toEqual([{ type: "takeControl", takeOver: true }]);
 });
 
 it("B15: scrolls remembered for a take that never lands are dropped", async () => {
@@ -664,7 +679,11 @@ it("floats watch-only: no size for the display, no control, and the frame size f
     </div>,
   );
   await control({ canOperate: true, controller: "unclaimed" });
-  await screen.getByLabelText("Blender viewport").click();
+  const viewport = screen.getByLabelText("Blender viewport");
+  await viewport.click();
+  // The chat behind it still scrolls.
+  const scroll = wheelNotch({ viewport: viewport.element() as HTMLElement, inside: [0, 0] });
+  expect(scroll.defaultPrevented).toBe(false);
   expect(stream.sent).toEqual([]);
   expect(stream.sizes).toEqual([]);
   expect(stream.visible).toEqual([true]);

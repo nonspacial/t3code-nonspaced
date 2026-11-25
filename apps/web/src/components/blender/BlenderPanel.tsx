@@ -1020,12 +1020,12 @@ function BlenderStream(props: {
   const onViewportWheel = useEffectEvent((event: WheelEvent) => {
     // Over the stream, a scroll is Blender's or nobody's, never T3's scroll containers'.
     event.preventDefault();
-    // In control, the input has its own listener.
-    if (inputRef.current !== null || paused) return;
+    // In control, the input has its own listener. Before the first frame the canvas is hidden.
+    if (inputRef.current !== null || paused || status !== "live") return;
     const client = clientRef.current;
-    if (!canOperate || client === null) return;
+    // A take over still waiting for its grant was the button's, not this scroll's.
+    if (!canOperate || client === null || control.controller === "another-viewer") return;
     if (!inControl && !takingRef.current) {
-      if (control.controller !== "unclaimed") return;
       // Like a middle press, a scroll takes control and reaches Blender once it arrives.
       takingRef.current = true;
       client.send({ type: "takeControl", takeOver: false });
@@ -1041,11 +1041,12 @@ function BlenderStream(props: {
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- React's wheel listener is passive, so it can't keep the page from scrolling
   useEffect(() => {
     const container = containerRef.current;
-    if (container === null) return;
+    // The floating player only watches; the chat behind it keeps its scrolling.
+    if (container === null || floating) return;
     const onWheel = (event: WheelEvent) => onViewportWheel(event);
     container.addEventListener("wheel", onWheel, { passive: false });
     return () => container.removeEventListener("wheel", onWheel);
-  }, []);
+  }, [floating]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- while in control, the pane owns the DOM's pointer lock, the keyboard and the desktop app's menu shortcuts
   useEffect(() => {
