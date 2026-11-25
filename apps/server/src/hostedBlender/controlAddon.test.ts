@@ -9,7 +9,8 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { HOSTED_STARTUP_GATE_SOURCE } from "./agentGuard.ts";
 import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
 
-const MCP = "bl_ext.user_default.mcp";
+// The launch snapshot's module, as the control add-on enables it.
+const MCP = "bl_ext.t3_blender_lab.mcp";
 
 // Blender and Blender Lab's MCP 1.0.3, stood in for: its server binds a real socket. As in
 // Blender's addon_utils, `default_set=False` leaves the preference entry that Reload Scripts
@@ -28,17 +29,29 @@ class Addons(dict):
     def __iter__(self): return iter(list(self.values()))
     def remove(self, addon): self.pop(addon.module)
 addons = Addons({name: Addon(name) for name in state["enabled"]})
+class Repos(list):
+    def new(self, name, module, custom_directory, source):
+        import addon_utils
+        addon_utils.log("repo", module, custom_directory)
+        repo = types.SimpleNamespace(name=name, module=module, directory=custom_directory)
+        self.append(repo)
+        return repo
 context = types.SimpleNamespace(
     preferences=types.SimpleNamespace(
-        addons=addons, is_dirty=True, edit=types.SimpleNamespace(undo_steps=state.get("undoSteps", 32))
+        addons=addons,
+        is_dirty=True,
+        edit=types.SimpleNamespace(undo_steps=state.get("undoSteps", 32)),
+        extensions=types.SimpleNamespace(repos=Repos()),
     ),
     window_manager=types.SimpleNamespace(windows=[]),
 )
 data = types.SimpleNamespace(filepath=state.get("filepath", "/work/hero.wip-1a2b3c4d.blend"), is_dirty=False)
 from . import app, ops
-# Blender registers the enabled add-ons before --python scripts run.
+# Blender runs startup scripts (T3's gate), then registers the enabled add-ons, then --python.
+if not state.get("gateSkipped"):
+    import t3_hosted_gate
 import addon_utils
-for name in state["enabled"]:
+for name in [addon.module for addon in addons]:
     addon_utils.register(name)
 `,
   "bpy/app/__init__.py": String.raw`
@@ -83,16 +96,22 @@ def _undo_push(message):
     if bpy.state.get("undoPushFails"):
         return {"CANCELLED"}
     # As in Blender: data edits leave the file clean; an undo push marks it modified.
-    bpy.data.is_dirty = True
+    if not bpy.state.get("undoPushLeavesClean"):
+        bpy.data.is_dirty = True
+    _undo.pushed = True
     return {"FINISHED"}
-ed = types.SimpleNamespace(undo_push=_undo_push)
+_undo = types.SimpleNamespace(pushed=False)
+def _undo_poll():
+    import bpy
+    return _undo.pushed and not bpy.state.get("noUndoStep")
+ed = types.SimpleNamespace(undo_push=_undo_push, undo=types.SimpleNamespace(poll=_undo_poll))
 `,
   // Imported at the top for the capture and hit tests, which register() never runs.
   "gpu.py": "",
   "mathutils.py": "class Matrix: pass\nclass Vector: pass\n",
   "bl_ext/__init__.py": "",
-  "bl_ext/user_default/__init__.py": "",
-  "bl_ext/user_default/mcp/__init__.py": String.raw`
+  "bl_ext/t3_blender_lab/__init__.py": "",
+  "bl_ext/t3_blender_lab/mcp/__init__.py": String.raw`
 import bpy
 from . import mcp_to_blender_server
 def _autostart_timer(): mcp_to_blender_server.start("localhost", 9876)
@@ -105,11 +124,16 @@ def unregister():
         bpy.app.timers.unregister(_autostart_timer)
     mcp_to_blender_server.stop()
 `,
-  "bl_ext/user_default/mcp/deferred_tool.py":
-    "pending = []\ndef has_pending(): return bool(pending)\n",
+  // Like 1.0.3's: it drops a client that disconnects or times out without asking its checker again.
+  "bl_ext/t3_blender_lab/mcp/deferred_tool.py": String.raw`
+class _DeferredClient:
+    def __init__(self, conn, check_fn): self.conn = conn; self.check_fn = check_fn
+_deferred_clients = []
+def has_pending(): return bool(_deferred_clients)
+`,
   "t3_hosted_gate.py": HOSTED_STARTUP_GATE_SOURCE,
   // 1.0.3's accept and execute path, which poll() looks up by name on each call.
-  "bl_ext/user_default/mcp/mcp_to_blender_server.py": String.raw`
+  "bl_ext/t3_blender_lab/mcp/mcp_to_blender_server.py": String.raw`
 import json, socket, types
 from typing import NamedTuple
 from . import deferred_tool
@@ -137,12 +161,16 @@ def _accept_clients():
         _state.clients.append(_Client(conn))
 def poll():
     # Deferred work first, so a call made in this poll finishes in a later one, as in Blender.
-    for conn, check in deferred_tool.pending[:]:
-        done = check()
+    for client in deferred_tool._deferred_clients[:]:
+        try:
+            done = client.check_fn()
+        except Exception as error:
+            deferred_tool._deferred_clients.remove(client)
+            _reply(client.conn, {"status": "error", "message": str(error)})
+            continue
         if done is not None:
-            deferred_tool.pending.remove((conn, check))
-            conn.sendall((json.dumps({"status": "ok", "result": done, **{k: v for k, v in done.items() if k == "t3UndoWarning"}}) + "\0").encode())
-            conn.close()
+            deferred_tool._deferred_clients.remove(client)
+            _reply(client.conn, {"status": "ok", "result": done})
     _accept_clients()
     for client in _state.clients[:]:
         try:
@@ -155,10 +183,15 @@ def poll():
         result = _execute_code(request["code"], request["strict_json"])
         _state.clients.remove(client)
         if result.check_fn is not None:
-            deferred_tool.pending.append((client.conn, result.check_fn))
+            deferred_tool._deferred_clients.append(deferred_tool._DeferredClient(client.conn, result.check_fn))
             continue
-        client.conn.sendall((json.dumps(result.response) + "\0").encode())
-        client.conn.close()
+        _reply(client.conn, result.response)
+def _reply(conn, response):
+    try:
+        conn.sendall((json.dumps(response) + "\0").encode())
+    except OSError:
+        pass
+    conn.close()
 def start(host, port):
     import addon_utils
     addon_utils.log("start", port)
@@ -256,8 +289,12 @@ if _scenario.get("connect", True):
         _steps.append(_report())
     if _scenario.get("fileBeforeGrant"):
         bpy.data.filepath = "/work/other.blend"
+    if _scenario.get("listeningBeforeGrant"):
+        # Blender Lab already listening, however it got there, when T3's grant arrives.
+        _addons.enable("${MCP}", default_set=True)
+        _server().start("localhost", int(MCP_PORT))
     if _scenario.get("manifestBeforeGrant") is not None:
-        with open(os.path.join(os.environ["PYTHONPATH"], "bl_ext/user_default/mcp/blender_manifest.toml"), "w") as _m:
+        with open(os.path.join(os.environ["PYTHONPATH"], "bl_ext/t3_blender_lab/mcp/blender_manifest.toml"), "w") as _m:
             _m.write(_scenario["manifestBeforeGrant"])
     _t3.sendall("".join(json.dumps({"type": kind}) + "\n" for kind in _scenario.get("send", ["grantAgentListener"])).encode())
     _tick()
@@ -314,7 +351,8 @@ if _call is not None:
     _table = _call.get("table")
     if _table is not None:
         # A /proc/net/tcp of the test's making, in the kernel's format: the client's row (its
-        # uid, state and inode as asked) and the row of Blender's own end.
+        # uid, state and inode as asked) and the row of Blender's own end, written once Blender
+        # has accepted, so it can carry that socket's real inode.
         def _hex(address):
             raw = socket.inet_aton(address[0])
             if _table.get("mapped"):
@@ -326,16 +364,35 @@ if _call is not None:
                 _hex(local), _hex(remote), state, uid, inode)
         _peer = _client.getsockname()
         _ours = ("127.0.0.1", int(MCP_PORT))
-        _rows = ["  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode"]
-        for _ in range(_table.get("clientRows", 1)):
-            _rows.append(_row(_peer, _ours, _table.get("state", "01"),
-                              os.getuid() + _table.get("uidOffset", 0), _table.get("inode", 4242)))
-        if _table.get("ownRow", True):
-            _rows.append(_row(_ours, _peer, _table.get("ownState", "01"), os.getuid(), 4243))
         _fake = os.path.join(os.path.dirname(SOCKET_PATH), "tcp")
-        with open(_fake, "w") as _out:
-            _out.write("\n".join(_rows) + "\n")
+        def _write_table(accepted):
+            rows = ["  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode"]
+            for _ in range(_table.get("clientRows", 1)):
+                rows.append(_row(_peer, _ours, _table.get("state", "01"),
+                                 os.getuid() + _table.get("uidOffset", 0), _table.get("inode", 4242)))
+            if _table.get("ownRow", True):
+                own_inode = os.fstat(accepted.fileno()).st_ino + _table.get("ownInodeOffset", 0)
+                rows.append(_row(_ours, _peer, _table.get("ownState", "01"), os.getuid(), own_inode))
+            if _table.get("malformed"):
+                rows.append("   1: 0100007F:ZZZZ 0100007F:1F90 01 00000000:00000000 00:00000000 00000000  1000 0 1 1")
+            with open(_fake, "w") as out:
+                out.write("\n".join(rows) + "\n")
+        class _Listening:
+            # Blender Lab's listening socket, writing the table at accept.
+            def __init__(self, sock): self._sock = sock
+            def accept(self):
+                connection, address = self._sock.accept()
+                _write_table(connection)
+                return connection, address
+            def __getattr__(self, name): return getattr(self._sock, name)
+        _server()._state.sock = _Listening(_server()._state.sock)
         PROC_NET_TCP = (_fake,)
+    if _call.get("controlBreaks"):
+        # T3's end of the control connection fails on the next write: the acting report.
+        class _Broken:
+            def sendall(self, data): raise BrokenPipeError()
+            def close(self): pass
+        _State.client = _Broken()
     _client.sendall((json.dumps({
         "type": "execute",
         "code": _call.get("code", "result = {'cube': 1}"),
@@ -343,7 +400,13 @@ if _call is not None:
     }) + "\0").encode())
     _server().poll()
     _dirty_first = bpy.data.is_dirty
-    _server().poll()
+    _deferred = sys.modules.get("${MCP}.deferred_tool")
+    if _call.get("deferredDropped") and _deferred is not None:
+        # Blender Lab dropping a call whose client went away, without asking its checker again.
+        _deferred._deferred_clients.clear()
+        _tick()
+    if _server() is not None and _server().is_running():
+        _server().poll()
     _client.settimeout(5)
     try:
         _reply = _client.recv(65536)
@@ -354,6 +417,9 @@ if _call is not None:
     _called = {
         "reply": json.loads(_reply.rstrip(b"\0")) if _reply else None,
         "dirtyAfterFirstPoll": _dirty_first,
+        "ran": getattr(bpy.data, "ran", False),
+        "listenerAfter": _snapshot()["agentListener"],
+        "undoPushes": sum(1 for line in open(os.environ["STUB_LOG"]) if '"undo_push"' in line) if os.path.exists(os.environ["STUB_LOG"]) else 0,
         "dirty": bpy.data.is_dirty,
         "acting": _acting,
         "actingAfter": _snapshot()["agentActing"],
@@ -428,8 +494,22 @@ const runAddon = (input: {
       readonly inode?: number;
       readonly ownRow?: boolean;
       readonly ownState?: string;
+      /** Blender's own row carries another socket's inode: a reused address and port. */
+      readonly ownInodeOffset?: number;
+      /** One more row that doesn't parse. */
+      readonly malformed?: boolean;
     };
+    /** T3's control connection fails when the add-on reports the agent acting. */
+    readonly controlBreaks?: boolean;
+    /** Blender Lab drops the deferred call after its first poll, as on a disconnect. */
+    readonly deferredDropped?: boolean;
   };
+  /** Blender skipped T3's startup gate, so enabled add-ons registered from the settings. */
+  readonly gateSkipped?: boolean;
+  /** Blender Lab is listening already when the grant arrives. */
+  readonly listeningBeforeGrant?: boolean;
+  readonly undoPushLeavesClean?: boolean;
+  readonly noUndoStep?: boolean;
 }) => {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-control-addon-"));
   dirs.push(dir);
@@ -438,7 +518,7 @@ const runAddon = (input: {
     NodeFS.writeFileSync(NodePath.join(dir, file), body);
   }
   NodeFS.writeFileSync(
-    NodePath.join(dir, "bl_ext/user_default/mcp/blender_manifest.toml"),
+    NodePath.join(dir, "bl_ext/t3_blender_lab/mcp/blender_manifest.toml"),
     input.manifest ?? `id = "mcp"\nversion = "${input.mcpVersion ?? "1.0.3"}"\n`,
   );
   const addon = NodePath.join(dir, "t3_control.py");
@@ -455,6 +535,9 @@ const runAddon = (input: {
       "--t3-mcp-port",
       String(port),
       ...(input.listen ? ["--t3-mcp-listen"] : []),
+      ...(input.installed.includes(MCP)
+        ? ["--t3-mcp-snapshot", NodePath.join(dir, "bl_ext/t3_blender_lab")]
+        : []),
     ],
     {
       env: { ...process.env, PYTHONPATH: dir, STUB_STATE: JSON.stringify(input), STUB_LOG: log },
@@ -467,7 +550,12 @@ const runAddon = (input: {
         .split("\n")
         .map((line) => JSON.parse(line))
     : [];
-  return { port, calls, ...JSON.parse(stdout.trim().split("\n").at(-1)!) };
+  return {
+    port,
+    calls,
+    snapshot: NodePath.join(dir, "bl_ext/t3_blender_lab"),
+    ...JSON.parse(stdout.trim().split("\n").at(-1)!),
+  };
 };
 
 const after = (result: { readonly steps: ReadonlyArray<unknown> }) => result.steps.at(-1);
@@ -476,7 +564,14 @@ const pending = { listener: "starting", listening: null, enabled: false };
 
 describe("T3's control add-on and Blender Lab's MCP add-on", () => {
   it("keeps it off without --t3-mcp-listen, and out of these settings so a reload can't start it", () => {
-    const result = runAddon({ installed: [MCP], enabled: [MCP], listen: false, then: "revert" });
+    // With the gate skipped, so the add-on's own cleanup is what keeps it out.
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: false,
+      gateSkipped: true,
+      then: "revert",
+    });
     expect(result.calls).toContainEqual(["disable", MCP, true]);
     expect(
       result.steps.every((step: unknown) => JSON.stringify(step) === JSON.stringify(off)),
@@ -524,6 +619,7 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
   it("enables an installed but disabled extension with its preferences, then starts it", () => {
     const result = runAddon({ installed: [MCP], enabled: [], listen: true });
     expect(result.calls.filter((call: ReadonlyArray<unknown>) => call[0] !== "start")).toEqual([
+      ["repo", "t3_blender_lab", result.snapshot],
       ["enable", MCP, true],
     ]);
     expect(after(result)).toEqual({ listener: "ready", listening: result.port, enabled: true });
@@ -617,6 +713,8 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       ["the client row is closing (FIN_WAIT2)", { state: "05" }],
       ["Blender's own end is gone by the second read", { ownRow: false }],
       ["Blender's own end is no longer established", { ownState: "08" }],
+      ["Blender's own row is another socket, by its inode", { ownInodeOffset: 1 }],
+      ["a table holds a row that doesn't parse", { malformed: true }],
     ] as const)("drops a connection when %s", (_name, table) => {
       expect(withTable(table)).toBeNull();
     });
@@ -656,6 +754,23 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       expect(result.inPrefs).toBe(false);
     });
 
+    it("grants nothing when Blender skipped T3's startup gate", () => {
+      const result = runAddon({ ...granted, gateSkipped: true });
+      expect(after(result)).toEqual({ listener: "failed", listening: null, enabled: false });
+      expect(bound(result)).toBe(false);
+    });
+
+    it("grants nothing when Blender Lab is listening already when the grant arrives", () => {
+      const result = runAddon({ ...granted, listeningBeforeGrant: true });
+      expect(after(result)).toMatchObject({ listener: "failed", listening: null });
+    });
+
+    it("loads only the launch's snapshot, through a repository of its own", () => {
+      const result = runAddon(granted);
+      expect(result.calls).toContainEqual(["repo", "t3_blender_lab", result.snapshot]);
+      expect(after(result)).toMatchObject({ listener: "ready" });
+    });
+
     it("pushes an undo step after the agent's own code, which makes the file unsaved", () => {
       const result = runAddon({ ...granted, call: {} });
       expect(result.call.dirty).toBe(true);
@@ -670,16 +785,35 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       );
     });
 
-    it("pushes a deferred call's undo step when its work finishes, not before", () => {
+    const deferredCode = (check: string) =>
+      `import bpy\nbpy.data.objects_changed = True\ndef check_is_finished():\n${check}\nresult = {}`;
+
+    it("pushes a step for a deferred call's first part, and another once its work finishes", () => {
       const result = runAddon({
         ...granted,
-        call: { code: "def check_is_finished():\n    return {'rendered': 1}\nresult = {}" },
+        call: { code: deferredCode("    return {'rendered': 1}") },
       });
       expect(result.call).toMatchObject({
         reply: { status: "ok", result: { rendered: 1 } },
-        dirtyAfterFirstPoll: false,
-        dirty: true,
+        dirtyAfterFirstPoll: true,
+        undoPushes: 2,
       });
+    });
+
+    it("still pushes a deferred call's last step when Blender Lab drops the call", () => {
+      const result = runAddon({
+        ...granted,
+        call: { code: deferredCode("    return None"), deferredDropped: true },
+      });
+      expect(result.call.undoPushes).toBe(2);
+    });
+
+    it("still pushes a deferred call's last step when its checker raises", () => {
+      const result = runAddon({
+        ...granted,
+        call: { code: deferredCode("    raise RuntimeError('render failed')") },
+      });
+      expect(result.call).toMatchObject({ reply: { status: "error" }, undoPushes: 2 });
     });
 
     it("records nothing once the agent's code opened another file", () => {
@@ -695,9 +829,28 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     it.each([
       ["undo is off", { undoSteps: 0 }, "Undo Steps is 0"],
       ["Blender refuses the undo push", { undoPushFails: true }, "couldn't record an undo step"],
+      ["the push leaves no undo step", { noUndoStep: true }, "couldn't record an undo step"],
+      [
+        "the file isn't marked unsaved",
+        { undoPushLeavesClean: true },
+        "doesn't show this edit as unsaved",
+      ],
     ] as const)("tells the agent when %s", (_name, options, says) => {
       const result = runAddon({ ...granted, ...options, call: {} });
       expect(result.call.reply.t3UndoWarning).toContain(says);
+    });
+
+    it("still marks the file unsaved with undo off, as Blender does before its limit", () => {
+      const result = runAddon({ ...granted, undoSteps: 0, call: {} });
+      expect(result.call.dirty).toBe(true);
+    });
+
+    it("runs nothing when telling T3 the agent is acting finds T3's connection gone", () => {
+      const result = runAddon({
+        ...granted,
+        call: { code: "import bpy\nbpy.data.ran = True\nresult = {}", controlBreaks: true },
+      });
+      expect(result.call).toMatchObject({ ran: false, listenerAfter: "off" });
     });
 
     it("tells T3 the agent is acting before its code runs, and not once the call has passed", () => {
@@ -746,7 +899,7 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
   });
 
   describe("T3's startup gate in the hosted settings", () => {
-    it("drops Blender Lab from the settings before Blender enables add-ons, and nothing else", () => {
+    it("drops Blender Lab and stale snapshot repositories, leaves the rest, and says it ran", () => {
       const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-gate-"));
       dirs.push(dir);
       NodeFS.mkdirSync(NodePath.join(dir, "bpy"));
@@ -756,21 +909,30 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
 import types
 class Addons(list):
     def remove(self, addon): list.remove(self, addon)
-context = types.SimpleNamespace(preferences=types.SimpleNamespace(addons=Addons(
-    types.SimpleNamespace(module=name)
-    for name in ["bl_ext.lab_blender_org.mcp", "bl_ext.user_default.mcp", "node_wrangler", "bl_ext.x.mcp_tools"]
-)))
+context = types.SimpleNamespace(preferences=types.SimpleNamespace(
+    addons=Addons(
+        types.SimpleNamespace(module=name)
+        for name in ["bl_ext.lab_blender_org.mcp", "bl_ext.user_default.mcp", "node_wrangler", "bl_ext.x.mcp_tools"]
+    ),
+    extensions=types.SimpleNamespace(repos=Addons(
+        types.SimpleNamespace(module=name) for name in ["user_default", "t3_blender_lab"]
+    )),
+))
 `,
       );
       NodeFS.writeFileSync(
         NodePath.join(dir, "gate.py"),
-        `${HOSTED_STARTUP_GATE_SOURCE}\nimport json\nprint(json.dumps([a.module for a in bpy.context.preferences.addons]))\n`,
+        `${HOSTED_STARTUP_GATE_SOURCE}\nimport json\nprefs = bpy.context.preferences\nprint(json.dumps({"addons": [a.module for a in prefs.addons], "repos": [r.module for r in prefs.extensions.repos], "completed": COMPLETED}))\n`,
       );
       const out = NodeChildProcess.execFileSync("python3", [NodePath.join(dir, "gate.py")], {
         env: { ...process.env, PYTHONPATH: dir },
         encoding: "utf8",
       });
-      expect(JSON.parse(out)).toEqual(["node_wrangler", "bl_ext.x.mcp_tools"]);
+      expect(JSON.parse(out)).toEqual({
+        addons: ["node_wrangler", "bl_ext.x.mcp_tools"],
+        repos: ["user_default"],
+        completed: true,
+      });
     });
   });
 });

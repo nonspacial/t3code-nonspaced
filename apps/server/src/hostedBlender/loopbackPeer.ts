@@ -1,4 +1,6 @@
-// @effect-diagnostics nodeBuiltinImport:off - the kernel's word order is the host's.
+// @effect-diagnostics nodeBuiltinImport:off - the kernel's word order is the host's, and a socket's inode comes from its fd.
+import * as NodeFS from "node:fs";
+import type * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 
 import * as Effect from "effect/Effect";
@@ -33,9 +35,8 @@ const unmapped = (hex: string) =>
 // "0100007F:1F90": the address as the kernel's 32-bit words in host byte order, then the port.
 const procEndpoint = (text: string): TcpEndpoint | null => {
   const [address, port] = text.split(":");
-  if (address === undefined || port === undefined || !/^(?:[0-9A-F]{8}){1,4}$/i.test(address)) {
-    return null;
-  }
+  if (address === undefined || port === undefined) return null;
+  if (!/^(?:[0-9A-F]{8}|[0-9A-F]{32})$/i.test(address) || !/^[0-9A-F]{4}$/i.test(port)) return null;
   const littleEndian = NodeOS.endianness() === "LE";
   let hex = "";
   for (let index = 0; index < address.length; index += 8) {
@@ -46,20 +47,32 @@ const procEndpoint = (text: string): TcpEndpoint | null => {
   return Number.isInteger(parsedPort) ? { address: unmapped(hex), port: parsedPort } : null;
 };
 
-export const parseTcpTable = (text: string): ReadonlyArray<TcpRow> =>
-  text
-    .split("\n")
-    .slice(1)
-    .flatMap((line) => {
-      const fields = line.trim().split(/\s+/);
-      const local = procEndpoint(fields[1] ?? "");
-      const remote = procEndpoint(fields[2] ?? "");
-      const uid = Number(fields[7]);
-      const inode = Number(fields[9]);
-      if (local === null || remote === null || fields[3] === undefined) return [];
-      if (!Number.isInteger(uid) || !Number.isInteger(inode)) return [];
-      return [{ local, remote, state: fields[3], uid, inode }];
-    });
+/** Null when any row doesn't parse: a table in doubt proves nothing. */
+export const parseTcpTable = (text: string): ReadonlyArray<TcpRow> | null => {
+  const rows: Array<TcpRow> = [];
+  for (const line of text.split("\n").slice(1)) {
+    if (line.trim() === "") continue;
+    const fields = line.trim().split(/\s+/);
+    const local = procEndpoint(fields[1] ?? "");
+    const remote = procEndpoint(fields[2] ?? "");
+    const [state, uid, inode] = [fields[3] ?? "", fields[7] ?? "", fields[9] ?? ""];
+    if (local === null || remote === null || !/^[0-9A-F]{2}$/i.test(state)) return null;
+    if (!/^\d+$/.test(uid) || !/^\d+$/.test(inode)) return null;
+    rows.push({ local, remote, state, uid: Number(uid), inode: Number(inode) });
+  }
+  return rows;
+};
+
+/** The inode the kernel lists an open socket under, from its file descriptor. */
+export const socketInode = (socket: NodeNet.Socket): number | null => {
+  const fd = (socket as unknown as { readonly _handle?: { readonly fd?: unknown } })._handle?.fd;
+  if (typeof fd !== "number" || fd < 0) return null;
+  try {
+    return NodeFS.fstatSync(fd).ino;
+  } catch {
+    return null;
+  }
+};
 
 const ipv4Hex = (address: string): string | null => {
   const parts = address.split(".");
@@ -110,39 +123,45 @@ const liveRow = (
   return row !== undefined && row.state === TCP_ESTABLISHED && row.inode !== 0 ? row : null;
 };
 
-export interface LoopbackConnection {
-  readonly remoteAddress?: string | undefined;
-  readonly remotePort?: number | undefined;
-  readonly localAddress?: string | undefined;
-  readonly localPort?: number | undefined;
-}
-
 /**
- * Whether the client of an accepted loopback connection runs as this OS account. Anything in
- * doubt (no row, several, a closing one, an unreadable table) is a no.
+ * Whether the client of a connection accepted on a loopback listener runs as this OS account.
+ * Our end is found by the accepted socket's own inode, so a reused address and port can't stand
+ * in for it. Anything in doubt (no row, several, a closing one, a table that doesn't parse) is a no.
  */
 export const isSameAccountPeer = Effect.fn("HostedBlender.isSameAccountPeer")(function* (
-  connection: LoopbackConnection,
+  socket: NodeNet.Socket,
   options?: { readonly tables?: ReadonlyArray<string>; readonly uid?: number },
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const uid = options?.uid ?? process.getuid?.();
-  const peerAddress = connection.remoteAddress && addressHex(connection.remoteAddress);
-  const ourAddress = connection.localAddress && addressHex(connection.localAddress);
-  if (uid === undefined || !peerAddress || !ourAddress) return false;
-  if (connection.remotePort === undefined || connection.localPort === undefined) return false;
-  const peer = { address: peerAddress, port: connection.remotePort };
-  const ours = { address: ourAddress, port: connection.localPort };
-  const readRows = Effect.forEach(options?.tables ?? LOOPBACK_TCP_TABLES, (table) =>
-    fileSystem.readFileString(table).pipe(Effect.orElseSucceed(() => "")),
-  ).pipe(Effect.map((texts) => texts.flatMap(parseTcpTable)));
-  const client = liveRow(yield* readRows, peer, ours);
-  if (client === null) return false;
-  // Read again: with our end still established, the row read was this connection's client.
-  const again = yield* readRows;
-  const still = liveRow(again, peer, ours);
-  if (liveRow(again, ours, peer) === null || still === null || still.inode !== client.inode) {
-    return false;
+  const inode = socketInode(socket);
+  const peerAddress = socket.remoteAddress && addressHex(socket.remoteAddress);
+  const ourAddress = socket.localAddress && addressHex(socket.localAddress);
+  if (uid === undefined || inode === null || !peerAddress || !ourAddress) return false;
+  if (socket.remotePort === undefined || socket.localPort === undefined) return false;
+  const peer = { address: peerAddress, port: socket.remotePort };
+  const ours = { address: ourAddress, port: socket.localPort };
+  const readings: Array<TcpRow> = [];
+  // Read twice: with our end still established, the row read was this connection's client.
+  for (let reading = 0; reading < 2; reading++) {
+    const texts = yield* Effect.forEach(options?.tables ?? LOOPBACK_TCP_TABLES, (table) =>
+      fileSystem.readFileString(table).pipe(Effect.orElseSucceed(() => "")),
+    );
+    const tables = texts.map(parseTcpTable);
+    if (tables.some((rows) => rows === null)) return false;
+    const rows = tables.flatMap((table) => table ?? []);
+    const own = liveRow(rows, ours, peer);
+    const client = liveRow(rows, peer, ours);
+    if (own === null || own.inode !== inode || client === null) return false;
+    readings.push(client);
   }
-  return still.uid === uid && client.uid === uid;
+  const [first, second] = readings;
+  return (
+    first !== undefined &&
+    second !== undefined &&
+    first.inode === second.inode &&
+    first.uid === second.uid &&
+    first.state === second.state &&
+    first.uid === uid
+  );
 });

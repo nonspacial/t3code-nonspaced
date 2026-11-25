@@ -32,22 +32,32 @@ connection's client end is read from `/proc/net/tcp` and `/proc/net/tcp6`, by tw
 that must keep the same rules: the control add-on's, inside Blender
 ([`agentGuard.ts`](../../apps/server/src/hostedBlender/agentGuard.ts)), and the server's, for
 connections T3 relays itself ([`loopbackPeer.ts`](../../apps/server/src/hostedBlender/loopbackPeer.ts)).
-A connection passes only when exactly one row is its client end, that row is established with a
-nonzero inode, and its uid is ours, and a second read still shows our own end established. Anything
-in doubt is refused: an orphaned or closing socket lists uid 0 and inode 0, which would otherwise
-read as root's.
+Our end is found by the accepted socket's own inode, so a reused address and port can't stand in
+for it. The client end must be exactly one row, established, with a nonzero inode and our uid, and a
+second read must show the same. A table with any row that doesn't parse proves nothing. An
+orphaned or closing socket lists uid 0 and inode 0, which would otherwise read as root's.
 
-Blender Lab never registers from the hosted settings: T3 writes a startup script into its settings
-copy, and Blender runs startup scripts before it enables add-ons, at launch and on Reload Scripts.
-Only the control add-on's grant enables it, after replacing two functions its `poll()` looks up by
-name: accepting a connection applies the check above, and running the agent's own code is followed
-by an undo push, which is what marks the file unsaved (Blender's data API alone leaves it clean), and
-reports when the agent is acting. Any listener without a live grant and that guard in place is
-stopped, so Reload Scripts ends access.
+The check covers a different account opening its own TCP connection. A socket the owner hands over
+on purpose (`SCM_RIGHTS`), or a proxy the owner runs, still has an owner-uid end and is outside it.
 
-Because the guard reaches into Blender Lab's internals, the add-on reads the extension's manifest
-(a top-level string `version`, parsed as TOML) when it grants, and enables nothing unless the
-version is in `TESTED_BLENDER_LAB_MCP_VERSIONS`. When Blender Lab releases a version, check that
-`_accept_clients`, `_Client`, `_state` and `_execute_code(code, strict_json)` still mean what the
-guard assumes, and only then add it. T3's settings copy is made once, so the user's own copy of the
-extension is copied in again whenever its manifest changes.
+Blender Lab is never in T3's settings copy, so Blender can't load it at startup from there. Each
+launch that may grant an agent gets its own snapshot of the user's copy, in that launch's private
+folder, checked to be whole and unchanged while it was copied. The control add-on loads only that
+snapshot, as an extension repository of its own, and reads its version there. A startup script
+T3 writes into the copy, which Blender runs before it enables add-ons (at launch and on Reload
+Scripts), strips any Blender Lab entry from the settings and leaves proof that it ran. The add-on
+grants nothing without that proof, if any Blender Lab module was already imported when it loaded,
+or if a Blender Lab listener is already running.
+
+Once granted, the add-on replaces two functions Blender Lab's `poll()` looks up by name. Accepting a
+connection applies the check above. Running the agent's own code first tells T3 the agent is
+acting, and runs nothing if that ended access. Afterwards it pushes an undo step, which is what
+marks the file unsaved; Blender's data API alone leaves it clean. Deferred work gets a second step
+when it finishes, fails, or is dropped. Any listener without a live, guarded grant is stopped, so
+Reload Scripts ends access.
+
+Because the guard reaches into Blender Lab's internals, nothing is enabled unless the snapshot's
+manifest has a top-level string `version`, parsed as TOML, that is in
+`TESTED_BLENDER_LAB_MCP_VERSIONS`. When Blender Lab releases a version, check that
+`_accept_clients`, `_Client`, `_ExecResult`, `_state`, `_execute_code(code, strict_json)` and
+`deferred_tool._deferred_clients` still mean what the guard assumes, and only then add it.

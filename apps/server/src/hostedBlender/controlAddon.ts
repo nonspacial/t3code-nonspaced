@@ -24,6 +24,8 @@ def _option(name):
 
 SOCKET_PATH = _option("--t3-control")
 MCP_PORT = _option("--t3-mcp-port")
+# The launch's own copy of Blender Lab: a folder holding its "mcp" package.
+MCP_SNAPSHOT = _option("--t3-mcp-snapshot")
 MCP_LISTEN = "--t3-mcp-listen" in (sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
 TICK = 0.1
 # Casting a mark's samples stops after this long, as the 3D preview's does.
@@ -40,6 +42,8 @@ class _State:
     mcp_name = None
     mcp_version = None
     mcp_file = None
+    # Blender Lab modules already imported when this add-on loaded: T3's gate didn't hold.
+    startup_mcp = []
     server = None
     client = None
     buffer = b""
@@ -369,6 +373,7 @@ def _tick():
                 break
         _check_authorized_file()
     _check_guard()
+    _sweep_deferred()
     _publish_state()
     return TICK
 
@@ -393,13 +398,13 @@ def _setup_mcp_addon():
     # drops it from these settings (T3's own copy), so Reload Scripts can't bring it back.
     import addon_utils
 
+    _State.startup_mcp = sorted(name for name in sys.modules if _is_mcp_module(name))
     preferences = bpy.context.preferences
     for name in [name for name in preferences.addons.keys() if _is_mcp_addon(name)]:
         addon_utils.disable(name, default_set=True)
-    installed = [module for module in addon_utils.modules() if _is_mcp_addon(module.__name__)]
-    if installed:
-        _State.mcp_name = installed[0].__name__
-        _State.mcp_file = getattr(installed[0], "__file__", None)
+    if MCP_SNAPSHOT is not None:
+        _State.mcp_name = "bl_ext." + SNAPSHOT_REPO_MODULE + ".mcp"
+        _State.mcp_file = os.path.join(MCP_SNAPSHOT, "mcp", "__init__.py")
     if MCP_LISTEN:
         _State.authorized_file = os.path.realpath(bpy.data.filepath) if bpy.data.filepath else None
     try:
@@ -417,6 +422,11 @@ def _grant_agent_listener():
     _check_authorized_file()
     if _State.grant != "granted":
         return
+    # Blender Lab must have stayed out of startup, behind T3's gate, with nothing listening yet.
+    if not _gate_completed() or _State.startup_mcp or _any_mcp_listening():
+        _State.agent_listener = "failed"
+        _disable_mcp()
+        return
     # Read now, from the manifest beside the module that will be enabled.
     _State.mcp_version = _mcp_version(_State.mcp_file) if _State.mcp_name else None
     if _State.mcp_name is not None and _State.mcp_version not in TESTED_MCP_VERSIONS:
@@ -428,6 +438,7 @@ def _grant_agent_listener():
 
         preferences = bpy.context.preferences
         try:
+            _use_snapshot_repo()
             # Its register() reads its preferences, which Blender creates only with default_set.
             addon_utils.enable(_State.mcp_name, default_set=True)
             addon = preferences.addons.get(_State.mcp_name)
@@ -443,6 +454,22 @@ def _grant_agent_listener():
         except AttributeError:
             pass
     _start_agent_listener()
+
+
+def _use_snapshot_repo():
+    # Only this launch's snapshot loads: a repository of its own, pointing at nothing else.
+    repos = bpy.context.preferences.extensions.repos
+    for repo in [repo for repo in repos if repo.module == SNAPSHOT_REPO_MODULE]:
+        repos.remove(repo)
+    repos.new(name="T3 Blender Lab", module=SNAPSHOT_REPO_MODULE, custom_directory=MCP_SNAPSHOT, source="USER")
+
+
+def _any_mcp_listening():
+    return any(
+        name.endswith(".mcp_to_blender_server") and _is_mcp_module(name) and module.is_running()
+        for name, module in list(sys.modules.items())
+        if module is not None and callable(getattr(module, "is_running", None))
+    )
 
 
 def _mcp_server():

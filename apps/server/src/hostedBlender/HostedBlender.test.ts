@@ -1762,50 +1762,72 @@ describe("Agent access at launch", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live(
-    "gates Blender Lab out of the hosted settings and refreshes it when the user's changed",
-    () =>
-      Effect.gen(function* () {
-        let hosted = "";
-        const { service } = yield* launch({}, {}, undefined, (dir) => {
-          const mine = NodePath.join(
-            dir,
-            ".config",
-            "blender",
-            "5.3",
-            "extensions",
-            "lab_blender_org",
-            "mcp",
-          );
-          NodeFS.mkdirSync(mine, { recursive: true });
-          NodeFS.writeFileSync(NodePath.join(mine, "blender_manifest.toml"), 'version = "1.0.4"\n');
-          NodeFS.writeFileSync(NodePath.join(mine, "__init__.py"), "# 1.0.4\n");
-          // T3's copy from before the user updated, with a setting of its own to keep.
-          const resources = NodePath.join(dir, "userdata", "hosted-blender", "user-resources");
-          hosted = NodePath.join(resources, "extensions", "lab_blender_org", "mcp");
-          NodeFS.mkdirSync(hosted, { recursive: true });
-          NodeFS.writeFileSync(
-            NodePath.join(hosted, "blender_manifest.toml"),
-            'version = "1.0.3"\n',
-          );
-          NodeFS.writeFileSync(NodePath.join(hosted, "stale.py"), "");
-          NodeFS.mkdirSync(NodePath.join(resources, "config"));
-          NodeFS.writeFileSync(NodePath.join(resources, "config", "kept.txt"), "kept");
-        });
-        expect(NodeFS.readFileSync(NodePath.join(hosted, "__init__.py"), "utf8")).toBe("# 1.0.4\n");
-        expect(NodeFS.existsSync(NodePath.join(hosted, "stale.py"))).toBe(false);
-        const resources = NodePath.dirname(NodePath.dirname(NodePath.dirname(hosted)));
-        expect(NodeFS.readFileSync(NodePath.join(resources, "config", "kept.txt"), "utf8")).toBe(
-          "kept",
-        );
-        expect(
-          NodeFS.readFileSync(
-            NodePath.join(resources, "scripts", "startup", "t3_hosted_gate.py"),
-            "utf8",
-          ),
-        ).toBe(HOSTED_STARTUP_GATE_SOURCE);
-        yield* service.quit({ threadId, save: false });
-      }).pipe(Effect.scoped),
+  // The user's own Blender Lab, and T3's settings copy from a launch before it was kept out.
+  const withBlenderLab =
+    (unreadable = false) =>
+    (dir: string) => {
+      const mine = NodePath.join(dir, ".config/blender/5.3/extensions/lab_blender_org/mcp");
+      NodeFS.mkdirSync(NodePath.join(mine, "tools"), { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(mine, "blender_manifest.toml"), 'version = "1.0.3"\n');
+      NodeFS.writeFileSync(NodePath.join(mine, "__init__.py"), "# Blender Lab\n");
+      NodeFS.writeFileSync(NodePath.join(mine, "tools", "execute.py"), "# tool\n");
+      if (unreadable) NodeFS.chmodSync(NodePath.join(mine, "tools", "execute.py"), 0o000);
+      const resources = NodePath.join(dir, "userdata/hosted-blender/user-resources");
+      NodeFS.mkdirSync(NodePath.join(resources, "extensions/lab_blender_org/mcp"), {
+        recursive: true,
+      });
+      NodeFS.mkdirSync(NodePath.join(resources, "config"));
+      NodeFS.writeFileSync(NodePath.join(resources, "config", "kept.txt"), "kept");
+    };
+  const snapshotArg = (args: ReadonlyArray<string>) =>
+    args.includes("--t3-mcp-snapshot") ? args[args.indexOf("--t3-mcp-snapshot") + 1] : undefined;
+
+  it.live("keeps Blender Lab out of the settings copy, behind T3's startup gate", () =>
+    Effect.gen(function* () {
+      let resources = "";
+      const { service } = yield* launch({}, {}, undefined, (dir) => {
+        withBlenderLab()(dir);
+        resources = NodePath.join(dir, "userdata/hosted-blender/user-resources");
+      });
+      expect(NodeFS.existsSync(NodePath.join(resources, "extensions/lab_blender_org/mcp"))).toBe(
+        false,
+      );
+      expect(NodeFS.readFileSync(NodePath.join(resources, "config", "kept.txt"), "utf8")).toBe(
+        "kept",
+      );
+      expect(
+        NodeFS.readFileSync(NodePath.join(resources, "scripts/startup/t3_hosted_gate.py"), "utf8"),
+      ).toBe(HOSTED_STARTUP_GATE_SOURCE);
+      yield* service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("gives a granted launch a whole private snapshot of Blender Lab, and the pane none", () =>
+    Effect.gen(function* () {
+      const granted = yield* launch({ agentPort: 41234 }, undefined, undefined, withBlenderLab());
+      const snapshot = snapshotArg(granted.args);
+      expect(snapshot).toContain(NodePath.join("hosted-blender", "launches"));
+      expect(
+        NodeFS.readFileSync(NodePath.join(snapshot!, "mcp", "tools", "execute.py"), "utf8"),
+      ).toBe("# tool\n");
+      yield* granted.service.quit({ threadId, save: false });
+      const pane = yield* launch({ agentPort: 41234 }, {}, undefined, withBlenderLab());
+      expect(snapshotArg(pane.args)).toBeUndefined();
+      yield* pane.service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("gives no snapshot when Blender Lab can't be copied whole", () =>
+    Effect.gen(function* () {
+      const { service, args } = yield* launch(
+        { agentPort: 41234 },
+        undefined,
+        undefined,
+        withBlenderLab(true),
+      );
+      expect(snapshotArg(args)).toBeUndefined();
+      yield* service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
   );
 
   it("waits for the control connection as long as Blender may take to start", () => {

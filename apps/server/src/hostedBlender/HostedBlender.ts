@@ -780,27 +780,96 @@ const make = Effect.gen(function* () {
       }
     });
 
-  // Updating Blender Lab in the user's own Blender reaches hosted Blenders at their next start.
-  const refreshBlenderLab = Effect.fnUntraced(function* (from: string, to: string) {
-    const extensions = path.join(from, "extensions");
+  const userBlenderSettings = Effect.fnUntraced(function* () {
+    const configHome = environment.XDG_CONFIG_HOME || path.join(homeDirectory, ".config");
+    const source = path.join(configHome, "blender");
+    const version = newestBlenderConfigVersion(
+      yield* fileSystem.readDirectory(source).pipe(Effect.orElseSucceed(() => [])),
+    );
+    return version === undefined ? undefined : path.join(source, version);
+  });
+
+  // Blender Lab is never kept in the settings copy, where Blender could load it at startup.
+  const removeBlenderLab = Effect.fnUntraced(function* (userResources: string) {
+    const extensions = path.join(userResources, "extensions");
     const repos = yield* fileSystem.readDirectory(extensions).pipe(Effect.orElseSucceed(() => []));
     for (const repo of repos) {
-      const installed = path.join(extensions, repo, "mcp");
-      const info = yield* fileSystem.lstat(installed).pipe(Effect.option);
-      if (Option.isNone(info) || info.value.type !== "Directory") continue;
-      const manifest = (dir: string) =>
-        fileSystem.readFileString(path.join(dir, "blender_manifest.toml")).pipe(Effect.option);
-      const wanted = yield* manifest(installed);
-      if (Option.isNone(wanted)) continue;
-      const hosted = path.join(to, "extensions", repo, "mcp");
-      const current = yield* manifest(hosted);
-      if (Option.isSome(current) && current.value === wanted.value) continue;
-      const partial = `${hosted}.partial`;
-      yield* fileSystem.remove(partial, { recursive: true, force: true });
-      yield* copyWithoutLinks(installed, partial);
-      yield* fileSystem.remove(hosted, { recursive: true, force: true });
-      yield* fileSystem.rename(partial, hosted);
+      yield* fileSystem.remove(path.join(extensions, repo, "mcp"), {
+        recursive: true,
+        force: true,
+      });
     }
+  });
+
+  // What a folder holds, links left out as copyWithoutLinks leaves them, to tell a whole copy.
+  // Each folder level shares the snapshot's span.
+  const listFolder: (
+    dir: string,
+    relative?: string,
+  ) => Effect.Effect<ReadonlyArray<string>, PlatformError> = Effect.fnUntraced(function* (
+    dir: string,
+    relative = "",
+  ) {
+    const entries: Array<string> = [];
+    for (const entry of (yield* fileSystem.readDirectory(path.join(dir, relative))).toSorted()) {
+      const child = path.join(relative, entry);
+      const info = yield* fileSystem.lstat(path.join(dir, child));
+      if (info.type === "Directory") entries.push(`${child}/`, ...(yield* listFolder(dir, child)));
+      else if (info.type === "File") {
+        const mtime = Option.getOrUndefined(info.mtime)?.getTime() ?? 0;
+        entries.push(`${child} ${String(info.size)} ${mtime}`);
+      }
+    }
+    return entries;
+  });
+  const withoutTimes = (entries: ReadonlyArray<string>) =>
+    entries.map((entry) => entry.replace(/ \d+$/, ""));
+
+  /**
+   * The user's Blender Lab, copied into a launch's private folder for that Blender alone, or
+   * null with none installed or none that holds still while it is copied.
+   */
+  const snapshotBlenderLab = Effect.fnUntraced(function* (stateDir: string) {
+    const settings = yield* userBlenderSettings();
+    if (settings === undefined) return null;
+    const extensions = path.join(settings, "extensions");
+    const repos = (yield* fileSystem.readDirectory(extensions).pipe(Effect.orElseSucceed(() => [])))
+      .toSorted()
+      .toSorted((a, b) => Number(b === "lab_blender_org") - Number(a === "lab_blender_org"));
+    let installed: string | undefined;
+    for (const repo of repos) {
+      const candidate = path.join(extensions, repo, "mcp");
+      const info = yield* fileSystem.lstat(candidate).pipe(Effect.option);
+      const manifest = path.join(candidate, "blender_manifest.toml");
+      if (
+        Option.isSome(info) &&
+        info.value.type === "Directory" &&
+        (yield* fileSystem.exists(manifest))
+      ) {
+        installed = candidate;
+        break;
+      }
+    }
+    if (installed === undefined) return null;
+    const snapshot = path.join(stateDir, "blender-lab");
+    const copy = path.join(snapshot, "mcp");
+    for (let attempt = 0; attempt < 3; attempt++) {
+      yield* fileSystem.remove(snapshot, { recursive: true, force: true });
+      yield* fileSystem.makeDirectory(snapshot, { recursive: true });
+      const before = yield* listFolder(installed);
+      yield* copyWithoutLinks(installed, copy);
+      const after = yield* listFolder(installed);
+      const copied = yield* listFolder(copy);
+      // Unchanged while it was copied, and all of it copied: one version, whole.
+      if (
+        before.join("\n") === after.join("\n") &&
+        withoutTimes(before).join("\n") === withoutTimes(copied).join("\n")
+      ) {
+        return snapshot;
+      }
+    }
+    yield* Effect.logWarning("hosted Blender's copy of Blender Lab's MCP kept changing");
+    return null;
   });
 
   // Runs before Blender enables add-ons, so Blender Lab never registers from these settings.
@@ -816,28 +885,20 @@ const make = Effect.gen(function* () {
   const ensureUserResources = userResourcesLock.withPermits(1)(
     Effect.gen(function* () {
       const target = path.join(rootDir, "user-resources");
-      const configHome = environment.XDG_CONFIG_HOME || path.join(homeDirectory, ".config");
-      const source = path.join(configHome, "blender");
-      const version = newestBlenderConfigVersion(
-        yield* fileSystem.readDirectory(source).pipe(Effect.orElseSucceed(() => [])),
-      );
       if (!(yield* fileSystem.exists(target))) {
+        const settings = yield* userBlenderSettings();
         const partial = `${target}.partial`;
         yield* fileSystem.remove(partial, { recursive: true, force: true });
-        if (version === undefined) {
+        if (settings === undefined) {
           yield* fileSystem.makeDirectory(partial, { recursive: true });
         } else {
-          yield* copyWithoutLinks(path.join(source, version), partial);
+          yield* copyWithoutLinks(settings, partial);
         }
+        yield* removeBlenderLab(partial);
         yield* fileSystem.rename(partial, target);
       }
-      if (version !== undefined) {
-        yield* refreshBlenderLab(path.join(source, version), target).pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning("hosted Blender could not refresh Blender Lab's MCP", { cause }),
-          ),
-        );
-      }
+      // Copies made before T3 kept Blender Lab out still hold it.
+      yield* removeBlenderLab(target);
       yield* writeStartupGate(target);
       return target;
     }),
@@ -867,6 +928,16 @@ const make = Effect.gen(function* () {
           ? yield* agents.value.listenerPort(instance.threadId)
           : null;
       if (agentPort === null) yield* setAgentListener(instance, "off");
+      const mcpSnapshot =
+        agentPort === null
+          ? null
+          : yield* snapshotBlenderLab(stateDir).pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("hosted Blender could not copy Blender Lab's MCP", {
+                  cause,
+                }).pipe(Effect.as(null)),
+              ),
+            );
       instance.agentListenerGranted = agentPort !== null;
       const mcpPort = agentPort ?? (yield* net.reserveLoopbackPort());
       const shell = yield* ThreadManagementService.ThreadManagementService.pipe(
@@ -892,6 +963,7 @@ const make = Effect.gen(function* () {
               controlSocket,
               mcpPort,
               mcpListen: agentPort !== null,
+              ...(mcpSnapshot === null ? {} : { mcpSnapshot }),
               // Plan mode is read-only, whatever the runtime mode.
               autoRun: shell?.runtimeMode === "full-access" && shell.interactionMode !== "plan",
               ...INITIAL_SIZE,

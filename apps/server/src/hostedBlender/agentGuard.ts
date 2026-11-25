@@ -29,17 +29,27 @@ export const untestedBlenderLabReason = (name: string, version: string | null): 
   return `${name} is open, but T3 Code refused you access: the hosted Blender has Blender Lab's ${installed}, and T3 Code has tested only ${tested}. Tell the user to update ${update}. Then call blender_quit and blender_start again.`;
 };
 
+/** The extension repository the control add-on loads a launch's Blender Lab snapshot from. */
+const SNAPSHOT_REPO_MODULE = "t3_blender_lab";
+
 // Written into T3's copy of the user's settings as a startup script, which Blender runs before it
-// enables add-ons, at launch and on Reload Scripts. Blender Lab's add-on then never registers from
-// those settings; only the control add-on's grant enables it.
+// enables add-ons, at launch and on Reload Scripts. Blender Lab never registers from those
+// settings, and the control add-on grants nothing unless this has run.
 export const HOSTED_STARTUP_GATE_SOURCE = String.raw`
 import bpy
 
+COMPLETED = False
+
 
 def _strip_blender_lab():
-    addons = bpy.context.preferences.addons
-    for addon in [addon for addon in addons if addon.module.startswith("bl_ext.") and addon.module.endswith(".mcp")]:
-        addons.remove(addon)
+    global COMPLETED
+    preferences = bpy.context.preferences
+    for addon in [addon for addon in preferences.addons if addon.module.startswith("bl_ext.") and addon.module.endswith(".mcp")]:
+        preferences.addons.remove(addon)
+    # A snapshot repository saved by an earlier launch points at a folder that is gone.
+    for repo in [repo for repo in preferences.extensions.repos if repo.module == "${SNAPSHOT_REPO_MODULE}"]:
+        preferences.extensions.repos.remove(repo)
+    COMPLETED = True
 
 
 _strip_blender_lab()
@@ -59,17 +69,21 @@ def unregister():
 // The peer rules match loopbackPeer.ts; see docs/internals/18_hosted-blender.md.
 export const AGENT_GUARD_SOURCE = String.raw`
 TESTED_MCP_VERSIONS = ${JSON.stringify(TESTED_BLENDER_LAB_MCP_VERSIONS)}
+SNAPSHOT_REPO_MODULE = "${SNAPSHOT_REPO_MODULE}"
 PROC_NET_TCP = ("/proc/net/tcp", "/proc/net/tcp6")
 # A quick call still shows on the pane.
 AGENT_ACTING_LINGER = 1.5
 _IPV4_MAPPED = b"\0" * 10 + b"\xff\xff"
 _TCP_ESTABLISHED = "01"
+ACCESS_ENDED_MESSAGE = "T3 Code ended your access to this Blender before this code ran; nothing was run."
 
 
 class _Guard:
     acting_until = 0.0
     accept = None
     execute = None
+    # Deferred calls whose final undo step is still owed.
+    deferred = []
 
 
 def _mcp_version(module_file):
@@ -85,13 +99,26 @@ def _mcp_version(module_file):
     return version if isinstance(version, str) else None
 
 
+def _is_mcp_module(name):
+    parts = name.split(".")
+    return len(parts) >= 3 and parts[0] == "bl_ext" and parts[2] == "mcp"
+
+
+def _gate_completed():
+    return getattr(sys.modules.get("t3_hosted_gate"), "COMPLETED", False) is True
+
+
 def _unmapped(raw):
     return raw[12:] if raw[:12] == _IPV4_MAPPED else raw
 
 
 def _proc_address(text):
     # "0100007F:1F90": the address as the kernel's 32-bit words in host byte order, then the port.
+    import re
+
     address, port = text.split(":")
+    if not re.fullmatch(r"[0-9A-Fa-f]{8}|[0-9A-Fa-f]{32}", address) or not re.fullmatch(r"[0-9A-Fa-f]{4}", port):
+        raise ValueError(text)
     raw = b"".join(struct.pack("=I", int(address[i:i + 8], 16)) for i in range(0, len(address), 8))
     return _unmapped(raw), int(port, 16)
 
@@ -101,6 +128,7 @@ def _address(family, sockaddr):
 
 
 def _tcp_rows():
+    # None when a table holds a row that doesn't parse: a table in doubt proves nothing.
     rows = []
     for path in PROC_NET_TCP:
         try:
@@ -109,8 +137,16 @@ def _tcp_rows():
         except OSError:
             continue
         for line in lines:
+            if not line.strip():
+                continue
             fields = line.split()
             try:
+                import re
+
+                if not re.fullmatch(r"[0-9A-Fa-f]{2}", fields[3]) or not all(
+                    re.fullmatch(r"[0-9]+", fields[index]) for index in (7, 9)
+                ):
+                    return None
                 rows.append({
                     "local": _proc_address(fields[1]),
                     "remote": _proc_address(fields[2]),
@@ -119,7 +155,7 @@ def _tcp_rows():
                     "inode": int(fields[9]),
                 })
             except (IndexError, ValueError, struct.error):
-                continue
+                return None
     return rows
 
 
@@ -133,16 +169,22 @@ def _live_row(rows, local, remote):
 
 
 def _peer_uid(connection):
+    # Blender's end is found by its own socket inode, so a reused address and port can't stand in.
+    inode = os.fstat(connection.fileno()).st_ino
     peer = _address(connection.family, connection.getpeername())
     ours = _address(connection.family, connection.getsockname())
-    client = _live_row(_tcp_rows(), peer, ours)
-    if client is None:
-        return None
-    # Read again: with our end still established, the row read was this connection's client.
-    again = _tcp_rows()
-    if _live_row(again, ours, peer) is None or _live_row(again, peer, ours) != client:
-        return None
-    return client["uid"]
+    readings = []
+    for _ in range(2):
+        rows = _tcp_rows()
+        if rows is None:
+            return None
+        own = _live_row(rows, ours, peer)
+        client = _live_row(rows, peer, ours)
+        if own is None or own["inode"] != inode or client is None:
+            return None
+        readings.append(client)
+    # Read twice: with our end still established, the row read was this connection's client.
+    return readings[0]["uid"] if readings[0] == readings[1] else None
 
 
 def _same_account(connection):
@@ -162,6 +204,10 @@ def _is_guarded(server):
     )
 
 
+def _still_granted(server):
+    return _State.grant == "granted" and _on_authorized_file() and _is_guarded(server) and server.is_running()
+
+
 def _guard_mcp_server(server):
     # Fails closed: a module without the functions this wraps gets no listener.
     if _is_guarded(server):
@@ -169,7 +215,7 @@ def _guard_mcp_server(server):
     original_execute = getattr(server, "_execute_code", None)
     if not callable(original_execute) or not callable(getattr(server, "_accept_clients", None)):
         return False
-    if not all(hasattr(server, name) for name in ("_Client", "_state")):
+    if not all(hasattr(server, name) for name in ("_Client", "_state", "_ExecResult")):
         return False
 
     # Background mode's poll_blocking accepts without this; hosted Blenders always have a GUI.
@@ -190,6 +236,9 @@ def _guard_mcp_server(server):
 
     def execute_code(code, strict_json):
         _mark_acting()
+        # Telling T3 can find its connection gone, which ends the grant: then nothing runs.
+        if not _still_granted(server):
+            return server._ExecResult({"status": "error", "message": ACCESS_ENDED_MESSAGE})
         try:
             result = original_execute(code, strict_json)
         except BaseException:
@@ -200,18 +249,28 @@ def _guard_mcp_server(server):
             _Guard.acting_until = time.monotonic() + AGENT_ACTING_LINGER
         if strict_json:
             return result
+        # What the code changed before handing off, even if the deferred part never finishes.
+        warning = _push_agent_undo()
         check = getattr(result, "check_fn", None)
         if check is None:
-            _with_undo_warning(result.response, _push_agent_undo())
+            _with_undo_warning(result.response, warning)
             return result
+        record = {"check": None}
 
-        # Deferred work (a render) changes the scene later: its undo step waits for it.
         def check_then_undo():
-            done = check()
-            if isinstance(done, dict):
-                _with_undo_warning(done, _push_agent_undo())
+            try:
+                done = check()
+            except BaseException:
+                _finish_deferred(record)
+                raise
+            if done is not None:
+                later = _finish_deferred(record)
+                if isinstance(done, dict):
+                    _with_undo_warning(done, warning or later)
             return done
 
+        record["check"] = check_then_undo
+        _Guard.deferred.append(record)
         return result._replace(check_fn=check_then_undo)
 
     server._accept_clients = accept_clients
@@ -219,6 +278,24 @@ def _guard_mcp_server(server):
     _Guard.accept = accept_clients
     _Guard.execute = execute_code
     return True
+
+
+def _finish_deferred(record):
+    if record not in _Guard.deferred:
+        return None
+    _Guard.deferred.remove(record)
+    return _push_agent_undo()
+
+
+def _sweep_deferred():
+    # Blender Lab drops a deferred call on disconnect or timeout without asking it again.
+    if not _Guard.deferred:
+        return
+    deferred = sys.modules.get(_State.mcp_name + ".deferred_tool") if _State.mcp_name else None
+    waiting = [client.check_fn for client in getattr(deferred, "_deferred_clients", [])]
+    for record in list(_Guard.deferred):
+        if not any(check is record["check"] for check in waiting):
+            _finish_deferred(record)
 
 
 def _mark_acting():
@@ -236,21 +313,28 @@ def _push_agent_undo():
     # Only the working copy T3 granted gets steps; once access ends, nothing more is recorded.
     if _State.grant != "granted" or not _on_authorized_file():
         return None
-    if bpy.context.preferences.edit.undo_steps < 1:
-        return "Undo is off in this Blender (Undo Steps is 0), so Ctrl+Z can't undo this edit."
+    # Pushed even with undo off: Blender marks the file modified before it checks the limit.
+    undo_off = bpy.context.preferences.edit.undo_steps < 1
     window = _main_window()
     try:
         if window is None:
             outcome = bpy.ops.ed.undo_push(message="Agent edit")
+            has_step = bpy.ops.ed.undo.poll()
         else:
             with bpy.context.temp_override(window=window):
                 outcome = bpy.ops.ed.undo_push(message="Agent edit")
+                has_step = bpy.ops.ed.undo.poll()
     except Exception as error:  # noqa: BLE001 - reported to the agent, never a crash
         print("T3 control add-on: undo push failed:", error, file=sys.stderr)
-        outcome = set()
-    if "FINISHED" not in outcome:
-        return "T3 couldn't record an undo step for this edit, so Ctrl+Z can't undo it."
-    return None
+        outcome, has_step = set(), False
+    problems = []
+    if undo_off:
+        problems.append("Undo is off in this Blender (Undo Steps is 0), so Ctrl+Z can't undo this edit.")
+    elif "FINISHED" not in outcome or not has_step:
+        problems.append("T3 couldn't record an undo step for this edit, so Ctrl+Z can't undo it.")
+    if not bpy.data.is_dirty:
+        problems.append("Blender doesn't show this edit as unsaved, so it may not autosave it or ask before quitting.")
+    return " ".join(problems) or None
 
 
 def _agent_acting(server):

@@ -8,7 +8,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
-import { addressHex, isSameAccountPeer, parseTcpTable } from "./loopbackPeer.ts";
+import { addressHex, isSameAccountPeer, parseTcpTable, socketInode } from "./loopbackPeer.ts";
 
 const HEADER =
   "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode";
@@ -67,6 +67,8 @@ interface Table {
   readonly ownRow?: boolean;
   readonly ownState?: string;
   readonly mapped?: boolean;
+  readonly ownInodeOffset?: number;
+  readonly malformed?: boolean;
 }
 
 const withTable = (table: Table) =>
@@ -84,7 +86,11 @@ const withTable = (table: Table) =>
         row(peer, ours, table.state ?? "01", uid + (table.uidOffset ?? 0), table.inode ?? 4242),
       );
     }
-    if (table.ownRow ?? true) rows.push(row(ours, peer, table.ownState ?? "01", uid, 4243));
+    if (table.ownRow ?? true) {
+      const own = socketInode(socket)! + (table.ownInodeOffset ?? 0);
+      rows.push(row(ours, peer, table.ownState ?? "01", uid, own));
+    }
+    if (table.malformed) rows.push(row("0100007F:ZZZZ", ours, "01", uid, 1));
     const file = NodePath.join(dir, "tcp");
     NodeFS.writeFileSync(file, `${rows.join("\n")}\n`);
     return yield* isSameAccountPeer(socket, { tables: [file] });
@@ -113,6 +119,8 @@ describe("isSameAccountPeer", () => {
     ["the client row is closing (FIN_WAIT2)", { state: "05" }],
     ["our own end is gone by the second read", { ownRow: false }],
     ["our own end is no longer established", { ownState: "08" }],
+    ["our own row is another socket, by its inode", { ownInodeOffset: 1 }],
+    ["a table holds a row that doesn't parse", { malformed: true }],
   ] as const)("says no when %s", ([, table]) =>
     Effect.gen(function* () {
       expect(yield* withTable(table)).toBe(false);
@@ -129,9 +137,10 @@ describe("isSameAccountPeer", () => {
 
 describe("the table and address formats", () => {
   it("reads a kernel row and Node's addresses to the same endpoint", () => {
-    const [parsed] = parseTcpTable(
-      `${HEADER}\n${row(hex("127.0.0.1", 8080), hex("127.0.0.1", 41234), "01", 1000, 77)}\n`,
-    );
+    const [parsed] =
+      parseTcpTable(
+        `${HEADER}\n${row(hex("127.0.0.1", 8080), hex("127.0.0.1", 41234), "01", 1000, 77)}\n`,
+      ) ?? [];
     expect(parsed).toEqual({
       local: { address: addressHex("127.0.0.1"), port: 8080 },
       remote: { address: addressHex("::ffff:127.0.0.1"), port: 41234 },
@@ -140,6 +149,9 @@ describe("the table and address formats", () => {
       inode: 77,
     });
     expect(addressHex("::1")).toBe("00000000000000000000000000000001");
+    expect(
+      parseTcpTable(`${HEADER}\n   0: 0100007F:1F90 0100007F:1F91 01 x x x +5 0 1\n`),
+    ).toBeNull();
     expect(addressHex("not an address")).toBeNull();
   });
 });
