@@ -3114,6 +3114,41 @@ def unregister():
     bpy.app.handlers.load_post.remove(_edit)
 `;
 
+// Opens the file named in HB_TEST_DIR/open-file from inside Blender, as an agent's
+// bpy.ops.wm.open_mainfile does, then edits it through undo so it reads unsaved.
+const OPENING_STARTUP_SCRIPT = `import os
+import bpy
+
+def _edit():
+    bpy.context.scene.collection.objects.link(bpy.data.objects.new("T3Other", None))
+    with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+        bpy.ops.ed.undo_push(message="T3 test edit")
+
+def _poll():
+    # As a build before T3 marked its viewport window saved it: a plain lone 3D view.
+    unmark = os.path.join(os.environ.get("HB_TEST_DIR", ""), "unmark")
+    if os.path.exists(unmark):
+        os.remove(unmark)
+        for window in bpy.context.window_manager.windows:
+            if "t3_viewport" in window.screen:
+                del window.screen["t3_viewport"]
+        open(unmark + "ed", "w").close()
+    trigger = os.path.join(os.environ.get("HB_TEST_DIR", ""), "open-file")
+    if os.path.exists(trigger):
+        target = open(trigger).read()
+        os.remove(trigger)
+        with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+            bpy.ops.wm.open_mainfile(filepath=target)
+        bpy.app.timers.register(_edit, first_interval=0.5)
+    return 0.2
+
+def register():
+    bpy.app.timers.register(_poll, first_interval=1.0, persistent=True)
+
+def unregister():
+    pass
+`;
+
 const objectsIn = (file: string) =>
   NodeChildProcess.execFileSync(
     "blender",
@@ -3218,6 +3253,98 @@ describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
       yield* service.reopen({ threadId, key: CUBE, restore: true });
       yield* fillsPane;
     }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "streams one fresh viewport window, filling the pane, after Blender opens a file saved from a hosted Blender, and after Reopen of its copy",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tempDir("real-open-stored");
+        const workspace = NodePath.join(dir, "work");
+        NodeFS.mkdirSync(workspace, { recursive: true });
+        for (const name of ["cube.blend", "other.blend"]) {
+          NodeChildProcess.execFileSync("blender", [
+            "--background",
+            "--factory-startup",
+            "--python-expr",
+            `import bpy; bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(NodePath.join(workspace, name))})`,
+          ]);
+        }
+        const configHome = NodePath.join(dir, "config");
+        const startup = NodePath.join(configHome, "blender", "5.3", "scripts", "startup");
+        NodeFS.mkdirSync(startup, { recursive: true });
+        NodeFS.writeFileSync(NodePath.join(startup, "t3_test_open.py"), OPENING_STARTUP_SCRIPT);
+        const service = yield* serviceFor(
+          layerFor({
+            env: {
+              PATH: hostEnvironment.PATH,
+              XDG_RUNTIME_DIR: hostEnvironment.XDG_RUNTIME_DIR,
+              XDG_CONFIG_HOME: configHome,
+              HB_TEST_DIR: dir,
+            },
+            helper: helperBuild,
+            workspaceRoot: workspace,
+            baseDir: dir,
+          }),
+        );
+        const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+        yield* service.threadState(threadId).pipe(
+          Stream.runForEach((state) => Queue.offer(states, state)),
+          Effect.forkScoped,
+        );
+        const awaitState = (matches: (state: HostedBlenderThreadState) => boolean) =>
+          Queue.take(states).pipe(Effect.repeat({ until: matches }), Effect.map(card));
+        // The size the stream settles at, asked for 1046x1336, after `then` runs.
+        const settledSize = (then: Effect.Effect<void> = Effect.void) =>
+          Effect.gen(function* () {
+            const attached = yield* service.attachViewer(threadId, { canOperate: false });
+            if (attached._tag !== "attached") return attached._tag;
+            yield* attached.viewer.resize(1046, 1336);
+            yield* then;
+            const sizes = Queue.take(attached.viewer.output).pipe(
+              Effect.repeat({
+                until: (output) => output._tag === "message" && output.message.type === "viewport",
+              }),
+              Effect.map((output) =>
+                output._tag === "message" && output.message.type === "viewport"
+                  ? `${output.message.width}x${output.message.height}`
+                  : "",
+              ),
+            );
+            let settled = yield* sizes.pipe(Effect.timeoutOption("30 seconds"));
+            while (Option.isSome(settled)) {
+              const next = yield* sizes.pipe(Effect.timeoutOption("6 seconds"));
+              if (Option.isNone(next)) break;
+              settled = next;
+            }
+            return Option.getOrElse(settled, () => "no frames");
+          }).pipe(Effect.scoped);
+
+        // other.blend, saved from a hosted Blender of an earlier build, keeps T3's viewport
+        // window in its UI, unmarked.
+        yield* service.open({ threadId, relativePath: "other.blend" });
+        yield* awaitState((state) => state.status === "running");
+        NodeFS.writeFileSync(NodePath.join(dir, "unmark"), "");
+        yield* fileAppears(dir, NodePath.join(dir, "unmarked"));
+        yield* service.quit({ threadId, save: true });
+        yield* awaitState((state) => state.status === "stopped");
+
+        yield* service.open({ threadId, relativePath: "cube.blend" });
+        yield* awaitState((state) => state.status === "running");
+        expect(yield* settledSize()).toBe("1046x1336");
+        const opened = Effect.sync(() =>
+          NodeFS.writeFileSync(
+            NodePath.join(dir, "open-file"),
+            NodePath.join(workspace, "other.blend"),
+          ),
+        );
+        expect(yield* settledSize(opened)).toBe("1046x1336");
+
+        yield* service.closeOnSettle({ threadId });
+        yield* awaitState((state) => state.status === "closed");
+        yield* service.reopen({ threadId, key: OTHER, restore: true });
+        expect(yield* settledSize()).toBe("1046x1336");
+      }).pipe(Effect.scoped),
   );
 
   it.live(

@@ -355,9 +355,10 @@ elif _then in ("saveAndQuit", "failedSaveAndQuit", "pendingSaveAndQuit"):
     bpy.ops.wm = types.SimpleNamespace(save_mainfile=_save_mainfile, quit_blender=_quit_blender)
     _t3.sendall(b'{"type": "quit", "save": true}\n')
     _tick()
-elif _then in ("replaceViewport", "stuckViewport", "ownChanged", "lateMarked"):
-    # The file was saved with T3's viewport window open, and the user's own second 3D view:
-    # after a recovery the add-on swaps T3's for its own, and always leaves the user's alone.
+elif _then in ("replaceViewport", "stuckViewport", "ownChanged", "lateMarked", "loadInSession"):
+    # The file was saved with T3's viewport window open, one from a build before T3 marked it
+    # (a plain lone 3D view), and the user's own window of another editor: after any load the
+    # add-on swaps T3's for its own, and leaves the user's alone.
     import contextlib, types
     class _Area:
         def __init__(self, kind):
@@ -374,9 +375,10 @@ elif _then in ("replaceViewport", "stuckViewport", "ownChanged", "lateMarked"):
                 self.screen["t3_viewport"] = True
         def as_pointer(self): return id(self)
     _windows = bpy.context.window_manager.windows
-    _users = _Window("VIEW_3D")
+    _users = _Window("IMAGE_EDITOR")
     _saved = _Window("VIEW_3D", marked=True)
-    _windows[:] = [_Window("VIEW_3D"), _users, _saved]
+    _legacy = _Window("VIEW_3D")
+    _windows[:] = [_Window("VIEW_3D"), _users, _saved, _legacy]
     _opened = []
     _closes = []
     _current = [None]
@@ -406,6 +408,23 @@ elif _then in ("replaceViewport", "stuckViewport", "ownChanged", "lateMarked"):
             _windows.append(_late)
     if _then == "lateMarked":
         _steps.append(dict(lateKept=_late in _windows))
+    if _then == "loadInSession":
+        # The person (or the agent) opens a file saved from a hosted Blender: Blender gives
+        # every window a new struct with the file's screens.
+        _users = _Window("IMAGE_EDITOR")
+        _windows[:] = [_Window("VIEW_3D"), _Window("VIEW_3D", marked=True), _Window("VIEW_3D"), _users]
+        _opened.clear()
+        _closes.clear()
+        _on_load_post()
+        _runs = 0
+        while _open_viewport_window() is not None and _runs < 10:
+            _runs += 1
+        lone = [window for window in _windows[1:] if _lone_3d_view(window)]
+        _steps.append(dict(
+            viewports=len(lone),
+            tracked=_viewport() is not None and _viewport()[0] is lone[0],
+            fresh=len(_opened),
+        ))
     if _then == "ownChanged":
         # The person turns T3's window into another editor: it's no longer T3's viewport, and
         # Blender's own tick, with nothing else asking, opens a fresh one.
@@ -633,6 +652,7 @@ const runAddon = (input: {
     | "stuckViewport"
     | "ownChanged"
     | "lateMarked"
+    | "loadInSession"
     | "revoke"
     | "drop"
     | "otherFile"
@@ -836,7 +856,7 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     // T3's saved window swapped for one fresh, marked window; the user's own view kept; the
     // agent's listener untouched.
     expect(result.steps.slice(-4)).toEqual([
-      { ...ready, windows: 3, fresh: 1, usersKept: true, closes: 1, runs: 1, marked: true },
+      { ...ready, windows: 3, fresh: 1, usersKept: true, closes: 2, runs: 1, marked: true },
       ready,
       off,
       off,
@@ -851,19 +871,33 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       recover: true,
       then: "stuckViewport",
     });
-    expect(result.steps.at(-4)).toMatchObject({ closes: 1, usersKept: true, fresh: 1 });
+    expect(result.steps.at(-4)).toMatchObject({ closes: 2, usersKept: true, fresh: 1 });
     expect(result.steps.at(-4).runs).toBeLessThan(10);
   });
 
-  it("leaves a marked window an ordinary file brought back, and opens its own", () => {
+  it("replaces every viewport window a file brought back, marked or from an earlier build", () => {
     const result = runAddon({
       installed: [MCP],
       enabled: [MCP],
       listen: true,
       then: "replaceViewport",
     });
-    // A file saved from a hosted Blender keeps the mark, but only a recovery copy is T3's own.
-    expect(result.steps.at(-4)).toMatchObject({ windows: 4, fresh: 1, closes: 0, usersKept: true });
+    // Streamed instead of T3's otherwise: the hidden display takes the first one it finds.
+    expect(result.steps.at(-4)).toMatchObject({ windows: 3, fresh: 1, closes: 2, usersKept: true });
+  });
+
+  it("leaves exactly one viewport window, its own, after a file is opened in the session", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      then: "loadInSession",
+    });
+    expect(result.steps.find((step: { viewports?: number }) => "viewports" in step)).toEqual({
+      viewports: 1,
+      tracked: true,
+      fresh: 1,
+    });
   });
 
   it("stops taking a window for its viewport once it no longer holds a lone 3D view", () => {

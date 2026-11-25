@@ -57,8 +57,9 @@ class _State:
     viewport_window = None
     # Restored viewport windows already asked to close, by pointer.
     closed_viewports = set()
-    # The recovery copy just loaded may bring T3's viewport window back, to be replaced.
-    replace_recovered = False
+    # The file just loaded (at launch, opened, reverted or recovered) may bring viewport windows
+    # back, to be replaced.
+    replace_loaded = True
 
 
 def _listen():
@@ -159,11 +160,13 @@ def _viewport_lost():
 
 
 def _viewport():
-    # The person's viewport window: the one _open_viewport_window made, never the main window.
-    windows = bpy.context.window_manager.windows
-    candidates = [window for window in _viewport_windows() if window.as_pointer() == _State.viewport_window]
-    candidates += [window for index, window in enumerate(windows) if index > 0]
-    candidates = [window for window in candidates if _lone_3d_view(window)]
+    # The person's viewport window: the one _open_viewport_window made this launch, never the
+    # main window or one a file brought back.
+    candidates = [
+        window
+        for window in _viewport_windows()
+        if window.as_pointer() == _State.viewport_window and _lone_3d_view(window)
+    ]
     for window in candidates:
         area = window.screen.areas[0]
         region = next((region for region in area.regions if region.type == "WINDOW"), None)
@@ -503,7 +506,7 @@ def _recover():
         with bpy.context.temp_override(window=window):
             result = bpy.ops.wm.recover_auto_save(filepath=RECOVER_PATH, use_scripts=False)
             _State.restored = "FINISHED" in result
-            _State.replace_recovered = _State.restored
+            _State.replace_loaded = True
     except Exception as error:  # noqa: BLE001 - reported to T3, which keeps the copy
         print("T3 control add-on: recovery failed:", error, file=sys.stderr)
     _State.restore = "ok" if _State.restored else "failed"
@@ -694,20 +697,22 @@ def _open_viewport_window():
         for other in found
         if other.as_pointer() == _State.viewport_window and _lone_3d_view(other)
     ]
-    # A recovery copy brings T3's viewport window back in its saved fullscreen state, which the
-    # compositor's fullscreen toggle then undoes. It is replaced by a fresh one, which fills the
-    # display as on a first open. Any file saved from a hosted Blender keeps the mark, so only
-    # the copy just recovered is replaced. One that didn't close when asked is left be rather
-    # than asked again forever.
+    # The hidden display streams the first lone 3D view window it finds, so a file's own (T3's
+    # from an earlier session, marked or from a build before the mark, in its saved fullscreen
+    # state, which the compositor's toggle undoes) would be streamed instead. After any load,
+    # every one T3 didn't open this launch is replaced by a fresh one. One that didn't close
+    # when asked is left be rather than asked again forever.
     restored = [
         other
-        for other in found
-        if _State.replace_recovered
-        and other.as_pointer() != _State.viewport_window
+        for index, other in enumerate(bpy.context.window_manager.windows)
+        if _State.replace_loaded
+        and index > 0
+        and (other.screen.get(VIEWPORT_MARKER) or _lone_3d_view(other))
+        and other.as_pointer() not in {kept.as_pointer() for kept in own}
         and other.as_pointer() not in _State.closed_viewports
     ]
-    # Only the windows the copy itself brought back, seen on the first pass after loading it.
-    _State.replace_recovered = False
+    # Only the windows the load itself brought back, seen on the first pass after it.
+    _State.replace_loaded = False
     if restored:
         for other in restored:
             _State.closed_viewports.add(other.as_pointer())
@@ -744,6 +749,7 @@ def _on_save_post(*_args):
 @persistent
 def _on_load_post(*_args):
     _check_authorized_file()
+    _State.replace_loaded = True
     bpy.app.timers.register(_open_viewport_window, first_interval=0.2)
 
 
