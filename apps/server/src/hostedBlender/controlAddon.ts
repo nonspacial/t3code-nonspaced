@@ -305,11 +305,14 @@ def _handle(command):
         return
     if kind == "quitIfClean":
         # Checked here, at the moment of quitting: T3's last word on unsaved changes may be stale.
-        if bpy.data.is_dirty:
+        # Saving the .blend leaves edited images unsaved, so they count too.
+        if bpy.data.is_dirty or any(image.is_dirty for image in bpy.data.images):
             _send({"type": "quitRefused"})
             return
+        # Invoked as the user's quit is, so Blender's own check (asset catalogs and the rest)
+        # asks instead of quitting; T3 then keeps it.
         with bpy.context.temp_override(window=_main_window()):
-            bpy.ops.wm.quit_blender()
+            bpy.ops.wm.quit_blender("INVOKE_DEFAULT")
         return
     if kind == "quit":
         if command.get("save"):

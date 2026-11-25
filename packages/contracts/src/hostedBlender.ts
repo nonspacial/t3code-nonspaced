@@ -254,6 +254,7 @@ export type HostedBlenderHits = typeof HostedBlenderHits.Type;
 
 export const HostedBlenderSetViewInput = Schema.Struct({
   threadId: ThreadId,
+  role: Schema.optionalKey(HostedBlenderRole),
   /** The file the link points at; refused when the thread's Blender has another file open. */
   relativePath: TrimmedNonEmptyString,
   /** A `#view=` link's camera position and target, in Blender's scene coordinates. */

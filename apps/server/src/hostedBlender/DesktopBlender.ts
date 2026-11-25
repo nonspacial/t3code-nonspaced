@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 
 /** Where Blender Lab's add-on listens in the user's own Blender unless they changed it. */
 export const DESKTOP_BLENDER_MCP_PORT = 9876;
@@ -110,7 +111,7 @@ result = {"filepath": bpy.data.filepath, "dirty": bool(bpy.data.is_dirty)}`;
 // Checked as the request arrives and again in the timer just before saving, so a Save As in
 // between is refused. Quitting waits for that timer, so the add-on still answers first;
 // save_mainfile(exit=True) quits only once it has saved. The state says what the timer did.
-const saveAndQuitCode = (filepath: string) => `import bpy, os
+const saveAndQuitCode = (filepath: string, token: string) => `import bpy, os
 expected = ${JSON.stringify(filepath)}
 def _t3_current():
     return os.path.realpath(bpy.data.filepath) if bpy.data.filepath else ""
@@ -124,11 +125,14 @@ else:
         bpy.app.driver_namespace["t3_move_state"] = "saving"
         try:
             with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
-                bpy.ops.wm.save_mainfile(exit=True)
+                saved = "FINISHED" in bpy.ops.wm.save_mainfile(exit=True)
         except Exception:
-            pass
-        # Still here: the save failed or was cancelled, so Blender stays open.
-        bpy.app.driver_namespace["t3_move_state"] = "failed"
+            saved = False
+        # The operator saves, then quits once it returns; the token proves this request saved.
+        if saved:
+            with open(${JSON.stringify(token)}, "w") as proof:
+                proof.write("saved")
+        bpy.app.driver_namespace["t3_move_state"] = "saved" if saved else "failed"
         return None
     bpy.app.driver_namespace["t3_move_state"] = "scheduled"
     bpy.app.timers.register(_t3_save_and_quit, first_interval=0.1)
@@ -143,8 +147,15 @@ export const make = (options: {
   readonly desktopBlenderRunning: Effect.Effect<boolean>;
   /** Whether the process with this pid still runs. */
   readonly processAlive: (pid: number) => Effect.Effect<boolean>;
-  /** When the file on disk last changed, or null if it can't be read. */
-  readonly modifiedAt: (path: string) => Effect.Effect<number | null>;
+  /**
+   * A fresh file path the desktop Blender writes once this request's save succeeded, and whether
+   * it has been written.
+   */
+  readonly saveToken: Effect.Effect<
+    { readonly path: string; readonly written: Effect.Effect<boolean> },
+    never,
+    Scope.Scope
+  >;
   readonly quitTimeout?: Duration.Input;
 }): DesktopBlender["Service"] => {
   const probe: DesktopBlender["Service"]["probe"] = executeOnAddon(
@@ -172,13 +183,12 @@ export const make = (options: {
     executeOnAddon(options.port, MOVE_STATE_CODE, PROBE_TIMEOUT).pipe(
       Effect.flatMap(decodeMoveState),
       Effect.map(({ state }) => state),
-      Effect.catchTags({ AddonUnreachable: () => Effect.succeed("gone" as const) }),
+      // Its add-on stopped answering: gone only once the process that took the save has.
+      Effect.catchTags({
+        AddonUnreachable: () =>
+          options.processAlive(pid).pipe(Effect.map((alive) => (alive ? null : "gone"))),
+      }),
       Effect.orElseSucceed(() => null),
-      Effect.flatMap((state) =>
-        state === "gone"
-          ? options.processAlive(pid).pipe(Effect.map((alive) => (alive ? null : "gone")))
-          : Effect.succeed(state),
-      ),
       Effect.repeat({
         schedule: Schedule.spaced(QUIT_POLL),
         until: (state) => state === "gone" || state === "otherFile" || state === "failed",
@@ -189,10 +199,10 @@ export const make = (options: {
   const saveAndQuit: DesktopBlender["Service"]["saveAndQuit"] = Effect.fn(
     "DesktopBlender.saveAndQuit",
   )(function* (filepath) {
-    const before = yield* options.modifiedAt(filepath);
+    const token = yield* options.saveToken;
     const result = yield* executeOnAddon(
       options.port,
-      saveAndQuitCode(filepath),
+      saveAndQuitCode(filepath, token.path),
       PROBE_TIMEOUT,
     ).pipe(
       Effect.catchTags({
@@ -210,12 +220,11 @@ export const make = (options: {
     if (Option.isSome(ended) && ended.value === "otherFile") {
       return yield* new DesktopBlenderError({ reason: "otherFile" });
     }
-    // A closed port alone proves nothing: the process must be gone and the file written.
-    const after = yield* options.modifiedAt(filepath);
-    if (Option.isNone(ended) || ended.value !== "gone" || after === null || after === before) {
+    // A closed port alone proves nothing: the process must be gone, and this save recorded.
+    if (Option.isNone(ended) || ended.value !== "gone" || !(yield* token.written)) {
       return yield* new DesktopBlenderError({ reason: "didNotQuit" });
     }
-  });
+  }, Effect.scoped);
 
   return DesktopBlender.of({ probe, saveAndQuit });
 };
@@ -251,11 +260,13 @@ export const layer = Layer.effect(
       port: DESKTOP_BLENDER_MCP_PORT,
       processAlive: (pid) =>
         fileSystem.exists(`/proc/${pid}`).pipe(Effect.orElseSucceed(() => false)),
-      modifiedAt: (path) =>
-        fileSystem.stat(path).pipe(
-          Effect.map((info) => Option.getOrNull(Option.map(info.mtime, (date) => date.getTime()))),
-          Effect.orElseSucceed(() => null),
-        ),
+      saveToken: fileSystem.makeTempDirectoryScoped({ prefix: "t3-move-" }).pipe(
+        Effect.map((dir) => {
+          const path = `${dir}/saved`;
+          return { path, written: fileSystem.exists(path).pipe(Effect.orElseSucceed(() => false)) };
+        }),
+        Effect.orDie,
+      ),
       desktopBlenderRunning: desktopBlenderRunning.pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
       ),

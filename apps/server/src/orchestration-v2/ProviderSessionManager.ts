@@ -706,6 +706,9 @@ export const layerWithOptions = (
                     return { mcpCredentialId: existing.providerSessionId, issued: false };
                   }
                   dropMcpCredentialReservation(threadId, existing.providerSessionId);
+                  // The replaced credential's agent loses its hosted Blenders before the new
+                  // one reuses the thread's ports.
+                  yield* endHostedBlenderAccess(threadId);
                 }
                 yield* mcpSessionRegistry.revokeThread(threadId);
                 const credential = yield* mcpSessionRegistry.issue({

@@ -521,6 +521,25 @@ describe("The viewport window", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("moves the master Blender's viewport window for a link to the thread's master", () =>
+    Effect.gen(function* () {
+      const { service } = yield* standIn("master-view", "");
+      yield* service.openMaster({ threadId, relativePath: "cube.blend" });
+      yield* service.masterState(threadId).pipe(
+        Stream.filter((state) => state.status === "running" && state.dirty),
+        Stream.runHead,
+      );
+      const view = { position: [1, 2, 3], target: [0, 0, 0] } as const;
+      yield* service.setView({ threadId, relativePath: "cube.blend", view, role: "master" });
+      // The working side has no Blender, so the same link there has nothing to move.
+      const working = yield* service
+        .setView({ threadId, relativePath: "cube.blend", view })
+        .pipe(Effect.flip);
+      expect(working.reason).toBe("notRunning");
+      yield* service.quit({ threadId, save: false, role: "master" });
+    }).pipe(Effect.scoped),
+  );
+
   it.live("refuses a link's view for a file other than the one open", () =>
     Effect.gen(function* () {
       const { service, openReady } = yield* standIn("set-view-other", "");
@@ -1571,6 +1590,10 @@ t3 = sys.argv[sys.argv.index("--t3-control"):]
 listener = ["starting" if "--t3-mcp-listen" in t3 else "off"]
 blend = next(arg for arg in sys.argv if arg.endswith(".blend"))
 def control():
+    # STANDIN_CONTROL_GATE: T3 can't reach the add-on until the test creates this file.
+    gate = os.environ.get("STANDIN_CONTROL_GATE")
+    while gate and not os.path.exists(gate):
+        threading.Event().wait(0.05)
     server = socket.socket(socket.AF_UNIX)
     server.bind(t3[1])
     server.listen(1)
@@ -1612,13 +1635,18 @@ def control():
             # Gone once it has heard the stop, so a test can wait for the stopped state.
             os._exit(0)
         if kind == "quitIfClean":
-            # STANDIN_UNSAVED: edits made after the last state T3 heard, so Blender won't quit.
-            if os.environ.get("STANDIN_UNSAVED") == "1":
-                connection.sendall(b'{"type": "quitRefused"}\n')
-            elif os.environ.get("STANDIN_SLOW_QUIT") == "1":
-                threading.Timer(0.5, lambda: os._exit(0)).start()
-            else:
+            def exit_now():
+                with open(os.environ["STANDIN_ARGS"] + ".exits", "a") as log:
+                    log.write("exit\n")
                 os._exit(0)
+            def refuse():
+                connection.sendall(b'{"type": "quitRefused"}\n')
+            # STANDIN_UNSAVED: edits made after the last state T3 heard, so Blender won't quit.
+            answer = refuse if os.environ.get("STANDIN_UNSAVED") == "1" else exit_now
+            if os.environ.get("STANDIN_SLOW_QUIT") == "1":
+                threading.Timer(0.5, answer).start()
+            else:
+                answer()
 threading.Thread(target=control, daemon=True).start()
 for line in sys.stdin:
     if '"quit"' in line:
@@ -1788,8 +1816,10 @@ const masterHost = Effect.fn(function* (
     readonly dirty?: boolean;
     /** Unsaved changes when T3 asks it to quit, whatever it last reported. */
     readonly unsaved?: boolean;
-    /** Blender takes a moment to quit once asked. */
+    /** Blender takes a moment to quit, or refuse to, once asked. */
     readonly slowQuit?: boolean;
+    /** T3 can't reach the add-on until `openControl` is called. */
+    readonly controlGate?: boolean;
   } = {},
 ) {
   const dir = yield* tempDir("master");
@@ -1817,6 +1847,7 @@ const masterHost = Effect.fn(function* (
         ...(host.dirty ? { STANDIN_DIRTY: "1" } : {}),
         ...(host.unsaved ? { STANDIN_UNSAVED: "1" } : {}),
         ...(host.slowQuit ? { STANDIN_SLOW_QUIT: "1" } : {}),
+        ...(host.controlGate ? { STANDIN_CONTROL_GATE: NodePath.join(dir, "control-gate") } : {}),
       },
       helper: NodePath.join(bin, "helper"),
       workspaceRoot: dir,
@@ -1838,6 +1869,8 @@ const masterHost = Effect.fn(function* (
     service,
     dir,
     masterStatus,
+    openControl: () => NodeFS.writeFileSync(NodePath.join(dir, "control-gate"), ""),
+    exits: () => read(".exits").split("\n").length - 1,
     blendPath: NodeFS.realpathSync(NodePath.join(dir, "cube.blend")),
     launches: () => read(".launches").split("\n").length - 1,
     controlLog: () => read(".control"),
@@ -1845,19 +1878,19 @@ const masterHost = Effect.fn(function* (
   };
 });
 
-describe("Master Blenders", () => {
-  /** A viewer on the master, whose output says `stopped` once that Blender has quit. */
-  const watchMaster = Effect.fn(function* (
-    service: HostedBlender.HostedBlender["Service"],
-    id: ThreadId,
-  ) {
-    const attached = yield* service.attachViewer(id, { canOperate: false, role: "master" });
-    assert(attached._tag === "attached");
-    return Queue.take(attached.viewer.output).pipe(
-      Effect.repeat({ until: (output) => output._tag === "stopped" }),
-    );
-  });
+/** A viewer on the master, whose output says `stopped` once that Blender has quit. */
+const watchMaster = Effect.fn(function* (
+  service: HostedBlender.HostedBlender["Service"],
+  id: ThreadId,
+) {
+  const attached = yield* service.attachViewer(id, { canOperate: false, role: "master" });
+  assert(attached._tag === "attached");
+  return Queue.take(attached.viewer.output).pipe(
+    Effect.repeat({ until: (output) => output._tag === "stopped" }),
+  );
+});
 
+describe("Master Blenders", () => {
   it.live("is shared by the threads working on a master and quits when the last one leaves", () =>
     Effect.gen(function* () {
       // It reports unsaved changes, but has none by the time it is asked to quit.
@@ -2067,42 +2100,46 @@ const fakeDesktop = (initial: DesktopBlender.DesktopBlenderProbe, quits = true) 
   return { service, saved };
 };
 
-describe("Move into T3", () => {
-  const desktopHost = Effect.fn(function* (
-    desktopFor: (blendPath: string) => ReturnType<typeof fakeDesktop>,
-    host: Pick<Host, "masterPorts" | "revocations" | "endedSessions"> = {},
-  ) {
-    const dir = yield* tempDir("move");
-    const bin = fakeTools(dir);
-    NodeFS.writeFileSync(NodePath.join(bin, "helper"), `#!${python}\n${ARGS_HELPER}`, {
-      mode: 0o755,
-    });
-    const runtime = NodePath.join(dir, "run");
-    NodeFS.mkdirSync(runtime);
-    NodeFS.writeFileSync(NodePath.join(dir, "cube.blend"), "");
-    const argsLog = NodePath.join(dir, "args.log");
-    const desktop = desktopFor(NodeFS.realpathSync(NodePath.join(dir, "cube.blend")));
-    const service = yield* serviceFor(
-      layerFor({
-        env: { PATH: bin, XDG_RUNTIME_DIR: runtime, STANDIN_ARGS: argsLog },
-        helper: NodePath.join(bin, "helper"),
-        workspaceRoot: dir,
-        baseDir: dir,
-        desktop: desktop.service,
-        ...host,
-      }),
-    );
-    return {
-      service,
-      desktop,
-      launched: () => NodeFS.existsSync(argsLog),
-      launches: () =>
-        NodeFS.existsSync(`${argsLog}.launches`)
-          ? NodeFS.readFileSync(`${argsLog}.launches`, "utf8").split("\n").length - 1
-          : 0,
-    };
+const desktopHost = Effect.fn(function* (
+  desktopFor: (blendPath: string) => ReturnType<typeof fakeDesktop>,
+  host: Pick<Host, "masterPorts" | "revocations" | "endedSessions"> = {},
+) {
+  const dir = yield* tempDir("move");
+  const bin = fakeTools(dir);
+  NodeFS.writeFileSync(NodePath.join(bin, "helper"), `#!${python}\n${ARGS_HELPER}`, {
+    mode: 0o755,
   });
+  const runtime = NodePath.join(dir, "run");
+  NodeFS.mkdirSync(runtime);
+  NodeFS.writeFileSync(NodePath.join(dir, "cube.blend"), "");
+  NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+  // Another name for cube.blend, as a desktop Blender may have it open under.
+  NodeFS.linkSync(NodePath.join(dir, "cube.blend"), NodePath.join(dir, "alias.blend"));
+  const argsLog = NodePath.join(dir, "args.log");
+  const desktop = desktopFor(NodeFS.realpathSync(NodePath.join(dir, "cube.blend")));
+  const service = yield* serviceFor(
+    layerFor({
+      env: { PATH: bin, XDG_RUNTIME_DIR: runtime, STANDIN_ARGS: argsLog },
+      helper: NodePath.join(bin, "helper"),
+      workspaceRoot: dir,
+      baseDir: dir,
+      desktop: desktop.service,
+      ...host,
+    }),
+  );
+  return {
+    service,
+    desktop,
+    dir: NodeFS.realpathSync(dir),
+    launched: () => NodeFS.existsSync(argsLog),
+    launches: () =>
+      NodeFS.existsSync(`${argsLog}.launches`)
+        ? NodeFS.readFileSync(`${argsLog}.launches`, "utf8").split("\n").length - 1
+        : 0,
+  };
+});
 
+describe("Move into T3", () => {
   it.live("leaves a master the desktop Blender has open there, then moves it on request", () =>
     Effect.gen(function* () {
       const { service, desktop, launched } = yield* desktopHost((file) =>
@@ -2193,8 +2230,8 @@ describe("Move into T3", () => {
         .pipe(Effect.flip);
       expect(refused.reason).toBe("desktopUnreachable");
       expect(desktop.saved).toEqual([]);
-      // What T3 last saw is gone; the pane offers opening it here instead.
-      expect(yield* firstMaster(service, threadId)).toMatchObject({ desktop: null });
+      // Asked again after the failed move: still a desktop Blender T3 can't ask.
+      expect(yield* firstMaster(service, threadId)).toMatchObject({ desktop: "noAddon" });
     }).pipe(Effect.scoped),
   );
 
@@ -2318,16 +2355,14 @@ describe("Move into T3", () => {
         .openMaster({ threadId, relativePath: "cube.blend" })
         .pipe(Effect.forkScoped);
       yield* Deferred.await(asked);
+      // The file is held while the desktop Blender is asked: a working open is refused at once,
+      // without waiting on the probe.
       const working = yield* service
         .open({ threadId: otherThreadId, relativePath: "cube.blend" })
-        .pipe(Effect.flip, Effect.forkScoped);
-      // It waits for the master's claim instead of taking the file; showing it waits needs a bound.
-      expect(
-        Option.isNone(yield* Fiber.join(working).pipe(Effect.timeoutOption("300 millis"))),
-      ).toBe(true);
+        .pipe(Effect.flip);
+      expect(working.reason).toBe("openInAnotherThread");
       yield* Deferred.succeed(answer, undefined);
       yield* Fiber.join(master);
-      expect((yield* Fiber.join(working)).reason).toBe("openInAnotherThread");
       yield* service.quit({ threadId, save: false, role: "master" });
     }).pipe(Effect.scoped),
   );
@@ -2436,3 +2471,300 @@ describe("Master file claims", () => {
     }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
   );
 });
+
+describe("A master's lifecycle", () => {
+  const waitDirty = (service: HostedBlender.HostedBlender["Service"], id: ThreadId) =>
+    service.masterState(id).pipe(
+      Stream.filter((state) => state.status === "running" && state.dirty),
+      Stream.runHead,
+    );
+
+  it.live(
+    "asks a master to quit again once T3 can reach it, if it couldn't when the last thread left",
+    () =>
+      Effect.gen(function* () {
+        const host = yield* masterHost({ controlGate: true });
+        yield* host.service.openMaster({ threadId, relativePath: "cube.blend" });
+        yield* host.masterStatus(threadId, "running");
+        // No control connection yet: the release can't ask, so the master stays the thread's.
+        yield* host.service.releaseMaster(threadId);
+        expect((yield* firstMaster(host.service, threadId)).status).toBe("running");
+        const stopped = yield* watchMaster(host.service, threadId);
+        host.openControl();
+        yield* stopped;
+        expect(host.exits()).toBe(1);
+        expect(yield* firstMaster(host.service, threadId)).toEqual({ status: "none" });
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("changes a thread's master one open at a time", () =>
+    Effect.gen(function* () {
+      const host = yield* masterHost({ dirty: true });
+      yield* Effect.all(
+        [
+          host.service.openMaster({ threadId, relativePath: "cube.blend" }).pipe(Effect.exit),
+          host.service.openMaster({ threadId, relativePath: "other.blend" }).pipe(Effect.exit),
+        ],
+        { concurrency: "unbounded" },
+      );
+      yield* waitDirty(host.service, threadId);
+      yield* host.service.releaseMaster(threadId);
+      // Only the master it ended with counted it, so leaving quits every Blender it started.
+      expect(host.exits()).toBe(host.launches());
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("doesn't hold other opens while it asks a slow desktop Blender", () =>
+    Effect.gen(function* () {
+      const asked = yield* Deferred.make<void>();
+      const answer = yield* Deferred.make<void>();
+      const { service } = yield* desktopHost(() => {
+        const desktop = fakeDesktop({ _tag: "none" });
+        return {
+          ...desktop,
+          service: {
+            ...desktop.service,
+            probe: Deferred.succeed(asked, undefined).pipe(
+              Effect.andThen(Deferred.await(answer)),
+              Effect.andThen(desktop.service.probe),
+            ),
+          },
+        };
+      });
+      const master = yield* service
+        .openMaster({ threadId, relativePath: "cube.blend" })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(asked);
+      // An unrelated file opens while the desktop Blender still hasn't answered.
+      yield* service.open({ threadId: otherThreadId, relativePath: "other.blend" });
+      yield* Deferred.succeed(answer, undefined);
+      yield* Fiber.join(master);
+      yield* service.quit({ threadId: otherThreadId, save: false });
+      yield* service.quit({ threadId, save: false, role: "master" });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "keeps a dirty master's thread through a second release while the first is deciding",
+    () =>
+      Effect.gen(function* () {
+        const host = yield* masterHost({ dirty: true, unsaved: true, slowQuit: true });
+        yield* host.service.openMaster({ threadId, relativePath: "cube.blend" });
+        yield* waitDirty(host.service, threadId);
+        const first = yield* host.service
+          .releaseMaster(threadId)
+          .pipe(Effect.forkScoped({ startImmediately: true }));
+        yield* host.service.releaseMaster(threadId);
+        yield* Fiber.join(first);
+        expect((yield* firstMaster(host.service, threadId)).status).toBe("running");
+        yield* host.service.quit({ threadId, save: false, role: "master" });
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("finishes a quit decision its caller stopped waiting for, and lets joins through", () =>
+    Effect.gen(function* () {
+      const host = yield* masterHost({ dirty: true, unsaved: true, slowQuit: true });
+      yield* host.service.openMaster({ threadId, relativePath: "cube.blend" });
+      yield* waitDirty(host.service, threadId);
+      const leaving = yield* host.service
+        .releaseMaster(threadId)
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      yield* Fiber.interrupt(leaving);
+      // Refused, so the master is kept, and the other thread joins it rather than waiting.
+      expect(
+        yield* host.service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" }),
+      ).toEqual({ _tag: "hosted", desktopUnchecked: false });
+      expect(host.launches()).toBe(1);
+      yield* host.service.quit({ threadId, save: false, role: "master" });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "never listens for an agent whose session ended before Blender could hear the grant",
+    () =>
+      Effect.gen(function* () {
+        const net = yield* NetService.NetService;
+        const ports = new Map([[threadId, yield* net.reserveLoopbackPort()]]);
+        const ended = new Set<ThreadId>();
+        const host = yield* masterHost({
+          masterPorts: ports,
+          endedSessions: ended,
+          controlGate: true,
+          dirty: true,
+        });
+        yield* host.service.openMaster(
+          { threadId, relativePath: "cube.blend" },
+          { agentSession: "session-1" },
+        );
+        ended.add(threadId);
+        host.openControl();
+        yield* waitDirty(host.service, threadId);
+        expect(host.controlLog()).not.toContain("grantAgentListener");
+        yield* host.service.quit({ threadId, save: false, role: "master" });
+      }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
+  );
+
+  it.live("closes a thread's relay once its session is no longer the one that asked", () =>
+    Effect.gen(function* () {
+      const net = yield* NetService.NetService;
+      const ports = new Map([
+        [threadId, yield* net.reserveLoopbackPort()],
+        [otherThreadId, yield* net.reserveLoopbackPort()],
+      ]);
+      const ended = new Set<ThreadId>();
+      const host = yield* masterHost({ masterPorts: ports, endedSessions: ended });
+      const agent = { agentSession: "session-1" };
+      yield* host.service.openMaster({ threadId, relativePath: "cube.blend" }, agent);
+      expect((yield* host.service.agentListener(threadId, { role: "master" }))?.state).toBe(
+        "ready",
+      );
+      expect(yield* ping(ports.get(threadId)!)).toBe("pong");
+      // Its credential was replaced; the next change to the master's relays drops its own.
+      ended.add(threadId);
+      yield* host.service.openMaster(
+        { threadId: otherThreadId, relativePath: "cube.blend" },
+        agent,
+      );
+      expect(yield* ping(ports.get(threadId)!)).toBe("ECONNREFUSED");
+      expect(yield* ping(ports.get(otherThreadId)!)).toBe("pong");
+      yield* host.service.quit({ threadId, save: false, role: "master" });
+    }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
+  );
+});
+
+describe("Move into T3, round two", () => {
+  it.live("knows the desktop Blender has the master open under another name for it", () =>
+    Effect.gen(function* () {
+      const seen: Array<string> = [];
+      const host = yield* desktopHost((file) => {
+        const desktop = fakeDesktop({
+          _tag: "open",
+          filepath: NodePathAlias(file),
+          dirty: false,
+        });
+        return {
+          ...desktop,
+          service: {
+            ...desktop.service,
+            saveAndQuit: (target: string) =>
+              Effect.sync(() => seen.push(target)).pipe(
+                Effect.andThen(desktop.service.saveAndQuit(target)),
+              ),
+          },
+        };
+      });
+      expect(yield* host.service.openMaster({ threadId, relativePath: "cube.blend" })).toEqual({
+        _tag: "desktop",
+      });
+      yield* host.service.moveIntoT3({ threadId, relativePath: "cube.blend" });
+      // The desktop Blender's re-check compares its own name for the file.
+      expect(seen).toEqual([NodePath.join(host.dir, "alias.blend")]);
+      yield* host.service.quit({ threadId, save: false, role: "master" });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("offers opening it here when the desktop Blender exited without the save recorded", () =>
+    Effect.gen(function* () {
+      const { service } = yield* desktopHost((file) => {
+        const desktop = fakeDesktop({ _tag: "open", filepath: file, dirty: false });
+        let gone = false;
+        return {
+          ...desktop,
+          service: {
+            probe: Effect.suspend(() =>
+              gone ? Effect.succeed({ _tag: "none" as const }) : desktop.service.probe,
+            ),
+            saveAndQuit: () =>
+              Effect.sync(() => {
+                gone = true;
+              }).pipe(
+                Effect.andThen(
+                  Effect.fail(new DesktopBlender.DesktopBlenderError({ reason: "didNotQuit" })),
+                ),
+              ),
+          },
+        };
+      });
+      yield* service.openMaster({ threadId, relativePath: "cube.blend" });
+      const refused = yield* service
+        .moveIntoT3({ threadId, relativePath: "cube.blend" })
+        .pipe(Effect.flip);
+      expect(refused.reason).toBe("desktopDidNotQuit");
+      expect(yield* firstMaster(service, threadId)).toMatchObject({ desktop: null });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("takes every thread still on the master along when a failed open is retried", () =>
+    Effect.gen(function* () {
+      let hide = (): void => undefined;
+      const host = yield* desktopHost((file) => {
+        const desktop = fakeDesktop({ _tag: "open", filepath: file, dirty: false });
+        return {
+          ...desktop,
+          service: {
+            ...desktop.service,
+            // The file is briefly unreadable once saved, so the hosted open after it fails.
+            saveAndQuit: (target: string) =>
+              desktop.service.saveAndQuit(target).pipe(Effect.tap(() => Effect.sync(hide))),
+          },
+        };
+      });
+      const cube = NodePath.join(host.dir, "cube.blend");
+      hide = () => NodeFS.renameSync(cube, `${cube}.away`);
+      yield* host.service.openMaster({ threadId, relativePath: "cube.blend" });
+      yield* host.service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" });
+      yield* host.service.moveIntoT3({ threadId, relativePath: "cube.blend" }).pipe(Effect.flip);
+      NodeFS.renameSync(`${cube}.away`, cube);
+      yield* host.service.reopenMaster(threadId);
+      for (const id of [threadId, otherThreadId]) {
+        yield* host.service.masterState(id).pipe(
+          Stream.filter((state) => state.status === "running"),
+          Stream.runHead,
+        );
+      }
+      yield* host.service.quit({ threadId, save: false, role: "master" });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("leaves a thread on the master it switched to while the desktop Blender saved", () =>
+    Effect.gen(function* () {
+      const saving = yield* Deferred.make<void>();
+      const finish = yield* Deferred.make<void>();
+      const host = yield* desktopHost((file) => {
+        const desktop = fakeDesktop({ _tag: "open", filepath: file, dirty: false });
+        return {
+          ...desktop,
+          service: {
+            ...desktop.service,
+            saveAndQuit: (target: string) =>
+              Deferred.succeed(saving, undefined).pipe(
+                Effect.andThen(Deferred.await(finish)),
+                Effect.andThen(desktop.service.saveAndQuit(target)),
+              ),
+          },
+        };
+      });
+      yield* host.service.openMaster({ threadId, relativePath: "cube.blend" });
+      yield* host.service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" });
+      const move = yield* host.service
+        .moveIntoT3({ threadId, relativePath: "cube.blend" })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(saving);
+      // The thread that asked for the move picks another master while the desktop Blender saves.
+      const switching = yield* host.service
+        .openMaster({ threadId, relativePath: "other.blend" })
+        .pipe(Effect.exit, Effect.forkScoped);
+      yield* Deferred.succeed(finish, undefined);
+      yield* Fiber.join(move);
+      yield* Fiber.join(switching);
+      expect(yield* firstMaster(host.service, threadId)).toMatchObject({
+        relativePath: "other.blend",
+      });
+      yield* host.service.quit({ threadId, save: false, role: "master" });
+      yield* host.service.quit({ threadId: otherThreadId, save: false, role: "master" });
+    }).pipe(Effect.scoped),
+  );
+});
+
+/** The hard-linked alias desktopHost makes beside cube.blend. */
+const NodePathAlias = (cube: string) => NodePath.join(NodePath.dirname(cube), "alias.blend");

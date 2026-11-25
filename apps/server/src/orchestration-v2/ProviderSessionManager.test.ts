@@ -6192,3 +6192,76 @@ it.effect("ProviderSessionManagerV2 gives a delegated child its project's device
     assert.isTrue(child?.capabilities?.has("device"));
   }),
 );
+
+it.effect(
+  "ProviderSessionManagerV2 ends a thread's hosted Blender access when its MCP credential is replaced",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const mcpConfigs = yield* Ref.make<
+        ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
+      >([]);
+      const ended: Array<string> = [];
+      let launches = 0;
+      const agentsLayer = Layer.mock(HostedBlenderAgents.HostedBlenderAgents)({
+        // Each session start offers a different launch, so the credential is replaced.
+        sessionLaunch: () =>
+          Effect.sync(() => {
+            launches += 1;
+            return {
+              command: "/home/user/.local/bin/blender-mcp",
+              blenderPath: "/usr/bin/blender",
+              hostedPort: 41000 + launches * 2,
+              masterPort: 41001 + launches * 2,
+              tmpDir: "/tmp/t3hb-mcp",
+            };
+          }),
+        sessionEnded: (threadId) =>
+          Effect.sync(() => {
+            ended.push(threadId);
+          }),
+      });
+      const effect = Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-provider-session-manager-blender-replacement");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const replacementSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        const first = (yield* Ref.get(mcpConfigs)).at(-1);
+        assert.deepEqual(ended, []);
+        yield* manager.open({
+          threadId,
+          providerSessionId: replacementSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const second = (yield* Ref.get(mcpConfigs)).at(-1);
+        assert.notEqual(second?.providerSessionId, first?.providerSessionId);
+        // The old credential's agent loses its Blender before the new one gets the port.
+        assert.deepEqual(ended, [threadId]);
+      });
+      yield* effect.pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 1_000,
+            capabilities: ExclusiveCapabilities,
+            mcpConfigs,
+            hostedBlenderAgentsLayer: agentsLayer,
+          }),
+        ),
+      );
+    }),
+);

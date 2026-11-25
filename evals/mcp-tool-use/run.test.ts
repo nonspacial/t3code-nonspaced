@@ -487,6 +487,39 @@ it("passes a good run and names every rule a bad run breaks", () => {
   ]);
 });
 
+it("grades the order of the code an agent sends Blender", () => {
+  const expect = {
+    codeOrder: ["bpy\\.data\\.filepath", "t3_copy_back", "undo_push", "save_mainfile"],
+  };
+  const code = (...codes: Array<string>): SampleRun => ({
+    calls: codes.map((value, step) => ({
+      step,
+      tool: "mcp__blender-master__execute_blender_code",
+      input: { code: value },
+    })),
+    text: "",
+    stopReason: "end_turn",
+  });
+  const inOrder = code(
+    "assert bpy.data.filepath == master",
+    'bpy.data.scenes[0]["t3_copy_back"] = "hero.wip 12:00"',
+    "replace(); bpy.ops.ed.undo_push(message='copy back')",
+    'del bpy.data.scenes[0]["t3_copy_back"]; bpy.ops.wm.save_mainfile()',
+  );
+  assert.deepEqual(failed(expect, inOrder), []);
+  // The clash check and replacement ran before the marker was taken.
+  const markerLate = code(
+    "assert bpy.data.filepath == master; replace(); bpy.ops.ed.undo_push(message='x')",
+    'bpy.data.scenes[0]["t3_copy_back"] = "x"; bpy.ops.wm.save_mainfile()',
+  );
+  assert.deepEqual(failed(expect, markerLate), [
+    "codeOrder bpy\\.data\\.filepath > t3_copy_back > undo_push > save_mainfile",
+  ]);
+  assert.deepEqual(failed(expect, code()), [
+    "codeOrder bpy\\.data\\.filepath > t3_copy_back > undo_push > save_mainfile",
+  ]);
+});
+
 it("grades a page passed by path on the file the agent last wrote there", () => {
   const expect = {
     calls: [{ tool: "html_render", args: { path: "/tmp/v.html", page: "~var(--" } }],

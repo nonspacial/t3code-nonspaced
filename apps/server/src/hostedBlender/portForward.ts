@@ -44,10 +44,13 @@ export const forwardLoopbackPort = Effect.fn("HostedBlender.forwardLoopbackPort"
       sockets.add(incoming);
       incoming.on("error", () => incoming.destroy());
       incoming.on("close", () => sockets.delete(incoming));
-      void Promise.resolve(input.accept?.(incoming) ?? true).then(
-        (accepted) => (accepted && !incoming.destroyed ? relay(incoming) : incoming.destroy()),
-        () => incoming.destroy(),
-      );
+      // Called inside the chain, so a check that throws closes the socket rather than the server.
+      void Promise.resolve()
+        .then(() => input.accept?.(incoming) ?? true)
+        .then(
+          (accepted) => (accepted && !incoming.destroyed ? relay(incoming) : incoming.destroy()),
+          () => incoming.destroy(),
+        );
     });
     yield* Effect.acquireRelease(
       Effect.callback<void, PortForwardError>((resume) => {

@@ -44,6 +44,9 @@ const requireHostedBlender = Effect.gen(function* () {
 /** The provider session calling, which an agent's access to a master is tied to. */
 const callerSession = McpInvocationContext.requireThreadMcpCapability("hosted-blender").pipe(
   Effect.map((scope) => scope.thread.providerSessionId),
+  Effect.mapError(
+    () => new HostedBlenderToolError({ reason: "Hosted Blender is not available to this agent." }),
+  ),
 );
 
 const underConfiguredRoot = Effect.fnUntraced(function* (file: string, root: string | undefined) {

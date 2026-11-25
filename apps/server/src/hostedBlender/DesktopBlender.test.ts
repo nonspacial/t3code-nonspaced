@@ -65,14 +65,19 @@ const fakeAddon = (
   );
 
 /** The desktop Blender's process and the master on disk, as T3 sees them from outside. */
-const world = () => ({ alive: true, modified: 1 });
+let tokens = 0;
+const world = () => ({ alive: true, saved: false, token: "" });
 
 const clientFor = (port: number, running = false, seen = world()) =>
   DesktopBlender.make({
     port,
     desktopBlenderRunning: Effect.succeed(running),
     processAlive: () => Effect.sync(() => seen.alive),
-    modifiedAt: () => Effect.sync(() => seen.modified),
+    saveToken: Effect.sync(() => {
+      tokens += 1;
+      seen.token = `/t3-test/move-token-${tokens}`;
+      return { path: seen.token, written: Effect.sync(() => seen.saved) };
+    }),
     quitTimeout: Duration.millis(500),
   });
 
@@ -89,7 +94,7 @@ const savingAddon =
 /** Blender saving the file and exiting, as the add-on's port closes. */
 const exits = (seen: ReturnType<typeof world>) => () => {
   seen.alive = false;
-  seen.modified += 1;
+  seen.saved = true;
 };
 
 const master = "/home/user/acme/app/models/hero.blend";
@@ -126,6 +131,8 @@ describe("DesktopBlender.saveAndQuit", () => {
       expect(addon.requests[0]).toContain(JSON.stringify(master));
       expect(addon.requests[0]?.match(/_t3_current\(\) != expected/g)).toHaveLength(2);
       expect(addon.requests[0]).toContain("save_mainfile(exit=True)");
+      // A save that left the file's time as it was still counts: this request's token says so.
+      expect(addon.requests[0]).toContain(seen.token);
     }).pipe(Effect.scoped),
   );
 
@@ -171,7 +178,7 @@ describe("DesktopBlender.saveAndQuit", () => {
         .pipe(Effect.flip);
       expect(still.reason).toBe("didNotQuit");
 
-      // The process is gone, but the file on disk never changed.
+      // The process is gone, but this request's save was never recorded.
       const unsaved = world();
       const gone = yield* fakeAddon(savingAddon(), {
         quitAfterSave: true,

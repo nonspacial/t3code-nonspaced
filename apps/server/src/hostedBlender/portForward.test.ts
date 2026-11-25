@@ -123,4 +123,24 @@ describe("forwardLoopbackPort", () => {
       expect(target.connections.count).toBe(0);
     }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
   );
+
+  it.live("closes a connection whose check throws, and keeps relaying others", () =>
+    Effect.gen(function* () {
+      const target = yield* echoServer;
+      const net = yield* NetService.NetService;
+      const listenPort = yield* net.reserveLoopbackPort();
+      let calls = 0;
+      yield* forwardLoopbackPort({
+        listenPort,
+        targetPort: target.port,
+        accept: () => {
+          calls += 1;
+          if (calls === 1) throw new Error("check failed");
+          return true;
+        },
+      });
+      expect(["closed", "error:ECONNRESET"]).toContain(yield* exchange(listenPort, "hello"));
+      expect(yield* exchange(listenPort, "again")).toBe("echo:again");
+    }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
+  );
 });

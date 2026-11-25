@@ -1,10 +1,20 @@
-import type { HostedBlenderThreadState, ScopedThreadRef } from "@t3tools/contracts";
+import type {
+  HostedBlenderMasterState,
+  HostedBlenderThreadState,
+  ScopedThreadRef,
+} from "@t3tools/contracts";
 import type { ModelView } from "@t3tools/shared/modelView";
 
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 
 import { rightPanelHostRef, useRightPanelStore } from "~/rightPanelStore";
-import { readHostedBlenderState, setHostedBlenderView } from "~/state/hostedBlender";
+import {
+  readHostedBlenderMasterState,
+  readHostedBlenderState,
+  setHostedBlenderView,
+} from "~/state/hostedBlender";
+
+import { useBlenderRoleStore } from "./blenderRole";
 
 export const isBlendFile = (relativePath: string) => relativePath.toLowerCase().endsWith(".blend");
 
@@ -19,7 +29,7 @@ const workspaceRelative = (path: string, workspaceRoot: string | undefined) => {
 export const hostedBlenderOpensLink = (
   path: string,
   workspaceRoot: string | undefined,
-  state: HostedBlenderThreadState | null,
+  state: HostedBlenderThreadState | HostedBlenderMasterState | null,
 ): boolean =>
   state !== null &&
   (state.status === "starting" || state.status === "running") &&
@@ -37,6 +47,9 @@ export async function openBlendLink(input: {
   readonly view?: ModelView | undefined;
   readonly openFile: () => void;
   readonly readState?: (threadRef: ScopedThreadRef) => Promise<HostedBlenderThreadState | null>;
+  readonly readMasterState?: (
+    threadRef: ScopedThreadRef,
+  ) => Promise<HostedBlenderMasterState | null>;
   readonly setView?: typeof setHostedBlenderView;
 }): Promise<void> {
   const panels = useRightPanelStore.getState();
@@ -47,9 +60,18 @@ export async function openBlendLink(input: {
   const superseded = () =>
     scopedThreadKey(rightPanelHostRef(input.threadRef)) !== panelKey ||
     useRightPanelStore.getState().getUserActionRevision(panelRef) !== revision;
-  const state = await (input.readState ?? readHostedBlenderState)(input.threadRef);
+  const [state, master] = await Promise.all([
+    (input.readState ?? readHostedBlenderState)(input.threadRef),
+    (input.readMasterState ?? readHostedBlenderMasterState)(input.threadRef),
+  ]);
   if (superseded()) return;
-  if (!hostedBlenderOpensLink(input.path, input.workspaceRoot, state)) {
+  // The working copy's own side first; a link to the master's file opens the Master side.
+  const role = hostedBlenderOpensLink(input.path, input.workspaceRoot, state)
+    ? "working"
+    : hostedBlenderOpensLink(input.path, input.workspaceRoot, master)
+      ? "master"
+      : null;
+  if (role === null) {
     input.openFile();
     return;
   }
@@ -58,10 +80,15 @@ export async function openBlendLink(input: {
         input.threadRef,
         workspaceRelative(input.path, input.workspaceRoot),
         input.view,
+        role,
       )
     : "moved";
   if (superseded()) return;
   // The state read may be from before a reconnect; the server has the last word on the file.
-  if (moved === "otherFile") input.openFile();
-  else useRightPanelStore.getState().open(input.threadRef, "blender");
+  if (moved === "otherFile") {
+    input.openFile();
+    return;
+  }
+  useBlenderRoleStore.getState().setRole(input.threadRef, role);
+  useRightPanelStore.getState().open(input.threadRef, "blender");
 }

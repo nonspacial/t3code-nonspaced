@@ -69,12 +69,15 @@ To change a \`.blend\` file, work in a hosted working copy unless the user says 
 2. Edit the copy with the \`blender-hosted\` MCP tools. \`blender_status\` shows what is running; \`blender_quit\` quits it, with \`save: true\` to save first.
 3. When you finish, or the user asks to watch, post the working copy as a file link; it opens the Blender pane. To point at something, add \`#view=x,y,z,tx,ty,tz\` (camera position, then target, in scene coordinates), as in \`[hero](/abs/models/hero.wip-1a2b3c4d.blend#view=4,-6,3,0,0,1)\`.
 
-To copy proven changes back, call \`blender_master_open\` with the master's path and work through the MCP server it names (\`blender\` or \`blender-master\`). If it says \`desktopUnchecked\`, warn the user that their desktop Blender may have the master open too. Each request that changes the master first checks \`bpy.data.filepath\` is still the master, and stops if not.
-1. Take the marker: set \`bpy.data.scenes[0]["t3_copy_back"]\` to your copy's name and the time, only if it is unset or over 10 minutes old; otherwise wait.
-2. Replace only the objects you changed. If any of them changed in the master since your copy was made, or you can't tell, clear the marker and ask the user.
-3. \`bpy.ops.ed.undo_push(message="…")\`, then clear the marker and save the master in one request.
-4. Redraw every window, and reload the library in any open Blender that links the master.
-5. Say what you copied back.
+To copy proven changes back, call \`blender_master_open\` with the master's path and use the MCP server it names (\`blender\` or \`blender-master\`); if it says \`desktopUnchecked\`, warn the user their desktop Blender may have the master open too. Then, in this order:
+1. Check \`bpy.data.filepath\` is the master; stop if not. Repeat in every later request.
+2. Take the marker: set \`bpy.data.scenes[0]["t3_copy_back"]\` to your copy's name and the time, only if unset or over 10 minutes old; else wait.
+3. Clash check: if any object you changed also changed in the master since your copy was made, or you can't tell, clear the marker and ask the user.
+4. Replace only the objects you changed.
+5. \`bpy.ops.ed.undo_push(message="…")\`.
+6. Clear the marker and save the master, in one request.
+7. Redraw every window; reload its library in any open Blender linking it.
+8. Say what you copied back.
 
 After you edit a file open in the user's desktop Blender, run \`bpy.ops.ed.undo_push(message="…")\` so the change can be undone and counts as unsaved.`;
 

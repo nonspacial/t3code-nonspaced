@@ -25,6 +25,7 @@ import type {
   HostedBlenderThreadState,
   ScopedThreadRef,
 } from "@t3tools/contracts";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { CameraIcon, MoreVertical } from "lucide-react";
@@ -96,6 +97,7 @@ import { HiddenThreadContext } from "../chat/backgroundThread";
 
 import { useBlenderAnnotation } from "./BlenderAnnotationEditor";
 import { BlenderRoleSwitch, DesktopUncheckedNotice, MasterCard } from "./BlenderMaster";
+import { useBlenderRoleStore } from "./blenderRole";
 import { attachBlenderInput, type BlenderInput } from "./blenderInput";
 
 interface StreamStats {
@@ -163,7 +165,12 @@ interface BlenderPanelProps {
 export function BlenderPanel(props: BlenderPanelProps) {
   const working = useHostedBlenderState(props.threadRef);
   const master = useHostedBlenderMasterState(props.threadRef);
-  const [role, setRole] = useState<HostedBlenderRole>("working");
+  // A link to the master's file picks the Master side, so the choice lives outside the pane.
+  const role = useBlenderRoleStore(
+    (store) => store.roles[scopedThreadKey(props.threadRef)] ?? "working",
+  );
+  const setRole = (next: HostedBlenderRole) =>
+    useBlenderRoleStore.getState().setRole(props.threadRef, next);
   const hasMaster = master !== null && master.status !== "none";
   const switcher = hasMaster ? (
     <BlenderRoleSwitch role={role} onRole={setRole} working={working} master={master} />

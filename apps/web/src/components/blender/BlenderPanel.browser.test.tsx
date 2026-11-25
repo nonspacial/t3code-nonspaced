@@ -74,6 +74,7 @@ vi.mock(import("~/state/hostedBlender"), async (original) => ({
 }));
 
 import { BlenderPanel, FloatingBlender } from "./BlenderPanel";
+import { useBlenderRoleStore } from "./blenderRole";
 
 const threadRef = {
   environmentId: EnvironmentId.make("environment-1"),
@@ -90,6 +91,7 @@ const startup = (): Disposable => {
   stream.events = null;
   stream.targets = [];
   stream.commands = [];
+  useBlenderRoleStore.setState({ roles: {} });
   stream.master = { status: "none" };
   stream.state = { status: "running", relativePath: "models/hero.blend", dirty: false };
   return { [Symbol.dispose]: installKeyboardCapture() };

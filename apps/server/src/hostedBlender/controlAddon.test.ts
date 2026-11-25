@@ -30,7 +30,8 @@ context = types.SimpleNamespace(
     window_manager=types.SimpleNamespace(windows=[]),
     temp_override=lambda **_kwargs: contextlib.nullcontext(),
 )
-data = types.SimpleNamespace(filepath=state.get("filepath", "/work/hero.wip-1a2b3c4d.blend"), is_dirty=False)
+images = [types.SimpleNamespace(name=name, is_dirty=True) for name in state.get("dirtyImages", [])]
+data = types.SimpleNamespace(filepath=state.get("filepath", "/work/hero.wip-1a2b3c4d.blend"), is_dirty=False, images=images)
 from . import app, ops
 # Blender registers the enabled add-ons before --python scripts run.
 import addon_utils
@@ -73,9 +74,9 @@ def _stop():
     sys.modules[NAME + ".mcp_to_blender_server"].stop()
     return {"FINISHED"}
 blmcp = types.SimpleNamespace(server_start=_operator(_start), server_stop=_operator(_stop))
-def _quit():
+def _quit(*args):
     import addon_utils
-    addon_utils.log("quit_blender")
+    addon_utils.log("quit_blender", *args)
     return {"FINISHED"}
 wm = types.SimpleNamespace(quit_blender=_quit)
 `,
@@ -254,6 +255,8 @@ const runAddon = (input: {
   readonly send?: ReadonlyArray<"grantAgentListener" | "stopAgentListener" | "quitIfClean">;
   /** Blender has unsaved changes when T3's commands arrive. */
   readonly dirty?: boolean;
+  /** Images edited and not saved, which saving the .blend leaves behind. */
+  readonly dirtyImages?: ReadonlyArray<string>;
   readonly pressStartBeforeGrant?: boolean;
   /** Another file is open by the time T3's grant arrives. */
   readonly fileBeforeGrant?: boolean;
@@ -425,10 +428,21 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       send: ["quitIfClean"],
       dirty: true,
     });
-    expect(dirty.calls).not.toContainEqual(["quit_blender"]);
+    expect(dirty.calls.some((call: Array<unknown>) => call[0] === "quit_blender")).toBe(false);
     expect(dirty.received).toContain("quitRefused");
+    // A saved .blend with an edited image is still unsaved work.
+    const image = runAddon({
+      installed: [],
+      enabled: [],
+      listen: false,
+      send: ["quitIfClean"],
+      dirtyImages: ["paint"],
+    });
+    expect(image.calls.some((call: Array<unknown>) => call[0] === "quit_blender")).toBe(false);
+    expect(image.received).toContain("quitRefused");
     const clean = runAddon({ installed: [], enabled: [], listen: false, send: ["quitIfClean"] });
-    expect(clean.calls).toContainEqual(["quit_blender"]);
+    // As the user's own quit, so Blender's check covers what T3 can't see.
+    expect(clean.calls).toContainEqual(["quit_blender", "INVOKE_DEFAULT"]);
     expect(clean.received).not.toContain("quitRefused");
   });
 });
