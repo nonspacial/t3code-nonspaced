@@ -13447,5 +13447,57 @@
   "0b7950be09ae6c3f": "Timeline",
   "05d1fff2e7325939": "Show Blender's Timeline under the 3D view in the Blender pane, for every hosted Blender on this server.",
   "138dedd43ae601b2": "Timeline in the Blender pane",
-  "d75cc4b1152e0425": "blender hosted timeline animation keyframes playback frames strip"
+  "d75cc4b1152e0425": "blender hosted timeline animation keyframes playback frames strip",
+  "b75a2837e20ac029": "Couldn't restore the changes",
+  "656229dd34610e6d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " changed on disk, so Blender reloaded it. Its unsaved changes are kept as a recovery copy."
+  ],
+  "a1d7b8f8a44e27aa": "Restore changes",
+  "acd0c171046c17bf": "Replace the unsaved changes to {name}?",
+  "cb7a692d62db22e7": "Blender has changes since it reloaded the file. Restoring puts the kept changes back and keeps these as the recovery copy instead, so you can restore them again.",
+  "449feb1ad3d6c425": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " changed on disk. Blender loads it once the agent's work running in it has finished."
+  ],
+  "06be14c04a81e489": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " changed on disk. Blender loads it once its unsaved image edits are saved or discarded, since a recovery copy can't keep them."
+  ],
+  "3a3de5a1dfe252e8": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " changed on disk. Blender loads it once its unsaved asset catalog edits are saved or discarded, since a recovery copy can't keep them."
+  ],
+  "f813d3c90e608095": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " changed on disk, but Blender couldn't keep its unsaved changes first, so it hasn't loaded the new version."
+  ],
+  "07634e6515f13cbe": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " changed on disk, but Blender couldn't load the new version. It tries again when the file changes."
+  ]
 }

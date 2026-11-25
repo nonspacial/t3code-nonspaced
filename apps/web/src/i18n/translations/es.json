@@ -13432,5 +13432,57 @@
   "0b7950be09ae6c3f": "Línea de tiempo",
   "05d1fff2e7325939": "Muestra la línea de tiempo de Blender bajo la vista 3D en el panel de Blender, para cada Blender alojado en este servidor.",
   "138dedd43ae601b2": "Línea de tiempo en el panel de Blender",
-  "d75cc4b1152e0425": "blender alojado línea de tiempo animación fotogramas clave reproducción fotogramas franja"
+  "d75cc4b1152e0425": "blender alojado línea de tiempo animación fotogramas clave reproducción fotogramas franja",
+  "b75a2837e20ac029": "No se pudieron restaurar los cambios",
+  "656229dd34610e6d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " cambió en el disco, así que Blender lo volvió a cargar. Sus cambios sin guardar se conservan como copia de recuperación."
+  ],
+  "a1d7b8f8a44e27aa": "Restaurar cambios",
+  "acd0c171046c17bf": "¿Reemplazar los cambios sin guardar de {name}?",
+  "cb7a692d62db22e7": "Blender tiene cambios desde que volvió a cargar el archivo. Al restaurar, vuelven los cambios conservados y estos se conservan en su lugar como copia de recuperación, para que puedas restaurarlos de nuevo.",
+  "449feb1ad3d6c425": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " cambió en el disco. Blender lo cargará cuando termine el trabajo del agente que se está ejecutando en él."
+  ],
+  "06be14c04a81e489": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " cambió en el disco. Blender lo cargará cuando se guarden o descarten sus ediciones de imagen sin guardar, ya que una copia de recuperación no puede conservarlas."
+  ],
+  "3a3de5a1dfe252e8": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " cambió en el disco. Blender lo cargará cuando se guarden o descarten sus ediciones de catálogos de recursos sin guardar, ya que una copia de recuperación no puede conservarlas."
+  ],
+  "f813d3c90e608095": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " cambió en el disco, pero Blender no pudo conservar antes sus cambios sin guardar, así que no ha cargado la nueva versión."
+  ],
+  "07634e6515f13cbe": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " cambió en el disco, pero Blender no pudo cargar la nueva versión. Lo intentará de nuevo cuando el archivo cambie."
+  ]
 }

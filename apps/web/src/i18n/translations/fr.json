@@ -13437,5 +13437,57 @@
   "0b7950be09ae6c3f": "Chronologie",
   "05d1fff2e7325939": "Affiche la chronologie de Blender sous la vue 3D dans le panneau Blender, pour chaque Blender hébergé sur ce serveur.",
   "138dedd43ae601b2": "Chronologie dans le panneau Blender",
-  "d75cc4b1152e0425": "blender hébergé chronologie animation images clés lecture images bande"
+  "d75cc4b1152e0425": "blender hébergé chronologie animation images clés lecture images bande",
+  "b75a2837e20ac029": "Impossible de restaurer les modifications",
+  "656229dd34610e6d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " a été modifié sur le disque, Blender l’a donc rechargé. Ses modifications non enregistrées sont conservées dans une copie de récupération."
+  ],
+  "a1d7b8f8a44e27aa": "Restaurer les modifications",
+  "acd0c171046c17bf": "Remplacer les modifications non enregistrées de {name} ?",
+  "cb7a692d62db22e7": "Blender a des modifications depuis le rechargement du fichier. La restauration remet les modifications conservées et garde celles-ci à la place comme copie de récupération, pour que vous puissiez les restaurer à nouveau.",
+  "449feb1ad3d6c425": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " a été modifié sur le disque. Blender le chargera une fois terminé le travail de l’agent en cours."
+  ],
+  "06be14c04a81e489": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " a été modifié sur le disque. Blender le chargera une fois ses modifications d’images non enregistrées enregistrées ou abandonnées, car une copie de récupération ne peut pas les conserver."
+  ],
+  "3a3de5a1dfe252e8": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " a été modifié sur le disque. Blender le chargera une fois ses modifications de catalogues d’assets non enregistrées enregistrées ou abandonnées, car une copie de récupération ne peut pas les conserver."
+  ],
+  "f813d3c90e608095": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " a été modifié sur le disque, mais Blender n’a pas pu conserver d’abord ses modifications non enregistrées et n’a donc pas chargé la nouvelle version."
+  ],
+  "07634e6515f13cbe": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " a été modifié sur le disque, mais Blender n’a pas pu charger la nouvelle version. Il réessaiera quand le fichier changera."
+  ]
 }

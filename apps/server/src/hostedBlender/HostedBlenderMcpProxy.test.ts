@@ -20,6 +20,7 @@ import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as NodeFS from "node:fs";
+import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -1159,6 +1160,45 @@ describe("HostedBlenderMcpProxy", () => {
             );
           }
           assert.deepStrictEqual(t.spawned, []);
+        }),
+      ),
+  );
+
+  it.live.skipIf(!NodeFS.existsSync(official))(
+    "B13: carries a stale Blender's refusal to the agent word for word",
+    () =>
+      run(
+        Effect.gen(function* () {
+          // The control add-on's answer to a call on a file changed on disk and not loaded yet,
+          // on Blender Lab's own listener protocol (JSON, NUL-terminated).
+          const refusal =
+            "The .blend this Blender has open changed on disk and Blender hasn't loaded it yet: the file is still being written; try again in a moment. Nothing was run.";
+          const listener = NodeNet.createServer((socket) => {
+            let received = "";
+            socket.on("data", (chunk) => {
+              received += chunk.toString();
+              if (received.includes("\0")) {
+                socket.end(`${JSON.stringify({ status: "error", message: refusal })}\0`);
+              }
+            });
+          });
+          yield* Effect.acquireRelease(
+            Effect.promise(
+              () => new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve)),
+            ),
+            () => Effect.sync(() => listener.close()),
+          );
+          const port = (listener.address() as NodeNet.AddressInfo).port;
+          const t = yield* setup({ command: official });
+          yield* t.startSession(a, port);
+          const [answer] = yield* t.ask(a, "working", {
+            method: "tools/call",
+            params: { name: "execute_blender_code", arguments: { code: "result = {}" } },
+          });
+          const text = (answer?.result.content ?? [])
+            .map((part: { text?: string }) => part.text ?? "")
+            .join("\n");
+          assert.include(text, refusal);
         }),
       ),
   );

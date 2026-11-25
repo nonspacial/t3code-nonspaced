@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import type {
   HostedBlenderMasterState,
+  HostedBlenderReloadBlocker,
   HostedBlenderRole,
   HostedBlenderThreadState,
   ScopedThreadRef,
@@ -8,6 +9,15 @@ import type {
 import { T, useGT, useMessages, Var } from "gt-react";
 import { useState } from "react";
 
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "~/components/ui/alert-dialog";
 import { Button } from "~/components/ui/button";
 import {
   Empty,
@@ -19,7 +29,7 @@ import {
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { Toggle, ToggleGroup } from "~/components/ui/toggle-group";
 import { cn } from "~/lib/utils";
-import { hostedBlenderEnvironment } from "~/state/hostedBlender";
+import { hostedBlenderEnvironment, isRestoreReplacingUnsaved } from "~/state/hostedBlender";
 import { formatEnvironmentQueryError } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
 
@@ -92,6 +102,135 @@ export function DesktopUncheckedNotice() {
         A desktop Blender T3 Code couldn't check may also have this file open. Save and close it
         there so the two don't overwrite each other.
       </T>
+    </div>
+  );
+}
+
+/**
+ * Over a running Blender that reloaded its file after it changed on disk: its unsaved changes
+ * are that file's copy, which Restore puts back over the reloaded file.
+ */
+export function ReloadedNotice(props: {
+  readonly threadRef: ScopedThreadRef;
+  /** The kept copy's key, which names its file: `workspace:<path>` or `outside:<path>`. */
+  readonly copyKey: string;
+  readonly master: boolean;
+  readonly onDismiss: () => void;
+}) {
+  const gt = useGT();
+  const m = useMessages();
+  const { environmentId, threadId } = props.threadRef;
+  const canRestore = useAtomValue(hostedBlenderEnvironment.reopen.permissionAtom(environmentId));
+  const reopen = useAtomCommand(hostedBlenderEnvironment.reopen, { reportFailure: false });
+  const [pending, setPending] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const name = fileName(props.copyKey.slice(props.copyKey.indexOf(":") + 1));
+  // Unsaved work since the reload is replaced only once the person agrees; it becomes the copy.
+  const restore = async (replaceUnsaved: boolean) => {
+    setPending(true);
+    const result = await reopen({
+      environmentId,
+      input: {
+        threadId,
+        key: props.copyKey,
+        restore: true,
+        ...(replaceUnsaved ? { replaceUnsaved: true } : {}),
+        ...(props.master ? { role: "master" as const } : {}),
+      },
+    });
+    setPending(false);
+    setConfirming(false);
+    if (result._tag === "Failure" && !replaceUnsaved && isRestoreReplacingUnsaved(result.cause)) {
+      setConfirming(true);
+      return;
+    }
+    if (result._tag === "Failure") {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: gt("Couldn't restore the changes"),
+          description: formatEnvironmentQueryError(result.cause, m),
+        }),
+      );
+    }
+  };
+  return (
+    <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border bg-info/8 px-3 py-1.5 text-info-foreground text-xs">
+      <span className="min-w-0 flex-1">
+        <T>
+          <Var>{name}</Var> changed on disk, so Blender reloaded it. Its unsaved changes are kept as
+          a recovery copy.
+        </T>
+      </span>
+      {canRestore ? (
+        <Button size="xs" variant="outline" disabled={pending} onClick={() => void restore(false)}>
+          <T>Restore changes</T>
+        </Button>
+      ) : null}
+      <Button size="xs" variant="ghost" onClick={props.onDismiss}>
+        <T>Dismiss</T>
+      </Button>
+      <AlertDialog open={confirming} onOpenChange={setConfirming}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {gt("Replace the unsaved changes to {name}?", { name })}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              <T>
+                Blender has changes since it reloaded the file. Restoring puts the kept changes back
+                and keeps these as the recovery copy instead, so you can restore them again.
+              </T>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" size="sm" />}>
+              <T>Cancel</T>
+            </AlertDialogClose>
+            <Button size="sm" disabled={pending} onClick={() => void restore(true)}>
+              <T>Restore changes</T>
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+    </div>
+  );
+}
+
+/** Over a running Blender whose file changed on disk but isn't loaded yet, and what holds it. */
+export function ReloadBlockedNotice(props: {
+  readonly name: string;
+  readonly blocker: HostedBlenderReloadBlocker;
+}) {
+  const name = props.name;
+  return (
+    <div className="shrink-0 border-b border-border bg-warning/8 px-3 py-1.5 text-warning-foreground text-xs">
+      {props.blocker === "agentWork" ? (
+        <T>
+          <Var>{name}</Var> changed on disk. Blender loads it once the agent's work running in it
+          has finished.
+        </T>
+      ) : props.blocker === "images" ? (
+        <T>
+          <Var>{name}</Var> changed on disk. Blender loads it once its unsaved image edits are saved
+          or discarded, since a recovery copy can't keep them.
+        </T>
+      ) : props.blocker === "catalogs" ? (
+        <T>
+          <Var>{name}</Var> changed on disk. Blender loads it once its unsaved asset catalog edits
+          are saved or discarded, since a recovery copy can't keep them.
+        </T>
+      ) : props.blocker === "copyFailed" ? (
+        <T>
+          <Var>{name}</Var> changed on disk, but Blender couldn't keep its unsaved changes first, so
+          it hasn't loaded the new version.
+        </T>
+      ) : (
+        <T>
+          <Var>{name}</Var> changed on disk, but Blender couldn't load the new version. It tries
+          again when the file changes.
+        </T>
+      )}
     </div>
   );
 }

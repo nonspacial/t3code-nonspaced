@@ -13437,5 +13437,57 @@
   "0b7950be09ae6c3f": "Linha do tempo",
   "05d1fff2e7325939": "Mostra a linha do tempo do Blender abaixo da visão 3D no painel do Blender, para cada Blender hospedado neste servidor.",
   "138dedd43ae601b2": "Linha do tempo no painel do Blender",
-  "d75cc4b1152e0425": "blender hospedado linha do tempo animação quadros-chave reprodução quadros faixa"
+  "d75cc4b1152e0425": "blender hospedado linha do tempo animação quadros-chave reprodução quadros faixa",
+  "b75a2837e20ac029": "Não foi possível restaurar as alterações",
+  "656229dd34610e6d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " foi alterado no disco, então o Blender o recarregou. As alterações não salvas foram mantidas como cópia de recuperação."
+  ],
+  "a1d7b8f8a44e27aa": "Restaurar alterações",
+  "acd0c171046c17bf": "Substituir as alterações não salvas de {name}?",
+  "cb7a692d62db22e7": "O Blender tem alterações desde que recarregou o arquivo. Restaurar traz de volta as alterações mantidas e guarda estas como cópia de recuperação no lugar delas, para que você possa restaurá-las de novo.",
+  "449feb1ad3d6c425": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " foi alterado no disco. O Blender vai carregá-lo quando o trabalho do agente em execução nele terminar."
+  ],
+  "06be14c04a81e489": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " foi alterado no disco. O Blender vai carregá-lo quando as edições de imagem não salvas forem salvas ou descartadas, pois uma cópia de recuperação não consegue guardá-las."
+  ],
+  "3a3de5a1dfe252e8": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " foi alterado no disco. O Blender vai carregá-lo quando as edições de catálogos de assets não salvas forem salvas ou descartadas, pois uma cópia de recuperação não consegue guardá-las."
+  ],
+  "f813d3c90e608095": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " foi alterado no disco, mas o Blender não conseguiu guardar antes as alterações não salvas, então não carregou a nova versão."
+  ],
+  "07634e6515f13cbe": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " foi alterado no disco, mas o Blender não conseguiu carregar a nova versão. Ele tenta de novo quando o arquivo mudar."
+  ]
 }

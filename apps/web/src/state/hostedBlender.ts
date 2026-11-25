@@ -153,6 +153,12 @@ export function readLatest<A, E>(
 
 const isHostedBlenderError = Schema.is(HostedBlenderError);
 
+/** A restore in place refused because it would replace unsaved changes nobody agreed to lose. */
+export const isRestoreReplacingUnsaved = (cause: Cause.Cause<unknown>) => {
+  const error = Cause.squash(cause);
+  return isHostedBlenderError(error) && error.reason === "restoreReplacesUnsaved";
+};
+
 /** A discard refused because Blender has another file open than the one its dialog named. */
 export const isOpenFileChanged = (cause: Cause.Cause<unknown>) => {
   const error = Cause.squash(cause);
