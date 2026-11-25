@@ -4,6 +4,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { HOSTED_STARTUP_GATE_SOURCE } from "./agentGuard.ts";
@@ -619,6 +620,8 @@ const after = (result: { readonly steps: ReadonlyArray<unknown> }) => result.ste
 const off = { listener: "off", listening: null, enabled: false };
 const pending = { listener: "starting", listening: null, enabled: false };
 
+const onLinux = HostProcess.Platform.defaultValue() === "linux";
+
 describe("T3's control add-on and Blender Lab's MCP add-on", () => {
   it("keeps it off without --t3-mcp-listen, and out of these settings so a reload can't start it", () => {
     // With the gate skipped, so the add-on's own cleanup is what keeps it out.
@@ -753,9 +756,13 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       table: NonNullable<NonNullable<Parameters<typeof runAddon>[0]["call"]>["table"]>,
     ) => runAddon({ ...granted, call: { table } }).call.reply;
 
-    it("takes a call from this account, found by its real loopback connection", () => {
-      expect(runAddon({ ...granted, call: {} }).call.reply).toEqual(ok);
-    });
+    // Reads the kernel's own /proc/net/tcp, which only Linux has.
+    it.skipIf(!onLinux)(
+      "takes a call from this account, found by its real loopback connection",
+      () => {
+        expect(runAddon({ ...granted, call: {} }).call.reply).toEqual(ok);
+      },
+    );
 
     it("takes a call whose client row and Blender's own end are both live", () => {
       expect(withTable({})).toEqual(ok);

@@ -833,9 +833,13 @@ const make = Effect.gen(function* () {
     const settings = yield* userBlenderSettings();
     if (settings === undefined) return null;
     const extensions = path.join(settings, "extensions");
-    const repos = (yield* fileSystem.readDirectory(extensions).pipe(Effect.orElseSucceed(() => [])))
-      .toSorted()
-      .toSorted((a, b) => Number(b === "lab_blender_org") - Number(a === "lab_blender_org"));
+    const repos = (yield* fileSystem
+      .readDirectory(extensions)
+      .pipe(Effect.orElseSucceed(() => []))).toSorted(
+      (a, b) =>
+        Number(b === "lab_blender_org") - Number(a === "lab_blender_org") ||
+        (a < b ? -1 : a > b ? 1 : 0),
+    );
     let installed: string | undefined;
     for (const repo of repos) {
       const candidate = path.join(extensions, repo, "mcp");

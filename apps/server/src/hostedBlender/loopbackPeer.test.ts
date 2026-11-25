@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 
 import { addressHex, isSameAccountPeer, parseTcpTable, socketInode } from "./loopbackPeer.ts";
@@ -96,12 +97,17 @@ const withTable = (table: Table) =>
     return yield* isSameAccountPeer(socket, { tables: [file] });
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
 
+const onLinux = HostProcess.Platform.defaultValue() === "linux";
+
 describe("isSameAccountPeer", () => {
-  it.effect("says yes for a real loopback client of this account, from the real tables", () =>
-    Effect.gen(function* () {
-      const { socket } = yield* accepted;
-      expect(yield* isSameAccountPeer(socket)).toBe(true);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  // The kernel's tables exist only on Linux; the faked tables below cover the rules everywhere.
+  it.effect.skipIf(!onLinux)(
+    "says yes for a real loopback client of this account, from the real tables",
+    () =>
+      Effect.gen(function* () {
+        const { socket } = yield* accepted;
+        expect(yield* isSameAccountPeer(socket)).toBe(true);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.effect("says yes when the client row and our own end are both live", () =>
