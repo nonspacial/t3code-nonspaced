@@ -59,6 +59,12 @@ interface Host {
   /** What setup reports after its first readiness, as Settings changes it. */
   readonly readinessChanges?: Stream.Stream<HostedBlenderSetup.HostedBlenderReadiness>;
   readonly revocations?: Stream.Stream<HostedBlenderAgents.HostedBlenderRevocation | null>;
+  /** Each role's agent access ending, as HostedBlender reports it. */
+  readonly accessEnded?: Queue.Queue<{
+    readonly threadId: ThreadId;
+    readonly role: HostedBlenderAgents.HostedBlenderRole;
+    readonly grant: string;
+  }>;
   /** Each thread's `blender-master` port, held by its agent session. */
   readonly masterPorts?: ReadonlyMap<ThreadId, number>;
   /** "Allow agents to start hosted Blenders"; on by default. */
@@ -87,7 +93,7 @@ const readinessFor = (host: Host): HostedBlenderSetup.HostedBlenderReadiness => 
   const blender = blenderOnPath(host.env);
   return host.helper == null || blender === undefined
     ? { status: "notSetUp", missing: ["helper"] }
-    : { status: "ok", helper: host.helper, blender, blenderMcp: null };
+    : { status: "ok", helper: host.helper, blender, blenderMcp: null, blenderMcpCapture: null };
 };
 
 const layerFor = (host: Host) =>
@@ -138,6 +144,10 @@ const layerFor = (host: Host) =>
           ).pipe(Effect.provide(NetService.layer)),
           agentsAllowed: Effect.succeed(host.agentsAllowed ?? true),
           revocations: host.revocations ?? Stream.never,
+          agentAccessEnded: (id, role, grant) =>
+            host.accessEnded === undefined
+              ? Effect.void
+              : Queue.offer(host.accessEnded, { threadId: id, role, grant }).pipe(Effect.asVoid),
         }),
         host.desktop === undefined
           ? Layer.empty
@@ -281,6 +291,9 @@ def send(connection, value):
             value = dict(value, loadedAt=state["loadedAt"])
         if scenario == "reloads" and "--t3-recover" in t3:
             value = dict(value, restore="ok")
+        # Granted at launch, its agent listener stays up through a reload of the same file.
+        if scenario == "reloads" and "--t3-mcp-listen" in t3:
+            value = dict(value, agentListener="ready")
     if value.get("type") == "saved" and "loadedAt" in state:
         value = dict(value, loadedAt=state["loadedAt"])
     connection.sendall((json.dumps(value) + "\n").encode())
@@ -653,7 +666,7 @@ const standIn = Effect.fn(function* (
   prefix: string,
   scenario: string,
   beforeThreadLookup?: () => Effect.Effect<void>,
-  host: Pick<Host, "readinessChanges"> = {},
+  host: Pick<Host, "readinessChanges" | "agentPort"> = {},
 ) {
   const dir = yield* tempDir(prefix);
   const bin = fakeTools(dir);
@@ -3343,6 +3356,27 @@ describe("B13: a file changed on disk", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("keeps the agent's grant, the MCP proxy's gate, through a reload of the same file", () =>
+    Effect.gen(function* () {
+      const host = yield* standIn("disk-grant", "reloads", undefined, { agentPort: 41237 });
+      const disk = diskOf(host.dir);
+      yield* host.service.open(
+        { threadId, relativePath: "cube.blend" },
+        { agentWorkingCopy: true },
+      );
+      expect((yield* host.service.agentListener(threadId))?.state).toBe("ready");
+      const gate = host.service.agentGrant({ threadId, role: "working", session: "session-1" });
+      const before = yield* gate;
+      expect(before).toMatchObject({ _tag: "granted", port: 41237 });
+      yield* disk.awaitAsked(1);
+      yield* attach(host.service, false);
+      disk.change("changed by a headless script");
+      yield* disk.awaitReloads(1);
+      yield* reloadKept(host.service.threadState(threadId));
+      expect(yield* gate).toEqual(before);
+    }).pipe(Effect.scoped),
+  );
+
   it.live("S10: keeps staged work under the file it names, not the file T3 last heard of", () =>
     Effect.gen(function* () {
       const { dir, service, openReady, hostedDir } = yield* standIn("disk-switched", "reloads");
@@ -5323,7 +5357,10 @@ for line in sys.stdin:
 
 describe("Agent access at launch", () => {
   const launch = Effect.fn(function* (
-    host: Pick<Host, "runtimeMode" | "interactionMode" | "agentPort" | "revocations">,
+    host: Pick<
+      Host,
+      "runtimeMode" | "interactionMode" | "agentPort" | "revocations" | "accessEnded"
+    >,
     options: { readonly agentWorkingCopy?: boolean; readonly edited?: boolean } = {
       agentWorkingCopy: true,
     },
@@ -5445,6 +5482,10 @@ describe("Agent access at launch", () => {
         expect(again).toMatchObject({ created: false, restoredUnsavedChanges: true });
         expect(NodeFS.readFileSync(argsLog, "utf8").split("\n")).toContain("--t3-recover");
         expect((yield* service.agentListener(threadId))?.state).toBe("ready");
+        // A restored launch is granted like any agent launch: the session's first call reaches it.
+        expect(
+          yield* service.agentGrant({ threadId, role: "working", session: "session-1" }),
+        ).toMatchObject({ _tag: "granted", port: 41234 });
         yield* service.quit({ threadId, save: false });
       }).pipe(Effect.scoped),
   );
@@ -5480,23 +5521,61 @@ describe("Agent access at launch", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("reports the listener as Blender's add-on does, and closes it when access ends", () =>
-    Effect.gen(function* () {
-      const revoked = yield* Queue.unbounded<HostedBlenderAgents.HostedBlenderRevocation | null>();
-      const { service, controlLog } = yield* launch({
-        agentPort: 41234,
-        revocations: Stream.fromQueue(revoked),
-      });
-      expect((yield* service.agentListener(threadId))?.state).toBe("ready");
-      // Another thread's session ending leaves this one alone.
-      yield* Queue.offer(revoked, { threadId: otherThreadId, session: undefined });
-      yield* Queue.offer(revoked, { threadId: threadId, session: undefined });
-      yield* service.threadState(threadId).pipe(
-        Stream.filter((state) => state.status === "stopped"),
-        Stream.runHead,
-      );
-      expect(controlLog().match(/stopAgentListener/g)).toHaveLength(1);
-    }).pipe(Effect.scoped),
+  it.live(
+    "keeps the listener for the launch when a session ends, and closes it when agents are switched off",
+    () =>
+      Effect.gen(function* () {
+        const revoked =
+          yield* Queue.unbounded<HostedBlenderAgents.HostedBlenderRevocation | null>();
+        const accessEnded = yield* Queue.unbounded<{
+          readonly threadId: ThreadId;
+          readonly role: HostedBlenderAgents.HostedBlenderRole;
+          readonly grant: string;
+        }>();
+        // Taken one at a time, so the sentinel is taken only once the revocation before it is handled.
+        const handled = yield* Deferred.make<void>();
+        const { service, controlLog } = yield* launch({
+          agentPort: 41234,
+          revocations: Stream.fromQueue(revoked).pipe(
+            Stream.rechunk(1),
+            Stream.tap((revocation) =>
+              revocation?.threadId === otherThreadId
+                ? Deferred.succeed(handled, undefined)
+                : Effect.void,
+            ),
+          ),
+          accessEnded,
+        });
+        expect((yield* service.agentListener(threadId))?.state).toBe("ready");
+        const granted = yield* service.agentGrant({ threadId, role: "working", session: "any" });
+        assert(granted._tag === "granted");
+        expect(granted.port).toBe(41234);
+        // The thread's session ending (an idle release, say) leaves the launch's grant: the next
+        // session reaches the same Blender through its own Blender Lab server.
+        yield* Queue.offer(revoked, { threadId, session: "session-1" });
+        yield* Queue.offer(revoked, { threadId: otherThreadId, session: undefined });
+        yield* Deferred.await(handled);
+        expect((yield* service.agentListener(threadId, { wait: false }))?.state).toBe("ready");
+        expect(controlLog()).not.toContain("stopAgentListener");
+        expect(yield* service.agentGrant({ threadId, role: "working", session: "next" })).toEqual(
+          granted,
+        );
+        yield* Queue.offer(revoked, null);
+        // Named by this launch, so it never stops a server serving a later one.
+        expect(yield* Queue.take(accessEnded)).toEqual({
+          threadId,
+          role: "working",
+          grant: granted.grant,
+        });
+        expect(
+          (yield* service.agentGrant({ threadId, role: "working", session: "next" }))._tag,
+        ).toBe("none");
+        yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status === "stopped"),
+          Stream.runHead,
+        );
+        expect(controlLog().match(/stopAgentListener/g)).toHaveLength(1);
+      }).pipe(Effect.scoped),
   );
 
   it.live("ends the agent's access when T3 closes its Blender, never as a lost connection", () =>
@@ -5635,7 +5714,7 @@ describe("Agent access at launch", () => {
         );
       expect(Option.getOrThrow(yield* acting(true))).toMatchObject({ agentActing: true });
       // The add-on stops acting once access ends; the published state drops the flag.
-      yield* Queue.offer(revoked, { threadId, session: undefined });
+      yield* Queue.offer(revoked, null);
       expect(Option.getOrThrow(yield* acting(false))).not.toHaveProperty("agentActing");
       yield* service.quit({ threadId, save: false });
     }).pipe(Effect.scoped),
@@ -5653,7 +5732,7 @@ describe("Agent access at launch", () => {
         Stream.filter((state) => state.status === "running" && state.agentActing === true),
         Stream.runHead,
       );
-      yield* Queue.offer(revoked, { threadId, session: undefined });
+      yield* Queue.offer(revoked, null);
       const dirty = yield* service.threadState(threadId).pipe(
         Stream.filter((state) => state.status === "running" && state.dirty),
         Stream.runHead,
@@ -5780,6 +5859,7 @@ const masterHost = Effect.fn(function* (
     Host,
     | "masterPorts"
     | "revocations"
+    | "accessEnded"
     | "agentsAllowed"
     | "desktop"
     | "endedSessions"
@@ -5942,6 +6022,10 @@ describe("Master Blenders", () => {
         yield* service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" });
         yield* host.masterStatus(otherThreadId, "running");
         expect((yield* firstMaster(service, threadId)).status).toBe("notOpen");
+        // Known is not chosen: no relay, so the thread's blender-master calls start nothing.
+        expect(
+          yield* service.agentGrant({ threadId, role: "master", session: "session-1" }),
+        ).toMatchObject({ _tag: "none", relativePath: null });
         const stopped = yield* watchMaster(service, otherThreadId);
         yield* service.releaseMaster(otherThreadId);
         yield* stopped;
@@ -7466,9 +7550,15 @@ describe("Agent access to a master, by session", () => {
         [otherThreadId, yield* net.reserveLoopbackPort()],
       ]);
       const revoked = yield* Queue.unbounded<HostedBlenderAgents.HostedBlenderRevocation | null>();
+      const accessEnded = yield* Queue.unbounded<{
+        readonly threadId: ThreadId;
+        readonly role: HostedBlenderAgents.HostedBlenderRole;
+        readonly grant: string;
+      }>();
       const host = yield* masterHost({
         masterPorts: ports,
         revocations: Stream.fromQueue(revoked),
+        accessEnded,
       });
       const agent = { agentSession: "session-1" };
       yield* host.service.openMaster({ threadId, relativePath: "cube.blend" }, agent);
@@ -7479,6 +7569,16 @@ describe("Agent access to a master, by session", () => {
       expect((yield* host.service.agentListener(threadId, { role: "master" }))?.state).toBe(
         "ready",
       );
+      // A relay serves the session it was opened for, on the thread's own port.
+      const relay = yield* host.service.agentGrant({
+        threadId: otherThreadId,
+        role: "master",
+        session: "session-1",
+      });
+      expect(relay).toMatchObject({ _tag: "granted", port: ports.get(otherThreadId) });
+      expect(
+        (yield* host.service.agentGrant({ threadId, role: "master", session: "session-2" }))._tag,
+      ).toBe("none");
       // A credential replaced before this one was granted: nothing of this session's ends.
       yield* Queue.offer(revoked, { threadId, session: "session-0" });
       yield* Queue.offer(revoked, { threadId: otherThreadId, session: "session-1" });
@@ -7487,6 +7587,13 @@ describe("Agent access to a master, by session", () => {
         .pipe(Effect.repeat({ until: (report) => report?.state === "off" }));
       expect(yield* ping(ports.get(threadId)!)).toBe("pong");
       expect(yield* ping(ports.get(otherThreadId)!)).toBe("ECONNREFUSED");
+      // Its relay's closing stops that session's Blender Lab server too, and no other.
+      expect(yield* Queue.take(accessEnded)).toEqual({
+        threadId: otherThreadId,
+        role: "master",
+        grant: relay._tag === "granted" ? relay.grant : "",
+      });
+      expect(yield* Queue.size(accessEnded)).toBe(0);
       yield* host.service.quit({ threadId, save: false, role: "master" });
     }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
   );

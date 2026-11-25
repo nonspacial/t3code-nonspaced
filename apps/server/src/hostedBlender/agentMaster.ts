@@ -18,6 +18,19 @@ import * as HostedBlender from "./HostedBlender.ts";
 /** The user's own MCP entry for their desktop Blender, which T3 never changes. */
 const DESKTOP_MCP_SERVER = "blender";
 
+/** A master this thread can't reach: a session joins it through `blender_master_open`. */
+export const masterAccessHelp = (
+  name: string,
+  listener: HostedBlender.AgentListenerReport | null,
+): string =>
+  listener?.state === "untested"
+    ? untestedBlenderLabReason(
+        name,
+        listener.mcpVersion,
+        "Then ask the user to quit the master Blender from the Blender pane's Master view, and call blender_master_open again.",
+      )
+    : `Call blender_master_open with ${name} to reach the master Blender from this session. If that says your access ended, ask the user to quit the master Blender from the Blender pane's Master view, then call blender_master_open again.`;
+
 /**
  * `blender_master_open`: names the master the agent copies back into and says which Blender has
  * it: the user's desktop Blender, or the master Blender this thread shares, started if needed.

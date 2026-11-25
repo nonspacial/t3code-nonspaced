@@ -463,7 +463,6 @@ const sameHostedBlenderLaunch = (
     b !== undefined &&
     a.command === b.command &&
     a.blenderPath === b.blenderPath &&
-    a.hostedPort === b.hostedPort &&
     a.masterPort === b.masterPort &&
     a.tmpDir === b.tmpDir);
 

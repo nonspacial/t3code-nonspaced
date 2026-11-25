@@ -108,6 +108,20 @@ const noAccessReason = (name: string, ended: HostedBlender.AgentAccessEnded | nu
 };
 
 /**
+ * Why the agent can't use the thread's working Blender with `name`, which isn't ready for it, and
+ * what gets it back: what `blender_start` answers and `blender_status` repeats.
+ */
+export const workingAccessHelp = (
+  name: string,
+  listener: Pick<HostedBlender.AgentListenerReport, "state" | "ended" | "mcpVersion"> | null,
+): string =>
+  listener?.state === "off"
+    ? noAccessReason(name, listener.ended)
+    : listener?.state === "untested"
+      ? untestedBlenderLabReason(name, listener.mcpVersion)
+      : `${name} is open, but Blender Lab's MCP add-on did not start listening for you. Check that the MCP extension is installed in the user's Blender and that nothing else holds its port, then call blender_quit and blender_start again.`;
+
+/**
  * `blender_start`: copies the master to the thread's working copy unless one exists, and opens
  * the copy in the thread's working Blender. A copy that is already open is answered as it is.
  */
@@ -236,18 +250,8 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
     }
     // Answered only once Blender Lab's listener has come up on the thread's port.
     const listener = yield* hostedBlender.agentListener(input.threadId);
-    if (listener?.state === "off") {
-      return yield* new HostedBlenderToolError({ reason: noAccessReason(name, listener.ended) });
-    }
-    if (listener?.state === "untested") {
-      return yield* new HostedBlenderToolError({
-        reason: untestedBlenderLabReason(name, listener.mcpVersion),
-      });
-    }
     if (listener?.state !== "ready") {
-      return yield* new HostedBlenderToolError({
-        reason: `${name} is open, but Blender Lab's MCP add-on did not start listening for you. Check that the MCP extension is installed in the user's Blender and that nothing else holds its port, then call blender_quit and blender_start again.`,
-      });
+      return yield* new HostedBlenderToolError({ reason: workingAccessHelp(name, listener) });
     }
     const status = Option.getOrUndefined(
       yield* Stream.runHead(hostedBlender.threadState(input.threadId)),

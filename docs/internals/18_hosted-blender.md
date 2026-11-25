@@ -31,14 +31,15 @@ unref'd so the server's exit signals nothing in its process group, and its launc
 for the next start's salvage, which waits for it before stopping anything. Deleting a thread ends its Blender, then removes the copies it kept, which
 nothing could show again; a master's copy is never the thread's. Agent access is narrower still: it lasts only while T3 holds the control
 connection, Allow agents is on, and the launch file (the working copy, or the master) is still the
-open file; a working Blender also needs its thread's session alive. Once any of those ends, access
-stays ended until that Blender restarts
+open file. Once any of those ends, access stays ended until that Blender restarts
 ([`controlAddon.ts`](../../apps/server/src/hostedBlender/controlAddon.ts)). Do not add a path that
 grants access again in place; every such path was a way to hand the agent a file the user opened.
-A master's grant lasts for its launch, since later sessions and threads copy back into it too;
-its agents reach Blender Lab only through relays, one per agent thread and session, opened for a
+A grant lasts for its launch, not for the session that asked: provider sessions end whenever a
+thread idles, and the thread's next session must reach the same Blender. The gate per session is
+T3's own: a working copy's agent reaches it only through the Blender Lab server T3 runs for that
+session, and a master's only through relays, one per agent thread and session, opened for a
 current session and closed when that session's access ends. With no agent thread, nothing listens
-for them.
+for a master's agents.
 
 ## A change on disk Blender didn't make
 
@@ -77,6 +78,14 @@ delta it drops smears the picture until the next keyframe, which the encoders se
 
 Agents reach a hosted Blender only through Blender Lab's own `blender-mcp`, added per session as
 `blender-hosted` and `blender-master` ([`hostedBlenderMcp.ts`](../../apps/server/src/provider/hostedBlenderMcp.ts)).
+T3 serves both over its own authenticated MCP endpoint
+([`HostedBlenderMcpProxy.ts`](../../apps/server/src/hostedBlender/HostedBlenderMcpProxy.ts)), so a
+session that never touches Blender starts no Python: `initialize` and the lists are the official
+server's own answers, read by setup when it checks the server (kept per installed build, never
+edited). A tool call starts the session's own `blender-mcp` only while the session holds a live
+grant for that role, and that server ends with the grant or the session. The credential picks
+the session, and T3's records the port; nothing a caller sends selects a Blender, and no port
+reaches the agent: a working Blender listens on a private port of its own launch.
 T3's own tools cover lifecycle (`blender_start`, `blender_master_open`, `blender_status`,
 `blender_quit`) and never run
 Blender code. T3 does not ship its own code-running bridge: Blender Lab's tools, docs and sandbox
