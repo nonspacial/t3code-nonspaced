@@ -23,6 +23,7 @@ import { McpSchema, McpServer } from "effect/ai";
 
 import * as HostedBlender from "../hostedBlender/HostedBlender.ts";
 import * as HostedBlenderAgents from "../hostedBlender/HostedBlenderAgents.ts";
+import * as HostedBlenderMcpProxy from "../hostedBlender/HostedBlenderMcpProxy.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
@@ -72,6 +73,8 @@ const mcpClient = McpSchema.McpServerClient.of({
 const layerFor = (input: {
   readonly state: HostedBlenderThreadState;
   readonly allowed?: boolean;
+  /** Why the session's Blender servers take no calls, as the proxy says; none by default. */
+  readonly unavailable?: string;
   readonly quits?: Array<HostedBlenderQuitInput>;
   readonly plan?: boolean;
   /** Shell reads after the first in each call, which the live-caller check makes, return null. */
@@ -117,6 +120,9 @@ const layerFor = (input: {
         Layer.mock(HostedBlenderAgents.HostedBlenderAgents)({
           agentsAllowed: Effect.succeed(input.allowed ?? true),
           revocations: Stream.never,
+        }),
+        Layer.mock(HostedBlenderMcpProxy.HostedBlenderMcpProxy)({
+          unavailable: () => Effect.succeed(input.unavailable ?? null),
         }),
         Layer.mock(ThreadManagement.ThreadManagementService)({
           getThreadShell: (id) =>
@@ -247,7 +253,33 @@ describe("hosted Blender MCP tools", () => {
     Effect.gen(function* () {
       const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
       expect(status.structuredContent).toMatchObject({ blenders: [{ agentAccess: false }] });
+      // Nothing to do yet but wait.
+      expect(JSON.stringify(status.structuredContent)).not.toContain("agentAccessHelp");
     }).pipe(Effect.provide(layerFor({ state: running, listener: "starting" }))),
+  );
+
+  it.effect("reports no agent access, and why, while setup has no current read of the server", () =>
+    Effect.gen(function* () {
+      const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
+      const reason =
+        "T3 Code has not read Blender Lab's MCP server's tools. Ask the user to press Check again in Settings → Blender.";
+      expect(status.structuredContent).toMatchObject({
+        blenders: [
+          { role: "working", agentAccess: false, agentAccessHelp: reason },
+          { role: "master", agentAccess: false, agentAccessHelp: reason },
+        ],
+      });
+    }).pipe(
+      Effect.provide(
+        layerFor({
+          state: running,
+          listener: "ready",
+          master: { status: "running", relativePath: "models/hero.blend", dirty: false },
+          unavailable:
+            "T3 Code has not read Blender Lab's MCP server's tools. Ask the user to press Check again in Settings → Blender.",
+        }),
+      ),
+    ),
   );
 
   it.effect(
@@ -297,6 +329,10 @@ describe("hosted Blender MCP tools", () => {
             file: "/home/user/acme/app/models/bracket-4.blend",
             agentAccess: false,
             agentAccessEnded: "otherFile",
+            // What blender_start would say, so an agent that only asks for status knows the way back.
+            agentAccessHelp: expect.stringContaining(
+              "call blender_quit with save: true, then blender_start",
+            ),
           },
         ],
       });
@@ -571,8 +607,18 @@ describe("hosted Blender MCP tools", () => {
       const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
       expect(status.structuredContent).toMatchObject({
         blenders: [
-          { role: "working", agentAccess: false, agentAccessRefused: "untestedBlenderLab" },
-          { role: "master", agentAccess: false, agentAccessRefused: "untestedBlenderLab" },
+          {
+            role: "working",
+            agentAccess: false,
+            agentAccessRefused: "untestedBlenderLab",
+            agentAccessHelp: expect.stringContaining("blender_start"),
+          },
+          {
+            role: "master",
+            agentAccess: false,
+            agentAccessRefused: "untestedBlenderLab",
+            agentAccessHelp: expect.stringContaining("blender_master_open again"),
+          },
         ],
       });
     }).pipe(

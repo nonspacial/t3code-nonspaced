@@ -15,6 +15,7 @@ import { McpSchema, Tool, Toolkit } from "effect/ai";
 
 import * as HostedBlender from "../../../hostedBlender/HostedBlender.ts";
 import * as HostedBlenderAgents from "../../../hostedBlender/HostedBlenderAgents.ts";
+import * as HostedBlenderMcpProxy from "../../../hostedBlender/HostedBlenderMcpProxy.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -67,7 +68,8 @@ const BlenderStatusTool = Tool.make("blender_status", {
   // No `parameters`: an explicit empty struct is not a valid MCP input schema.
   success: HostedBlenderToolStatusResult,
   failure: HostedBlenderToolFailure,
-  dependencies,
+  // Whether the session's Blender servers take calls at all, beside each listener's state.
+  dependencies: [...dependencies, HostedBlenderMcpProxy.HostedBlenderMcpProxy],
 })
   .annotate(Tool.Title, "Hosted Blender status")
   .annotate(Tool.Readonly, true)

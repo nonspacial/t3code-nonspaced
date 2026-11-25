@@ -120,6 +120,7 @@ import * as HiddenDisplayBinary from "./hostedBlender/HiddenDisplayBinary.ts";
 import * as DesktopBlender from "./hostedBlender/DesktopBlender.ts";
 import * as HostedBlender from "./hostedBlender/HostedBlender.ts";
 import * as HostedBlenderAgents from "./hostedBlender/HostedBlenderAgents.ts";
+import * as HostedBlenderMcpProxy from "./hostedBlender/HostedBlenderMcpProxy.ts";
 import * as HostedBlenderSetup from "./hostedBlender/HostedBlenderSetup.ts";
 import * as HostedBlenderStream from "./hostedBlender/HostedBlenderStream.ts";
 import * as PreviewBrowser from "./preview/PreviewBrowser.ts";
@@ -979,6 +980,8 @@ const layerMakeRoutes = Layer.mergeAll(
     speechStreamRouteLayer,
   ),
   McpHttpServer.layer.pipe(
+    // One Blender Lab server per agent session and role, started on its first call.
+    Layer.provide(HostedBlenderMcpProxy.layer),
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
     Layer.provide(McpOAuth.layerMcpClientAuthenticator),
     Layer.provide(ProjectionStoreV2.layer),

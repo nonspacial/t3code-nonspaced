@@ -36,7 +36,10 @@ type CheckedSetup = Extract<HostedBlenderSetupResult, { status: "checked" }>;
 const canInstall = (result: CheckedSetup) =>
   result.checks.some(
     (check) =>
-      check.status === "missing" || check.status === "outdated" || check.status === "unrecognized",
+      check.status === "missing" ||
+      check.status === "outdated" ||
+      check.status === "unrecognized" ||
+      check.status === "failed",
   );
 
 /**
@@ -253,6 +256,12 @@ function CheckBadge(props: { readonly check: HostedBlenderSetupCheck }) {
           <T>Not Blender Lab's</T>
         </Badge>
       );
+    case "failed":
+      return (
+        <Badge variant="warning">
+          <T>Didn't start</T>
+        </Badge>
+      );
   }
 }
 
@@ -343,6 +352,11 @@ function CheckDescription(props: {
         <T>
           <Var>{found}</Var> is a different project with the same name, not the Blender Lab MCP.
           Install the official one, or set its path below.
+        </T>
+      ) : check.status === "failed" ? (
+        <T>
+          <Var>{found}</Var> didn't answer when T3 Code started it, so agents get no Blender tools.
+          Reinstall it, then check again.
         </T>
       ) : (
         <T>Agents need the official Blender Lab MCP server. The pane works without it.</T>

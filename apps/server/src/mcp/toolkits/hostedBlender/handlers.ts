@@ -10,10 +10,14 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 
-import { openAgentMaster } from "../../../hostedBlender/agentMaster.ts";
-import { startAgentWorkingCopy } from "../../../hostedBlender/agentWorkingCopy.ts";
+import { masterAccessHelp, openAgentMaster } from "../../../hostedBlender/agentMaster.ts";
+import {
+  startAgentWorkingCopy,
+  workingAccessHelp,
+} from "../../../hostedBlender/agentWorkingCopy.ts";
 import * as HostedBlender from "../../../hostedBlender/HostedBlender.ts";
 import * as HostedBlenderAgents from "../../../hostedBlender/HostedBlenderAgents.ts";
+import * as HostedBlenderMcpProxy from "../../../hostedBlender/HostedBlenderMcpProxy.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import { threadWorkspaceRoot } from "../../../project/threadWorkspaceRoot.ts";
 import { isWithinRoot } from "../../../workspace/KnownWorkspaces.ts";
@@ -95,7 +99,7 @@ const keptEntry = (
   };
 };
 
-const workingStatus = Effect.fnUntraced(function* (threadId: ThreadId) {
+const workingStatus = Effect.fnUntraced(function* (threadId: ThreadId, unavailable: string | null) {
   const hostedBlender = yield* HostedBlender.HostedBlender;
   const path = yield* Path.Path;
   const state = Option.getOrUndefined(yield* Stream.runHead(hostedBlender.threadState(threadId)));
@@ -124,12 +128,18 @@ const workingStatus = Effect.fnUntraced(function* (threadId: ThreadId) {
       status: state.status,
       ...(file === undefined ? {} : { file }),
       unsavedChanges: state.dirty,
-      // Only a listener that came up on the thread's port takes `blender-hosted` calls.
-      agentAccess: listener?.state === "ready",
+      // Only a listener that came up on the thread's port takes `blender-hosted` calls, and only
+      // while setup's read of the official server is current.
+      agentAccess: listener?.state === "ready" && unavailable === null,
       ...(listener?.ended == null ? {} : { agentAccessEnded: listener.ended }),
       ...(listener?.state === "untested"
         ? { agentAccessRefused: "untestedBlenderLab" as const }
         : {}),
+      ...(listener?.state === "ready" || listener?.state === "starting"
+        ? unavailable === null
+          ? {}
+          : { agentAccessHelp: unavailable }
+        : { agentAccessHelp: workingAccessHelp(path.basename(state.relativePath), listener) }),
     },
     ...kept,
   ] as const;
@@ -158,7 +168,12 @@ const handlers = {
     Effect.gen(function* () {
       const threadId = yield* requireHostedBlender;
       const hostedBlender = yield* HostedBlender.HostedBlender;
-      const working = yield* workingStatus(threadId);
+      const proxy = yield* HostedBlenderMcpProxy.HostedBlenderMcpProxy;
+      const unavailable = yield* proxy.unavailable({
+        threadId,
+        providerSessionId: yield* callerSession,
+      });
+      const working = yield* workingStatus(threadId, unavailable);
       const master = Option.getOrUndefined(
         yield* Stream.runHead(hostedBlender.masterState(threadId)),
       );
@@ -198,11 +213,18 @@ const handlers = {
             file: root === undefined ? master.relativePath : path.join(root, master.relativePath),
             unsavedChanges: master.dirty,
             // Only this thread's own `blender-master` port reaches the shared master.
-            agentAccess: listener?.state === "ready",
+            agentAccess: listener?.state === "ready" && unavailable === null,
             ...(listener?.ended == null ? {} : { agentAccessEnded: listener.ended }),
             ...(listener?.state === "untested"
               ? { agentAccessRefused: "untestedBlenderLab" as const }
               : {}),
+            ...(listener?.state === "ready" || listener?.state === "starting"
+              ? unavailable === null
+                ? {}
+                : { agentAccessHelp: unavailable }
+              : {
+                  agentAccessHelp: masterAccessHelp(path.basename(master.relativePath), listener),
+                }),
           },
         ],
       } satisfies HostedBlenderToolStatusResult;

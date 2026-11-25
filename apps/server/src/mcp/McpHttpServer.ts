@@ -99,6 +99,11 @@ import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 import * as IssuesHandlers from "./toolkits/issues/handlers.ts";
 import { IssuesToolkit } from "./toolkits/issues/tools.ts";
 import * as DeviceHandlers from "./toolkits/device/handlers.ts";
+import * as HostedBlenderMcpProxy from "../hostedBlender/HostedBlenderMcpProxy.ts";
+import {
+  BLENDER_HOSTED_MCP_SERVER,
+  BLENDER_MASTER_MCP_SERVER,
+} from "../provider/hostedBlenderMcp.ts";
 import * as HostedBlenderHandlers from "./toolkits/hostedBlender/handlers.ts";
 import { HostedBlenderToolkit } from "./toolkits/hostedBlender/tools.ts";
 import {
@@ -1643,6 +1648,82 @@ export const layerMilestoneEvents = Layer.effectDiscard(
   Layer.provide(layerWebhookTransport),
 );
 
-export const layer = layerMcpTransport(
-  Layer.mergeAll(layerTools, layerToolSearch, layerMilestoneEvents),
+const blenderMcpError = (status: number, message: string) =>
+  HttpServerResponse.jsonUnsafe(
+    { error: "hosted_blender_unavailable", message },
+    { status, headers: { "cache-control": "no-store" } },
+  );
+
+const SSE_KEEPALIVE = Stream.tick("15 seconds").pipe(
+  Stream.drop(1),
+  Stream.map(() => ": keepalive\n\n"),
+);
+
+/**
+ * One of the thread's Blender Lab servers, served from `HostedBlenderMcpProxy`. Like /mcp, the
+ * caller's credential names its thread and session; nothing in the request does.
+ */
+const blenderMcpRoute = (
+  proxy: HostedBlenderMcpProxy.HostedBlenderMcpProxy["Service"],
+  role: "working" | "master",
+  name: string,
+) =>
+  HttpRouter.add("*", `${MCP_HTTP_PATH}/${name}`, (request) =>
+    Effect.gen(function* () {
+      if (request.method !== "POST") {
+        return HttpServerResponse.empty({ status: 405, headers: { allow: "POST" } });
+      }
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("hosted-blender").pipe(
+        Effect.option,
+      );
+      if (Option.isNone(scope)) {
+        return blenderMcpError(403, "Hosted Blender is available only to T3 agent sessions.");
+      }
+      const message = yield* request.json.pipe(Effect.option);
+      if (Option.isNone(message)) {
+        return HttpServerResponse.jsonUnsafe(
+          { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } },
+          { status: 400 },
+        );
+      }
+      const reply = yield* proxy.handle({
+        caller: scope.value.thread,
+        role,
+        protocolVersion: request.headers["mcp-protocol-version"],
+        message: message.value,
+      });
+      if (reply._tag === "Accepted") return HttpServerResponse.empty({ status: 202 });
+      if (reply._tag === "Message") {
+        return HttpServerResponse.text(reply.message, { contentType: "application/json" });
+      }
+      // Renders can run for minutes; the comments keep idle-timeouts from closing the stream.
+      if ((request.headers.accept ?? "").includes("text/event-stream")) {
+        return HttpServerResponse.stream(
+          Stream.merge(
+            reply.messages.pipe(Stream.map((line) => `data: ${line}\n\n`)),
+            SSE_KEEPALIVE,
+            { haltStrategy: "left" },
+          ).pipe(Stream.encodeText),
+          { contentType: "text/event-stream", headers: { "cache-control": "no-store" } },
+        );
+      }
+      const answers = yield* Stream.runCollect(reply.messages);
+      return HttpServerResponse.text(answers.at(-1) ?? "", { contentType: "application/json" });
+    }),
+  );
+
+/** `blender-hosted` and `blender-master`, beside /mcp and behind the same authentication. */
+export const layerHostedBlenderMcpRoutes = Layer.unwrap(
+  Effect.gen(function* () {
+    const proxy = yield* HostedBlenderMcpProxy.HostedBlenderMcpProxy;
+    return Layer.mergeAll(
+      blenderMcpRoute(proxy, "working", BLENDER_HOSTED_MCP_SERVER),
+      blenderMcpRoute(proxy, "master", BLENDER_MASTER_MCP_SERVER),
+    );
+  }),
+).pipe(Layer.provide(layerMcpAuthMiddleware));
+
+export const layer = Layer.mergeAll(
+  layerMcpTransport(Layer.mergeAll(layerTools, layerToolSearch, layerMilestoneEvents)),
+  layerHostedBlenderMcpRoutes,
 );
