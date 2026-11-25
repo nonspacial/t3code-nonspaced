@@ -3885,7 +3885,6 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         hostedBlender: {
           command: "/home/user/.local/bin/blender-mcp",
           blenderPath: "/usr/bin/blender",
-          hostedPort: 41001,
           masterPort: 41002,
           tmpDir: "/tmp/t3hb-mcp",
         },

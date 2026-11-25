@@ -25,15 +25,13 @@ export interface McpProviderSessionConfig {
 }
 
 /**
- * How a thread's session runs the official `blender-mcp`, once per hosted Blender role. The ports
- * are assigned when the session starts, before any Blender exists; the Blender binds them later.
+ * How T3 runs the official `blender-mcp` for a thread's session. The master relay's port is the
+ * thread's, assigned before any master exists; a working Blender listens on a port of its own.
  */
 export interface HostedBlenderMcpLaunch {
   readonly command: string;
   readonly blenderPath: string;
-  /** The thread's working Blender. */
-  readonly hostedPort: number;
-  /** The master Blender the thread copies back into. */
+  /** The relay to the master Blender the thread copies back into. */
   readonly masterPort: number;
   /** A private `TMPDIR` for the MCP server. */
   readonly tmpDir: string;

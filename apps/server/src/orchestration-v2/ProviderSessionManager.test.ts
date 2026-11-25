@@ -6104,7 +6104,6 @@ it.effect("ProviderSessionManagerV2 gives the session its hosted Blender MCP whe
     const launch = {
       command: "/home/user/.local/bin/blender-mcp",
       blenderPath: "/usr/bin/blender",
-      hostedPort: 41001,
       masterPort: 41002,
       tmpDir: "/tmp/t3hb-mcp",
     };
@@ -6293,7 +6292,6 @@ it.effect(
       const launch = {
         command: "/home/user/.local/bin/blender-mcp",
         blenderPath: "/usr/bin/blender",
-        hostedPort: 41010,
         masterPort: 41011,
         tmpDir: "/tmp/t3hb-mcp",
       };

@@ -46,9 +46,10 @@ export const HostedBlenderSetupCheck = Schema.Struct({
   item: HostedBlenderSetupItem,
   /**
    * `warning` works, but slowly or only partly: no GPU. `unrecognized` is a program by the right
-   * name that isn't the expected one, such as PyPI's unrelated `blender-mcp`.
+   * name that isn't the expected one, such as PyPI's unrelated `blender-mcp`. `failed` is the
+   * expected program, which didn't answer when started.
    */
-  status: Schema.Literals(["ok", "missing", "outdated", "warning", "unrecognized"]),
+  status: Schema.Literals(["ok", "missing", "outdated", "warning", "unrecognized", "failed"]),
   /** What was found: a version, a path or an encoder. */
   found: Schema.optionalKey(Schema.String),
 });
@@ -597,14 +598,16 @@ export const HostedBlenderToolStatusResult = Schema.Struct({
       /** Whether its Blender MCP takes this thread's `blender-hosted` calls. */
       agentAccess: Schema.optionalKey(Schema.Boolean),
       /**
-       * Why that access ended: switched off or the session ended, T3 lost its connection to
-       * Blender, or Blender has another file open.
+       * Why that access ended: switched off (or, for a master, this thread's session ended), T3
+       * lost its connection to Blender, or Blender has another file open.
        */
       agentAccessEnded: Schema.optionalKey(
         Schema.Literals(["revoked", "connectionLost", "otherFile"]),
       ),
       /** T3 never gave access: the Blender's Blender Lab version is one T3 hasn't tested. */
       agentAccessRefused: Schema.optionalKey(Schema.Literal("untestedBlenderLab")),
+      /** Without access: what gets it back, as `blender_start` or `blender_master_open` says. */
+      agentAccessHelp: Schema.optionalKey(Schema.String),
     }),
   ),
 });

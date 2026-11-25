@@ -50,7 +50,12 @@ export interface SetupFacts {
   readonly glupload: boolean;
   readonly renderNodes: { readonly total: number; readonly accessible: number };
   /** `official`: its console script runs Blender Lab's `blmcp`, not a lookalike's module. */
-  readonly blenderMcp: { readonly path: string; readonly official: boolean } | null;
+  readonly blenderMcp: {
+    readonly path: string;
+    readonly official: boolean;
+    /** False when the official server didn't answer as T3 started it to read its tools. */
+    readonly answered?: boolean;
+  } | null;
 }
 
 export type CheckedSetup = Extract<HostedBlenderSetupResult, { status: "checked" }>;
@@ -247,7 +252,7 @@ const installCommands = (
       "# for example with `uv tool uninstall blender-mcp` or `pipx uninstall blender-mcp`.",
     );
   }
-  if (needs("blenderMcp", "missing", "unrecognized")) {
+  if (needs("blenderMcp", "missing", "unrecognized", "failed")) {
     commands.push(
       "# The official Blender Lab MCP server (needs uv; `pipx install` works too):",
       `uv tool install "${BLENDER_MCP_PACKAGE}"`,
@@ -292,7 +297,11 @@ export const evaluateSetup = (
       ? check("blenderMcp", "missing")
       : check(
           "blenderMcp",
-          facts.blenderMcp.official ? "ok" : "unrecognized",
+          !facts.blenderMcp.official
+            ? "unrecognized"
+            : facts.blenderMcp.answered === false
+              ? "failed"
+              : "ok",
           facts.blenderMcp.path,
         ),
   ];
@@ -317,7 +326,10 @@ export const evaluateSetup = (
 export const needsInstall = (result: Pick<CheckedSetup, "checks">) =>
   result.checks.some(
     (entry) =>
-      entry.status === "missing" || entry.status === "outdated" || entry.status === "unrecognized",
+      entry.status === "missing" ||
+      entry.status === "outdated" ||
+      entry.status === "unrecognized" ||
+      entry.status === "failed",
   );
 
 const ITEM_NAMES: Record<HostedBlenderSetupItem, string> = {
@@ -350,7 +362,10 @@ export const installPrompt = (
 ): string => {
   const missing = result.checks.filter(
     (entry) =>
-      entry.status === "missing" || entry.status === "outdated" || entry.status === "unrecognized",
+      entry.status === "missing" ||
+      entry.status === "outdated" ||
+      entry.status === "unrecognized" ||
+      entry.status === "failed",
   );
   const lines = [
     "Set up this machine so T3 Code can run hosted Blenders.",
@@ -365,7 +380,9 @@ export const installPrompt = (
             ? `: found ${entry.found}`
             : entry.status === "unrecognized"
               ? ": the `blender-mcp` installed is a different project with the same name"
-              : ""
+              : entry.status === "failed"
+                ? ": the `blender-mcp` installed didn't answer when T3 Code started it"
+                : ""
         }`,
     ),
     "",
