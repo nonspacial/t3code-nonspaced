@@ -288,6 +288,30 @@ describe("hosted Blender MCP tools", () => {
     ),
   );
 
+  it.effect.each(["crashed", "closed"] as const)(
+    "reports a %s working Blender, and whether its recovery copy can be restored",
+    (status) =>
+      Effect.gen(function* () {
+        const result = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
+        expect(result.structuredContent).toEqual({
+          blenders: [
+            {
+              role: "working",
+              status,
+              file: `${workspace}/models/hero.wip-41cbc0de.blend`,
+              recovery: true,
+            },
+          ],
+        });
+      }).pipe(
+        Effect.provide(
+          layerFor({
+            state: { status, relativePath: "models/hero.wip-41cbc0de.blend", recovery: true },
+          }),
+        ),
+      ),
+  );
+
   it.effect("leaves the file out for an untitled scene", () =>
     Effect.gen(function* () {
       const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));

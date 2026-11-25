@@ -84,8 +84,20 @@ const handlers = {
       if (state?.status === "failed") {
         return { blenders: [{ role: "working", status: "failed" }] };
       }
-      if (state?.status !== "starting" && state?.status !== "running") return { blenders: [] };
       const root = yield* threadWorkspaceRoot(threadId);
+      if (state?.status === "closed" || state?.status === "crashed") {
+        return {
+          blenders: [
+            {
+              role: "working",
+              status: state.status,
+              file: root === undefined ? state.relativePath : path.join(root, state.relativePath),
+              recovery: state.recovery,
+            },
+          ],
+        } satisfies HostedBlenderToolStatusResult;
+      }
+      if (state?.status !== "starting" && state?.status !== "running") return { blenders: [] };
       const listener = yield* hostedBlender.agentListener(threadId, { wait: false });
       const reported = listener?.openFile;
       // The file Blender has open now, which may no longer be the one it started with, under

@@ -462,9 +462,11 @@ export const HostedBlenderToolStatusResult = Schema.Struct({
   blenders: Schema.Array(
     Schema.Struct({
       role: Schema.Literal("working"),
-      status: Schema.Literals(["starting", "running", "failed"]),
+      status: Schema.Literals(["starting", "running", "failed", "closed", "crashed"]),
       /** The open file's absolute path; absent for a start that failed. */
       file: Schema.optionalKey(Schema.String),
+      /** Closed or crashed: a recovery copy of its session that Reopen in the pane can restore. */
+      recovery: Schema.optionalKey(Schema.Boolean),
       unsavedChanges: Schema.optionalKey(Schema.Boolean),
       /** Whether its Blender MCP takes this thread's `blender-hosted` calls. */
       agentAccess: Schema.optionalKey(Schema.Boolean),
