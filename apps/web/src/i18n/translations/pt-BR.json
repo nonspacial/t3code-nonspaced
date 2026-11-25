@@ -3291,6 +3291,60 @@
   "984c25ffcae69300": "Adicionar backend",
   "08570ee0982df89d": "Pareando...",
   "3bbae7c96b6cbfc3": "Abrir app",
+  "473079352585294d": "Qual Blender mostrar",
+  "72ec28b225ed9811": "Não foi possível abrir o arquivo mestre",
+  "70da4581cf87971c": "Não foi possível mover para o T3 Code",
+  "d5da364f3ffb7fa7": "Cópia de trabalho",
+  "d3b2dad809961953": "Mestre",
+  "ab03a468cc62daf1": "Mover para o T3 Code",
+  "77b72b3b7ee97069": "Abrir no T3 Code",
+  "cb4451ab067ff47d": "O Blender não iniciou",
+  "731b80ac194beb4a": "Aberto no seu Blender de desktop",
+  "ca40a1f4300b4838": "Arquivo mestre não aberto no T3 Code",
+  "10a2ab0021554b0a": [
+    "O Blender não conseguiu abrir ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " na tela oculta. Verifique se o Blender o abre e abra-o de novo."
+  ],
+  "f5db5877ab70bfc8": [
+    "Mover para o T3 Code salva ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " no seu Blender de desktop, com as alterações não salvas, fecha esse Blender e abre o arquivo aqui. O histórico de desfazer é perdido."
+  ],
+  "6484265e8c18d3dd": [
+    "Mover para o T3 Code salva ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " no seu Blender de desktop, fecha esse Blender e abre o arquivo aqui. O histórico de desfazer é perdido."
+  ],
+  "d77c7db5a642f111": [
+    "Há um Blender de desktop em execução, mas o T3 Code não consegue acessar o complemento MCP dele para ver se ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " está aberto. Salve e feche o arquivo lá antes de abri-lo aqui."
+  ],
+  "a0056043b004c957": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " não está aberto em um Blender mestre. É lá que os agentes copiam para ele as alterações comprovadas."
+  ],
   "e69c6af74880ba75": "Inglês (EUA)",
   "675e421e80618158": "Inglês (Reino Unido)",
   "27cface4ce8ec314": "Alemão",
@@ -3320,7 +3374,6 @@
   "b94f5fc6d71bc852": "Configuração necessária",
   "7050870331ac8b9a": "Nenhum Hosted Blender em execução",
   "fb2c65328a8a2e17": "Abra um arquivo .blend na pré-visualização de arquivos e escolha Abrir no Hosted Blender.",
-  "cb4451ab067ff47d": "O Blender não iniciou",
   "3f25b97ec987231e": "O Blender não conseguiu abrir o arquivo na tela oculta. Verifique se o Blender o abre e se o GStreamer tem um codificador H.264 e abra-o de novo no Hosted Blender.",
   "7dfc4caecd0ca4da": "Abrir configurações do Blender",
   "22e7ff1b5896ba7b": "O Hosted Blender precisa de um servidor Linux. Você ainda pode abrir arquivos 3D na pré-visualização de arquivos.",

@@ -3292,6 +3292,60 @@
   "984c25ffcae69300": "Backend hinzufügen",
   "08570ee0982df89d": "Wird gekoppelt...",
   "3bbae7c96b6cbfc3": "App öffnen",
+  "473079352585294d": "Welches Blender angezeigt wird",
+  "72ec28b225ed9811": "Die Masterdatei konnte nicht geöffnet werden",
+  "70da4581cf87971c": "Verschieben nach T3 Code fehlgeschlagen",
+  "d5da364f3ffb7fa7": "Arbeitskopie",
+  "d3b2dad809961953": "Master",
+  "ab03a468cc62daf1": "Nach T3 Code verschieben",
+  "77b72b3b7ee97069": "In T3 Code öffnen",
+  "cb4451ab067ff47d": "Blender ist nicht gestartet",
+  "731b80ac194beb4a": "Im Desktop-Blender geöffnet",
+  "ca40a1f4300b4838": "Masterdatei nicht in T3 Code geöffnet",
+  "10a2ab0021554b0a": [
+    "Blender konnte ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " auf dem verborgenen Display nicht öffnen. Prüfe, ob Blender die Datei öffnet, und öffne sie dann erneut."
+  ],
+  "f5db5877ab70bfc8": [
+    "„Nach T3 Code verschieben“ speichert ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " in deinem Desktop-Blender samt ungespeicherten Änderungen, beendet dieses Blender und öffnet die Datei hier. Der Rückgängig-Verlauf geht verloren."
+  ],
+  "6484265e8c18d3dd": [
+    "„Nach T3 Code verschieben“ speichert ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " in deinem Desktop-Blender, beendet dieses Blender und öffnet die Datei hier. Der Rückgängig-Verlauf geht verloren."
+  ],
+  "d77c7db5a642f111": [
+    "Ein Desktop-Blender läuft, aber T3 Code erreicht dessen MCP-Add-on nicht und kann nicht prüfen, ob dort ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " geöffnet ist. Speichere und schließe die Datei dort, bevor du sie hier öffnest."
+  ],
+  "a0056043b004c957": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ist in keinem Master-Blender geöffnet. Dort übertragen Agenten ihre geprüften Änderungen in die Datei."
+  ],
   "e69c6af74880ba75": "Englisch (US)",
   "675e421e80618158": "Englisch (UK)",
   "27cface4ce8ec314": "Deutsch",
@@ -3321,7 +3375,6 @@
   "b94f5fc6d71bc852": "Einrichtung erforderlich",
   "7050870331ac8b9a": "Kein Hosted Blender aktiv",
   "fb2c65328a8a2e17": "Öffne eine .blend-Datei in der Dateivorschau und wähle „In Hosted Blender öffnen“.",
-  "cb4451ab067ff47d": "Blender ist nicht gestartet",
   "3f25b97ec987231e": "Blender konnte die Datei auf dem verborgenen Display nicht öffnen. Prüfe, ob Blender sie öffnet und ob GStreamer einen H.264-Encoder hat, und öffne sie dann erneut in Hosted Blender.",
   "7dfc4caecd0ca4da": "Blender-Einstellungen öffnen",
   "22e7ff1b5896ba7b": "Hosted Blender benötigt einen Linux-Server. 3D-Dateien kannst du weiterhin in der Dateivorschau öffnen.",

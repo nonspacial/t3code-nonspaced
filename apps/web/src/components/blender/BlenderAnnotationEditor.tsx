@@ -70,6 +70,8 @@ export function useBlenderAnnotation(input: {
   readonly relativePath: string;
   readonly composerTarget: ComposerThreadTarget;
   readonly projectId?: ProjectId | undefined;
+  /** The thread's master Blender rather than its working Blender. */
+  readonly master?: boolean;
   readonly onClose: () => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -80,11 +82,12 @@ export function useBlenderAnnotation(input: {
   });
   const findHits = useAtomCommand(hostedBlenderEnvironment.findHits, { reportFailure: false });
   const { environmentId, threadId } = input.threadRef;
+  const role = input.master === true ? ({ role: "master" } as const) : {};
 
   const start = async () => {
     if (!hasFrame(canvasRef.current)) return;
     setCapturing(true);
-    const result = await captureView({ environmentId, input: { threadId } });
+    const result = await captureView({ environmentId, input: { threadId, ...role } });
     const rendered = result._tag === "Success" ? await renderedFrame(result.value) : null;
     setCapturing(false);
     setFrozen(rendered ?? freezeStreamFrame(canvasRef.current));
@@ -98,7 +101,7 @@ export function useBlenderAnnotation(input: {
       environmentId={environmentId}
       projectId={input.projectId}
       findHits={async (request) => {
-        const result = await findHits({ environmentId, input: { threadId, ...request } });
+        const result = await findHits({ environmentId, input: { threadId, ...role, ...request } });
         return result._tag === "Success" ? result.value : null;
       }}
       onClose={() => {
