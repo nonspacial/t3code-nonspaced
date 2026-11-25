@@ -1594,6 +1594,7 @@ function OpenCommandPaletteDialog(props: {
   ) {
     const threadRef = blenderThreadRef;
     const { relativePath, dirty } = blenderState;
+    const quitFile = blenderState;
     actionItems.push({
       kind: "action",
       value: "action:quit-hosted-blender",
@@ -1602,7 +1603,7 @@ function OpenCommandPaletteDialog(props: {
       description: fileName(relativePath),
       icon: <PowerIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
-        requestHostedBlenderQuit(threadRef, fileName(relativePath), dirty);
+        requestHostedBlenderQuit(threadRef, quitFile, dirty);
       },
     });
   }

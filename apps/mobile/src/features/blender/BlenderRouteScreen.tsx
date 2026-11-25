@@ -5,6 +5,7 @@ import {
   VIEW_ONLY,
 } from "@t3tools/client-runtime/hosted-blender/stream";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
+import { blendFileName, quitFileOf } from "@t3tools/client-runtime/state/hosted-blender";
 import {
   EnvironmentId,
   type HostedBlenderKeptCopy,
@@ -98,12 +99,22 @@ function BlenderScreen(props: {
   const canQuit = useAtomValue(hostedBlenderEnvironment.quit.permissionAtom(props.environmentId));
   const quit = useAtomCommand(hostedBlenderEnvironment.quit, { reportFailure: false });
   const [quitting, setQuitting] = useState(false);
-  // `discard` only from the dialog's Quit without saving; see useQuitHostedBlender on web.
+  // `discard` only from the dialog's Quit without saving, naming the file it showed; see
+  // useQuitHostedBlender on web. Refused once Blender has another file open, which the next
+  // Quit Blender names.
   const quitBlender = async (save: boolean, discard = false) => {
     setQuitting(true);
+    const openFile =
+      blender?.status === "running" || blender?.status === "starting"
+        ? blender.openFile
+        : undefined;
     const result = await quit({
       environmentId: props.environmentId,
-      input: { threadId: props.threadId, save, ...(discard ? { discard } : {}) },
+      input: {
+        threadId: props.threadId,
+        save,
+        ...(discard ? { discard, ...(openFile === undefined ? {} : { openFile }) } : {}),
+      },
     }).finally(() => setQuitting(false));
     if (result._tag === "Failure") {
       Dialog.alert(m(msg("Couldn't quit Blender")), formatEnvironmentQueryError(result.cause));
@@ -113,7 +124,9 @@ function BlenderScreen(props: {
     if (blender?.status !== "running" && blender?.status !== "starting") return;
     if (!blender.dirty) return void quitBlender(false);
     Dialog.alert(
-      gt("Save changes to {name} before quitting?", { name: fileName(blender.relativePath) }),
+      gt("Save changes to {name} before quitting?", {
+        name: blendFileName(quitFileOf(blender), gt("Untitled scene")),
+      }),
       gt("Changes Blender hasn't saved are lost if you quit without saving."),
       [
         { text: gt("Cancel"), style: "cancel" },

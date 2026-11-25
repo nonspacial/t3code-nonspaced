@@ -708,7 +708,11 @@ function BlenderToolbar(props: {
   );
   const name = fileName(props.state.relativePath);
   const { canOperate, controller } = props.control;
-  const quit = useQuitHostedBlender(props.threadRef, name, props.master ? { role: "master" } : {});
+  const quit = useQuitHostedBlender(
+    props.threadRef,
+    props.state,
+    props.master ? { role: "master" } : {},
+  );
   return (
     <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
       {props.switcher}

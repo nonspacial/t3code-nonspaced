@@ -1,4 +1,4 @@
-import { WS_METHODS } from "@t3tools/contracts";
+import { type HostedBlenderKeptFile, WS_METHODS } from "@t3tools/contracts";
 import type { Atom } from "effect/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
@@ -25,21 +25,39 @@ export const chatHostedBlenderThread = <T>(
   thread: T | null,
 ): T | null => (serverConfig?.settings.hostedBlenderEnabled === true ? thread : null);
 
+/** A file's name as the pane shows it; `untitled` for an unsaved scene. */
+export const blendFileName = (file: HostedBlenderKeptFile, untitled: string): string => {
+  if (file.kind === "untitled") return untitled;
+  const path = file.kind === "workspace" ? file.relativePath : file.path;
+  return path.slice(path.lastIndexOf("/") + 1);
+};
+
+/** The file a running hosted Blender has open now, which its quit names: once Blender has said. */
+export const quitFileOf = (state: {
+  readonly relativePath: string;
+  readonly openFile?: HostedBlenderKeptFile | undefined;
+}): HostedBlenderKeptFile =>
+  state.openFile ?? { kind: "workspace", relativePath: state.relativePath };
+
+/**
+ * Opening and quitting one thread's Blender run in order; other threads don't wait. Quit without
+ * saving must reach a Blender whose Save and quit is stuck in it, so a discard runs beside that
+ * lane rather than behind it.
+ */
+export const hostedBlenderLane = ({
+  environmentId,
+  input,
+}: {
+  environmentId: string;
+  input: { readonly threadId: string; readonly discard?: boolean | undefined };
+}) =>
+  JSON.stringify([environmentId, input.threadId, ...(input.discard === true ? ["discard"] : [])]);
+
 export function createHostedBlenderEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {
   const scheduler = createAtomCommandScheduler();
-  // Opening and quitting one thread's Blender run in order; other threads don't wait.
-  const concurrency = {
-    mode: "serial" as const,
-    key: ({
-      environmentId,
-      input,
-    }: {
-      environmentId: string;
-      input: { readonly threadId: string };
-    }) => JSON.stringify([environmentId, input.threadId]),
-  };
+  const concurrency = { mode: "serial" as const, key: hostedBlenderLane };
   return {
     threadState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:hosted-blender:thread-state",

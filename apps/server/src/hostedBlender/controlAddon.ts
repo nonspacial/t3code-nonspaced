@@ -390,6 +390,12 @@ def _handle(command):
             bpy.ops.wm.quit_blender()
         return
     if kind == "quit":
+        expected = command.get("filepath")
+        if not command.get("save") and expected is not None and expected != bpy.data.filepath:
+            # The person's discard named the file T3 last heard of; another is open now, whose
+            # changes they never chose to lose.
+            _send({"type": "discardRefused"})
+            return
         if not command.get("save"):
             # T3 waits on this rather than stopping a Blender still writing its quit copy. It
             # carries the file and its unsaved bit as they are now, before the undo step below

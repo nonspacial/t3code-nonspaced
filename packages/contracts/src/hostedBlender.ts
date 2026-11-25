@@ -124,6 +124,14 @@ export class HostedBlenderSetupError extends Schema.TaggedError<HostedBlenderSet
   }
 }
 
+/** A file a thread keeps a recovery copy of: one in its workspace, one outside it, or untitled. */
+export const HostedBlenderKeptFile = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("workspace"), relativePath: TrimmedNonEmptyString }),
+  Schema.Struct({ kind: Schema.Literal("outside"), path: TrimmedNonEmptyString }),
+  Schema.Struct({ kind: Schema.Literal("untitled") }),
+]);
+export type HostedBlenderKeptFile = typeof HostedBlenderKeptFile.Type;
+
 export const HostedBlenderRunningState = Schema.Struct({
   status: Schema.Literals(["starting", "running"]),
   /** Relative to the thread's workspace. */
@@ -132,16 +140,13 @@ export const HostedBlenderRunningState = Schema.Struct({
   dirty: Schema.Boolean,
   /** The agent is acting in this Blender through Blender Lab's MCP, as T3's add-on reports. */
   agentActing: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The file Blender has open now, once it has said: after File > Open, not `relativePath`.
+   * Quitting names this file, and a discard sends it back.
+   */
+  openFile: Schema.optionalKey(HostedBlenderKeptFile),
 });
 export type HostedBlenderRunningState = typeof HostedBlenderRunningState.Type;
-
-/** A file a thread keeps a recovery copy of: one in its workspace, one outside it, or untitled. */
-export const HostedBlenderKeptFile = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("workspace"), relativePath: TrimmedNonEmptyString }),
-  Schema.Struct({ kind: Schema.Literal("outside"), path: TrimmedNonEmptyString }),
-  Schema.Struct({ kind: Schema.Literal("untitled") }),
-]);
-export type HostedBlenderKeptFile = typeof HostedBlenderKeptFile.Type;
 
 /**
  * What a thread's hosted Blender left for one file: `closed` when T3 quit it (its thread settled
@@ -242,6 +247,11 @@ export const HostedBlenderQuitInput = Schema.Struct({
    * Blender has unsaved. Any other quit without saving keeps it, as a settle does.
    */
   discard: Schema.optionalKey(Schema.Boolean),
+  /**
+   * With `discard`: the file the dialog named. Refused with `openFileChanged` when Blender has
+   * another file open by then, so a discard never drops another file's changes.
+   */
+  openFile: Schema.optionalKey(HostedBlenderKeptFile),
   /** Quitting the master Blender quits it for every thread sharing it. */
   role: Schema.optionalKey(HostedBlenderRole),
   /** A master Blender by its key from the Running Blenders list, which may have no thread. */
@@ -275,6 +285,8 @@ export const HostedBlenderRunningBlender = Schema.Struct({
   status: Schema.Literals(["starting", "running"]),
   relativePath: TrimmedNonEmptyString,
   dirty: Schema.Boolean,
+  /** The file Blender has open now, once it has said. */
+  openFile: Schema.optionalKey(HostedBlenderKeptFile),
   memoryBytes: Schema.NullOr(Schema.Number),
   /** A master Blender's own key, which Quit takes: it may have no thread left. */
   master: Schema.optionalKey(Schema.String),
@@ -373,6 +385,7 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "masterChanged",
       "desktopAlias",
       "masterBusy",
+      "openFileChanged",
     ]),
   },
 ) {
@@ -422,6 +435,8 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "This thread's master changed. Check the Blender pane and try again.";
       case "masterBusy":
         return "The master Blender is busy finishing an earlier request to quit. Try again in a moment.";
+      case "openFileChanged":
+        return "The hosted Blender has another file open now. Check which file you're quitting and try again.";
       case "desktopAlias":
         return "The desktop Blender has this master open under another name, so its save wouldn't reach the master. Open the master itself there, or quit it and open the master here.";
     }

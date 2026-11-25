@@ -90,7 +90,7 @@ Taking control needs permission to use terminals, because Blender's Python conso
 
 One device is in control at a time. While someone else is, the pane offers **Take over**, and the device that lost control is told.
 
-Closing the pane leaves Blender running; open it again from the file preview, a link or **Open hosted Blender** in the command palette. To stop Blender, choose **Quit Blender** from the pane's menu or **Quit hosted Blender** in the command palette. If the file has unsaved changes, you can save them first or quit without saving. If the save fails, Blender keeps running so nothing is lost. Only **Quit without saving** discards unsaved changes: any other quit, such as the agent's or one made just as an edit arrived, keeps them as a close does.
+Closing the pane leaves Blender running; open it again from the file preview, a link or **Open hosted Blender** in the command palette. To stop Blender, choose **Quit Blender** from the pane's menu or **Quit hosted Blender** in the command palette. If the file has unsaved changes, you can save them first or quit without saving. The question names the file Blender has open now, even one you opened from Blender's own File menu; if Blender opens another file before you choose, it asks again for that one. If the save fails, Blender keeps running so nothing is lost. If Blender is too busy to save, **Quit without saving** still stops it. Only **Quit without saving** discards unsaved changes: any other quit, such as the agent's or one made just as an edit arrived, keeps them as a close does.
 
 ## When Blender closes
 

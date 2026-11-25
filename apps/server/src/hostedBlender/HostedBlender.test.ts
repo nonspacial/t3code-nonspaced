@@ -426,7 +426,14 @@ def control():
         saves += 1
         with open(os.environ["STANDIN_SAVES"], "a") as log:
             log.write("save\n")
+        if scenario == "busy-save":
+            # Blender's main thread never frees up: the save is never begun, and nothing after
+            # it is read.
+            threading.Event().wait()
         connection.sendall(b'{"type": "saving"}\n')
+        if scenario == "stuck-saving":
+            # Begun, and stuck in the write: nothing after it is read.
+            threading.Event().wait()
         if scenario == "held-save":
             # Acknowledged, then fails once the test creates STANDIN_BIND.
             def fail_when_released():
@@ -1782,6 +1789,57 @@ describe("Endings and recovery", () => {
       expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(5_000);
       expect(NodeFS.readFileSync(marker, "utf8")).toBe("killed");
     }).pipe(Effect.scoped),
+  );
+
+  it.live("R3: Quit without saving ends a Blender stuck in a Save and quit, begun or not", () =>
+    Effect.gen(function* () {
+      const discardStuck = Effect.fnUntraced(function* (scenario: string) {
+        const { dir, service, openReady, awaitStatus } = yield* standIn(scenario, scenario);
+        yield* openReady;
+        const saving = yield* service
+          .quit({ threadId, save: true })
+          .pipe(Effect.flip, Effect.forkChild);
+        yield* fileAppears(dir, NodePath.join(dir, "saves.log"));
+        yield* service.quit({ threadId, save: false, discard: true });
+        expect(yield* awaitStatus("stopped")).toEqual({ status: "stopped" });
+        expect((yield* Fiber.join(saving)).reason).toBe("saveFailed");
+      });
+      yield* Effect.all([discardStuck("busy-save"), discardStuck("stuck-saving")], {
+        concurrency: "unbounded",
+      });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "R3: a settle ends a Blender whose Save and quit never began, by its deadline, holding up no other thread",
+    () =>
+      Effect.gen(function* () {
+        const { dir, service, openReady } = yield* standIn("busy-settle", "busy-save");
+        NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+        yield* openReady;
+        yield* service.open({ threadId: otherThreadId, relativePath: "other.blend" });
+        const ended = (id: ThreadId) =>
+          service.threadState(id).pipe(
+            Stream.filter((state) => state.status !== "running" && state.status !== "starting"),
+            Stream.runHead,
+            Effect.map(Option.getOrThrow),
+          );
+        const saving = yield* service
+          .quit({ threadId, save: true })
+          .pipe(Effect.flip, Effect.forkChild);
+        yield* fileAppears(dir, NodePath.join(dir, "saves.log"));
+        yield* service.closeOnSettle({ threadId });
+        // Settled meanwhile, the other thread's Blender closes with its copy at once.
+        yield* service.closeOnSettle({ threadId: otherThreadId });
+        expect(card(yield* ended(otherThreadId))).toMatchObject({
+          status: "closed",
+          relativePath: "other.blend",
+        });
+        const stuck = yield* Stream.runHead(service.threadState(threadId));
+        expect(Option.getOrThrow(stuck).status).toBe("running");
+        yield* ended(threadId);
+        expect((yield* Fiber.join(saving)).reason).toBe("saveFailed");
+      }).pipe(Effect.scoped),
   );
 
   it.live("a settle that outlasts a failing save still quits Blender with its copy", () =>
@@ -3597,6 +3655,85 @@ def unregister():
 `;
 
 describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
+  it.live(
+    "N1: a quit names the file Blender has open, and a discard named for another is refused",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tempDir("real-discard-other");
+        const workspace = NodePath.join(dir, "work");
+        NodeFS.mkdirSync(workspace, { recursive: true });
+        for (const name of ["cube.blend", "other.blend"]) {
+          NodeChildProcess.execFileSync("blender", [
+            "--background",
+            "--factory-startup",
+            "--python-expr",
+            `import bpy; bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(NodePath.join(workspace, name))})`,
+          ]);
+        }
+        const configHome = NodePath.join(dir, "config");
+        const startup = NodePath.join(configHome, "blender", "5.3", "scripts", "startup");
+        NodeFS.mkdirSync(startup, { recursive: true });
+        NodeFS.writeFileSync(NodePath.join(startup, "t3_test_command.py"), COMMAND_STARTUP_SCRIPT);
+        const service = yield* serviceFor(
+          layerFor({
+            env: {
+              PATH: hostEnvironment.PATH,
+              XDG_RUNTIME_DIR: hostEnvironment.XDG_RUNTIME_DIR,
+              XDG_CONFIG_HOME: configHome,
+              HB_TEST_DIR: dir,
+            },
+            helper: helperBuild,
+            workspaceRoot: workspace,
+            baseDir: dir,
+          }),
+        );
+        const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+        yield* service.threadState(threadId).pipe(
+          Stream.runForEach((state) => Queue.offer(states, state)),
+          Effect.forkScoped,
+        );
+        const awaitState = (matches: (state: HostedBlenderThreadState) => boolean) =>
+          Queue.take(states).pipe(Effect.repeat({ until: matches }));
+        const command = (text: string) => {
+          NodeFS.writeFileSync(NodePath.join(dir, "command.partial"), text);
+          NodeFS.renameSync(NodePath.join(dir, "command.partial"), NodePath.join(dir, "command"));
+        };
+        const cube = { kind: "workspace", relativePath: "cube.blend" } as const;
+        const other = { kind: "workspace", relativePath: "other.blend" } as const;
+
+        yield* service.open({ threadId, relativePath: "cube.blend" });
+        command("edit T3Edit");
+        expect(
+          yield* awaitState((state) => state.status === "running" && state.dirty),
+        ).toMatchObject({ relativePath: "cube.blend", openFile: cube });
+        expect(NodeFS.readFileSync(NodePath.join(dir, "tempdir"), "utf8")).toContain(dir);
+        // File > Open in the pane, then an edit there: the pane now names other.blend.
+        command(`open ${NodePath.join(workspace, "other.blend")};edit T3Other`);
+        yield* awaitState(
+          (state) =>
+            state.status === "running" &&
+            state.dirty &&
+            "openFile" in state &&
+            state.openFile?.kind === "workspace" &&
+            state.openFile.relativePath === "other.blend",
+        );
+        // A dialog opened before the switch named cube.blend: its discard is refused.
+        const refused = yield* service
+          .quit({ threadId, save: false, discard: true, openFile: cube })
+          .pipe(Effect.flip);
+        expect(refused.reason).toBe("openFileChanged");
+        expect(
+          Option.getOrThrow(yield* Stream.runHead(service.threadState(threadId))),
+        ).toMatchObject({ status: "running", openFile: other });
+        // Named for the file open now, it discards that file's changes.
+        yield* service.quit({ threadId, save: false, discard: true, openFile: other });
+        expect(
+          yield* awaitState((state) => state.status !== "running" && state.status !== "starting"),
+        ).toEqual({ status: "stopped" });
+        expect(objectsIn(NodePath.join(workspace, "other.blend"))).not.toContain("T3Other");
+      }).pipe(Effect.scoped),
+  );
+
   it.live(
     "R2: a save in Blender after Reopen removes the file's copy, whether it stays open or not",
     () =>

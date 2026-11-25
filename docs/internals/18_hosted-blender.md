@@ -16,7 +16,12 @@ Only the person's own Quit without saving, which the quit request marks as a dis
 without keeping its unsaved work; every other quit without saving (an agent's, or a one-click quit
 of a file the client last saw clean) ends as a settle does, so what Blender reports as it quits
 decides what is kept. No agent tool can reopen or discard a copy, so the agent's next
-`blender_start` of a working copy with a waiting copy restores it rather than refusing. Deleting a thread ends its Blender, then removes the copies it kept, which
+`blender_start` of a working copy with a waiting copy restores it rather than refusing. A discard
+carries the file its dialog named, and the add-on refuses it if Blender has another open by then,
+so a file opened from Blender's own menu is never discarded under another's name. It runs beside
+the client's per-thread command lane, so a Save and quit stuck in a busy Blender can't hold it,
+and it stops Blender at its deadline even mid-save. A settle waits on a Save and quit only once
+Blender has begun it; one still queued by the deadline is stopped like any unanswered quit. Deleting a thread ends its Blender, then removes the copies it kept, which
 nothing could show again; a master's copy is never the thread's. Agent access is narrower still: it lasts only while T3 holds the control
 connection, Allow agents is on, and the launch file (the working copy, or the master) is still the
 open file; a working Blender also needs its thread's session alive. Once any of those ends, access

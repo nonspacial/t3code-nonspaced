@@ -174,6 +174,8 @@ const ControlMessage = Schema.Union([
     quit: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({ type: Schema.Literal("quitFailed"), reason: Schema.Literal("saveFailed") }),
+  /** A discard named another file than the one Blender has open, so Blender stays open. */
+  Schema.Struct({ type: Schema.Literal("discardRefused") }),
   /** `quitIfClean` found unsaved changes, so Blender stays open. */
   Schema.Struct({ type: Schema.Literal("quitRefused"), id: Schema.optional(Schema.Int) }),
   /** A quit T3 gave up on won't be carried out. */
@@ -226,8 +228,15 @@ export interface AgentListenerReport {
   /** The installed Blender Lab extension's version, once the add-on has said. */
   readonly mcpVersion: string | null;
 }
+// `filepath`: a discard of this open file only; the add-on refuses it once another is open.
 const encodeControlCommand = Schema.encodeSync(
-  Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("quit"), save: Schema.Boolean })),
+  Schema.fromJsonString(
+    Schema.Struct({
+      type: Schema.Literal("quit"),
+      save: Schema.Boolean,
+      filepath: Schema.optionalKey(Schema.String),
+    }),
+  ),
 );
 
 /**
@@ -560,6 +569,8 @@ interface Instance {
   agentSession: string | undefined;
   /** Answered when the add-on has dropped the quit T3 gave up on. */
   quitCancelled: { readonly id: number; readonly done: Deferred.Deferred<void> } | null;
+  /** Answered when the add-on refuses a discard that named another file. */
+  discardRefused: Deferred.Deferred<void> | null;
   openFile: string | null | undefined;
   /** The real path of the file Blender has open now, which no other hosted Blender may open. */
   openRealPath: string | null;
@@ -699,6 +710,12 @@ const make = Effect.gen(function* () {
         };
       });
 
+  /** The file Blender has open now, once it has said, as the client names it. */
+  const openFileOf = (instance: Instance): { readonly openFile?: KeptFile } =>
+    instance.openFile === undefined
+      ? {}
+      : { openFile: keptFileOf(instance.openFile ?? "", instance.workspaceRoot, path.relative) };
+
   const publishRunning = () =>
     Effect.suspend(() =>
       SubscriptionRef.set(
@@ -708,6 +725,7 @@ const make = Effect.gen(function* () {
           status: instance.status,
           relativePath: instance.relativePath,
           dirty: instance.dirty,
+          ...openFileOf(instance),
           memoryBytes: instance.memoryBytes,
           // A master may have no thread left, so Quit names it by its own key.
           ...(instance.role === "master" ? { master: instance.key } : {}),
@@ -728,6 +746,7 @@ const make = Effect.gen(function* () {
         relativePath: known.relativePath,
         dirty: instance.dirty,
         ...(instance.agentActing ? { agentActing: true } : {}),
+        ...openFileOf(instance),
         ...(instance.desktopUnchecked ? { desktopUnchecked: true } : {}),
       };
     }
@@ -784,6 +803,7 @@ const make = Effect.gen(function* () {
                 relativePath: instance.relativePath,
                 dirty: instance.dirty,
                 ...(instance.agentActing ? { agentActing: true } : {}),
+                ...openFileOf(instance),
               },
             ]),
         ]),
@@ -1556,6 +1576,7 @@ const make = Effect.gen(function* () {
                 instance.blendPath);
           yield* updateRestore(instance, message.value.restore === "ok" && saves ? "ok" : "failed");
         }
+        const openBefore = instance.openFile;
         // Its quit pushes an undo step for the quit copy, so a report after "quitting" is always
         // unsaved and says nothing about the person's work; "quitting" itself carried the facts.
         if (!instance.quitHeard) {
@@ -1577,7 +1598,13 @@ const make = Effect.gen(function* () {
         }
         // A report queued before T3 revoked access is stale: nothing acts after that.
         const agentActing = message.value.agentActing === true && !instance.agentListenerRevoked;
-        if (instance.dirty === message.value.dirty && instance.agentActing === agentActing) return;
+        if (
+          instance.dirty === message.value.dirty &&
+          instance.agentActing === agentActing &&
+          instance.openFile === openBefore
+        ) {
+          return;
+        }
         instance.dirty = message.value.dirty;
         instance.agentActing = agentActing;
         return yield* publishNow();
@@ -1623,6 +1650,9 @@ const make = Effect.gen(function* () {
         // The add-on ended the grant before saying so; Blender quits next.
         yield* revokeAgentListener(instance);
         if (instance.saveReplies) yield* Queue.offer(instance.saveReplies, "saved");
+        return;
+      case "discardRefused":
+        if (instance.discardRefused) yield* Deferred.succeed(instance.discardRefused, undefined);
         return;
       case "saving":
       case "quitFailed":
@@ -2255,6 +2285,7 @@ const make = Effect.gen(function* () {
       desktopUnchecked: false,
       quitRefused: null,
       quitCancelled: null,
+      discardRefused: null,
       agentSession: undefined,
       openFile: undefined,
       openRealPath: input.blendPath,
@@ -2455,6 +2486,8 @@ const make = Effect.gen(function* () {
   const sendQuitWithoutSaving = Effect.fnUntraced(function* (
     instance: Instance,
     deadline: Deadline,
+    /** A discard of this open file only. */
+    filepath?: string,
   ) {
     const connected = yield* within(Deferred.await(instance.controlReady), deadline).pipe(
       Effect.raceFirst(Deferred.await(instance.ended).pipe(Effect.as(Option.none()))),
@@ -2462,21 +2495,46 @@ const make = Effect.gen(function* () {
     const control = instance.control;
     if (Option.isNone(connected) || control === null) return false;
     yield* control
-      .write(`${encodeControlCommand({ type: "quit", save: false })}\n`)
+      .write(
+        `${encodeControlCommand({ type: "quit", save: false, ...(filepath === undefined ? {} : { filepath }) })}\n`,
+      )
       .pipe(Effect.raceFirst(Deferred.await(control.closed)));
     return true;
   });
 
+  /**
+   * The person's Quit without saving, or a quit of a Blender still starting. A discard names the
+   * file the dialog showed: Blender refuses it with another open, and stays open.
+   */
   const quitWithoutSaving = Effect.fn("HostedBlender.quitWithoutSaving")(function* (
     instance: Instance,
+    filepath?: string,
   ) {
     instance.quitting = true;
     yield* revokeAgentListener(instance);
     // Quitting a Blender still starting has nothing of its session to keep.
     if (instance.control === null) return yield* forceQuit(instance);
     const deadline = yield* deadlineIn(QUIT_TIMEOUT, false);
-    if (!(yield* sendQuitWithoutSaving(instance, deadline))) return yield* forceQuit(instance);
-    yield* awaitEnded(instance, deadline);
+    const refused = yield* Deferred.make<void>();
+    instance.discardRefused = refused;
+    if (!(yield* sendQuitWithoutSaving(instance, deadline, filepath))) {
+      return yield* forceQuit(instance);
+    }
+    const outcome = yield* within(
+      Effect.raceFirst(
+        Deferred.await(instance.ended).pipe(Effect.as("ended" as const)),
+        Deferred.await(refused).pipe(Effect.as("refused" as const)),
+      ),
+      deadline,
+    );
+    if (instance.discardRefused === refused) instance.discardRefused = null;
+    // What it would keep is what the person chose to lose, so a Blender busy past the deadline
+    // (a Save and quit stuck in it included) is stopped; saves never damage the file.
+    if (Option.isNone(outcome)) return yield* forceQuit(instance);
+    if (outcome.value === "refused") {
+      instance.quitting = false;
+      return yield* new HostedBlenderError({ reason: "openFileChanged" });
+    }
   });
 
   /** Quits without saving, so Blender writes its quit copy, which the run keeps to reopen. */
@@ -2490,18 +2548,16 @@ const make = Effect.gen(function* () {
     yield* revokeAgentListener(instance);
     let deadline = given;
     // A Save and quit already under way decides first; only a failed one leaves work to keep.
-    // Settling waits for its answer however long the save takes (an unacknowledged one answers
-    // within seconds); a shutdown keeps its one deadline.
+    // Settling waits however long a save Blender has begun takes; one still queued in a busy
+    // Blender, never begun by the deadline, is stopped as any unanswered quit is. A shutdown
+    // keeps its one deadline.
     const pending = instance.pendingSave;
     if (pending !== null) {
-      let saved: boolean;
-      if (deadline.shutdown) {
-        const answered = yield* within(Deferred.await(pending), deadline);
-        if (Option.isNone(answered)) return yield* pastDeadline(instance, deadline);
-        saved = answered.value;
-      } else {
-        saved = yield* Deferred.await(pending);
+      const answered = yield* within(Deferred.await(pending), deadline);
+      if (Option.isNone(answered) && (deadline.shutdown || !instance.acknowledged)) {
+        return yield* pastDeadline(instance, deadline);
       }
+      const saved = Option.isSome(answered) ? answered.value : yield* Deferred.await(pending);
       if (saved) return yield* awaitEnded(instance, deadline);
       // Blender stays open after a failed save; the recovery quit gets a deadline of its own.
       if (!deadline.shutdown) deadline = yield* deadlineIn(QUIT_TIMEOUT, false);
@@ -2603,6 +2659,7 @@ const make = Effect.gen(function* () {
     threadId,
     save,
     discard,
+    openFile,
     role,
     master,
   }) {
@@ -2620,21 +2677,29 @@ const make = Effect.gen(function* () {
       if (!cleared) return;
       return yield* publishNow();
     }
-    return yield* quitInstance(instance, save, discard === true);
+    return yield* quitInstance(instance, save, discard === true ? { openFile } : null);
   });
 
   // Runs inside quit's span.
   const quitInstance = Effect.fnUntraced(function* (
     instance: Instance,
     save: boolean,
-    discard: boolean,
+    /** The person's Quit without saving, and the file its dialog named. */
+    discard: { readonly openFile: KeptFile | undefined } | null,
   ) {
     const control = instance.control;
     const saveFailed = new HostedBlenderError({ reason: "saveFailed" });
     // Only the person's choice in the save/discard dialog discards. Any other quit without
     // saving (a file the client believed clean, an agent's) ends as a settle does, so what
     // Blender says as it quits decides what is kept. One still starting has no session yet.
-    if (!save && (discard || instance.status === "starting")) {
+    if (!save && discard?.openFile !== undefined) {
+      const open = openFileOf(instance).openFile;
+      if (open === undefined || fileKeyOf(open) !== fileKeyOf(discard.openFile)) {
+        return yield* new HostedBlenderError({ reason: "openFileChanged" });
+      }
+      return yield* quitWithoutSaving(instance, instance.openFile ?? "");
+    }
+    if (!save && (discard !== null || instance.status === "starting")) {
       return yield* quitWithoutSaving(instance);
     }
     if (!save) return yield* end(instance, yield* deadlineIn(QUIT_TIMEOUT, false));
