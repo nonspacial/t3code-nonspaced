@@ -68,6 +68,12 @@ const threadRef = {
   environmentId: EnvironmentId.make("environment-1"),
   threadId: ThreadId.make("thread-1"),
 };
+const kept = (kind: "closed" | "crashed", relativePath: string, recovery: boolean) => ({
+  key: `workspace:${relativePath}`,
+  kind,
+  file: { kind: "workspace" as const, relativePath },
+  recovery,
+});
 const control = (next: HostedBlenderControl) => act(() => stream.events?.onControl?.(next));
 
 /** The app installs keyboard capture at startup; each test starts with a fresh stream. */
@@ -268,7 +274,7 @@ it("shows a closed or crashed Blender's card in the pane, never in the float", a
   using _app = startup();
   const running = stream.state;
   try {
-    stream.state = { status: "closed", relativePath: "models/hero.blend", recovery: true };
+    stream.state = { status: "closed", copies: [kept("closed", "models/hero.blend", true)] };
     await using pane = await render(
       <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
     );
@@ -277,7 +283,7 @@ it("shows a closed or crashed Blender's card in the pane, never in the float", a
       .element(pane.getByText("kept its unsaved changes", { exact: false }))
       .toBeInTheDocument();
 
-    stream.state = { status: "crashed", relativePath: "models/hero.blend", recovery: false };
+    stream.state = { status: "crashed", copies: [kept("crashed", "models/hero.blend", false)] };
     await using float = await render(
       <div style={{ height: 180, width: 320 }}>
         <FloatingBlender threadRef={threadRef} onFrameSize={() => undefined} />
@@ -290,22 +296,40 @@ it("shows a closed or crashed Blender's card in the pane, never in the float", a
   }
 });
 
-it("names the file Blender had open outside the workspace on its card", async () => {
+it("shows each kept file's card, naming its own file, and acts on that file", async () => {
   using _app = startup();
   const running = stream.state;
   try {
     stream.state = {
       status: "closed",
-      relativePath: "models/hero.blend",
-      recovery: true,
-      fileName: "outside.blend",
+      copies: [
+        {
+          key: "outside:/elsewhere/outside.blend",
+          kind: "closed",
+          file: { kind: "outside", path: "/elsewhere/outside.blend" },
+          recovery: true,
+          copyPath: "/srv/state/copy.blend",
+        },
+        kept("crashed", "models/hero.blend", true),
+      ],
     };
     await using pane = await render(
       <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
     );
+    // Outside the project: named, located, and only discardable.
     await expect
-      .element(pane.getByText("T3 Code closed outside.blend", { exact: false }))
+      .element(pane.getByText("outside.blend is outside this project", { exact: false }))
       .toBeInTheDocument();
+    await expect
+      .element(pane.getByText("/srv/state/copy.blend", { exact: false }))
+      .toBeInTheDocument();
+    // The other file's copy is a click away, and its card is that file's.
+    await pane.getByRole("button", { name: "hero.blend" }).click();
+    await expect.element(pane.getByText("Blender crashed")).toBeInTheDocument();
+    await expect
+      .element(pane.getByText("hero.blend stopped unexpectedly", { exact: false }))
+      .toBeInTheDocument();
+    await expect.element(pane.getByRole("button", { name: "outside.blend" })).toBeInTheDocument();
   } finally {
     stream.state = running;
   }

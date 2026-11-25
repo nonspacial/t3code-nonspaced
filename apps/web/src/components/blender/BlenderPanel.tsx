@@ -18,12 +18,14 @@ import {
 } from "@t3tools/client-runtime/hosted-blender/stream";
 import type {
   EnvironmentId,
+  HostedBlenderKeptCopy,
   HostedBlenderRequirement,
   HostedBlenderRunningState,
   ProjectId,
   HostedBlenderThreadState,
   ScopedThreadRef,
 } from "@t3tools/contracts";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { CameraIcon, MoreVertical } from "lucide-react";
@@ -94,6 +96,7 @@ import { HiddenThreadContext } from "../chat/backgroundThread";
 
 import { useBlenderAnnotation } from "./BlenderAnnotationEditor";
 import { attachBlenderInput, type BlenderInput } from "./blenderInput";
+import { useKeptCopySelection } from "./keptCopies";
 import { fileName, useQuitHostedBlender } from "./useQuitHostedBlender";
 
 interface StreamStats {
@@ -236,6 +239,7 @@ function StateCard(props: {
   readonly title: ReactNode;
   readonly description?: ReactNode;
   readonly action?: ReactNode;
+  readonly footer?: ReactNode;
 }) {
   return (
     <Empty className="h-full">
@@ -246,11 +250,28 @@ function StateCard(props: {
       {props.action ? (
         <EmptyContent className="flex-row flex-wrap justify-center">{props.action}</EmptyContent>
       ) : null}
+      {props.footer ? (
+        <EmptyContent>
+          <div className="flex flex-wrap items-center justify-center gap-1 text-muted-foreground text-xs">
+            {props.footer}
+          </div>
+        </EmptyContent>
+      ) : null}
     </Empty>
   );
 }
 
-/** A Blender T3 closed, or one that crashed: it stays stopped until someone reopens it. */
+const keptName = (copy: HostedBlenderKeptCopy, untitled: string) =>
+  copy.file.kind === "workspace"
+    ? fileName(copy.file.relativePath)
+    : copy.file.kind === "outside"
+      ? fileName(copy.file.path)
+      : untitled;
+
+/**
+ * What a closed or crashed Blender left for one file: it stays stopped until someone reopens
+ * it. The thread's copies of other files are a click away, so none is out of reach.
+ */
 function ReopenCard(props: {
   readonly threadRef: ScopedThreadRef;
   readonly state: Extract<HostedBlenderThreadState, { status: "closed" | "crashed" }>;
@@ -263,11 +284,20 @@ function ReopenCard(props: {
   const dismiss = useAtomCommand(hostedBlenderEnvironment.dismiss, { reportFailure: false });
   const [pending, setPending] = useState(false);
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
-  const name = props.state.fileName ?? fileName(props.state.relativePath);
-  const crashed = props.state.status === "crashed";
+  const selected = useKeptCopySelection(
+    (selection) => selection.byThread[scopedThreadKey(props.threadRef)],
+  );
+  const select = useKeptCopySelection((selection) => selection.select);
+  const { copies } = props.state;
+  const copy = copies.find((kept) => kept.key === selected) ?? copies[0];
+  const untitled = gt("Untitled scene");
+  const name = keptName(copy, untitled);
+  const crashed = copy.kind === "crashed";
+  // T3 opens only workspace files, so only there can it check where a restore would save.
+  const reopenable = copy.file.kind === "workspace";
   const run = async (action: "restore" | "fresh" | "dismiss") => {
     setPending(true);
-    const input = { threadId: props.threadRef.threadId };
+    const input = { threadId: props.threadRef.threadId, key: copy.key };
     const result =
       action === "dismiss"
         ? await dismiss({ environmentId, input })
@@ -284,13 +314,33 @@ function ReopenCard(props: {
       );
     }
   };
-  const { recovery, restoreFailed } = props.state;
+  const { recovery, restoreFailed, copyPath } = copy;
+  const others = copies.filter((kept) => kept !== copy);
   return (
     <>
       <StateCard
         title={crashed ? <T>Blender crashed</T> : <T>Blender was closed</T>}
         description={
-          restoreFailed ? (
+          copy.file.kind === "outside" ? (
+            recovery ? (
+              <T>
+                <Var>{name}</Var> is outside this project, so T3 Code can't reopen it. Its unsaved
+                changes are kept at <Var>{copyPath}</Var>.
+              </T>
+            ) : (
+              <T>
+                <Var>{name}</Var> is outside this project, so T3 Code can't reopen it.
+              </T>
+            )
+          ) : copy.file.kind === "untitled" ? (
+            recovery ? (
+              <T>
+                T3 Code kept the unsaved changes to an untitled scene at <Var>{copyPath}</Var>.
+              </T>
+            ) : (
+              <T>Blender had an untitled scene open, which T3 Code can't reopen.</T>
+            )
+          ) : restoreFailed ? (
             <T>
               Blender couldn't restore the copy of <Var>{name}</Var>. The copy is kept: try again,
               open the file as last saved, or discard the copy.
@@ -320,7 +370,7 @@ function ReopenCard(props: {
         action={
           canOperate ? (
             <>
-              {crashed ? (
+              {!reopenable ? null : crashed ? (
                 <>
                   <Button size="sm" disabled={pending} onClick={() => void run("fresh")}>
                     <T>Restart</T>
@@ -361,6 +411,23 @@ function ReopenCard(props: {
               >
                 {recovery ? <T>Discard</T> : <T>Dismiss</T>}
               </Button>
+            </>
+          ) : null
+        }
+        footer={
+          others.length > 0 ? (
+            <>
+              <T>Also kept:</T>
+              {others.map((other) => (
+                <Button
+                  key={other.key}
+                  size="xs"
+                  variant="link"
+                  onClick={() => select(props.threadRef, other.key)}
+                >
+                  {keptName(other, untitled)}
+                </Button>
+              ))}
             </>
           ) : null
         }

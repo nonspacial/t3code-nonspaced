@@ -8,6 +8,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
   type HostedBlenderQuitInput,
+  type HostedBlenderKeptCopy,
   type HostedBlenderThreadState,
   ProviderInstanceId,
   ThreadId,
@@ -77,6 +78,8 @@ const layerFor = (input: {
   readonly ended?: HostedBlender.AgentAccessEnded;
   readonly openFile?: string | null;
   readonly workspace?: string;
+  /** The thread's kept copies; by default those of a closed or crashed `state`. */
+  readonly copies?: ReadonlyArray<HostedBlenderKeptCopy>;
 }) =>
   McpHttpServer.layerHostedBlenderToolkit.pipe(
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
@@ -84,6 +87,8 @@ const layerFor = (input: {
       Layer.mergeAll(
         Layer.mock(HostedBlender.HostedBlender)({
           threadState: () => Stream.succeed(input.state),
+          keptCopies: () =>
+            Effect.succeed(input.copies ?? ("copies" in input.state ? input.state.copies : [])),
           agentListener: () =>
             Effect.succeed({
               state: input.listener ?? "ready",
@@ -306,10 +311,59 @@ describe("hosted Blender MCP tools", () => {
       }).pipe(
         Effect.provide(
           layerFor({
-            state: { status, relativePath: "models/hero.wip-41cbc0de.blend", recovery: true },
+            state: {
+              status,
+              copies: [
+                {
+                  key: "workspace:models/hero.wip-41cbc0de.blend",
+                  kind: status,
+                  file: { kind: "workspace", relativePath: "models/hero.wip-41cbc0de.blend" },
+                  recovery: true,
+                },
+              ],
+            },
           }),
         ),
       ),
+  );
+
+  it.effect("lists each file's waiting copy under its own file, beside the running Blender", () =>
+    Effect.gen(function* () {
+      const result = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
+      const blenders = (result.structuredContent as { blenders: ReadonlyArray<object> }).blenders;
+      expect(blenders.slice(1)).toEqual([
+        {
+          role: "working",
+          status: "crashed",
+          file: `${workspace}/models/other.blend`,
+          recovery: true,
+        },
+        { role: "working", status: "closed", file: "/elsewhere/outside.blend", recovery: true },
+        { role: "working", status: "closed", recovery: false },
+      ]);
+    }).pipe(
+      Effect.provide(
+        layerFor({
+          state: running,
+          copies: [
+            {
+              key: "workspace:models/other.blend",
+              kind: "crashed",
+              file: { kind: "workspace", relativePath: "models/other.blend" },
+              recovery: true,
+            },
+            {
+              key: "outside:/elsewhere/outside.blend",
+              kind: "closed",
+              file: { kind: "outside", path: "/elsewhere/outside.blend" },
+              recovery: true,
+              copyPath: "/state/copy.blend",
+            },
+            { key: "untitled", kind: "closed", file: { kind: "untitled" }, recovery: false },
+          ],
+        }),
+      ),
+    ),
   );
 
   it.effect("leaves the file out for an untitled scene", () =>

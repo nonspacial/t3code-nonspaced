@@ -24,46 +24,83 @@ export const endingOf = (run: {
   return exit !== null && exit.signal === null && exit.code === 0 ? "stopped" : "crashed";
 };
 
-// Blender writes `quit.blend` when it quits and `<name>_<pid>_autosave.blend` (or
-// `<pid>_autosave.blend` for an unsaved file) on its autosave timer, both to its TMPDIR. Both
-// keep the original file's path, so recovering one saves back to the user's file.
-const SESSION_FILE = /^(quit|.*_autosave)\.blend$/;
+/** The file a recovery copy is of. A thread keeps at most one copy per file. */
+export type KeptFile =
+  | { readonly kind: "workspace"; readonly relativePath: string }
+  | { readonly kind: "outside"; readonly path: string }
+  | { readonly kind: "untitled" };
 
-/** The newest copy of the session Blender left in its temporary folder. */
-export const newestSession = (
+export const fileKeyOf = (file: KeptFile): string =>
+  file.kind === "workspace"
+    ? `workspace:${file.relativePath}`
+    : file.kind === "outside"
+      ? `outside:${file.path}`
+      : "untitled";
+
+/** The file a path Blender reports is, under the workspace's real root. */
+export const keptFileOf = (
+  filepath: string,
+  workspaceRoot: string,
+  relative: (from: string, to: string) => string,
+): KeptFile => {
+  if (filepath === "") return { kind: "untitled" };
+  const inside = relative(workspaceRoot, filepath);
+  return inside === "" || inside.startsWith("../") || inside === ".." || inside.startsWith("/")
+    ? { kind: "outside", path: filepath }
+    : { kind: "workspace", relativePath: inside };
+};
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Blender's snapshot of the file it ended on: its quit copy, or an autosave named for that file
+ * (`<stem>_<pid>_autosave.blend`, `<pid>_autosave.blend` untitled) since it opened it. None when
+ * Blender reported it clean and no snapshot is newer than its last save (`savedMs`).
+ */
+export const snapshotOf = (
   files: ReadonlyArray<{ readonly name: string; readonly mtimeMs: number }>,
-): string | undefined =>
-  files.filter((file) => SESSION_FILE.test(file.name)).toSorted((a, b) => b.mtimeMs - a.mtimeMs)[0]
-    ?.name;
+  file: { readonly stem: string | null; readonly since: number },
+  clean: boolean,
+  savedMs: number | null,
+): string | undefined => {
+  const autosave =
+    file.stem === null
+      ? /^\d+_autosave\.blend$/
+      : new RegExp(`^${escapeRegExp(file.stem)}_\\d+_autosave\\.blend$`);
+  const newest = files
+    .filter(
+      (entry) =>
+        entry.mtimeMs >= 0 &&
+        (entry.name === "quit.blend" || (autosave.test(entry.name) && entry.mtimeMs >= file.since)),
+    )
+    .toSorted((a, b) => b.mtimeMs - a.mtimeMs)[0];
+  if (newest === undefined) return undefined;
+  if (clean && savedMs !== null && newest.mtimeMs <= savedMs) return undefined;
+  return newest.name;
+};
 
 export type RestoreState = "none" | "pending" | "ok" | "failed";
 
-/** What a run leaves to reopen; the same for a run's own end and for salvaging it later. */
+/**
+ * What a run's end does, to the copy of the file it ended on and to no other file's: keep its
+ * snapshot, forget the copy after a confirmed save of that file, or leave things as they are.
+ */
 export type Cleanup =
-  | {
-      readonly action: "keep";
-      readonly kind: "closed" | "crashed";
-      readonly unchanged: boolean;
-      /** Never restored the waiting copy and changed nothing, whatever file it ended on. */
-      readonly untouched: boolean;
-    }
+  | { readonly action: "keep"; readonly kind: "closed" | "crashed" }
   | { readonly action: "forget" }
   | { readonly action: "leave" };
 
 export const cleanupOf = (run: {
   readonly restore: RestoreState;
+  /** A confirmed save of the file it ended on was its last word on that file. */
   readonly saved: boolean;
-  readonly changed: boolean;
   readonly ending: Ending;
 }): Cleanup => {
-  // A restore that never succeeded had the saved file open: the copy it came from stays.
+  // A restore that never succeeded had the saved file open, never the copy's work.
   if (run.restore === "pending" || run.restore === "failed") return { action: "leave" };
-  if (run.saved || run.ending === "stopped") return { action: "forget" };
-  if (run.ending === "failed") return { action: "leave" };
-  return {
-    action: "keep",
-    kind: run.ending,
-    unchanged: !run.changed,
-    untouched: run.restore === "none" && !run.changed,
-  };
+  if (run.saved) return { action: "forget" };
+  // Quit by the person, or by Blender's own File menu: nothing more to keep, and nothing to
+  // remove but by Discard.
+  if (run.ending === "stopped" || run.ending === "failed") return { action: "leave" };
+  return { action: "keep", kind: run.ending };
 };

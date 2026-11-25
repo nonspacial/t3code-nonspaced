@@ -3307,6 +3307,7 @@
   "d1634d41846e72cb": "Japonês",
   "c77caac5b764ef8c": "Inglês (Dvorak)",
   "7b15925473b02c07": "Inglês (Colemak)",
+  "7c6bc1129dc9f48e": "Cena sem título",
   "cd078f4497dfcd36": "Não foi possível reiniciar o Blender",
   "ad3ce6044792509a": "Não foi possível reabrir o Blender",
   "90e3c64eab32945e": "Descartar o salvamento automático de {name}?",
@@ -3326,6 +3327,38 @@
   "3f25b97ec987231e": "O Blender não conseguiu abrir o arquivo na tela oculta. Verifique se o Blender o abre e se o GStreamer tem um codificador H.264 e abra-o de novo no Hosted Blender.",
   "c9d23ccb15073177": "O Blender travou",
   "9f406050b6efb934": "O Blender foi fechado",
+  "0693a88b1530f8eb": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " está fora deste projeto, então o T3 Code não pode reabri-lo. As alterações não salvas estão guardadas em ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "95b2d0bdafc5b01d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " está fora deste projeto, então o T3 Code não pode reabri-lo."
+  ],
+  "0181fc8af235ad77": [
+    "O T3 Code guardou as alterações não salvas de uma cena sem título em ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "c3528aaa534d9a33": "O Blender tinha uma cena sem título aberta, que o T3 Code não pode reabrir.",
   "df374db2c12ff019": [
     "O Blender não conseguiu restaurar a cópia de ",
     {
@@ -3374,6 +3407,7 @@
   "182049c015041be2": "Reabrir",
   "eb23e8b7b8458cfa": "Abrir como salvo por último",
   "97585565390197f6": "Descartar",
+  "930be3d3ed674427": "Também guardados:",
   "d6c851db16c7dfd8": "O arquivo como foi salvo por último é mantido. Isso não pode ser desfeito.",
   "7dfc4caecd0ca4da": "Abrir configurações do Blender",
   "22e7ff1b5896ba7b": "O Hosted Blender precisa de um servidor Linux. Você ainda pode abrir arquivos 3D na pré-visualização de arquivos.",

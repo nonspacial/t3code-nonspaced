@@ -17,10 +17,20 @@ describe("hostedBlenderOpensLink", () => {
     ).toBe(true);
   });
 
-  it("opens the pane to reopen the file a closed or crashed Blender had open", () => {
+  it("opens the pane to reopen any file a closed or crashed Blender kept a copy of", () => {
     for (const status of ["closed", "crashed"] as const) {
-      const ended = { status, relativePath: "models/hero.blend", recovery: true };
+      const copy = (relativePath: string) => ({
+        key: `workspace:${relativePath}`,
+        kind: status,
+        file: { kind: "workspace" as const, relativePath },
+        recovery: true,
+      });
+      const ended = {
+        status,
+        copies: [copy("models/hero.blend"), copy("models/older.blend")] as const,
+      };
       expect(hostedBlenderOpensLink("models/hero.blend", "/work", ended)).toBe(true);
+      expect(hostedBlenderOpensLink("/work/models/older.blend", "/work", ended)).toBe(true);
       expect(hostedBlenderOpensLink("models/other.blend", "/work", ended)).toBe(false);
     }
   });

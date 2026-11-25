@@ -3307,6 +3307,7 @@
   "d1634d41846e72cb": "Japanska",
   "c77caac5b764ef8c": "Engelska (Dvorak)",
   "7b15925473b02c07": "Engelska (Colemak)",
+  "7c6bc1129dc9f48e": "Namnlös scen",
   "cd078f4497dfcd36": "Det gick inte att starta om Blender",
   "ad3ce6044792509a": "Det gick inte att öppna Blender igen",
   "90e3c64eab32945e": "Ta bort den automatiska sparningen av {name}?",
@@ -3326,6 +3327,38 @@
   "3f25b97ec987231e": "Blender kunde inte öppna filen på den dolda skärmen. Kontrollera att Blender kan öppna den och att GStreamer har en H.264-kodare, och öppna den sedan i Hosted Blender igen.",
   "c9d23ccb15073177": "Blender kraschade",
   "9f406050b6efb934": "Blender stängdes",
+  "0693a88b1530f8eb": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ligger utanför det här projektet, så T3 Code kan inte öppna den igen. Dess osparade ändringar finns kvar i ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "95b2d0bdafc5b01d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ligger utanför det här projektet, så T3 Code kan inte öppna den igen."
+  ],
+  "0181fc8af235ad77": [
+    "T3 Code behöll de osparade ändringarna i en namnlös scen i ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "c3528aaa534d9a33": "Blender hade en namnlös scen öppen, som T3 Code inte kan öppna igen.",
   "df374db2c12ff019": [
     "Blender kunde inte återställa kopian av ",
     {
@@ -3374,6 +3407,7 @@
   "182049c015041be2": "Öppna igen",
   "eb23e8b7b8458cfa": "Öppna senast sparade",
   "97585565390197f6": "Kasta",
+  "930be3d3ed674427": "Sparas också:",
   "d6c851db16c7dfd8": "Filen som den senast sparades behålls. Det går inte att ångra.",
   "7dfc4caecd0ca4da": "Öppna Blender-inställningar",
   "22e7ff1b5896ba7b": "Hosted Blender kräver en Linux-server. Du kan fortfarande öppna 3D-filer i filförhandsvisningen.",

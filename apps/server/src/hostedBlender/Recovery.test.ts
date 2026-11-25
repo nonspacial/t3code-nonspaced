@@ -1,32 +1,86 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { cleanupOf, endingOf, newestSession } from "./Recovery.ts";
+import { cleanupOf, endingOf, keptFileOf, snapshotOf } from "./Recovery.ts";
 
-describe("newestSession", () => {
-  it("keeps the newest of Blender's quit copy and its autosaves", () => {
+describe("snapshotOf", () => {
+  const hero = { stem: "hero", since: 0 };
+
+  it("keeps the newest of Blender's quit copy and the file's autosaves", () => {
     expect(
-      newestSession([
-        { name: "hero_101_autosave.blend", mtimeMs: 10 },
-        { name: "quit.blend", mtimeMs: 30 },
-        { name: "hero_102_autosave.blend", mtimeMs: 20 },
-      ]),
+      snapshotOf(
+        [
+          { name: "hero_101_autosave.blend", mtimeMs: 10 },
+          { name: "quit.blend", mtimeMs: 30 },
+          { name: "hero_102_autosave.blend", mtimeMs: 20 },
+        ],
+        hero,
+        false,
+        null,
+      ),
     ).toBe("quit.blend");
     expect(
-      newestSession([
-        { name: "hero_101_autosave.blend", mtimeMs: 10 },
-        { name: "hero_102_autosave.blend", mtimeMs: 20 },
-        { name: "hero.crash.txt", mtimeMs: 40 },
-      ]),
+      snapshotOf(
+        [
+          { name: "hero_101_autosave.blend", mtimeMs: 10 },
+          { name: "hero_102_autosave.blend", mtimeMs: 20 },
+          { name: "hero.crash.txt", mtimeMs: 40 },
+          { name: "blender_x1y2", mtimeMs: 50 },
+        ],
+        hero,
+        false,
+        null,
+      ),
     ).toBe("hero_102_autosave.blend");
   });
 
-  it("ignores everything else Blender leaves in its temporary folder", () => {
+  it("never takes another file's autosave, or one from before the file was opened", () => {
+    const files = [
+      { name: "cube_101_autosave.blend", mtimeMs: 30 },
+      { name: "hero_101_autosave.blend", mtimeMs: 10 },
+      { name: "101_autosave.blend", mtimeMs: 40 },
+    ];
+    expect(snapshotOf(files, hero, false, null)).toBe("hero_101_autosave.blend");
+    expect(snapshotOf(files, { stem: "hero", since: 20 }, false, null)).toBeUndefined();
+    expect(snapshotOf(files, { stem: null, since: 0 }, false, null)).toBe("101_autosave.blend");
+    // A stem is matched as text, never as a pattern.
     expect(
-      newestSession([
-        { name: "hero.crash.txt", mtimeMs: 40 },
-        { name: "blender_x1y2", mtimeMs: 50 },
-      ]),
+      snapshotOf(
+        [{ name: "h_r_101_autosave.blend", mtimeMs: 1 }],
+        { stem: "h.r", since: 0 },
+        false,
+        null,
+      ),
     ).toBeUndefined();
+  });
+
+  it("drops a clean file's snapshot only when none is newer than its last save", () => {
+    const quit = [{ name: "quit.blend", mtimeMs: 30 }];
+    const autosave = [{ name: "hero_101_autosave.blend", mtimeMs: 10 }];
+    expect(snapshotOf(autosave, hero, true, 20)).toBeUndefined();
+    // Scripted edits can leave Blender's dirty bit clear: a newer snapshot is still kept.
+    expect(snapshotOf(quit, hero, true, 20)).toBe("quit.blend");
+    expect(snapshotOf(autosave, hero, false, 20)).toBe("hero_101_autosave.blend");
+    expect(snapshotOf(autosave, { stem: null, since: 0 }, true, null)).toBeUndefined();
+    expect(snapshotOf(quit, { stem: null, since: 0 }, true, null)).toBe("quit.blend");
+  });
+});
+
+describe("keptFileOf", () => {
+  // As path.relative answers for these.
+  const relative = (from: string, to: string) =>
+    to === from ? "" : to.startsWith(`${from}/`) ? to.slice(from.length + 1) : `..${to}`;
+
+  it("names a file by its place in the workspace, outside it, or as untitled", () => {
+    expect(keptFileOf("/work/models/a.blend", "/work", relative)).toEqual({
+      kind: "workspace",
+      relativePath: "models/a.blend",
+    });
+    expect(keptFileOf("/elsewhere/a.blend", "/work", relative)).toEqual({
+      kind: "outside",
+      path: "/elsewhere/a.blend",
+    });
+    expect(keptFileOf("/work-other/a.blend", "/work", relative)).toMatchObject({ kind: "outside" });
+    expect(keptFileOf("", "/work", relative)).toEqual({ kind: "untitled" });
   });
 });
 
@@ -69,40 +123,25 @@ describe("endingOf", () => {
 });
 
 describe("cleanupOf", () => {
-  const run = { restore: "none", saved: false, changed: true, ending: "closed" } as const;
+  const run = { restore: "none", saved: false, ending: "closed" } as const;
 
-  it("keeps a closed or crashed run's copy, or the waiting one if the run changed nothing", () => {
-    expect(cleanupOf(run)).toEqual({
-      action: "keep",
-      kind: "closed",
-      unchanged: false,
-      untouched: false,
-    });
-    expect(cleanupOf({ ...run, ending: "crashed", changed: false })).toEqual({
-      action: "keep",
-      kind: "crashed",
-      unchanged: true,
-      untouched: true,
-    });
-    // A restored copy left unchanged is the restored file's, not the waiting one's.
-    expect(cleanupOf({ ...run, restore: "ok", changed: false })).toMatchObject({
-      unchanged: true,
-      untouched: false,
-    });
+  it("keeps a closed or crashed run's snapshot of the file it ended on", () => {
+    expect(cleanupOf(run)).toEqual({ action: "keep", kind: "closed" });
+    expect(cleanupOf({ ...run, ending: "crashed" })).toEqual({ action: "keep", kind: "crashed" });
+    expect(cleanupOf({ ...run, restore: "ok" })).toEqual({ action: "keep", kind: "closed" });
   });
 
-  it("clears what's waiting once the run saved, or someone quit it", () => {
+  it("forgets the file's copy once its last word was a confirmed save", () => {
     expect(cleanupOf({ ...run, saved: true })).toEqual({ action: "forget" });
     expect(cleanupOf({ ...run, ending: "crashed", saved: true })).toEqual({ action: "forget" });
-    expect(cleanupOf({ ...run, ending: "stopped" })).toEqual({ action: "forget" });
   });
 
-  it("leaves the waiting copy alone after a restore that never succeeded, or a failed start", () => {
+  it("leaves every copy alone after a quit, a failed start, or a restore that never succeeded", () => {
+    expect(cleanupOf({ ...run, ending: "stopped" })).toEqual({ action: "leave" });
+    expect(cleanupOf({ ...run, ending: "failed" })).toEqual({ action: "leave" });
     expect(cleanupOf({ ...run, restore: "failed" })).toEqual({ action: "leave" });
     expect(cleanupOf({ ...run, restore: "pending", ending: "crashed" })).toEqual({
       action: "leave",
     });
-    expect(cleanupOf({ ...run, restore: "ok" })).toMatchObject({ action: "keep" });
-    expect(cleanupOf({ ...run, ending: "failed" })).toEqual({ action: "leave" });
   });
 });

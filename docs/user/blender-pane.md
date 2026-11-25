@@ -18,7 +18,7 @@ Hosted Blender is off until you set it up. Until then, the pane says **Setup nee
 
 Without a GPU, or without access to it, hosted Blender still works, but Blender is slow; Settings and the pane's status strip say so.
 
-Switching Hosted Blender off stops new hosted Blenders from starting. One that is already running keeps running until you quit it.
+Switching Hosted Blender off stops new hosted Blenders from starting and closes the ones running, as a settled thread does: each keeps a copy of its unsaved changes, which the pane offers once you switch it on again.
 
 ## Open a file
 
@@ -28,7 +28,7 @@ If Blender can't open the file, the pane says Blender didn't start. Check that t
 
 Each thread has one hosted Blender with one file open. To open a different file, quit Blender first. A file open in another thread's hosted Blender can't be opened again until that one quits. Only files inside the thread's project or worktree can be opened.
 
-Once a file is open, a link to that `.blend` in the chat opens the Blender pane, as it does after that Blender closes or crashes. Links to other `.blend` files open the file preview.
+Once a file is open, a link to that `.blend` in the chat opens the Blender pane, as it does for any file a closed or crashed Blender kept a copy of. Links to other `.blend` files open the file preview.
 
 ## Agents in a hosted Blender
 
@@ -75,9 +75,9 @@ Closing the pane leaves Blender running; open it again from the file preview or 
 
 ## When Blender closes
 
-When a thread settles, is archived or is deleted, its hosted Blender closes, and so does every hosted Blender when T3 Code stops or restarts. Before closing, Blender keeps a copy of the session, unsaved changes included, in T3 Code's own folder. Your file is never saved over.
+When a thread settles, is archived or is deleted, its hosted Blender closes, and so does every hosted Blender when T3 Code stops or restarts. Before closing, Blender keeps a copy of the session, unsaved changes included, in T3 Code's own folder, as the copy of the file it had open then. Your file is never saved over.
 
-The pane then offers **Reopen**, which opens the file with those unsaved changes restored, ready to save or discard as you would in Blender. **Open as last saved** opens the file as it is on disk instead. The copy stays until you reopen the file and quit, or choose **Discard**, and while it waits the thread can't open another file in hosted Blender. Reopen is still there after T3 Code restarts. T3 Code gives Blender a few seconds to keep its copy when T3 Code stops; a Blender that takes longer is stopped. Your file is never damaged that way, but that session's unsaved changes can be lost. If the file is missing afterwards, its previous version is beside it as `.blend1`. If Blender can't restore the copy, the pane says so and keeps it.
+The pane then offers **Reopen**, which opens the file with those unsaved changes restored, ready to save or discard as you would in Blender. **Open as last saved** opens the file as it is on disk instead. A thread keeps one copy per file: a later session of the same file replaces it, saving that file removes it, and **Discard** removes it; nothing you do in another file touches it. While a file's copy waits, opening that file in hosted Blender shows its copy first, and other files open as usual. If the thread kept copies of several files, the pane lists them under **Also kept**; choose one to see it. Copies are still there after T3 Code restarts. A copy of a file outside the project, or of an untitled scene, can't be reopened from T3 Code: the pane says where the copy is, so you can open it in your own Blender, and offers **Discard**. T3 Code gives Blender a few seconds to keep its copy when T3 Code stops; a Blender that takes longer is stopped. Your file is never damaged that way, but that session's unsaved changes can be lost. If the file is missing afterwards, its previous version is beside it as `.blend1`. If Blender can't restore the copy, the pane says so and keeps it.
 
 If Blender crashes, it stays stopped and the pane says so. **Restart** opens the file as last saved; if Blender autosaved since your last save, **Restore autosave** opens that instead. Blender autosaves on the schedule in its own settings (every 2 minutes by default). If T3 Code itself stops without closing Blender, the pane shows the crash the next time it starts.
 

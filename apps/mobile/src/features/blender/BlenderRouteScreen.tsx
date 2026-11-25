@@ -5,7 +5,12 @@ import {
   VIEW_ONLY,
 } from "@t3tools/client-runtime/hosted-blender/stream";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
-import { EnvironmentId, type HostedBlenderThreadState, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  type HostedBlenderKeptCopy,
+  type HostedBlenderThreadState,
+  ThreadId,
+} from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { msg, useGT, useMessages } from "gt-react-native";
 import { type ReactNode, type RefObject, useEffect, useReducer, useRef, useState } from "react";
@@ -46,6 +51,12 @@ type BlenderRouteScreenProps = StaticScreenProps<{
 }>;
 
 const fileName = (relativePath: string) => relativePath.slice(relativePath.lastIndexOf("/") + 1);
+const keptName = (copy: HostedBlenderKeptCopy, untitled: string) =>
+  copy.file.kind === "workspace"
+    ? fileName(copy.file.relativePath)
+    : copy.file.kind === "outside"
+      ? fileName(copy.file.path)
+      : untitled;
 
 /** The thread's hosted Blender: watched live, and controlled by touch once taken. */
 export function BlenderRouteScreen({ route }: BlenderRouteScreenProps) {
@@ -240,20 +251,28 @@ function BlenderStateCard(props: { readonly state: HostedBlenderThreadState }) {
         ];
       // Reopening and restarting happen in the Blender pane on the web or desktop.
       case "closed":
+      case "crashed": {
+        const [newest, ...others] = props.state.copies;
+        const untitled = gt("Untitled scene");
+        const name = keptName(newest, untitled);
+        const detail =
+          newest.kind === "closed"
+            ? gt(
+                "T3 Code closed {name} when this thread settled or T3 Code stopped. Reopen it from T3 Code on the web or desktop.",
+                { name },
+              )
+            : gt("{name} stopped unexpectedly. Restart it from T3 Code on the web or desktop.", {
+                name,
+              });
         return [
-          gt("Blender was closed"),
-          gt(
-            "T3 Code closed {name} when this thread settled or T3 Code stopped. Reopen it from T3 Code on the web or desktop.",
-            { name: props.state.fileName ?? fileName(props.state.relativePath) },
-          ),
+          newest.kind === "closed" ? gt("Blender was closed") : gt("Blender crashed"),
+          others.length === 0
+            ? detail
+            : `${detail} ${gt("Also kept: {names}", {
+                names: others.map((copy) => keptName(copy, untitled)).join(", "),
+              })}`,
         ];
-      case "crashed":
-        return [
-          gt("Blender crashed"),
-          gt("{name} stopped unexpectedly. Restart it from T3 Code on the web or desktop.", {
-            name: props.state.fileName ?? fileName(props.state.relativePath),
-          }),
-        ];
+      }
       case "starting":
       case "running":
         return [

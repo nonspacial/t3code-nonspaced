@@ -3308,6 +3308,7 @@
   "d1634d41846e72cb": "Japanisch",
   "c77caac5b764ef8c": "Englisch (Dvorak)",
   "7b15925473b02c07": "Englisch (Colemak)",
+  "7c6bc1129dc9f48e": "Unbenannte Szene",
   "cd078f4497dfcd36": "Blender konnte nicht neu gestartet werden",
   "ad3ce6044792509a": "Blender konnte nicht erneut geöffnet werden",
   "90e3c64eab32945e": "Die automatische Sicherung von {name} verwerfen?",
@@ -3327,6 +3328,38 @@
   "3f25b97ec987231e": "Blender konnte die Datei auf dem verborgenen Display nicht öffnen. Prüfe, ob Blender sie öffnet und ob GStreamer einen H.264-Encoder hat, und öffne sie dann erneut in Hosted Blender.",
   "c9d23ccb15073177": "Blender ist abgestürzt",
   "9f406050b6efb934": "Blender wurde geschlossen",
+  "0693a88b1530f8eb": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " liegt außerhalb dieses Projekts, daher kann T3 Code sie nicht erneut öffnen. Ihre ungespeicherten Änderungen liegen unter ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "95b2d0bdafc5b01d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " liegt außerhalb dieses Projekts, daher kann T3 Code sie nicht erneut öffnen."
+  ],
+  "0181fc8af235ad77": [
+    "T3 Code hat die ungespeicherten Änderungen an einer unbenannten Szene unter ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " aufbewahrt."
+  ],
+  "c3528aaa534d9a33": "Blender hatte eine unbenannte Szene geöffnet, die T3 Code nicht erneut öffnen kann.",
   "df374db2c12ff019": [
     "Blender konnte die Kopie von ",
     {
@@ -3375,6 +3408,7 @@
   "182049c015041be2": "Erneut öffnen",
   "eb23e8b7b8458cfa": "Zuletzt gespeicherte Version öffnen",
   "97585565390197f6": "Verwerfen",
+  "930be3d3ed674427": "Ebenfalls aufbewahrt:",
   "d6c851db16c7dfd8": "Die zuletzt gespeicherte Datei bleibt erhalten. Das kann nicht rückgängig gemacht werden.",
   "7dfc4caecd0ca4da": "Blender-Einstellungen öffnen",
   "22e7ff1b5896ba7b": "Hosted Blender benötigt einen Linux-Server. 3D-Dateien kannst du weiterhin in der Dateivorschau öffnen.",

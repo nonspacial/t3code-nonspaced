@@ -6,6 +6,8 @@ import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { rightPanelHostRef, useRightPanelStore } from "~/rightPanelStore";
 import { readHostedBlenderState, setHostedBlenderView } from "~/state/hostedBlender";
 
+import { keptCopyOf, showKeptCopy } from "./keptCopies";
+
 export const isBlendFile = (relativePath: string) => relativePath.toLowerCase().endsWith(".blend");
 
 const workspaceRelative = (path: string, workspaceRoot: string | undefined) => {
@@ -17,16 +19,17 @@ const workspaceRelative = (path: string, workspaceRoot: string | undefined) => {
 
 /**
  * A `.blend` link shows the Blender pane only when that file is open in the thread's Blender, or
- * was open in one that closed or crashed, whose pane offers to reopen it.
+ * a closed or crashed one kept a copy of it, whose card the pane then shows.
  */
 export const hostedBlenderOpensLink = (
   path: string,
   workspaceRoot: string | undefined,
   state: HostedBlenderThreadState | null,
-): boolean =>
-  state !== null &&
-  "relativePath" in state &&
-  state.relativePath === workspaceRelative(path, workspaceRoot);
+): boolean => {
+  const relativePath = workspaceRelative(path, workspaceRoot);
+  if (state !== null && "relativePath" in state) return state.relativePath === relativePath;
+  return keptCopyOf(state, relativePath) !== undefined;
+};
 
 /**
  * Opens a chat link to a `.blend` in the Blender pane, or in the file preview otherwise. Reading
@@ -56,6 +59,7 @@ export async function openBlendLink(input: {
     input.openFile();
     return;
   }
+  showKeptCopy(input.threadRef, state, workspaceRelative(input.path, input.workspaceRoot));
   const moved = input.view
     ? await (input.setView ?? setHostedBlenderView)(
         input.threadRef,

@@ -85,19 +85,26 @@ const handlers = {
         return { blenders: [{ role: "working", status: "failed" }] };
       }
       const root = yield* threadWorkspaceRoot(threadId);
-      if (state?.status === "closed" || state?.status === "crashed") {
+      const inWorkspace = (relativePath: string) =>
+        root === undefined ? relativePath : path.join(root, relativePath);
+      // Each file's waiting copy, under its own file, whether or not a Blender runs.
+      const kept = (yield* hostedBlender.keptCopies(threadId)).map((copy) => {
+        const file =
+          copy.file.kind === "workspace"
+            ? inWorkspace(copy.file.relativePath)
+            : copy.file.kind === "outside"
+              ? copy.file.path
+              : undefined;
         return {
-          blenders: [
-            {
-              role: "working",
-              status: state.status,
-              file: root === undefined ? state.relativePath : path.join(root, state.relativePath),
-              recovery: state.recovery,
-            },
-          ],
-        } satisfies HostedBlenderToolStatusResult;
+          role: "working" as const,
+          status: copy.kind,
+          ...(file === undefined ? {} : { file }),
+          recovery: copy.recovery,
+        };
+      });
+      if (state?.status !== "starting" && state?.status !== "running") {
+        return { blenders: kept } satisfies HostedBlenderToolStatusResult;
       }
-      if (state?.status !== "starting" && state?.status !== "running") return { blenders: [] };
       const listener = yield* hostedBlender.agentListener(threadId, { wait: false });
       const reported = listener?.openFile;
       // The file Blender has open now, which may no longer be the one it started with, under
@@ -106,9 +113,7 @@ const handlers = {
         reported === null
           ? undefined
           : reported === undefined
-            ? root === undefined
-              ? state.relativePath
-              : path.join(root, state.relativePath)
+            ? inWorkspace(state.relativePath)
             : yield* underConfiguredRoot(reported, root);
       return {
         blenders: [
@@ -121,6 +126,7 @@ const handlers = {
             agentAccess: listener?.state === "ready",
             ...(listener?.ended == null ? {} : { agentAccessEnded: listener.ended }),
           },
+          ...kept,
         ],
       } satisfies HostedBlenderToolStatusResult;
     }),

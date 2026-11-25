@@ -3307,6 +3307,7 @@
   "d1634d41846e72cb": "Japanese",
   "c77caac5b764ef8c": "English (Dvorak)",
   "7b15925473b02c07": "English (Colemak)",
+  "7c6bc1129dc9f48e": "Untitled scene",
   "cd078f4497dfcd36": "Couldn't restart Blender",
   "ad3ce6044792509a": "Couldn't reopen Blender",
   "90e3c64eab32945e": "Discard the autosave of {name}?",
@@ -3326,6 +3327,38 @@
   "3f25b97ec987231e": "Blender couldn't open the file on the hidden display. Check that Blender opens it and that GStreamer has an H.264 encoder, then open it in hosted Blender again.",
   "c9d23ccb15073177": "Blender crashed",
   "9f406050b6efb934": "Blender was closed",
+  "0693a88b1530f8eb": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " is outside this project, so T3 Code can't reopen it. Its unsaved changes are kept at ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "95b2d0bdafc5b01d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " is outside this project, so T3 Code can't reopen it."
+  ],
+  "0181fc8af235ad77": [
+    "T3 Code kept the unsaved changes to an untitled scene at ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "c3528aaa534d9a33": "Blender had an untitled scene open, which T3 Code can't reopen.",
   "df374db2c12ff019": [
     "Blender couldn't restore the copy of ",
     {
@@ -3374,6 +3407,7 @@
   "182049c015041be2": "Reopen",
   "eb23e8b7b8458cfa": "Open as last saved",
   "97585565390197f6": "Discard",
+  "930be3d3ed674427": "Also kept:",
   "d6c851db16c7dfd8": "The file as last saved is kept. This can't be undone.",
   "7dfc4caecd0ca4da": "Open Blender settings",
   "22e7ff1b5896ba7b": "Hosted Blender needs a Linux server. You can still open 3D files in the file preview.",

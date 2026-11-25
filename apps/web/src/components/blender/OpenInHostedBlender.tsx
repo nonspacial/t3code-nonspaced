@@ -10,6 +10,7 @@ import { PreviewAction } from "~/components/files/previewChrome";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { hostedBlenderEnvironment, useHostedBlenderState } from "~/state/hostedBlender";
+import { keptCopyOf, showKeptCopy } from "./keptCopies";
 import { formatEnvironmentQueryError } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
 
@@ -39,8 +40,9 @@ export function OpenInHostedBlender(props: {
       !(state.missing.length === 1 && state.missing[0] === "check")
     )
       return showPane();
-    // The pane offers the unsaved changes a closed Blender kept.
-    if ((state.status === "closed" || state.status === "crashed") && state.recovery) {
+    // The pane offers the unsaved changes a closed Blender kept of this file first.
+    if (keptCopyOf(state, props.relativePath)?.recovery === true) {
+      showKeptCopy(props.threadRef, state, props.relativePath);
       return showPane();
     }
     setPending(true);
@@ -57,6 +59,11 @@ export function OpenInHostedBlender(props: {
       (error.reason === "notSetUp" || error.reason === "unavailable")
     )
       return showPane();
+    // A copy of this file was kept meanwhile: its card comes first.
+    if (isHostedBlenderError(error) && error.reason === "recoveryPending") {
+      showKeptCopy(props.threadRef, state, props.relativePath);
+      return showPane();
+    }
     toastManager.add(
       stackedThreadToast({
         type: "error",
