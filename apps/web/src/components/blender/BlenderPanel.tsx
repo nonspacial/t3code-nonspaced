@@ -28,6 +28,7 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { blendFileName, quitFileOf } from "@t3tools/client-runtime/state/hosted-blender";
 import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { CameraIcon, MoreVertical } from "lucide-react";
@@ -100,7 +101,13 @@ import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { HiddenThreadContext } from "../chat/backgroundThread";
 
 import { useBlenderAnnotation } from "./BlenderAnnotationEditor";
-import { BlenderRoleSwitch, DesktopUncheckedNotice, MasterCard } from "./BlenderMaster";
+import {
+  BlenderRoleSwitch,
+  DesktopUncheckedNotice,
+  MasterCard,
+  ReloadBlockedNotice,
+  ReloadedNotice,
+} from "./BlenderMaster";
 import { useBlenderRoleStore } from "./blenderRole";
 import {
   attachBlenderInput,
@@ -625,6 +632,7 @@ function RunningBlender(
     readonly notice?: ReactNode;
   },
 ) {
+  const gt = useGT();
   const master = props.master === true;
   const [stats, setStats] = useState<StreamStats>({ frameSize: null, rate: null, server: null });
   const [control, setControl] = useState<HostedBlenderControl>(VIEW_ONLY);
@@ -638,6 +646,9 @@ function RunningBlender(
     onClose: () => streamRef.current?.focus(),
   });
   const live = props.state.status === "running" && props.visible && stats.frameSize !== null;
+  // Hidden until the next reload keeps a copy; the copy itself stays as any kept copy does.
+  const [dismissedReload, setDismissedReload] = useState<number | null>(null);
+  const reloadKept = props.state.reloadKept;
   return (
     <div className="flex h-full min-h-0 flex-col">
       <BlenderToolbar
@@ -650,6 +661,20 @@ function RunningBlender(
         master={master}
       />
       {props.notice}
+      {props.state.reloadBlocked === undefined ? null : (
+        <ReloadBlockedNotice
+          name={blendFileName(quitFileOf(props.state), gt("Untitled scene"))}
+          blocker={props.state.reloadBlocked}
+        />
+      )}
+      {reloadKept !== undefined && reloadKept.at !== dismissedReload ? (
+        <ReloadedNotice
+          threadRef={props.threadRef}
+          copyKey={reloadKept.key}
+          master={master}
+          onDismiss={() => setDismissedReload(reloadKept.at)}
+        />
+      ) : null}
       {props.state.status === "starting" ? (
         <StateCard
           title={<T>Starting Blender…</T>}
@@ -712,7 +737,8 @@ function BlenderToolbar(props: {
     "auto",
     ScrollingSetting,
   );
-  const name = fileName(props.state.relativePath);
+  // The file Blender has open, which File > Open can have changed since it started.
+  const name = blendFileName(quitFileOf(props.state), gt("Untitled scene"));
   const { canOperate, controller } = props.control;
   const quit = useQuitHostedBlender(
     props.threadRef,
@@ -960,17 +986,21 @@ function BlenderStream(props: {
       onStats((current) => ({ ...current, frameSize }));
       reportFrameSize(frameSize);
     });
-    const client = createHostedBlenderStreamClient({ access, threadId, master }, sink, {
-      onStatus: setStatus,
-      onStats: (server) => onStats((current) => ({ ...current, server })),
-      onFrameRate: (rate) => onStats((current) => ({ ...current, rate })),
-      onUnauthorized: () => refreshHostedBlenderStreamAccess(environmentId),
-      onControl: changeControl,
-      onCursor: (captured) => {
-        capturedRef.current = captured;
-        inputRef.current?.setCaptured(captured);
+    const client = createHostedBlenderStreamClient(
+      { access, threadId, master, visible: onScreen() },
+      sink,
+      {
+        onStatus: setStatus,
+        onStats: (server) => onStats((current) => ({ ...current, server })),
+        onFrameRate: (rate) => onStats((current) => ({ ...current, rate })),
+        onUnauthorized: () => refreshHostedBlenderStreamAccess(environmentId),
+        onControl: changeControl,
+        onCursor: (captured) => {
+          capturedRef.current = captured;
+          inputRef.current?.setCaptured(captured);
+        },
       },
-    });
+    );
     clientRef.current = client;
     handleRef.current = {
       takeControl: (takeOver) => {

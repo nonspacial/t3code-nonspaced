@@ -205,13 +205,42 @@ it("tells the server when the pane leaves the screen and comes back, across reco
     JSON.stringify({ type: "visibility", visible: true }),
   ]);
 
-  // A pane hidden while reconnecting says so as soon as the new connection opens.
+  // A pane hidden while reconnecting says so as it connects, before the server attaches it, so
+  // nothing starts capturing or reloading for it; it says nothing more once open.
   client.setVisible(false);
   first.closeWith(1012);
   vi.runAllTimers();
   const second = FakeSocket.instances[1]!;
+  expect(second.url).toBe("wss://t3/blender/ws?threadId=thread-1&hidden=1");
   second.open();
-  expect(second.sent).toEqual([JSON.stringify({ type: "visibility", visible: false })]);
+  expect(second.sent).toEqual([]);
+  // Shown again before the next connection opens, it says so once open.
+  second.closeWith(1012);
+  vi.runAllTimers();
+  const third = FakeSocket.instances[2]!;
+  client.setVisible(true);
+  third.open();
+  expect(third.sent).toEqual([JSON.stringify({ type: "visibility", visible: true })]);
+  client.stop();
+});
+it("S5: a pane mounted off screen connects hidden, so the server never attaches it as visible", () => {
+  FakeSocket.instances = [];
+  vi.stubGlobal("WebSocket", FakeSocket);
+  vi.stubGlobal("EncodedVideoChunk", vi.fn());
+  vi.stubGlobal("VideoDecoder", vi.fn());
+  const client = createHostedBlenderStreamClient(
+    {
+      access: { httpBase: "https://t3", wsBase: "wss://t3/blender", credentials: false, query: {} },
+      threadId: "thread-1",
+      visible: false,
+    },
+    { present: vi.fn(() => true) },
+    { onStatus: vi.fn(), onStats: vi.fn(), onFrameRate: vi.fn(), onUnauthorized: vi.fn() },
+  );
+  const first = FakeSocket.instances[0]!;
+  expect(first.url).toBe("wss://t3/blender/ws?threadId=thread-1&hidden=1");
+  first.open();
+  expect(first.sent).toEqual([]);
   client.stop();
 });
 

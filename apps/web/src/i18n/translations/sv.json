@@ -13440,5 +13440,57 @@
   "ec2bc06507d0d9af": "värdbaserad blender avsluta minne 3d tråd",
   "37d76dab21a26b2a": "blender hosted konfiguration installera kontrollera labwc gstreamer kodare gpu dold skärm linux agent kommandon",
   "f74fb1f1e951cb67": "blender hosted agenter mcp starta tillåt",
-  "3cf7f8ed35b33c5f": "blender lab mcp server sökväg program installera uv pipx"
+  "3cf7f8ed35b33c5f": "blender lab mcp server sökväg program installera uv pipx",
+  "b75a2837e20ac029": "Det gick inte att återställa ändringarna",
+  "656229dd34610e6d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ändrades på disken, så Blender läste in den igen. Dess osparade ändringar finns kvar som en återställningskopia."
+  ],
+  "a1d7b8f8a44e27aa": "Återställ ändringar",
+  "acd0c171046c17bf": "Ersätta de osparade ändringarna i {name}?",
+  "cb7a692d62db22e7": "Blender har ändringar sedan filen lästes in igen. Återställning tar tillbaka de sparade ändringarna och behåller de här som återställningskopia i stället, så att du kan återställa dem igen.",
+  "449feb1ad3d6c425": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ändrades på disken. Blender läser in den när agentens pågående arbete i den är klart."
+  ],
+  "06be14c04a81e489": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ändrades på disken. Blender läser in den när de osparade bildändringarna har sparats eller förkastats, eftersom en återställningskopia inte kan behålla dem."
+  ],
+  "3a3de5a1dfe252e8": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ändrades på disken. Blender läser in den när de osparade ändringarna i resurskatalogerna har sparats eller förkastats, eftersom en återställningskopia inte kan behålla dem."
+  ],
+  "f813d3c90e608095": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ändrades på disken, men Blender kunde inte behålla de osparade ändringarna först och har därför inte läst in den nya versionen."
+  ],
+  "07634e6515f13cbe": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ändrades på disken, men Blender kunde inte läsa in den nya versionen. Det försöker igen när filen ändras."
+  ]
 }

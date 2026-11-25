@@ -7,7 +7,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, expect, it } from "@effect/vitest";
 import {
   HostedBlenderError,
+  type HostedBlenderKeptCopy,
   type HostedBlenderOpenInput,
+  type HostedBlenderReopenInput,
   type HostedBlenderThreadState,
   ThreadId,
 } from "@t3tools/contracts";
@@ -48,6 +50,9 @@ const layerFor = (input: {
   readonly openError?: HostedBlenderError;
   /** The masters `blender_start` made known to the thread. */
   readonly known?: Array<HostedBlenderOpenInput>;
+  /** The copies the thread keeps, and the reopens `blender_start` asked for. */
+  readonly kept?: ReadonlyArray<HostedBlenderKeptCopy>;
+  readonly reopened?: Array<HostedBlenderReopenInput>;
 }) =>
   Layer.mergeAll(
     Layer.mock(HostedBlender.HostedBlender)({
@@ -58,7 +63,8 @@ const layerFor = (input: {
             })
           : Effect.fail(input.openError),
       threadState: () => Stream.succeed(input.state ?? { status: "stopped" }),
-      keptCopies: () => Effect.succeed([]),
+      keptCopies: () => Effect.succeed(input.kept ?? []),
+      reopen: (reopen) => Effect.sync(() => void input.reopened?.push(reopen)),
       knowMaster: (master) => Effect.sync(() => void input.known?.push(master)),
       agentListener: () =>
         Effect.succeed({
@@ -83,6 +89,44 @@ const writeMaster = (root: string, relative: string, body = "master") => {
 };
 
 describe("startAgentWorkingCopy", () => {
+  it.effect(
+    "B13: opens the file as on disk past a copy a reload kept, leaving the copy for the person",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* tempWorkspace;
+        writeMaster(root, "hero.blend");
+        writeMaster(root, "hero.wip-3c4d5e6f.blend", "agent edits");
+        const relativePath = "hero.wip-3c4d5e6f.blend";
+        const copy = (reloaded: boolean): HostedBlenderKeptCopy => ({
+          key: `workspace:${relativePath}`,
+          kind: "closed",
+          file: { kind: "workspace", relativePath },
+          recovery: true,
+          ...(reloaded ? { reloaded: true } : {}),
+        });
+        const start = (reloaded: boolean) =>
+          Effect.gen(function* () {
+            const reopened: Array<HostedBlenderReopenInput> = [];
+            const result = yield* startAgentWorkingCopy({ threadId, path: "hero.blend" }).pipe(
+              Effect.provide(layerFor({ root, opened: [], kept: [copy(reloaded)], reopened })),
+            );
+            return { reopened, result };
+          });
+        // The work a reload kept is older than the file on disk, so the agent gets the file.
+        const afterReload = yield* start(true);
+        assert.deepEqual(afterReload.reopened, [
+          { threadId, key: `workspace:${relativePath}`, restore: false },
+        ]);
+        assert.notProperty(afterReload.result, "restoredUnsavedChanges");
+        // Its own quit without saving keeps work only it can get back, which it gets.
+        const afterQuit = yield* start(false);
+        assert.deepEqual(afterQuit.reopened, [
+          { threadId, key: `workspace:${relativePath}`, restore: true },
+        ]);
+        assert.propertyVal(afterQuit.result, "restoredUnsavedChanges", true);
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("copies the master beside itself and opens the copy in the thread's Blender", () =>
     Effect.gen(function* () {
       const root = yield* tempWorkspace;

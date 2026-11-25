@@ -41,6 +41,30 @@ session, and a master's only through relays, one per agent thread and session, o
 current session and closed when that session's access ends. With no agent thread, nothing listens
 for a master's agents.
 
+## A change on disk Blender didn't make
+
+The add-on, not the server, decides whether the open file changed. T3's watcher only says the
+file, by its real path, settled at a revision (as previews read one, never the bytes); the add-on
+compares that with the revision it recorded itself, before reading the file (`load_pre`) and after
+its own save (`save_post`), and checks the disk again right before it loads. It answers on
+Blender's main thread, so a save in progress has finished and recorded its revision first; a
+timing guess either reloads over live work or misses a change. A copy restored over the same file
+keeps that baseline, since the file wasn't read again, and a file deleted since it was read is a
+conflict for saves T3 starts, which refuse rather than write an older state over the file.
+
+Reloads run only while a pane is on screen (the server takes a held one back once none is, and
+a pane attaching in a background tab says so before capture starts) or right before an agent's
+call. A stale scene that can't reload yet answers the agent's call with why, and runs nothing.
+A reload keeps the session's windows (`load_ui=False`), so the viewport window and its view stay.
+
+Unsaved work goes first to Blender's own autosave, which carries the file's path so restoring it
+saves to the file. Blenders before 5.2 have no operator for that: their copy is saved as-is and
+the path set in its FileGlobal, found through the file's own SDNA. Either is staged in the
+launch's TMPDIR beside a note naming its file, before the load, so a server that dies first
+leaves it for salvage; the server writes its record, moves it, then drops the note, and offers
+it only once all three are done. A save retires a copy only once the scene holds its work: one
+a reload or a restore displaced never did, until it is restored and not reloaded since.
+
 ## The stream's window and acks change together
 
 The server keeps a few frames per viewer unacked and sends nothing after a keyframe until that

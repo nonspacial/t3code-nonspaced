@@ -587,6 +587,8 @@ const layerHostedBlender = HostedBlender.layer.pipe(
   Layer.provideMerge(layerHostedBlenderSetup),
   // Read when a master opens and asked to save and quit by Move into T3; never otherwise.
   Layer.provide(DesktopBlender.layer),
+  // The open file's folder, so a change on disk the Blender didn't make reloads it.
+  Layer.provide(BlendFileWatcher.layer),
   Layer.provide(WorkspacePaths.layer),
   Layer.provide(NetService.layer),
 );
