@@ -27,6 +27,15 @@ its agents reach Blender Lab only through relays, one per agent thread and sessi
 current session and closed when that session's access ends. With no agent thread, nothing listens
 for them.
 
+## The stream's window and acks change together
+
+The server keeps a few frames per viewer unacked and sends nothing after a keyframe until that
+keyframe is acked ([`ViewerFlow.ts`](../../apps/server/src/hostedBlender/ViewerFlow.ts)); the
+client, web and mobile alike, acks every frame it receives once its decoder can take more
+([`stream.ts`](../../packages/client-runtime/src/hostedBlender/stream.ts)). Change one only with
+the other: an ack the client folds into another takes a slot out of the window for good, and a
+delta it drops smears the picture until the next keyframe, which the encoders send only on request.
+
 ## Agents use only the official Blender Lab MCP
 
 Agents reach a hosted Blender only through Blender Lab's own `blender-mcp`, added per session as

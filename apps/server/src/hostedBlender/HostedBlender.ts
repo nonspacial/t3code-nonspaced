@@ -2713,8 +2713,8 @@ const make = Effect.gen(function* () {
   // Acks arrive for every frame; they share the viewer's stream span.
   const ackFrame = Effect.fnUntraced(function* (instance: Instance, entry: ViewerEntry) {
     const now = yield* Clock.currentTimeMillis;
-    const { next, latencyMs, requestKeyframe: wantsKeyframe } = entry.flow.ack(now);
-    if (next) yield* Queue.offer(entry.queue, { _tag: "frame", data: next.data });
+    const { send, latencyMs, requestKeyframe: wantsKeyframe } = entry.flow.ack(now);
+    for (const frame of send) yield* Queue.offer(entry.queue, { _tag: "frame", data: frame.data });
     if (wantsKeyframe) yield* requestKeyframe(instance);
     if (latencyMs === null || leadViewer(instance) !== entry) return;
     if (instance.bitrateLead !== entry.id) {
@@ -2736,7 +2736,7 @@ const make = Effect.gen(function* () {
     const entry: ViewerEntry = {
       id: `viewer-${nextViewerId++}`,
       canOperate,
-      // ViewerFlow keeps at most one frame queued; the rest are small, infrequent messages.
+      // ViewerFlow bounds the frames queued here; the rest are small, infrequent messages.
       queue: yield* Queue.unbounded<HostedBlenderViewerOutput>(),
       flow: new ViewerFlow(),
       size: null,
