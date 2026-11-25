@@ -385,6 +385,19 @@ def control():
             if revision() != disk[0]:
                 reload_now()
         threading.Thread(target=agent_call, daemon=True).start()
+        def ctrl_s():
+            # "ctrl-s": the person edits, then saves with Ctrl+S in the pane.
+            trigger = os.path.join(os.path.dirname(os.environ["STANDIN_SAVES"]), "ctrl-s")
+            while True:
+                time.sleep(0.05)
+                if not os.path.exists(trigger):
+                    continue
+                os.remove(trigger)
+                send(connection, {"type": "state", "filepath": opened, "dirty": True})
+                disk[0] = revision()
+                send(connection, {"type": "saved", "filepath": opened, "dirty": False, "quit": False})
+                send(connection, {"type": "state", "filepath": opened, "dirty": False})
+        threading.Thread(target=ctrl_s, daemon=True).start()
     for line in connection.makefile():
         command = json.loads(line)
         if command.get("type") == "panesHidden" and scenario == "reloads":
@@ -406,14 +419,23 @@ def control():
                                   "dirty": state.get("dirty", True), "stale": True})
             continue
         if command.get("type") == "restore":
-            # Puts the copy back, unsaved, as recover_auto_save does.
-            result = {"outcome": "restored" if os.path.exists(command["path"]) else "failed"}
+            # Puts the copy back, unsaved, as recover_auto_save does: a load, taking its time.
+            time.sleep(0.3)
+            loaded = time.time() * 1000
+            result = {"outcome": "restored" if os.path.exists(command["path"]) else "failed",
+                      "loadedAt": loaded}
             connection.sendall((json.dumps({"type": "reply", "id": command["id"], "result": result}) + "\n").encode())
-            send(connection, {"type": "state", "filepath": opened, "dirty": True})
+            send(connection, {"type": "state", "filepath": opened, "dirty": True, "loadedAt": loaded})
             continue
         if command.get("type") == "quit" and command.get("save") and scenario == "reloads" and revision() != disk[0]:
             send(connection, {"type": "quitFailed", "reason": "changedOnDisk"})
             continue
+        if command.get("type") == "quit" and command.get("save") and scenario == "reloads":
+            send(connection, {"type": "saving"})
+            send(connection, {"type": "saved", "filepath": opened, "dirty": False})
+            event({"type": "exited", "process": "blender", "code": 0, "signal": None})
+            connection.close()
+            return
         if command.get("type") == "quit" and not command.get("save"):
             if scenario == "ignores-quit":
                 continue
@@ -3104,6 +3126,107 @@ describe("B13: a file changed on disk", () => {
       yield* disk.awaitAsked(3);
       yield* viewer.setVisible(true);
       yield* disk.awaitReloads(1);
+    }).pipe(Effect.scoped),
+  );
+
+  /** Running, the pane on screen, after one reload that kept the unsaved work as the copy. */
+  const reloadedWithCopy = (prefix: string) =>
+    Effect.gen(function* () {
+      const host = yield* standIn(prefix, "reloads");
+      const disk = diskOf(host.dir);
+      yield* host.openReady;
+      yield* disk.awaitAsked(1);
+      yield* attach(host.service, false);
+      disk.change("changed once");
+      yield* reloadKept(host.service.threadState(threadId));
+      return host;
+    });
+  const saveInPane = (host: Effect.Success<ReturnType<typeof standIn>>) =>
+    Effect.gen(function* () {
+      NodeFS.writeFileSync(NodePath.join(host.dir, "ctrl-s"), "");
+      yield* host.awaitDirty(true);
+      yield* host.awaitDirty(false);
+    });
+
+  it.live("S12: a save after a reload keeps the copy it displaced, and the pane's offer", () =>
+    Effect.gen(function* () {
+      const host = yield* reloadedWithCopy("disk-save-keeps");
+      yield* saveInPane(host);
+      expect(recoveryOf(host.hostedDir)?.contents).toBe("unsaved 1");
+      expect(yield* firstState(host.service)).toMatchObject({ reloadKept: { key: CUBE } });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("S12: a save after Restore changes retires the copy, whose work it now holds", () =>
+    Effect.gen(function* () {
+      const host = yield* reloadedWithCopy("disk-save-retires");
+      yield* host.service.reopen({ threadId, key: CUBE, restore: true });
+      yield* saveInPane(host);
+      expect(recoveryOf(host.hostedDir)).toBeNull();
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "S12: Save and quit after a reload leaves the copy waiting, offered by the next Blender on the file",
+    () =>
+      Effect.gen(function* () {
+        const host = yield* reloadedWithCopy("disk-quit-keeps");
+        yield* host.service.quit({ threadId, save: true });
+        expect(yield* host.awaitStatus("closed")).toMatchObject({ recovery: true });
+        // Opened as on disk past it, as the agent's blender_start does: offered while it runs.
+        yield* host.service.reopen({ threadId, key: CUBE, restore: false });
+        yield* host.awaitStatus("running");
+        expect(yield* firstState(host.service)).toMatchObject({ reloadKept: { key: CUBE } });
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "S2: a copy whose record couldn't be written stays staged, unoffered, for the run's end to keep",
+    () =>
+      Effect.gen(function* () {
+        const { dir, service, openReady, hostedDir, awaitStatus } = yield* standIn(
+          "disk-record-fails",
+          "reloads",
+        );
+        const disk = diskOf(dir);
+        yield* openReady;
+        yield* disk.awaitAsked(1);
+        // The record can't be written: a folder stands where it goes.
+        const copyDir = NodePath.join(
+          hostedDir,
+          "recovery",
+          Buffer.from(threadId).toString("base64url"),
+          NodeCrypto.createHash("sha256").update(CUBE).digest("hex"),
+        );
+        NodeFS.mkdirSync(NodePath.join(copyDir, "record.json", "in-the-way"), { recursive: true });
+        yield* attach(service, false);
+        disk.change("changed once");
+        yield* disk.awaitReloads(1);
+        yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status === "running" && !state.dirty),
+          Stream.runHead,
+        );
+        expect(yield* firstState(service)).not.toHaveProperty("reloadKept");
+        NodeFS.rmSync(NodePath.join(copyDir, "record.json"), { recursive: true });
+        yield* service.closeOnSettle({ threadId });
+        yield* awaitStatus("closed");
+        expect(recoveryOf(hostedDir)).toMatchObject({
+          record: { recovery: true, reloaded: true },
+          contents: "unsaved 1",
+        });
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("S11: refuses a second restore while one is under way on the same Blender", () =>
+    Effect.gen(function* () {
+      const host = yield* reloadedWithCopy("disk-two-restores");
+      const restore = host.service.reopen({ threadId, key: CUBE, restore: true }).pipe(
+        Effect.flip,
+        Effect.map((error) => error.reason),
+        Effect.orElseSucceed(() => "ok"),
+      );
+      const outcomes = yield* Effect.all([restore, restore], { concurrency: "unbounded" });
+      expect(outcomes.toSorted()).toEqual(["ok", "restoreFailed"]);
     }).pipe(Effect.scoped),
   );
 
@@ -6356,8 +6479,26 @@ describe("Master Blenders' endings", () => {
             workspaceRoot: NodeFS.realpathSync(dir),
           }),
         );
-        // Staged before a reload of other.blend, which T3 died before moving.
+        // Staged before a reload of other.blend; T3 wrote its record, then died before moving it.
         NodeFS.writeFileSync(NodePath.join(launchDir, "tmp", "t3-reload-1.blend"), "staged work");
+        const copyDir = NodePath.join(
+          hostedDir,
+          "recovery",
+          Buffer.from(threadId).toString("base64url"),
+          NodeCrypto.createHash("sha256").update(OTHER).digest("hex"),
+        );
+        NodeFS.mkdirSync(copyDir, { recursive: true });
+        NodeFS.writeFileSync(
+          NodePath.join(copyDir, "record.json"),
+          JSON.stringify({
+            threadId,
+            file: { kind: "workspace", relativePath: "other.blend" },
+            kind: "closed",
+            recovery: true,
+            keptAt: 1,
+            reloaded: true,
+          }),
+        );
         NodeFS.writeFileSync(
           NodePath.join(launchDir, "tmp", "t3-reload-1.json"),
           JSON.stringify({ filepath: NodePath.join(NodeFS.realpathSync(dir), "other.blend") }),

@@ -181,6 +181,8 @@ export function createHostedBlenderStreamClient(
     readonly threadId: string;
     /** The thread's master Blender instead of its working Blender. */
     readonly master?: boolean;
+    /** Whether its pane is on screen as it mounts; the first connection says so. */
+    readonly visible?: boolean;
   },
   sink: DeviceFrameSink,
   events: HostedBlenderStreamEvents,
@@ -203,7 +205,7 @@ export function createHostedBlenderStreamClient(
   let decoderSps: Uint8Array | null = null;
   let configuring = false;
   let size: { readonly width: number; readonly height: number } | null = null;
-  let visible = true;
+  let visible = target.visible ?? true;
   let live = false;
   // Whether the server last said this viewer controls Blender, on the current socket.
   let controlling = false;

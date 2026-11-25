@@ -177,6 +177,8 @@ const ControlMessage = Schema.Union([
   }),
   /** Blender reloaded the file from disk; `kept` when its unsaved changes went to a copy first. */
   Schema.Struct({ type: Schema.Literal("reloaded"), kept: Schema.Boolean }),
+  /** The agent called while the file on disk wasn't what Blender read: T3 looks now. */
+  Schema.Struct({ type: Schema.Literal("checkDisk") }),
   /** The file and its unsaved bit as Blender began to quit without saving: the run's last word. */
   Schema.Struct({
     type: Schema.Literal("quitting"),
@@ -381,6 +383,8 @@ const RestoreAnswer = Schema.Struct({
   outcome: Schema.Literals(["restored", "otherFile", "unsaved", "unkeepable", "failed"]),
   copy: Schema.optional(Schema.NullOr(Schema.String)),
   filepath: Schema.optional(Schema.String),
+  /** When the restore loaded, which marks the scene as holding the restored copy's work. */
+  loadedAt: Schema.optional(Schema.Number),
 });
 /** What the add-on renders; the server reads the PNG it wrote. */
 const AddonViewCapture = Schema.Struct({
@@ -669,6 +673,10 @@ interface Instance {
   diskCheckWaiting: boolean;
   /** The key of the copy the last `reloading` kept, which its `reloaded` offers. */
   keptReload: string | null;
+  /** The copy (by when it was kept) whose work the scene holds, since the load that restored it. */
+  contained: { readonly keptAt: number | undefined; readonly loadedAt: number | undefined } | null;
+  /** A restore in place is under way; another waits for none. */
+  restoring: boolean;
   /** The workspace's real path, which the open file is named under. */
   readonly workspaceRoot: string;
   mcpVersion: string | null;
@@ -949,15 +957,35 @@ const make = Effect.gen(function* () {
     yield* fileSystem.rename(partial, target);
   });
 
-  const writeRecord = Effect.fnUntraced(function* (record: RecoveryRecord) {
-    const key = fileKeyOf(record.file);
-    yield* writeAtomically(path.join(copyDir(record.threadId, key), "record.json"), (to) =>
-      fileSystem.writeFileString(to, encodeRecoveryRecord(record)),
+  const writeRecordFile = (record: RecoveryRecord) =>
+    writeAtomically(
+      path.join(copyDir(record.threadId, fileKeyOf(record.file)), "record.json"),
+      (to) => fileSystem.writeFileString(to, encodeRecoveryRecord(record)),
     );
+  const rememberRecord = (record: RecoveryRecord) => {
     const kept = records.get(record.threadId) ?? new Map<string, RecoveryRecord>();
-    kept.set(key, record);
+    kept.set(fileKeyOf(record.file), record);
     records.set(record.threadId, kept);
+  };
+  const writeRecord = Effect.fnUntraced(function* (record: RecoveryRecord) {
+    yield* writeRecordFile(record);
+    rememberRecord(record);
   });
+
+  /**
+   * A save retires the file's copy only once the scene holds that copy's work. A copy a reload
+   * or a restore displaced never was in it, until it is restored and not reloaded since.
+   */
+  const saveRetiresCopy = (instance: Instance) => {
+    const record = records.get(ownerOf(instance))?.get(fileKeyOf(instance.endFile.file));
+    if (record?.reloaded !== true) return true;
+    const contained = instance.contained;
+    return (
+      contained !== null &&
+      contained.keptAt === record.keptAt &&
+      contained.loadedAt === instance.loadedAt
+    );
+  };
 
   /**
    * Keeps the snapshot Blender left in `tmpDir` of the file it ended on as that file's copy,
@@ -1043,7 +1071,7 @@ const make = Effect.gen(function* () {
             encodeRunFacts({
               restore: instance.restore,
               endFile: instance.endFile,
-              saved: instance.saved,
+              saved: instance.saved && saveRetiresCopy(instance),
               clean: instance.clean,
             }),
           ),
@@ -1773,7 +1801,18 @@ const make = Effect.gen(function* () {
     if (Option.isNone(info) || info.value.type !== "File") return null;
     const file = yield* keptFileFor(input.role, input.workspaceRoot, input.filepath);
     const key = fileKeyOf(file);
+    const record: RecoveryRecord = {
+      threadId: input.owner,
+      file,
+      kind: "closed",
+      recovery: true,
+      keptAt: yield* Clock.currentTimeMillis,
+      reloaded: true,
+    };
+    // Record, move, then note, so a crash at any step leaves salvage what it needs to finish;
+    // the copy is offered only once both are in place.
     yield* fileSystem.makeDirectory(copyDir(input.owner, key), { recursive: true });
+    yield* writeRecordFile(record);
     // On the same disk a rename, which costs nothing however large the file is.
     yield* fileSystem
       .rename(from, sessionPath(input.owner, key))
@@ -1783,14 +1822,7 @@ const make = Effect.gen(function* () {
         ),
       );
     failedRestores.delete(copyId(input.owner, key));
-    yield* writeRecord({
-      threadId: input.owner,
-      file,
-      kind: "closed",
-      recovery: true,
-      keptAt: yield* Clock.currentTimeMillis,
-      reloaded: true,
-    });
+    rememberRecord(record);
     yield* fileSystem.remove(from.replace(/\.blend$/, ".json"), { force: true });
     return key;
   });
@@ -1858,6 +1890,10 @@ const make = Effect.gen(function* () {
               (yield* fileSystem.realPath(target).pipe(Effect.orElseSucceed(() => ""))) ===
                 instance.blendPath);
           yield* updateRestore(instance, message.value.restore === "ok" && saves ? "ok" : "failed");
+          if (instance.restore === "ok") {
+            const restored = records.get(ownerOf(instance))?.get(fileKeyOf(instance.endFile.file));
+            instance.contained = { keptAt: restored?.keptAt, loadedAt: message.value.loadedAt };
+          }
         }
         const openBefore = instance.openFile;
         // Its quit pushes an undo step for the quit copy, so a report after "quitting" is always
@@ -1928,7 +1964,10 @@ const make = Effect.gen(function* () {
           });
           // A restore that never succeeded had the saved file open, never the copy's work.
           if (instance.restore === "pending" || instance.restore === "failed") return;
-          if (yield* forgetCopy(ownerOf(instance), fileKeyOf(instance.endFile.file))) {
+          if (
+            saveRetiresCopy(instance) &&
+            (yield* forgetCopy(ownerOf(instance), fileKeyOf(instance.endFile.file)))
+          ) {
             yield* publishNow();
           }
           return;
@@ -1943,6 +1982,8 @@ const make = Effect.gen(function* () {
         yield* revokeAgentListener(instance);
         if (instance.saveReplies) yield* Queue.offer(instance.saveReplies, "saved");
         return;
+      case "checkDisk":
+        return yield* checkDisk(instance);
       case "reloading":
         instance.keptReload = yield* keepReloadCopy(
           instance,
@@ -2237,7 +2278,7 @@ const make = Effect.gen(function* () {
             },
             cleanupOf({
               restore: instance.restore,
-              saved: instance.saved,
+              saved: instance.saved && saveRetiresCopy(instance),
               clean: instance.clean,
               ending: endingOf({
                 wasRunning: instance.status === "running",
@@ -2637,6 +2678,8 @@ const make = Effect.gen(function* () {
       staleBlocked: null,
       diskCheckWaiting: false,
       keptReload: null,
+      contained: null,
+      restoring: false,
       workspaceRoot: input.workspaceRoot,
       mcpVersion: null,
       agentActing: false,
@@ -2648,6 +2691,12 @@ const make = Effect.gen(function* () {
       bitrate: new BitrateControl(),
       bitrateLead: null,
     };
+    // A copy a reload kept waits for the person, offered while this Blender runs the file as on
+    // disk.
+    const waiting = records.get(ownerOf(instance))?.get(fileKeyOf(launchFile));
+    if (input.recover === null && waiting?.reloaded === true && waiting.recovery) {
+      instance.reloadKept = { key: fileKeyOf(launchFile), at: waiting.keptAt };
+    }
     instances.set(instance.key, instance);
     yield* publishNow();
     // Started now, so a quit straight after still runs its cleanup; a fiber interrupted before
@@ -2786,21 +2835,35 @@ const make = Effect.gen(function* () {
   ) {
     const owner = ownerOf(instance);
     const filepath = instance.openFile;
+    const record = records.get(owner)?.get(key);
     if (
       !restore ||
       typeof filepath !== "string" ||
       key !== fileKeyOf(instance.endFile.file) ||
-      records.get(owner)?.get(key)?.recovery !== true
+      record?.recovery !== true
     ) {
       return;
     }
+    // Two panes of a shared master confirming at once: the second would stage the first's
+    // restored work over what the first displaced.
+    if (instance.restoring) return yield* new HostedBlenderError({ reason: "restoreFailed" });
+    instance.restoring = true;
     const answer = yield* ask(
       instance,
       { type: "restore", path: sessionPath(owner, key), filepath, replace: replaceUnsaved },
       RestoreAnswer,
       // A large file takes as long as it takes; the caller bounds the wait.
       { untimed: true },
+    ).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          instance.restoring = false;
+        }),
+      ),
     );
+    if (answer.outcome === "restored") {
+      instance.contained = { keptAt: record.keptAt, loadedAt: answer.loadedAt };
+    }
     switch (answer.outcome) {
       case "otherFile":
         return yield* new HostedBlenderError({ reason: "openFileChanged" });

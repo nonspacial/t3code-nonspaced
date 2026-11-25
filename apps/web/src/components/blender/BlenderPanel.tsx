@@ -975,17 +975,21 @@ function BlenderStream(props: {
       onStats((current) => ({ ...current, frameSize }));
       reportFrameSize(frameSize);
     });
-    const client = createHostedBlenderStreamClient({ access, threadId, master }, sink, {
-      onStatus: setStatus,
-      onStats: (server) => onStats((current) => ({ ...current, server })),
-      onFrameRate: (rate) => onStats((current) => ({ ...current, rate })),
-      onUnauthorized: () => refreshHostedBlenderStreamAccess(environmentId),
-      onControl: changeControl,
-      onCursor: (captured) => {
-        capturedRef.current = captured;
-        inputRef.current?.setCaptured(captured);
+    const client = createHostedBlenderStreamClient(
+      { access, threadId, master, visible: onScreen() },
+      sink,
+      {
+        onStatus: setStatus,
+        onStats: (server) => onStats((current) => ({ ...current, server })),
+        onFrameRate: (rate) => onStats((current) => ({ ...current, rate })),
+        onUnauthorized: () => refreshHostedBlenderStreamAccess(environmentId),
+        onControl: changeControl,
+        onCursor: (captured) => {
+          capturedRef.current = captured;
+          inputRef.current?.setCaptured(captured);
+        },
       },
-    });
+    );
     clientRef.current = client;
     handleRef.current = {
       takeControl: (takeOver) => {

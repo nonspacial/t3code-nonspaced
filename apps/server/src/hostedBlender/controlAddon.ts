@@ -69,9 +69,8 @@ class _State:
     replace_loaded = True
     # Quit requests T3 gave up on; one still waiting here is never carried out.
     cancelled_quits = set()
-    # Asset libraries seen with unsaved catalogs, until a save, or an asset browser on that
-    # library, available and editable, says it has none.
-    catalogs_unsaved = set()
+    # Seen with unsaved asset catalogs, until a save or a browser that can answer says otherwise.
+    catalogs_unsaved = False
     # Save and quit is saving: its own result answers T3, not save_post's.
     quit_saving = False
     # The open file as Blender last read or saved it; anything else on disk is a change Blender
@@ -471,23 +470,14 @@ def _handle(command):
             bpy.ops.wm.quit_blender()
 
 
-# Libraries whose catalogs can't be edited, so an asset browser on one can't tell.
-READ_ONLY_LIBRARIES = {"ALL", "ESSENTIALS"}
-
-
 def _catalog_state():
     # Blender's own quit check also covers asset catalogs, which Python can read only through
-    # catalogs_save's poll, in an asset browser on an editable library. True or False from those
-    # that can be asked; "unknown" when browsers exist but none can be; "none" without any.
-    readings, unknown = _catalog_readings()
-    if readings:
-        return any(unsaved for _library, unsaved in readings)
-    return "unknown" if unknown else "none"
-
-
-def _catalog_readings():
-    readings = []
+    # catalogs_save's poll, in an asset browser. It answers for every loaded library at once, and
+    # means something only where catalog_new's poll holds too: a browser whose library is loaded
+    # and editable. True or False from those; "unknown" when browsers exist but none can answer;
+    # "none" without any.
     unknown = False
+    answers = []
     for screen in bpy.data.screens:
         for area in screen.areas:
             for space in area.spaces:
@@ -497,38 +487,29 @@ def _catalog_readings():
                     (window for window in bpy.context.window_manager.windows if window.screen == screen),
                     None,
                 )
-                params = getattr(space, "params", None)
-                library = getattr(params, "asset_library_reference", None)
-                if window is None or space != area.spaces.active or library in READ_ONLY_LIBRARIES or library is None:
+                if window is None or space != area.spaces.active:
                     unknown = True
                     continue
                 with bpy.context.temp_override(window=window, area=area, space_data=space):
-                    readings.append((library, bool(bpy.ops.asset.catalogs_save.poll())))
-    return readings, unknown
-
-
-def _library_answers(library):
-    # Only the current file's library, or a configured one whose folder is there, polls False
-    # because it has nothing unsaved; an unavailable one polls False whatever was edited.
-    if library == "LOCAL":
-        return True
-    libraries = getattr(bpy.context.preferences.filepaths, "asset_libraries", [])
-    return any(entry.name == library and os.path.isdir(entry.path) for entry in libraries)
+                    if not bpy.ops.asset.catalog_new.poll():
+                        unknown = True
+                        continue
+                    answers.append(bool(bpy.ops.asset.catalogs_save.poll()))
+    if answers:
+        return any(answers)
+    return "unknown" if unknown else "none"
 
 
 def _watch_catalogs():
-    # Asked every tick, so an edit is remembered after its asset browser is gone or switched.
-    # A library's mark clears only when an answering browser on it says so (its catalogs saved
-    # or discarded), or the .blend is saved.
+    # Asked every tick, so an edit is remembered after its asset browser is gone or switched. A
+    # browser that can answer sets or clears the mark (catalogs saved or discarded); with none,
+    # it stands.
     try:
-        readings, _unknown = _catalog_readings()
+        state = _catalog_state()
     except Exception:  # noqa: BLE001 - a failed look leaves the last answer standing
         return
-    for library, unsaved in readings:
-        if unsaved:
-            _State.catalogs_unsaved.add(library)
-        elif _library_answers(library):
-            _State.catalogs_unsaved.discard(library)
+    if isinstance(state, bool):
+        _State.catalogs_unsaved = state
 
 
 def _session_is_clean():
@@ -933,13 +914,16 @@ def _record_disk(path, revision):
     _State.disk_revision = revision
 
 
+def _same_disk_file():
+    # What Blender last read or saved is of the file it has open now.
+    current = bpy.data.filepath
+    return bool(current) and _State.disk_path == os.path.realpath(current) and _State.disk_revision is not None
+
+
 def _changed_on_disk():
     # Saving would write what Blender read over whatever replaced it, or bring back a file that
     # was deleted. A file Blender never read or saved has nothing to conflict with.
-    current = bpy.data.filepath
-    if not current or _State.disk_path != os.path.realpath(current) or _State.disk_revision is None:
-        return False
-    return _revision(current) != _State.disk_revision
+    return _same_disk_file() and _revision(bpy.data.filepath) != _State.disk_revision
 
 
 def _check_disk(command):
@@ -1201,7 +1185,13 @@ def _catch_up_for_agent():
     # The agent works on the file as it is on disk. None once Blender has it; otherwise why not.
     outcome = _reload_if_stale()
     if _State.stale is None:
-        return None
+        # Written after Blender read it, before T3's word: T3 is asked to look now, so the retry
+        # doesn't wait on a watch event that may never come. A file gone has nothing to load.
+        current = _revision(bpy.data.filepath) if bpy.data.filepath else None
+        if current is None or current == _State.disk_revision or not _same_disk_file():
+            return None
+        _send({"type": "checkDisk"})
+        outcome = "changing"
     return (
         "The .blend this Blender has open changed on disk and Blender hasn't loaded it yet: "
         + STALE_REASONS.get(outcome or "changing", STALE_REASONS["changing"])
@@ -1214,9 +1204,11 @@ def _restore_copy(command):
     # over unsaved work unasked; asked, that work is kept first as the file's copy.
     if bpy.data.filepath != command.get("filepath"):
         return {"outcome": "otherFile"}
-    if any(image.is_dirty for image in bpy.data.images):
+    # Edited images and asset catalogs live outside the .blend: no copy keeps them, and the load
+    # drops them.
+    if _State.catalogs_unsaved or any(image.is_dirty for image in bpy.data.images):
         return {"outcome": "unkeepable"}
-    unsaved = bpy.data.is_dirty or _State.restored or bool(_State.catalogs_unsaved)
+    unsaved = bpy.data.is_dirty or _State.restored
     if unsaved and not command.get("replace"):
         return {"outcome": "unsaved"}
     copy = None
@@ -1236,7 +1228,7 @@ def _restore_copy(command):
             _unstage(copy)
         return {"outcome": "failed"}
     _State.restored = True
-    return {"outcome": "restored", "copy": copy, "filepath": bpy.data.filepath}
+    return {"outcome": "restored", "copy": copy, "filepath": bpy.data.filepath, "loadedAt": _State.loaded_at}
 
 
 @persistent
@@ -1244,7 +1236,7 @@ def _on_save_post(*args):
     _State.restored = False
     _check_authorized_file()
     # Saving the .blend saves its asset catalogs too.
-    _State.catalogs_unsaved = set()
+    _State.catalogs_unsaved = False
     # A save of the open file made in Blender (Ctrl+S, or code), which Blender stays open after,
     # is a confirmed save that T3 forgets the file's older copy on. A copy saved elsewhere names
     # another path than the open file's.

@@ -54,10 +54,7 @@ context = types.SimpleNamespace(
     preferences=types.SimpleNamespace(
         addons=addons,
         is_dirty=True,
-        filepaths=types.SimpleNamespace(
-            temporary_directory="",
-            asset_libraries=[types.SimpleNamespace(**library) for library in state.get("assetLibraries", [])],
-        ),
+        filepaths=types.SimpleNamespace(temporary_directory=""),
         edit=types.SimpleNamespace(
             undo_steps=state.get("undoSteps", 32), use_global_undo=state.get("globalUndo", True)
         ),
@@ -118,15 +115,21 @@ def _quit(*args):
     addon_utils.log("quit_blender", *args)
     return {"FINISHED"}
 wm = types.SimpleNamespace(quit_blender=_quit)
+def _catalog_new_poll():
+    import bpy
+    # As Blender 5.3: only a browser whose library is loaded and editable; not All or
+    # Essentials, an unavailable library ("missing"), or one still loading.
+    return bpy._assets.params.asset_library_reference not in ("ALL", "ESSENTIALS", "missing", "loading")
 def _catalogs_poll():
     import bpy
-    # Blender's own unsaved-catalog state, read through an asset browser; on a library whose
-    # catalogs can't be edited, as All, it answers False whatever is unsaved.
-    # An unavailable or read-only library (here "missing") answers False too.
-    return bpy.world["unsaved"] and bpy._assets.params.asset_library_reference not in ("ALL", "ESSENTIALS", "missing")
+    # The same browser check, then Blender's unsaved state across every loaded library.
+    return _catalog_new_poll() and bpy.world["unsaved"]
 import json as _json, os as _os
 state = _json.loads(_os.environ["STUB_STATE"])
-asset = types.SimpleNamespace(catalogs_save=types.SimpleNamespace(poll=_catalogs_poll))
+asset = types.SimpleNamespace(
+    catalogs_save=types.SimpleNamespace(poll=_catalogs_poll),
+    catalog_new=types.SimpleNamespace(poll=_catalog_new_poll),
+)
 def _undo_push(message):
     import bpy, addon_utils
     addon_utils.log("undo_push", message)
@@ -1039,8 +1042,6 @@ const runAddon = (input: {
   >;
   /** Another program writes the open file while Blender keeps its unsaved work. */
   readonly writtenDuringCopy?: boolean;
-  /** Asset libraries configured in Blender's preferences, by name and folder. */
-  readonly assetLibraries?: ReadonlyArray<{ readonly name: string; readonly path: string }>;
 }) => {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-control-addon-"));
   dirs.push(dir);
@@ -1179,6 +1180,13 @@ describe("B13: a file changed on disk", () => {
     expect(order).toEqual(["open_mainfile", "agent code"]);
   });
 
+  it("S3: runs nothing for the agent on a file written before T3's word, and asks T3 to look", () => {
+    const result = runAddon({ ...granted, diskChanges: ["changeUnheard"], call: agentCall });
+    expect(names(result)).not.toContain("agent code");
+    expect(result.call.reply.message).toMatch(/still being written/);
+    expect(result.received).toContain("checkDisk");
+  });
+
   it("S3: answers the agent with why, and runs nothing, while a stale scene can't reload", () => {
     const pending = runAddon({
       ...granted,
@@ -1282,6 +1290,15 @@ describe("B13: a file changed on disk", () => {
     expect(names(unsaved)).not.toContain("recover_auto_save");
     const images = runAddon({ ...granted, diskChanges: ["editImage", "restoreReplacing"] });
     expect(reply(images)).toEqual({ outcome: "unkeepable" });
+    // Round 2: unsaved catalogs too, which no staged .blend keeps and the load drops.
+    const catalogs = runAddon({
+      ...granted,
+      assetBrowser: "shown",
+      unsavedCatalogs: true,
+      diskChanges: ["restoreReplacing"],
+    });
+    expect(reply(catalogs)).toEqual({ outcome: "unkeepable" });
+    expect(names(catalogs)).not.toContain("recover_auto_save");
     const replacing = runAddon({ ...granted, diskChanges: ["edit", "restoreReplacing"] });
     expect(reply(replacing)).toMatchObject({ outcome: "restored", copy: "t3-reload-1.blend" });
     expect(
@@ -1686,17 +1703,13 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
   });
 
   describe("unsaved asset catalogs, remembered past their asset browser", () => {
-    const quitAfter = (
-      steps: NonNullable<Parameters<typeof runAddon>[0]["catalogSteps"]>,
-      assetLibraries?: ReadonlyArray<{ readonly name: string; readonly path: string }>,
-    ) => {
+    const quitAfter = (steps: NonNullable<Parameters<typeof runAddon>[0]["catalogSteps"]>) => {
       const result = runAddon({
         installed: [],
         enabled: [],
         listen: false,
         send: ["quitIfClean"],
         catalogSteps: steps,
-        ...(assetLibraries === undefined ? {} : { assetLibraries }),
       });
       return {
         quit: result.calls.some((call: Array<unknown>) => call[0] === "quit_blender"),
@@ -1747,22 +1760,22 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       ).toEqual({ quit: false, refused: true });
     });
 
-    it("S9: quits once the library's catalogs are saved with Blender's own catalog command", () => {
-      // An available, editable library's browser answering clean has nothing unsaved; the
-      // same answer from a library that isn't there proves nothing.
-      const steps = [
-        { browser: "shown" as const, unsaved: true },
-        { browser: "shown" as const, unsaved: false },
-        { browser: "files" as const },
-      ];
-      expect(quitAfter(steps, [{ name: "lib", path: NodeOS.tmpdir() }])).toEqual({
-        quit: true,
-        refused: false,
-      });
-      expect(quitAfter(steps, [{ name: "lib", path: "/nowhere/library" }])).toEqual({
-        quit: false,
-        refused: true,
-      });
+    it("S9: quits once the catalogs are saved with Blender's own catalog command", () => {
+      // A browser that can answer clears the mark; one still loading its library can't.
+      expect(
+        quitAfter([
+          { browser: "shown", unsaved: true },
+          { browser: "shown", unsaved: false },
+          { browser: "files" },
+        ]),
+      ).toEqual({ quit: true, refused: false });
+      expect(
+        quitAfter([
+          { browser: "shown", unsaved: true },
+          { browser: "shown", library: "loading", unsaved: false },
+          { browser: "files" },
+        ]),
+      ).toEqual({ quit: false, refused: true });
     });
 
     it("quits once the edit is saved", () => {

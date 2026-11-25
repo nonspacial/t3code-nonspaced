@@ -60,7 +60,9 @@ Unsaved work goes first to Blender's own autosave, which carries the file's path
 saves to the file. Blenders before 5.2 have no operator for that: their copy is saved as-is and
 the path set in its FileGlobal, found through the file's own SDNA. Either is staged in the
 launch's TMPDIR beside a note naming its file, before the load, so a server that dies first
-leaves it for salvage; the pane offers it only once its record is written.
+leaves it for salvage; the server writes its record, moves it, then drops the note, and offers
+it only once all three are done. A save retires a copy only once the scene holds its work: one
+a reload or a restore displaced never did, until it is restored and not reloaded since.
 
 ## The stream's window and acks change together
 

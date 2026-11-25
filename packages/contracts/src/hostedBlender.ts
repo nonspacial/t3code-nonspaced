@@ -478,7 +478,7 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       case "restoreReplacesUnsaved":
         return "This Blender has unsaved changes the restore would replace.";
       case "unkeepableEdits":
-        return "This Blender has unsaved image edits a recovery copy can't keep. Save or discard them first.";
+        return "This Blender has unsaved image or asset catalog edits a recovery copy can't keep. Save or discard them first.";
     }
   }
 }
