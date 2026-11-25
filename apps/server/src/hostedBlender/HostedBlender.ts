@@ -1485,7 +1485,12 @@ const make = Effect.gen(function* () {
     instance: Instance,
     filepath: string,
     dirty: boolean,
-    options: { readonly loadedAt?: number | undefined; readonly saved?: boolean } = {},
+    options: {
+      readonly loadedAt?: number | undefined;
+      readonly saved?: boolean;
+      /** Saved now: an autosave from before this is older than the file on disk. */
+      readonly savedAt?: number;
+    } = {},
   ) {
     const openFile = filepath === "" ? null : filepath;
     const facts = () =>
@@ -1508,6 +1513,9 @@ const make = Effect.gen(function* () {
     if (options.loadedAt !== undefined && options.loadedAt !== instance.loadedAt) {
       instance.loadedAt = options.loadedAt;
       instance.endFile = { ...instance.endFile, since: options.loadedAt };
+    }
+    if (options.savedAt !== undefined) {
+      instance.endFile = { ...instance.endFile, since: options.savedAt };
     }
     if (dirty) instance.saved = false;
     if (options.saved !== undefined) instance.saved = options.saved;
@@ -1586,11 +1594,19 @@ const make = Effect.gen(function* () {
         }
         return;
       case "saved":
-        // Saved in Blender: the file's waiting copy is older than what is on disk now.
+        // Saved in Blender (save_post), which still reads unsaved until a later notifier: the
+        // write itself is done, so the file's waiting copy is older than its disk now, and goes.
         if (message.value.quit === false) {
-          return yield* noteFile(instance, message.value.filepath, message.value.dirty, {
-            saved: !message.value.dirty,
+          yield* noteFile(instance, message.value.filepath, message.value.dirty, {
+            saved: true,
+            savedAt: yield* Clock.currentTimeMillis,
           });
+          // A restore that never succeeded had the saved file open, never the copy's work.
+          if (instance.restore === "pending" || instance.restore === "failed") return;
+          if (yield* forgetCopy(ownerOf(instance), fileKeyOf(instance.endFile.file))) {
+            yield* publishNow();
+          }
+          return;
         }
         instance.saveConfirmed = true;
         // A confirmed save only if nothing was left unsaved, recorded with the file saved

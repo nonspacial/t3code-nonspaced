@@ -310,7 +310,8 @@ def control():
     send(connection, first)
     if scenario == "saves-in-blender":
         # The restored copy's work, saved with Ctrl+S in the pane: Blender stays open, clean.
-        send(connection, {"type": "saved", "filepath": opened, "dirty": False, "quit": False})
+        # In save_post Blender still reads unsaved; a later notifier clears it.
+        send(connection, {"type": "saved", "filepath": opened, "dirty": True, "quit": False})
         send(connection, dict(first, dirty=False))
     if scenario == "opens-other" and "--t3-recover" not in t3:
         # The person opens another file of the workspace from Blender's own File menu.
@@ -3557,7 +3558,129 @@ def unregister():
     bpy.app.handlers.exit_pre.remove(_slow)
 `;
 
+// Runs what the test writes to HB_TEST_DIR/command, as a person would in Blender: "edit <name>"
+// adds an object through undo, "save" is Ctrl+S, "open <path>" is File > Open; ";" chains them,
+// one a tick.
+// Writes bpy.app.tempdir to HB_TEST_DIR/tempdir first, to show it is the launch's own.
+const COMMAND_STARTUP_SCRIPT = `import os
+import bpy
+
+_queue = []
+
+def _poll():
+    folder = os.environ.get("HB_TEST_DIR", "")
+    with open(os.path.join(folder, "tempdir"), "w") as out:
+        out.write(bpy.app.tempdir)
+    command_path = os.path.join(folder, "command")
+    if os.path.exists(command_path):
+        _queue.extend(open(command_path).read().split(";"))
+        os.remove(command_path)
+    # One a tick: a file opened frees the window the next one would run in.
+    if _queue:
+        verb, _, argument = _queue.pop(0).partition(" ")
+        with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+            if verb == "edit":
+                bpy.context.scene.collection.objects.link(bpy.data.objects.new(argument, None))
+                bpy.ops.ed.undo_push(message="T3 test edit")
+            elif verb == "save":
+                bpy.ops.wm.save_mainfile()
+            elif verb == "open":
+                bpy.ops.wm.open_mainfile(filepath=argument)
+    return 0.2
+
+def register():
+    bpy.app.timers.register(_poll, first_interval=1.0, persistent=True)
+
+def unregister():
+    pass
+`;
+
 describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
+  it.live(
+    "R2: a save in Blender after Reopen removes the file's copy, whether it stays open or not",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tempDir("real-save-in-blender");
+        const workspace = NodePath.join(dir, "work");
+        NodeFS.mkdirSync(workspace, { recursive: true });
+        for (const name of ["cube.blend", "other.blend"]) {
+          NodeChildProcess.execFileSync("blender", [
+            "--background",
+            "--factory-startup",
+            "--python-expr",
+            `import bpy; bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(NodePath.join(workspace, name))})`,
+          ]);
+        }
+        const configHome = NodePath.join(dir, "config");
+        const startup = NodePath.join(configHome, "blender", "5.3", "scripts", "startup");
+        NodeFS.mkdirSync(startup, { recursive: true });
+        NodeFS.writeFileSync(NodePath.join(startup, "t3_test_command.py"), COMMAND_STARTUP_SCRIPT);
+        const service = yield* serviceFor(
+          layerFor({
+            env: {
+              PATH: hostEnvironment.PATH,
+              XDG_RUNTIME_DIR: hostEnvironment.XDG_RUNTIME_DIR,
+              XDG_CONFIG_HOME: configHome,
+              HB_TEST_DIR: dir,
+            },
+            helper: helperBuild,
+            workspaceRoot: workspace,
+            baseDir: dir,
+          }),
+        );
+        const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+        yield* service.threadState(threadId).pipe(
+          Stream.runForEach((state) => Queue.offer(states, state)),
+          Effect.forkScoped,
+        );
+        const awaitState = (matches: (state: HostedBlenderThreadState) => boolean) =>
+          Queue.take(states).pipe(Effect.repeat({ until: matches }));
+        const running = (dirty: boolean) => (state: HostedBlenderThreadState) =>
+          state.status === "running" && state.dirty === dirty;
+        const ended = (state: HostedBlenderThreadState) =>
+          state.status !== "running" && state.status !== "starting";
+        const command = (text: string) => {
+          NodeFS.writeFileSync(NodePath.join(dir, "command.partial"), text);
+          NodeFS.renameSync(NodePath.join(dir, "command.partial"), NodePath.join(dir, "command"));
+        };
+        // Settling an edited cube.blend keeps its copy, which Reopen restores as unsaved work.
+        const restoredCopy = Effect.fnUntraced(function* () {
+          yield* service.open({ threadId, relativePath: "cube.blend" });
+          yield* awaitState(running(false));
+          command("edit T3Edit");
+          yield* awaitState(running(true));
+          yield* service.closeOnSettle({ threadId });
+          expect(card(yield* awaitState(ended))).toMatchObject({
+            status: "closed",
+            relativePath: "cube.blend",
+          });
+          yield* service.reopen({ threadId, key: CUBE, restore: true });
+          yield* awaitState(running(true));
+        });
+
+        // Saved in Blender and still open when it ends: nothing is left to offer.
+        yield* restoredCopy();
+        expect(NodeFS.readFileSync(NodePath.join(dir, "tempdir"), "utf8")).toContain(dir);
+        command("edit T3More;save");
+        yield* awaitState(running(false));
+        yield* service.closeOnSettle({ threadId });
+        expect(yield* awaitState(ended)).toEqual({ status: "stopped" });
+        expect(objectsIn(NodePath.join(workspace, "cube.blend"))).toContain("T3More");
+
+        // Saved, then another file opened and edited: only that file's copy is kept.
+        yield* restoredCopy();
+        command("edit T3Again;save");
+        yield* awaitState(running(false));
+        command(`open ${NodePath.join(workspace, "other.blend")};edit T3Other`);
+        yield* awaitState(running(true));
+        yield* service.closeOnSettle({ threadId });
+        const last = yield* awaitState(ended);
+        expect("copies" in last ? last.copies.map((copy) => copy.file) : last).toEqual([
+          { kind: "workspace", relativePath: "other.blend" },
+        ]);
+      }).pipe(Effect.scoped),
+  );
+
   it.live("a reopened Blender's viewport window fills the pane size asked for, and keeps it", () =>
     Effect.gen(function* () {
       const dir = yield* tempDir("real-reopen-size");
