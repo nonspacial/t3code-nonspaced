@@ -12,6 +12,8 @@ export interface BlenderLaunch {
   readonly mcpPort: number;
   /** The official add-on listens on `mcpPort` for the thread's agent; otherwise it stays off. */
   readonly mcpListen?: boolean;
+  /** The launch's own copy of Blender Lab's extension, the only one its grant may load. */
+  readonly mcpSnapshot?: string;
   /** Embedded scripts follow the user's "Auto Run Python Scripts"; otherwise they are forced off. */
   readonly autoRun?: boolean;
   readonly width: number;
@@ -50,6 +52,7 @@ export const helperArguments = (launch: BlenderLaunch): ReadonlyArray<string> =>
   "--t3-mcp-port",
   String(launch.mcpPort),
   ...(launch.mcpListen === true ? ["--t3-mcp-listen"] : []),
+  ...(launch.mcpSnapshot === undefined ? [] : ["--t3-mcp-snapshot", launch.mcpSnapshot]),
 ];
 
 /**

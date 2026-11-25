@@ -2,7 +2,8 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
-export type AgentListenerState = "off" | "starting" | "ready" | "failed";
+/** `untested`: the installed Blender Lab extension is a version T3 hasn't tested, so never enabled. */
+export type AgentListenerState = "off" | "starting" | "ready" | "failed" | "untested";
 
 /**
  * Waits for a starting agent listener to settle. One still starting at the deadline is revoked

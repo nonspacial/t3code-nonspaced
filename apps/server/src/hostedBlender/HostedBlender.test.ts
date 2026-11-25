@@ -25,6 +25,7 @@ import * as ServerConfig from "../config.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import { HOSTED_STARTUP_GATE_SOURCE } from "./agentGuard.ts";
 import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
 import * as HostedBlender from "./HostedBlender.ts";
 import * as HostedBlenderAgents from "./HostedBlenderAgents.ts";
@@ -1383,7 +1384,9 @@ print("T3-RESULT", json.dumps(results))`,
       expect(
         NodeFS.readFileSync(NodePath.join(userResources, "config", "nested", "note.txt"), "utf8"),
       ).toBe("kept");
-      expect(NodeFS.existsSync(NodePath.join(userResources, "scripts"))).toBe(false);
+      // The link to desktop scripts isn't followed; T3's own startup gate is all that's there.
+      expect(NodeFS.readdirSync(NodePath.join(userResources, "scripts"))).toEqual(["startup"]);
+      expect(NodeFS.readdirSync(NodePath.join(dir, "desktop-scripts"))).toEqual([]);
       // The viewport window opens after the stand-in's timer would have fired.
       expect(
         NodeFS.existsSync(
@@ -1547,9 +1550,9 @@ def control():
     server.bind(t3[1])
     server.listen(1)
     connection, _ = server.accept()
-    def state(filepath):
+    def state(filepath, **extra):
         connection.sendall((json.dumps({"type": "state", "filepath": filepath, "dirty": False,
-                                        "agentListener": listener[0]}) + "\n").encode())
+                                        "agentListener": listener[0], **extra}) + "\n").encode())
     after = os.environ.get("STANDIN_AFTER")
     # Another file already open by the time T3 hears, claiming its listener is ready.
     if after == "otherFileFirst":
@@ -1561,12 +1564,26 @@ def control():
         with open(os.environ["STANDIN_ARGS"] + ".control", "a") as log:
             log.write(line)
         kind = json.loads(line).get("type")
+        if kind == "grantAgentListener" and listener[0] == "starting" and after == "untested":
+            # The add-on found a Blender Lab version T3 hasn't tested and never enabled it.
+            listener[0] = "untested"
+            state(blend, mcpVersion="1.1.0")
+            continue
         if kind == "grantAgentListener" and listener[0] == "starting":
             listener[0] = "ready"
-            state(blend)
+            state(blend, agentActing=after in ("acting", "staleActing"), mcpVersion="1.0.3")
             if after == "otherFile":
                 # Someone opens another file through Blender's own UI.
                 state("/elsewhere/other.blend")
+        if kind == "stopAgentListener" and after == "acting":
+            listener[0] = "off"
+            state(blend, agentActing=False, mcpVersion="1.0.3")
+            continue
+        if kind == "stopAgentListener" and after == "staleActing":
+            # A report Blender queued before it heard the stop, with a change T3 does publish.
+            connection.sendall((json.dumps({"type": "state", "filepath": blend, "dirty": True,
+                                            "agentListener": "ready", "agentActing": True}) + "\n").encode())
+            continue
         if kind == "stopAgentListener":
             # Gone once it has heard the stop, so a test can wait for the stopped state.
             os._exit(0)
@@ -1580,9 +1597,11 @@ describe("Agent access at launch", () => {
   const launch = Effect.fn(function* (
     host: Pick<Host, "runtimeMode" | "interactionMode" | "agentPort" | "revocations">,
     options: { readonly agentWorkingCopy?: boolean } = { agentWorkingCopy: true },
-    after?: "otherFile" | "otherFileFirst",
+    after?: "otherFile" | "otherFileFirst" | "untested" | "acting" | "staleActing",
+    prepare?: (dir: string) => void,
   ) {
     const dir = yield* tempDir("agent-access");
+    prepare?.(dir);
     const bin = fakeTools(dir);
     NodeFS.writeFileSync(NodePath.join(bin, "helper"), `#!${python}\n${ARGS_HELPER}`, {
       mode: 0o755,
@@ -1687,6 +1706,130 @@ describe("Agent access at launch", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("passes on an untested Blender Lab version, which never listens", () =>
+    Effect.gen(function* () {
+      const { service } = yield* launch({ agentPort: 41234 }, undefined, "untested");
+      expect(yield* service.agentListener(threadId)).toMatchObject({
+        state: "untested",
+        mcpVersion: "1.1.0",
+      });
+      yield* service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("shows the agent acting while the add-on says so, for the pane's badge", () =>
+    Effect.gen(function* () {
+      const revoked = yield* Queue.unbounded<ThreadId | null>();
+      const { service } = yield* launch(
+        { agentPort: 41234, revocations: Stream.fromQueue(revoked) },
+        undefined,
+        "acting",
+      );
+      const acting = (value: boolean) =>
+        service.threadState(threadId).pipe(
+          Stream.filter(
+            (state) => state.status === "running" && (state.agentActing === true) === value,
+          ),
+          Stream.runHead,
+        );
+      expect(Option.getOrThrow(yield* acting(true))).toMatchObject({ agentActing: true });
+      // The add-on stops acting once access ends; the published state drops the flag.
+      yield* Queue.offer(revoked, threadId);
+      expect(Option.getOrThrow(yield* acting(false))).not.toHaveProperty("agentActing");
+      yield* service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("never takes the agent as acting from a report Blender sent before the revoke", () =>
+    Effect.gen(function* () {
+      const revoked = yield* Queue.unbounded<ThreadId | null>();
+      const { service } = yield* launch(
+        { agentPort: 41234, revocations: Stream.fromQueue(revoked) },
+        undefined,
+        "staleActing",
+      );
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "running" && state.agentActing === true),
+        Stream.runHead,
+      );
+      yield* Queue.offer(revoked, threadId);
+      const dirty = yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "running" && state.dirty),
+        Stream.runHead,
+      );
+      expect(Option.getOrThrow(dirty)).not.toHaveProperty("agentActing");
+      yield* service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
+  // The user's own Blender Lab, and T3's settings copy from a launch before it was kept out.
+  const withBlenderLab =
+    (unreadable = false) =>
+    (dir: string) => {
+      const mine = NodePath.join(dir, ".config/blender/5.3/extensions/lab_blender_org/mcp");
+      NodeFS.mkdirSync(NodePath.join(mine, "tools"), { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(mine, "blender_manifest.toml"), 'version = "1.0.3"\n');
+      NodeFS.writeFileSync(NodePath.join(mine, "__init__.py"), "# Blender Lab\n");
+      NodeFS.writeFileSync(NodePath.join(mine, "tools", "execute.py"), "# tool\n");
+      if (unreadable) NodeFS.chmodSync(NodePath.join(mine, "tools", "execute.py"), 0o000);
+      const resources = NodePath.join(dir, "userdata/hosted-blender/user-resources");
+      NodeFS.mkdirSync(NodePath.join(resources, "extensions/lab_blender_org/mcp"), {
+        recursive: true,
+      });
+      NodeFS.mkdirSync(NodePath.join(resources, "config"));
+      NodeFS.writeFileSync(NodePath.join(resources, "config", "kept.txt"), "kept");
+    };
+  const snapshotArg = (args: ReadonlyArray<string>) =>
+    args.includes("--t3-mcp-snapshot") ? args[args.indexOf("--t3-mcp-snapshot") + 1] : undefined;
+
+  it.live("keeps Blender Lab out of the settings copy, behind T3's startup gate", () =>
+    Effect.gen(function* () {
+      let resources = "";
+      const { service } = yield* launch({}, {}, undefined, (dir) => {
+        withBlenderLab()(dir);
+        resources = NodePath.join(dir, "userdata/hosted-blender/user-resources");
+      });
+      expect(NodeFS.existsSync(NodePath.join(resources, "extensions/lab_blender_org/mcp"))).toBe(
+        false,
+      );
+      expect(NodeFS.readFileSync(NodePath.join(resources, "config", "kept.txt"), "utf8")).toBe(
+        "kept",
+      );
+      expect(
+        NodeFS.readFileSync(NodePath.join(resources, "scripts/startup/t3_hosted_gate.py"), "utf8"),
+      ).toBe(HOSTED_STARTUP_GATE_SOURCE);
+      yield* service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("gives a granted launch a whole private snapshot of Blender Lab, and the pane none", () =>
+    Effect.gen(function* () {
+      const granted = yield* launch({ agentPort: 41234 }, undefined, undefined, withBlenderLab());
+      const snapshot = snapshotArg(granted.args);
+      expect(snapshot).toContain(NodePath.join("hosted-blender", "launches"));
+      expect(
+        NodeFS.readFileSync(NodePath.join(snapshot!, "mcp", "tools", "execute.py"), "utf8"),
+      ).toBe("# tool\n");
+      yield* granted.service.quit({ threadId, save: false });
+      const pane = yield* launch({ agentPort: 41234 }, {}, undefined, withBlenderLab());
+      expect(snapshotArg(pane.args)).toBeUndefined();
+      yield* pane.service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("gives no snapshot when Blender Lab can't be copied whole", () =>
+    Effect.gen(function* () {
+      const { service, args } = yield* launch(
+        { agentPort: 41234 },
+        undefined,
+        undefined,
+        withBlenderLab(true),
+      );
+      expect(snapshotArg(args)).toBeUndefined();
+      yield* service.quit({ threadId, save: false });
+    }).pipe(Effect.scoped),
+  );
+
   it("waits for the control connection as long as Blender may take to start", () => {
     expect(HostedBlender.CONTROL_CONNECT_ATTEMPTS * 200).toBeGreaterThanOrEqual(90_000);
     expect(Duration.toMillis(HostedBlender.AGENT_LISTENER_TIMEOUT)).toBeGreaterThan(90_000);
@@ -1704,6 +1847,7 @@ describe("Agent access at launch", () => {
         state: "off",
         ended: "otherFile",
         openFile: "/elsewhere/other.blend",
+        mcpVersion: null,
       });
       yield* service.threadState(threadId).pipe(
         Stream.filter((state) => state.status === "stopped"),

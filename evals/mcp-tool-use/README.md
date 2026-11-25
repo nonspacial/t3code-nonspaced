@@ -292,7 +292,7 @@ After the change, the first reference to a file is an absolute link. The remaini
 
 ## Hosted Blender cases
 
-`cases/hosted-blender.ndjson` checks the hosted Blender instructions and tools (`blender_start`, `blender_status`, `blender_quit`) that T3 gives Claude and Codex threads while "Allow agents to start hosted Blenders" is on. `world.hostedBlenderAgentAccess: true` turns them on; every other case runs with them off, as T3 ships. A change to a `.blend` should start a hosted working copy from the master's path, a user who names their desktop Blender should not get one, and the control is ordinary code work. The official Blender MCP's own tools (`blender-hosted`, `blender-master`) are not in the templates, so these cases stop at T3's tools.
+`cases/hosted-blender.ndjson` checks the hosted Blender instructions and tools (`blender_start`, `blender_status`, `blender_quit`) that T3 gives Claude and Codex threads while "Allow agents to start hosted Blenders" is on. `world.hostedBlenderAgentAccess: true` turns them on; every other case runs with them off, as T3 ships. A change to a `.blend` should start a hosted working copy from the master's path, a user who names their desktop Blender should not get one, an agent refused for an untested Blender Lab version tells the user what to update instead of retrying or editing the file another way, and the control is ordinary code work. The refusal's text is T3's, made by `untestedBlenderLabReason`; regenerate it there if that wording changes. The official Blender MCP's own tools (`blender-hosted`, `blender-master`) are not in the templates, so these cases stop at T3's tools.
 
 ## PR tools vs raw CLIs
 
