@@ -8,19 +8,19 @@ export const MAX_PENDING_FRAMES = 8;
 
 /**
  * Frames on the wire before an ack. A viewer gets at most this many per round trip: Blender is
- * captured at 60 fps, so 6 keeps a 100 ms link (remote, relay) at the full rate; one frame at a
- * time held it to 10 fps.
+ * captured at 60 fps, so 8 keeps a 100 ms link (remote, relay) at the full rate with room to catch
+ * up after a keyframe, which waits a round trip for its ack; one frame at a time held it to 10 fps.
  */
-export const MAX_IN_FLIGHT_FRAMES = 6;
+export const MAX_IN_FLIGHT_FRAMES = 8;
 
 /**
- * One viewer's frames: a few on the wire until the viewer acks them, in order. H.264 deltas
- * can't be skipped, so later frames queue; a keyframe replaces the queue, and a viewer that falls
- * too far behind drops everything until the next keyframe.
+ * One viewer's frames: a few on the wire until acked, in order. Deltas can't be skipped, so later
+ * frames queue; a keyframe replaces the queue and nothing follows it until it is acked (the client
+ * acks it once its decoder is configured); a viewer too far behind waits for the next keyframe.
  */
 export class ViewerFlow {
-  /** When each frame on the wire went out, oldest first; acks arrive in that order. */
-  private inFlight: number[] = [];
+  /** Each frame on the wire, oldest first; acks arrive in that order. */
+  private inFlight: Array<{ readonly sentAt: number; readonly key: boolean }> = [];
   private synced = false;
   private pending: VideoFrame[] = [];
 
@@ -38,8 +38,8 @@ export class ViewerFlow {
     } else if (!this.synced) {
       return { send: null, requestKeyframe: this.inFlight.length === 0 };
     }
-    if (this.inFlight.length < MAX_IN_FLIGHT_FRAMES && this.pending.length === 0) {
-      this.inFlight.push(now);
+    if (this.canSend() && this.pending.length === 0) {
+      this.inFlight.push({ sentAt: now, key: frame.key });
       return { send: frame, requestKeyframe: false };
     }
     if (this.pending.length >= MAX_PENDING_FRAMES) {
@@ -58,19 +58,26 @@ export class ViewerFlow {
   }
 
   /**
-   * The oldest frame on the wire arrived. Returns the next one to send, how long the acked frame
-   * took from going out to its ack, and whether this viewer now waits for a keyframe.
+   * The oldest frame on the wire arrived. Returns the frames to send now, how long the acked
+   * frame took from going out to its ack, and whether this viewer now waits for a keyframe.
    */
   ack(now: number): {
-    readonly next: VideoFrame | null;
+    readonly send: ReadonlyArray<VideoFrame>;
     readonly latencyMs: number | null;
     readonly requestKeyframe: boolean;
   } {
-    const sentAt = this.inFlight.shift();
-    const latencyMs = sentAt === undefined ? null : now - sentAt;
-    const next =
-      this.inFlight.length < MAX_IN_FLIGHT_FRAMES ? (this.pending.shift() ?? null) : null;
-    if (next !== null) this.inFlight.push(now);
-    return { next, latencyMs, requestKeyframe: !this.synced && latencyMs !== null };
+    const acked = this.inFlight.shift();
+    const latencyMs = acked === undefined ? null : now - acked.sentAt;
+    const send: VideoFrame[] = [];
+    while (this.canSend() && this.pending.length > 0) {
+      const next = this.pending.shift()!;
+      this.inFlight.push({ sentAt: now, key: next.key });
+      send.push(next);
+    }
+    return { send, latencyMs, requestKeyframe: !this.synced && latencyMs !== null };
+  }
+
+  private canSend(): boolean {
+    return this.inFlight.length < MAX_IN_FLIGHT_FRAMES && !this.inFlight.some((sent) => sent.key);
   }
 }

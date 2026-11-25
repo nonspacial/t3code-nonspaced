@@ -8,6 +8,7 @@ import type { ModelView } from "@t3tools/shared/modelView";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 
 import { rightPanelHostRef, useRightPanelStore } from "~/rightPanelStore";
+import { readEnvironmentHostedBlenderEnabled } from "~/state/entities";
 import {
   readHostedBlenderMasterState,
   readHostedBlenderState,
@@ -60,7 +61,18 @@ export async function openBlendLink(input: {
     threadRef: ScopedThreadRef,
   ) => Promise<HostedBlenderMasterState | null>;
   readonly setView?: typeof setHostedBlenderView;
+  readonly hostedBlenderEnabled?: boolean;
 }): Promise<void> {
+  // Without Hosted Blender on, no Blender can have the file: no state is asked for.
+  if (
+    !(
+      input.hostedBlenderEnabled ??
+      readEnvironmentHostedBlenderEnabled(input.threadRef.environmentId)
+    )
+  ) {
+    input.openFile();
+    return;
+  }
   const panels = useRightPanelStore.getState();
   const panelRef = rightPanelHostRef(input.threadRef);
   const panelKey = scopedThreadKey(panelRef);

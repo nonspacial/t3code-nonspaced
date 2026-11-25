@@ -153,6 +153,12 @@ export function readLatest<A, E>(
 
 const isHostedBlenderError = Schema.is(HostedBlenderError);
 
+/** A discard refused because Blender has another file open than the one its dialog named. */
+export const isOpenFileChanged = (cause: Cause.Cause<unknown>) => {
+  const error = Cause.squash(cause);
+  return isHostedBlenderError(error) && error.reason === "openFileChanged";
+};
+
 /**
  * Moves the person's viewport window to a view link's camera on `relativePath`. A Blender still
  * starting, or a person who may only watch, leaves the view where it is; `otherFile` means the

@@ -389,7 +389,9 @@ elif _then == "saveInBlender":
         for message in map(json.loads, _heard.decode().splitlines())
         if message["type"] == "saved"
     ])
-elif _then in ("saveAndQuit", "failedSaveAndQuit", "pendingSaveAndQuit", "quitWithoutSaving"):
+elif _then in (
+    "saveAndQuit", "failedSaveAndQuit", "pendingSaveAndQuit", "quitWithoutSaving", "discardOther",
+):
     # Save and quit as T3 asks for it: Blender's own operators stood in for.
     import contextlib, types
     if _then == "pendingSaveAndQuit":
@@ -432,9 +434,18 @@ elif _then in ("saveAndQuit", "failedSaveAndQuit", "pendingSaveAndQuit", "quitWi
     _t3.sendall(
         b'{"type": "quit", "save": false}\n'
         if _then == "quitWithoutSaving"
+        # The person's discard of a file Blender no longer has open.
+        else b'{"type": "quit", "save": false, "filepath": "/work/other.blend"}\n'
+        if _then == "discardOther"
         else b'{"type": "quit", "save": true}\n'
     )
     _tick()
+    if _then == "discardOther":
+        _t3.setblocking(False)
+        try:
+            _addons.log("heard", [json.loads(line)["type"] for line in _t3.recv(65536).decode().splitlines()])
+        except BlockingIOError:
+            _addons.log("heard", [])
 elif _then in (
     "replaceViewport", "stuckViewport", "ownChanged", "lateMarked", "loadInSession", "ownClosed",
     "childClosed", "reusedAddress",
@@ -802,6 +813,7 @@ const runAddon = (input: {
     | "saveInBlender"
     | "pendingSaveAndQuit"
     | "quitWithoutSaving"
+    | "discardOther"
     | "loadTime"
     | "ownClosed"
     | "childClosed"
@@ -1007,6 +1019,20 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     });
     expect(heardOf(quit)).toEqual([["quitting", "/work/hero.wip-1a2b3c4d.blend", false]]);
     expect(quit.calls).toContainEqual(["undo_push", "T3 recovery copy"]);
+  });
+
+  it("N1: refuses a discard of a file it no longer has open, and stays open", () => {
+    const refused = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      dirty: true,
+      then: "discardOther",
+    });
+    expect(heardOf(refused)).toEqual(expect.arrayContaining(["discardRefused"]));
+    expect(heardOf(refused)).not.toContain("quitting");
+    expect(refused.calls.some((call: Array<unknown>) => call[0] === "quit_blender")).toBe(false);
+    expect(refused.calls).not.toContainEqual(["undo_push", "T3 recovery copy"]);
   });
 
   it("reports when Blender loaded a file, a revert of the same file included", () => {

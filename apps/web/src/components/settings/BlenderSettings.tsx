@@ -3,7 +3,7 @@ import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, HostedBlenderRunningBlender } from "@t3tools/contracts";
 import { T, useGT } from "gt-react";
 
-import { fileName, useQuitHostedBlender } from "~/components/blender/useQuitHostedBlender";
+import { useQuitHostedBlender } from "~/components/blender/useQuitHostedBlender";
 import { Button } from "~/components/ui/button";
 import { formatBytes } from "~/lib/formatBytes";
 import { useThreadShell } from "~/state/entities";
@@ -72,7 +72,7 @@ function RunningBlenderRow(props: {
   // A master is quit by its own key: it may be kept open with no thread left.
   const quit = useQuitHostedBlender(
     threadRef,
-    fileName(props.blender.relativePath),
+    props.blender,
     props.blender.master === undefined ? {} : { role: "master", master: props.blender.master },
   );
   const details = [

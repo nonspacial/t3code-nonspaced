@@ -60,6 +60,13 @@ describe("agentWorkingInBlender", () => {
       false,
     );
     expect(agentWorkingInBlender([toolEntry("Bash", "inProgress")], run)).toBe(false);
+    // Outside a turn, or with Hosted Blender off, the timeline isn't read at all.
+    const unread = new Proxy<TimelineEntry[]>([], {
+      get: () => {
+        throw new Error("scanned");
+      },
+    });
+    expect(agentWorkingInBlender(unread, null)).toBe(false);
   });
 
   it("ignores a call an earlier turn left in progress", () => {
