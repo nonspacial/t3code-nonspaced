@@ -142,10 +142,18 @@ const ControlMessage = Schema.Union([
     agentActing: Schema.optional(Schema.Boolean),
     /** The installed Blender Lab extension's version, when the launch asked for its listener. */
     mcpVersion: Schema.optional(Schema.NullOr(Schema.String)),
+    /** When Blender last loaded a file (open, revert, recover), epoch ms. */
+    loadedAt: Schema.optional(Schema.Number),
   }),
-  Schema.Struct({ type: Schema.Literal("quitting") }),
+  /** The file and its unsaved bit as Blender began to quit without saving: the run's last word. */
+  Schema.Struct({
+    type: Schema.Literal("quitting"),
+    filepath: Schema.String,
+    dirty: Schema.Boolean,
+  }),
   Schema.Struct({ type: Schema.Literal("saving") }),
-  Schema.Struct({ type: Schema.Literal("saved") }),
+  /** The file saved, and whether it was unsaved again once the agent's access ended. */
+  Schema.Struct({ type: Schema.Literal("saved"), filepath: Schema.String, dirty: Schema.Boolean }),
   Schema.Struct({ type: Schema.Literal("quitFailed"), reason: Schema.Literal("saveFailed") }),
   /** The answer to the request with this `id`. */
   Schema.Struct({ type: Schema.Literal("reply"), id: Schema.Int, result: Schema.Unknown }),
@@ -437,6 +445,8 @@ interface Instance {
   clean: boolean;
   /** The add-on said it is quitting without saving. */
   quitHeard: boolean;
+  /** The load time Blender last reported. */
+  loadedAt: number | undefined;
   /** What T3 had asked when the helper exited; later asks can't make a crash look closed. */
   exitIntent: { readonly ending: boolean; readonly quitting: boolean } | null;
   /** The add-on said it is saving or writing its quit copy; stopping it now could cut that short. */
@@ -527,6 +537,8 @@ const make = Effect.gen(function* () {
   let nextShownAt = 0;
 
   const instances = new Map<string, Instance>();
+  // Hosted Blender was switched off in Settings; see the readiness subscription below.
+  let switchedOff = false;
   const states = yield* SubscriptionRef.make<ReadonlyMap<string, PublishedState>>(new Map());
   const running = yield* SubscriptionRef.make<HostedBlenderRunningList>([]);
   // Threads whose last start failed, until they open a file again.
@@ -1216,6 +1228,49 @@ const make = Effect.gen(function* () {
     instance.ending ||
     instance.pendingSave !== null;
 
+  /**
+   * Records what Blender says of the file it has open, which the run's end keeps a copy of:
+   * the file, whether it is unsaved, and whether its last word was a confirmed save.
+   */
+  const noteFile = Effect.fnUntraced(function* (
+    instance: Instance,
+    filepath: string,
+    dirty: boolean,
+    options: { readonly loadedAt?: number | undefined; readonly saved?: boolean } = {},
+  ) {
+    const openFile = filepath === "" ? null : filepath;
+    const facts = () =>
+      `${fileKeyOf(instance.endFile.file)}:${instance.endFile.since}:${instance.saved}:${instance.clean}`;
+    const before = facts();
+    // Before anything that waits, so the run's end always sees the file this names.
+    const switched = openFile !== instance.openFile;
+    if (switched) {
+      instance.openFile = openFile;
+      const file = keptFileOf(filepath, instance.workspaceRoot, path.relative);
+      if (fileKeyOf(file) !== fileKeyOf(instance.endFile.file)) {
+        instance.endFile = { file, path: openFile, since: yield* Clock.currentTimeMillis };
+        instance.saved = false;
+      }
+    }
+    // Any load, the same file's revert included: an autosave from before it is not its work.
+    if (options.loadedAt !== undefined && options.loadedAt !== instance.loadedAt) {
+      instance.loadedAt = options.loadedAt;
+      instance.endFile = { ...instance.endFile, since: options.loadedAt };
+    }
+    if (dirty) instance.saved = false;
+    if (options.saved !== undefined) instance.saved = options.saved;
+    instance.clean = !dirty;
+    if (switched) {
+      instance.openRealPath =
+        openFile === null
+          ? null
+          : yield* fileSystem.realPath(openFile).pipe(Effect.orElseSucceed(() => openFile));
+    }
+    if (before !== facts()) {
+      yield* writeRunFacts(instance);
+    }
+  });
+
   const handleControlLine = Effect.fnUntraced(function* (instance: Instance, line: string) {
     const message = decodeControlMessage(line);
     if (Option.isNone(message)) return;
@@ -1235,30 +1290,12 @@ const make = Effect.gen(function* () {
                 instance.blendPath);
           yield* updateRestore(instance, message.value.restore === "ok" && saves ? "ok" : "failed");
         }
-        const openFile = message.value.filepath === "" ? null : message.value.filepath;
-        const before = `${fileKeyOf(instance.endFile.file)}:${instance.saved}:${instance.clean}`;
-        // Before anything that waits, so the run's end always sees the file this line names.
-        const switched = openFile !== instance.openFile;
-        if (switched) {
-          instance.openFile = openFile;
-          const file = keptFileOf(message.value.filepath, instance.workspaceRoot, path.relative);
-          if (fileKeyOf(file) !== fileKeyOf(instance.endFile.file)) {
-            instance.endFile = { file, path: openFile, since: yield* Clock.currentTimeMillis };
-            instance.saved = false;
-          }
-        }
-        if (message.value.dirty) instance.saved = false;
-        // Its quit pushes an undo step for the quit copy, so a report after "quitting" is
-        // always unsaved and says nothing about the person's work.
-        if (!instance.quitHeard) instance.clean = !message.value.dirty;
-        if (switched) {
-          instance.openRealPath =
-            openFile === null
-              ? null
-              : yield* fileSystem.realPath(openFile).pipe(Effect.orElseSucceed(() => openFile));
-        }
-        if (before !== `${fileKeyOf(instance.endFile.file)}:${instance.saved}:${instance.clean}`) {
-          yield* writeRunFacts(instance);
+        // Its quit pushes an undo step for the quit copy, so a report after "quitting" is always
+        // unsaved and says nothing about the person's work; "quitting" itself carried the facts.
+        if (!instance.quitHeard) {
+          yield* noteFile(instance, message.value.filepath, message.value.dirty, {
+            loadedAt: message.value.loadedAt,
+          });
         }
         if (message.value.mcpVersion !== undefined) instance.mcpVersion = message.value.mcpVersion;
         // Only the working copy T3 opened may reach the agent, so the file is checked before
@@ -1290,14 +1327,20 @@ const make = Effect.gen(function* () {
       }
       case "quitting":
         instance.acknowledged = true;
-        instance.quitHeard = true;
+        if (!instance.quitHeard) {
+          instance.quitHeard = true;
+          yield* noteFile(instance, message.value.filepath, message.value.dirty);
+        }
         return;
       case "saved":
-        instance.saved = true;
         instance.saveConfirmed = true;
+        // A confirmed save only if nothing was left unsaved, recorded with the file saved
+        // before the save is answered, so salvage after a restart reads the same.
+        yield* noteFile(instance, message.value.filepath, message.value.dirty, {
+          saved: !message.value.dirty,
+        });
         // The add-on ended the grant before saying so; Blender quits next.
         yield* revokeAgentListener(instance);
-        yield* writeRunFacts(instance);
         if (instance.saveReplies) yield* Queue.offer(instance.saveReplies, "saved");
         return;
       case "saving":
@@ -1802,6 +1845,7 @@ const make = Effect.gen(function* () {
     const ended = yield* Deferred.make<void>();
     const controlReady = yield* Deferred.make<void>();
     // Checked together, with no wait before the launch is reserved below.
+    if (switchedOff) return yield* new HostedBlenderError({ reason: "notSetUp" });
     const existing = instances.get(threadId);
     if (existing) {
       if (existing.relativePath === resolved.relativePath) return;
@@ -1853,6 +1897,7 @@ const make = Effect.gen(function* () {
       endFile: { file: launchFile, path: real[1], since: 0 },
       clean: false,
       quitHeard: false,
+      loadedAt: undefined,
       exitIntent: null,
       acknowledged: false,
       stopNow: false,
@@ -2064,17 +2109,20 @@ const make = Effect.gen(function* () {
   });
 
   // Switching Hosted Blender off closes every hosted Blender as a settle does, copies kept.
+  // Set before the scan, which an open checks as it reserves its launch, so none slips past.
   yield* setup.readiness.pipe(
     Stream.map(
       (readiness) => readiness.status === "notSetUp" && readiness.missing.includes("enabled"),
     ),
     Stream.changes,
-    Stream.filter((switchedOff) => switchedOff),
-    Stream.runForEach(() =>
-      Effect.forEach([...instances.values()], (instance) =>
-        closeOnSettle({ threadId: instance.threadId }),
-      ),
-    ),
+    Stream.runForEach((off) => {
+      switchedOff = off;
+      return off
+        ? Effect.forEach([...instances.values()], (instance) =>
+            closeOnSettle({ threadId: instance.threadId }),
+          )
+        : Effect.void;
+    }),
     Effect.forkIn(serviceScope),
   );
 

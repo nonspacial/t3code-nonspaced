@@ -231,6 +231,7 @@ if scenario != "never-shows":
 def send(connection, value):
     if value.get("type") == "state":
         state["open"] = value["filepath"]
+        state["dirty"] = value["dirty"]
     connection.sendall((json.dumps(value) + "\n").encode())
 # A 1x1 PNG, as the add-on renders the viewport into the control socket's private folder.
 PIXEL = bytes.fromhex(
@@ -265,7 +266,7 @@ def control():
     # Blender reports the file it has open by its full path, as it was given.
     opened = next(arg for arg in rest if arg.endswith(".blend"))
     first = {"type": "state", "filepath": opened,
-             "dirty": scenario not in ("switches", "matrix")}
+             "dirty": scenario not in ("switches", "matrix", "quit-dirty", "quit-other")}
     if "--t3-recover" in t3 and scenario != "restore-silent":
         first["restore"] = "failed" if scenario == "restore-fails" else matrix.get("restore", "ok")
         if scenario == "restored-elsewhere":
@@ -283,8 +284,14 @@ def control():
         state["stem"] = os.path.basename(end)[:-len(".blend")] if end else ""
         last = {"type": "state", "filepath": end, "dirty": True}
         send(connection, last)
-        if not matrix["dirty"]:
+        if not matrix["dirty"] and not matrix.get("revert"):
             send(connection, dict(last, dirty=False))
+        if matrix.get("revert"):
+            # Edited and autosaved, then reverted to the file as saved, which Blender reports
+            # as a load after that autosave.
+            open(os.path.join(tmp, "%s_4242_autosave.blend" % state["stem"]), "w").write("autosave")
+            time.sleep(0.01)
+            send(connection, dict(last, dirty=False, loadedAt=time.time() * 1000))
     if scenario == "opens-outside":
         # The person opens a file from outside the workspace and edits it.
         send(connection, dict(first, filepath="/elsewhere/outside.blend"))
@@ -306,8 +313,17 @@ def control():
         if command.get("type") == "quit" and not command.get("save"):
             if scenario == "ignores-quit":
                 continue
-            send(connection, {"type": "quitting"})
-            # As the add-on does: its quit pushes an undo step, so its next report is unsaved.
+            # As the add-on does: the file and its unsaved bit as they are as it begins to quit.
+            # "quit-dirty" was edited, and "quit-other" opened another file, since it last said.
+            other = os.path.join(os.path.dirname(opened), "other.blend")
+            quitting = {"type": "quitting", "filepath": state.get("open", opened),
+                        "dirty": state.get("dirty", True)}
+            if scenario == "quit-dirty":
+                quitting["dirty"] = True
+            if scenario == "quit-other":
+                quitting.update(filepath=other, dirty=True)
+            send(connection, quitting)
+            # Its quit pushes an undo step, so its next report is unsaved.
             send(connection, {"type": "state", "filepath": state.get("open", opened), "dirty": True})
             state["finishing"].clear()
             if scenario in ("slow-quit", "late-slow-quit"):
@@ -386,15 +402,22 @@ def control():
         if scenario == "saved-then-dirty":
             # Saved, then ending the agent's grant recorded its pending work: unsaved again,
             # and Blender quits into its quit copy.
-            connection.sendall(b'{"type": "saved"}\n')
-            send(connection, {"type": "state", "filepath": opened, "dirty": True})
+            send(connection, {"type": "saved", "filepath": opened, "dirty": True})
+            open(os.path.join(tmp, "quit.blend"), "w").write("quit copy %d" % os.getpid())
+            event({"type": "exited", "process": "blender", "code": 0, "signal": None})
+            connection.close()
+            return
+        if scenario == "save-other":
+            # Opened other.blend since it last said, and that is the file it saved.
+            send(connection, {"type": "saved", "dirty": False,
+                              "filepath": os.path.join(os.path.dirname(opened), "other.blend")})
             open(os.path.join(tmp, "quit.blend"), "w").write("quit copy %d" % os.getpid())
             event({"type": "exited", "process": "blender", "code": 0, "signal": None})
             connection.close()
             return
         if scenario == "saved-then-exit":
             # Saved, then a moment before Blender is gone; "clean" marks the moment.
-            connection.sendall(b'{"type": "saved"}\n')
+            send(connection, {"type": "saved", "filepath": opened, "dirty": False})
             send(connection, {"type": "state", "filepath": opened, "dirty": False})
             connection.close()
             threading.Timer(1.0, lambda: os._exit(0)).start()
@@ -768,6 +791,7 @@ interface Cell {
   readonly end: "same" | "other" | "outside" | "untitled";
   readonly ending: "settle" | "crash";
   readonly autosave?: boolean;
+  readonly revert?: boolean;
 }
 
 const END_KEYS = {
@@ -793,6 +817,7 @@ const runCell = Effect.fn(function* (cell: Cell) {
       dirty: cell.dirty,
       end: cell.end,
       autosave: cell.autosave ?? true,
+      revert: cell.revert ?? false,
     }),
   );
   if (cell.waiting) waitingCopy(hostedDir, "waiting copy");
@@ -960,6 +985,79 @@ describe("One recovery copy per file", () => {
       });
       expect(cube?.contents).toMatch(/^quit copy /);
       expect(copies.get(CUBE)).toMatchObject({ kind: "closed", recovery: true });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("M15: a crash after a revert never offers an autosave from before it", () =>
+    Effect.gen(function* () {
+      const { before, cube } = yield* runCell({
+        waiting: true,
+        restore: "none",
+        dirty: false,
+        end: "same",
+        ending: "crash",
+        autosave: false,
+        revert: true,
+      });
+      expect(cube).toEqual(before);
+      expect(cube?.contents).toBe("waiting copy");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("M13: an edit after Blender's last report is kept, as its quit says", () =>
+    Effect.gen(function* () {
+      const { service, awaitStatus, hostedDir } = yield* standIn("quit-dirty", "quit-dirty");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitStatus("running");
+      yield* service.closeOnSettle({ threadId });
+      expect(yield* awaitStatus("closed")).toEqual({
+        status: "closed",
+        relativePath: "cube.blend",
+        recovery: true,
+      });
+      expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "M13: a file opened after Blender's last report is the one its quit copy is filed under",
+    () =>
+      Effect.gen(function* () {
+        const { dir, service, awaitStatus, hostedDir } = yield* standIn("quit-other", "quit-other");
+        NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+        yield* service.open({ threadId, relativePath: "cube.blend" });
+        yield* awaitStatus("running");
+        yield* service.closeOnSettle({ threadId });
+        expect(yield* awaitStatus("closed")).toEqual({
+          status: "closed",
+          relativePath: "other.blend",
+          recovery: true,
+        });
+        expect(recoveryOf(hostedDir, OTHER)?.contents).toMatch(/^quit copy /);
+        expect(recoveryOf(hostedDir)).toBeNull();
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("M14: saving a file opened since the last report never removes another file's copy", () =>
+    Effect.gen(function* () {
+      const { dir, layer, hostedDir } = yield* standIn("save-other", "save-other");
+      NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+      waitingCopy(hostedDir, "waiting copy");
+      const service = yield* serviceFor(layer);
+      yield* service.reopen({ threadId, key: CUBE, restore: false });
+      // Its add-on is connected once it has reported the file unsaved.
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "running" && state.dirty),
+        Stream.runHead,
+      );
+      yield* service.quit({ threadId, save: true });
+      const ended = yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status !== "running" && state.status !== "starting"),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
+      expect(card(ended)).toMatchObject({ status: "closed", relativePath: "cube.blend" });
+      expect(recoveryOf(hostedDir)?.contents).toBe("waiting copy");
     }).pipe(Effect.scoped),
   );
 
@@ -1785,6 +1883,33 @@ describe("Endings and recovery", () => {
       // Never saved over the user's file: Blender quit without saving, into its copy.
       expect(saveCommands()).toBe(0);
       expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("M18: an open still validating when Hosted Blender is switched off never launches", () =>
+    Effect.gen(function* () {
+      let hold: Deferred.Deferred<void> | null = null;
+      const switches = yield* Queue.unbounded<HostedBlenderSetup.HostedBlenderReadiness>();
+      const { dir, service, openReady, awaitStatus, launches } = yield* standIn(
+        "switch-off-race",
+        "",
+        () => (hold === null ? Effect.void : Deferred.await(hold)),
+        { readinessChanges: Stream.fromQueue(switches) },
+      );
+      NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+      yield* openReady;
+      // Another thread's open passes its readiness check, then waits on its thread lookup...
+      const gate = yield* Deferred.make<void>();
+      hold = gate;
+      const opening = yield* service
+        .open({ threadId: otherThreadId, relativePath: "other.blend" })
+        .pipe(Effect.flip, Effect.forkChild);
+      // ...while Hosted Blender is switched off, which closes the Blender that was running.
+      yield* Queue.offer(switches, { status: "notSetUp", missing: ["enabled"] });
+      yield* awaitStatus("closed");
+      yield* Deferred.succeed(gate, undefined);
+      expect((yield* Fiber.join(opening)).reason).toBe("notSetUp");
+      expect(launches()).toHaveLength(1);
     }).pipe(Effect.scoped),
   );
 
@@ -3601,7 +3726,7 @@ def control():
             # As Blender does: saved, then quitting, reading no more commands (T3's stop
             # included) while it writes its quit copy and exits.
             import time
-            for reply in ({"type": "saving"}, {"type": "saved"}):
+            for reply in ({"type": "saving"}, {"type": "saved", "filepath": blend, "dirty": False}):
                 connection.sendall((json.dumps(reply) + "\n").encode())
             if after == "offAfterSaved":
                 # The add-on ended the grant on saving; its next state says the listener is off,

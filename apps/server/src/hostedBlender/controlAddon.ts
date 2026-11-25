@@ -55,8 +55,9 @@ class _State:
     restore = None
     # The viewport window this session opened, by pointer: one a loaded file brings back is not.
     viewport_window = None
-    # Restored viewport windows already asked to close, by pointer.
-    closed_viewports = set()
+    # When Blender last loaded a file (open, revert, recover), epoch ms; T3 ignores autosaves
+    # from before it.
+    loaded_at = None
     # The file just loaded (at launch, opened, reverted or recovered) may bring viewport windows
     # back, to be replaced.
     replace_loaded = True
@@ -116,6 +117,8 @@ def _snapshot():
     }
     if _State.restore is not None:
         snapshot["restore"] = _State.restore
+    if _State.loaded_at is not None:
+        snapshot["loadedAt"] = _State.loaded_at
     return snapshot
 
 
@@ -151,12 +154,15 @@ def _lone_3d_view(window):
 
 
 def _viewport_lost():
+    # T3's viewport window closed, or turned into another editor.
+    if _State.viewport_window is None:
+        return False
     tracked = [
         window
         for window in bpy.context.window_manager.windows
         if window.as_pointer() == _State.viewport_window
     ]
-    return bool(tracked) and not _lone_3d_view(tracked[0])
+    return not tracked or not _lone_3d_view(tracked[0])
 
 
 def _viewport():
@@ -355,8 +361,14 @@ def _handle(command):
         return
     if kind == "quit":
         if not command.get("save"):
-            # T3 waits on this rather than stopping a Blender still writing its quit copy.
-            _send({"type": "quitting"})
+            # T3 waits on this rather than stopping a Blender still writing its quit copy. It
+            # carries the file and its unsaved bit as they are now, before the undo step below
+            # (which always reads unsaved), as the run's last word on them.
+            _send({
+                "type": "quitting",
+                "filepath": bpy.data.filepath,
+                "dirty": bool(bpy.data.is_dirty),
+            })
             _push_undo_step()
         else:
             # Answered before the save, which blocks Blender for as long as a big file takes.
@@ -365,19 +377,16 @@ def _handle(command):
                 _send({"type": "quitFailed", "reason": "saveFailed"})
                 return
             # Saved, so Blender quits next: the agent's grant ends now, as T3's stop would
-            # come too late once quitting begins.
-            # Ending the grant records the agent's pending work that can write as a step after
-            # the save, leaving the file unsaved: T3 hears so after "saved", and keeps the copy.
+            # come too late once quitting begins. Ending it records the agent's pending work
+            # that can write as a step after the save, leaving the file unsaved; the result
+            # says so with the file saved, and T3 then keeps the quit copy.
             pending = (
                 _State.grant == "granted"
                 and _on_authorized_file()
                 and any(record["writes"] for record in _Guard.deferred)
             )
             _end_grant()
-            _send({"type": "saved"})
-            if pending:
-                _State.sent = dict(_snapshot(), dirty=True)
-                _send(_State.sent)
+            _send({"type": "saved", "filepath": bpy.data.filepath, "dirty": pending})
         window = _main_window()
         with bpy.context.temp_override(window=window):
             bpy.ops.wm.quit_blender()
@@ -700,22 +709,28 @@ def _open_viewport_window():
     # The hidden display streams the first lone 3D view window it finds, so a file's own (T3's
     # from an earlier session, marked or from a build before the mark, in its saved fullscreen
     # state, which the compositor's toggle undoes) would be streamed instead. After any load,
-    # every one T3 didn't open this launch is replaced by a fresh one. One that didn't close
-    # when asked is left be rather than asked again forever.
+    # every one T3 didn't open this launch is replaced by a fresh one, on the first pass only.
+    # T3's own turned into another editor goes too: it would go on being streamed.
+    windows = bpy.context.window_manager.windows
     restored = [
         other
-        for index, other in enumerate(bpy.context.window_manager.windows)
-        if _State.replace_loaded
-        and index > 0
-        and (other.screen.get(VIEWPORT_MARKER) or _lone_3d_view(other))
+        for index, other in enumerate(windows)
+        if index > 0
         and other.as_pointer() not in {kept.as_pointer() for kept in own}
-        and other.as_pointer() not in _State.closed_viewports
+        and (
+            other.as_pointer() == _State.viewport_window
+            or _State.replace_loaded
+            and (other.screen.get(VIEWPORT_MARKER) or _lone_3d_view(other))
+        )
     ]
-    # Only the windows the load itself brought back, seen on the first pass after it.
     _State.replace_loaded = False
+    if not own:
+        _State.viewport_window = None
     if restored:
         for other in restored:
-            _State.closed_viewports.add(other.as_pointer())
+            # Closing one can take its child windows with it.
+            if other.as_pointer() not in {left.as_pointer() for left in windows}:
+                continue
             with bpy.context.temp_override(window=other):
                 bpy.ops.wm.window_close()
         return 0.2
@@ -748,6 +763,7 @@ def _on_save_post(*_args):
 
 @persistent
 def _on_load_post(*_args):
+    _State.loaded_at = time.time() * 1000
     _check_authorized_file()
     _State.replace_loaded = True
     bpy.app.timers.register(_open_viewport_window, first_interval=0.2)

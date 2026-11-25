@@ -321,7 +321,12 @@ elif _then == "saveAs":
     _on_save_post()
 elif _then == "revert":
     _on_load_post()
-elif _then in ("saveAndQuit", "failedSaveAndQuit", "pendingSaveAndQuit"):
+elif _then == "loadTime":
+    # Any load, a revert of the same file included, says when it happened.
+    _before = _snapshot().get("loadedAt")
+    _on_load_post()
+    _steps.append(dict(loadedBefore=_before, loadedAfter=type(_snapshot().get("loadedAt")).__name__))
+elif _then in ("saveAndQuit", "failedSaveAndQuit", "pendingSaveAndQuit", "quitWithoutSaving"):
     # Save and quit as T3 asks for it: Blender's own operators stood in for.
     import contextlib, types
     if _then == "pendingSaveAndQuit":
@@ -348,14 +353,27 @@ elif _then in ("saveAndQuit", "failedSaveAndQuit", "pendingSaveAndQuit"):
         except BlockingIOError:
             pass
         _addons.log("heard", [
-            [message["type"], message.get("dirty")]
+            [message["type"], message.get("filepath"), message.get("dirty")]
             for message in map(json.loads, heard.decode().splitlines())
-            if message["type"] in ("saved", "state")
+            if message["type"] in ("saved", "quitting")
         ])
+    def _undo_push(message):
+        # A real undo step marks the file unsaved.
+        bpy.data.is_dirty = True
+        _addons.log("undo_push", message)
+        return {"FINISHED"}
     bpy.ops.wm = types.SimpleNamespace(save_mainfile=_save_mainfile, quit_blender=_quit_blender)
-    _t3.sendall(b'{"type": "quit", "save": true}\n')
+    bpy.ops.ed = types.SimpleNamespace(undo_push=_undo_push)
+    _t3.sendall(
+        b'{"type": "quit", "save": false}\n'
+        if _then == "quitWithoutSaving"
+        else b'{"type": "quit", "save": true}\n'
+    )
     _tick()
-elif _then in ("replaceViewport", "stuckViewport", "ownChanged", "lateMarked", "loadInSession"):
+elif _then in (
+    "replaceViewport", "stuckViewport", "ownChanged", "lateMarked", "loadInSession", "ownClosed",
+    "childClosed", "reusedAddress",
+):
     # The file was saved with T3's viewport window open, one from a build before T3 marked it
     # (a plain lone 3D view), and the user's own window of another editor: after any load the
     # add-on swaps T3's for its own, and leaves the user's alone.
@@ -369,11 +387,12 @@ elif _then in ("replaceViewport", "stuckViewport", "ownChanged", "lateMarked", "
         def __init__(self, kind):
             super().__init__(); self.areas = [_Area(kind)]
     class _Window:
-        def __init__(self, kind, marked=False):
+        def __init__(self, kind, marked=False, pointer=None):
             self.screen = _Screen(kind)
+            self.pointer = pointer
             if marked:
                 self.screen["t3_viewport"] = True
-        def as_pointer(self): return id(self)
+        def as_pointer(self): return id(self) if self.pointer is None else self.pointer
     _windows = bpy.context.window_manager.windows
     _users = _Window("IMAGE_EDITOR")
     _saved = _Window("VIEW_3D", marked=True)
@@ -389,6 +408,9 @@ elif _then in ("replaceViewport", "stuckViewport", "ownChanged", "lateMarked", "
         _closes.append(_current[0])
         if _then != "stuckViewport":
             _windows.remove(_current[0])
+        if _then == "childClosed" and _current[0] is _saved:
+            # Its child window closes with it.
+            _windows.remove(_legacy)
     def _dupli(_mode):
         window = _Window("VIEW_3D"); _windows.append(window); _opened.append(window)
     bpy.context.temp_override = _override
@@ -408,6 +430,18 @@ elif _then in ("replaceViewport", "stuckViewport", "ownChanged", "lateMarked", "
             _windows.append(_late)
     if _then == "lateMarked":
         _steps.append(dict(lateKept=_late in _windows))
+    if _then == "reusedAddress":
+        # A later load brings back a marked window at an address a closed one had.
+        _windows[:] = [_Window("VIEW_3D"), _Window("VIEW_3D", marked=True, pointer=id(_saved))]
+        _opened.clear()
+        _on_load_post()
+        _runs = 0
+        while _open_viewport_window() is not None and _runs < 10:
+            _runs += 1
+        _steps.append(dict(
+            viewports=len([window for window in _windows[1:] if _lone_3d_view(window)]),
+            fresh=len(_opened),
+        ))
     if _then == "loadInSession":
         # The person (or the agent) opens a file saved from a hosted Blender: Blender gives
         # every window a new struct with the file's screens.
@@ -425,22 +459,31 @@ elif _then in ("replaceViewport", "stuckViewport", "ownChanged", "lateMarked", "
             tracked=_viewport() is not None and _viewport()[0] is lone[0],
             fresh=len(_opened),
         ))
-    if _then == "ownChanged":
-        # The person turns T3's window into another editor: it's no longer T3's viewport, and
-        # Blender's own tick, with nothing else asking, opens a fresh one.
-        _opened[0].screen.areas[0].type = "IMAGE_EDITOR"
+    if _then in ("ownChanged", "ownClosed"):
+        # The person turns T3's window into another editor, or closes it: it's no longer T3's
+        # viewport, and Blender's own tick, with nothing else asking, replaces it.
+        _first = _opened[0]
+        if _then == "ownChanged":
+            _first.screen.areas[0].type = "IMAGE_EDITOR"
+        else:
+            _windows.remove(_first)
         _changed = _viewport()
         bpy.app.registered.clear()
         _tick()
         _scheduled = [function for function in bpy.app.registered if function is _open_viewport_window]
         for function in _scheduled:
             bpy.app.registered.remove(function)
-            function()
+            _passes = 0
+            while function() is not None and _passes < 10:
+                _passes += 1
         _steps.append(dict(
-            stillOwn=_changed is not None and _changed[0] is _opened[0],
+            stillOwn=_changed is not None and _changed[0] is _first,
             scheduled=len(_scheduled),
             reopened=_viewport() is not None and _viewport()[0] is _opened[-1],
             fresh=len(_opened),
+            # One T3 viewport window, the one streamed: the old one is gone.
+            oldGone=_first not in _windows,
+            marked=len([window for window in _windows if window.screen.get("t3_viewport")]),
         ))
     _steps.append(dict(
         _report(),
@@ -661,6 +704,11 @@ const runAddon = (input: {
     | "replaceViewport"
     | "saveAndQuit"
     | "pendingSaveAndQuit"
+    | "quitWithoutSaving"
+    | "loadTime"
+    | "ownClosed"
+    | "childClosed"
+    | "reusedAddress"
     | "failedSaveAndQuit";
   /** The installed extension's manifest version; 1.0.3 by default. */
   readonly mcpVersion?: string;
@@ -826,22 +874,38 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     expect(after(failed)).toEqual({ listener: "ready", listening: failed.port, enabled: true });
   });
 
-  it("says the file is unsaved again when ending the grant records pending agent work", () => {
+  const heardOf = (result: { readonly calls: ReadonlyArray<ReadonlyArray<unknown>> }) =>
+    result.calls.find((call) => call[0] === "heard")?.[1];
+
+  it("says in its save result which file it saved, and that pending agent work left it unsaved", () => {
     const pending = runAddon({
       installed: [MCP],
       enabled: [MCP],
       listen: true,
       then: "pendingSaveAndQuit",
     });
-    const heard = pending.calls.find((call: ReadonlyArray<unknown>) => call[0] === "heard")[1];
-    // T3 hears the save, then that the file is unsaved, before Blender quits into its copy.
-    expect(heard.slice(heard.findIndex(([type]: [string]) => type === "saved"))).toEqual([
-      ["saved", null],
-      ["state", true],
-    ]);
+    expect(heardOf(pending)).toEqual([["saved", "/work/hero.wip-1a2b3c4d.blend", true]]);
     const plain = runAddon({ installed: [MCP], enabled: [MCP], listen: true, then: "saveAndQuit" });
-    const after = plain.calls.find((call: ReadonlyArray<unknown>) => call[0] === "heard")[1];
-    expect(after.at(-1)).toEqual(["saved", null]);
+    expect(heardOf(plain)).toEqual([["saved", "/work/hero.wip-1a2b3c4d.blend", false]]);
+  });
+
+  it("says which file it quits and whether it was unsaved, before its quit's own undo step", () => {
+    const quit = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      then: "quitWithoutSaving",
+    });
+    expect(heardOf(quit)).toEqual([["quitting", "/work/hero.wip-1a2b3c4d.blend", false]]);
+    expect(quit.calls).toContainEqual(["undo_push", "T3 recovery copy"]);
+  });
+
+  it("reports when Blender loaded a file, a revert of the same file included", () => {
+    const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, then: "loadTime" });
+    expect(result.steps.find((step: object) => "loadedAfter" in step)).toEqual({
+      loadedBefore: null,
+      loadedAfter: "float",
+    });
   });
 
   it("keeps the grant when it replaces a viewport window a recovery copy brought back", () => {
@@ -912,6 +976,43 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       scheduled: 1,
       reopened: true,
       fresh: 2,
+      oldGone: true,
+      marked: 1,
+    });
+  });
+
+  it("goes on to open its viewport window when closing one window took another with it", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      then: "childClosed",
+    });
+    expect(result.steps.at(-4)).toMatchObject({ windows: 3, fresh: 1, usersKept: true });
+  });
+
+  it("replaces a window a later load brings back, at whatever address", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      then: "reusedAddress",
+    });
+    expect(result.steps.find((step: object) => "viewports" in step)).toEqual({
+      viewports: 1,
+      fresh: 1,
+    });
+  });
+
+  it("replaces its viewport window when the person closes it", () => {
+    const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, then: "ownClosed" });
+    expect(result.steps.find((step: { stillOwn?: boolean }) => "stillOwn" in step)).toEqual({
+      stillOwn: false,
+      scheduled: 1,
+      reopened: true,
+      fresh: 2,
+      oldGone: true,
+      marked: 1,
     });
   });
 
