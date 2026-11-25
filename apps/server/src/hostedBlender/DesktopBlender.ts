@@ -34,9 +34,20 @@ export class DesktopBlenderError extends Schema.TaggedError<DesktopBlenderError>
 
 class AddonUnreachable extends Schema.TaggedError<AddonUnreachable>()("AddonUnreachable", {}) {}
 
+const AddonReply = Schema.Struct({
+  status: Schema.String,
+  result: Schema.optional(Schema.Unknown),
+  message: Schema.optional(Schema.String),
+});
+const decodeAddonReply = Schema.decodeUnknownOption(Schema.fromJsonString(AddonReply));
+const ProbeResult = Schema.Struct({ filepath: Schema.String, dirty: Schema.Boolean });
+const SaveResult = Schema.Struct({ moved: Schema.Boolean });
+const decodeProbeResult = Schema.decodeUnknownEffect(ProbeResult);
+const decodeSaveResult = Schema.decodeUnknownEffect(SaveResult);
+
 /**
- * The user's desktop Blender, reached only for "Move into T3": T3 reads what it has open, then
- * has it save and quit so a master Blender can open the file. Nothing else ever talks to it.
+ * The user's desktop Blender. Opening a master reads what it has open, so T3 never opens that
+ * file a second time; Move into T3 has it save and quit so a master Blender can open the file.
  */
 export class DesktopBlender extends Context.Service<
   DesktopBlender,
@@ -46,13 +57,6 @@ export class DesktopBlender extends Context.Service<
     readonly saveAndQuit: (filepath: string) => Effect.Effect<void, DesktopBlenderError>;
   }
 >()("t3/hostedBlender/DesktopBlender") {}
-
-const AddonReply = Schema.Struct({
-  status: Schema.String,
-  result: Schema.optional(Schema.Unknown),
-  message: Schema.optional(Schema.String),
-});
-const decodeAddonReply = Schema.decodeUnknownOption(Schema.fromJsonString(AddonReply));
 
 // The developer's own Blender is on this port while tests run, with their work open.
 const refuseDesktopPortInTests = (port: number) =>
@@ -130,18 +134,12 @@ else:
     bpy.app.timers.register(_t3_save_and_quit, first_interval=0.1)
     result = {"moved": True}`;
 
-const ProbeResult = Schema.Struct({ filepath: Schema.String, dirty: Schema.Boolean });
-const SaveResult = Schema.Struct({ moved: Schema.Boolean });
-const decodeProbeResult = Schema.decodeUnknownEffect(ProbeResult);
-const decodeSaveResult = Schema.decodeUnknownEffect(SaveResult);
-
 export const make = (options: {
   readonly port: number;
   /** Whether any desktop Blender is running, add-on or not. */
   readonly desktopBlenderRunning: Effect.Effect<boolean>;
   readonly quitTimeout?: Duration.Input;
 }): DesktopBlender["Service"] => {
-  const badReply = () => new DesktopBlenderError({ reason: "badReply" });
   const probe: DesktopBlender["Service"]["probe"] = executeOnAddon(
     options.port,
     PROBE_CODE,
@@ -176,7 +174,11 @@ export const make = (options: {
       Effect.catchTags({
         AddonUnreachable: () => Effect.fail(new DesktopBlenderError({ reason: "unreachable" })),
       }),
-      Effect.flatMap((value) => decodeSaveResult(value).pipe(Effect.mapError(badReply))),
+      Effect.flatMap((value) =>
+        decodeSaveResult(value).pipe(
+          Effect.mapError(() => new DesktopBlenderError({ reason: "badReply" })),
+        ),
+      ),
     );
     if (!result.moved) return yield* new DesktopBlenderError({ reason: "otherFile" });
     if (Option.isNone(yield* quitObserved)) {

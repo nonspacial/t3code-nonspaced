@@ -578,7 +578,7 @@ const layerHostedBlenderSetup = HostedBlenderSetup.layer.pipe(
 
 const layerHostedBlender = HostedBlender.layer.pipe(
   Layer.provideMerge(layerHostedBlenderSetup),
-  // Reached only for Move into T3; desktop Blenders are otherwise never touched.
+  // Read when a master opens and asked to save and quit by Move into T3; never otherwise.
   Layer.provide(DesktopBlender.layer),
   Layer.provide(WorkspacePaths.layer),
   Layer.provide(NetService.layer),

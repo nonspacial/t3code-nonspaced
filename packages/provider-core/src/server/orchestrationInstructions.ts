@@ -69,7 +69,7 @@ To change a \`.blend\` file, work in a hosted working copy unless the user says 
 2. Edit the copy with the \`blender-hosted\` MCP tools. \`blender_status\` shows what is running; \`blender_quit\` quits it, with \`save: true\` to save first.
 3. When you finish, or the user asks to watch, post the working copy as a file link; it opens the Blender pane. To point at something, add \`#view=x,y,z,tx,ty,tz\` (camera position, then target, in scene coordinates), as in \`[hero](/abs/models/hero.wip-1a2b3c4d.blend#view=4,-6,3,0,0,1)\`.
 
-To copy proven changes back, call \`blender_master_open\` with the master's path and work through the MCP server it names (\`blender\` or \`blender-master\`):
+To copy proven changes back, call \`blender_master_open\` with the master's path and work through the MCP server it names (\`blender\` or \`blender-master\`). If it says \`desktopUnchecked\`, warn the user that their desktop Blender may have the master open too.
 1. Replace only the objects you changed. If any of them changed in the master since your copy was made, stop and ask the user.
 2. First set \`bpy.data.scenes[0]["t3_copy_back"]\` to your copy's name and the time, only if it is unset or over 10 minutes old; otherwise wait.
 3. Copy, clear the marker, \`bpy.ops.ed.undo_push(message="…")\`, then save the master.

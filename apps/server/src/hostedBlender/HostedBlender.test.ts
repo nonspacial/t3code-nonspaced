@@ -1856,8 +1856,9 @@ describe("Master Blenders", () => {
         Stream.runHead,
       );
       yield* service.releaseMaster(threadId);
-      yield* service.openMaster({ threadId, relativePath: "cube.blend" });
+      // Still the thread's to see and quit, so nothing is lost or left running unseen.
       expect((yield* firstMaster(service, threadId)).status).toBe("running");
+      yield* service.openMaster({ threadId, relativePath: "cube.blend" });
       expect(host.launches()).toBe(1);
       yield* service.quit({ threadId, save: false, role: "master" });
     }).pipe(Effect.scoped),
@@ -2012,7 +2013,15 @@ describe("Move into T3", () => {
         desktop: desktop.service,
       }),
     );
-    return { service, desktop, launched: () => NodeFS.existsSync(argsLog) };
+    return {
+      service,
+      desktop,
+      launched: () => NodeFS.existsSync(argsLog),
+      launches: () =>
+        NodeFS.existsSync(`${argsLog}.launches`)
+          ? NodeFS.readFileSync(`${argsLog}.launches`, "utf8").split("\n").length - 1
+          : 0,
+    };
   });
 
   it.live("leaves a master the desktop Blender has open there, then moves it on request", () =>
@@ -2041,6 +2050,40 @@ describe("Move into T3", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("starts one master Blender when two threads open the master at once", () =>
+    Effect.gen(function* () {
+      const { service, launches } = yield* desktopHost(() => {
+        const desktop = fakeDesktop({ _tag: "none" });
+        // Asking the desktop Blender takes a while, as a real round trip does.
+        return {
+          ...desktop,
+          service: {
+            ...desktop.service,
+            // oxlint-disable-next-line t3code/no-real-time-wait-in-tests -- the second open must arrive mid-probe; a second open waiting its turn marks nothing to await.
+            probe: Effect.sleep("100 millis").pipe(Effect.andThen(desktop.service.probe)),
+          },
+        };
+      });
+      yield* Effect.all(
+        [
+          service.openMaster({ threadId, relativePath: "cube.blend" }),
+          service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" }),
+        ],
+        { concurrency: "unbounded" },
+      );
+      for (const id of [threadId, otherThreadId]) {
+        yield* service.masterState(id).pipe(
+          Stream.filter((state) => state.status === "running"),
+          Stream.runHead,
+        );
+      }
+      // One Blender: quitting it through one thread quits it for the other.
+      yield* service.quit({ threadId, save: false, role: "master" });
+      expect((yield* firstMaster(service, otherThreadId)).status).toBe("notOpen");
+      expect(launches()).toBe(1);
+    }).pipe(Effect.scoped),
+  );
+
   it.live("ignores a desktop Blender with another file open", () =>
     Effect.gen(function* () {
       const { service } = yield* desktopHost(() =>
@@ -2061,10 +2104,16 @@ describe("Move into T3", () => {
         _tag: "hosted",
         desktopUnchecked: true,
       });
+      yield* service.masterState(threadId).pipe(
+        Stream.filter((state) => state.status === "running"),
+        Stream.runHead,
+      );
       yield* service.quit({ threadId, save: false, role: "master" });
       const refused = yield* service.moveIntoT3(threadId).pipe(Effect.flip);
       expect(refused.reason).toBe("desktopUnreachable");
       expect(desktop.saved).toEqual([]);
+      // What T3 last saw is gone; the pane offers opening it here instead.
+      expect(yield* firstMaster(service, threadId)).toMatchObject({ desktop: null });
     }).pipe(Effect.scoped),
   );
 
@@ -2077,6 +2126,22 @@ describe("Move into T3", () => {
       const refused = yield* service.moveIntoT3(threadId).pipe(Effect.flip);
       expect(refused.reason).toBe("desktopDidNotQuit");
       expect(launched()).toBe(false);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("stops a Blender quit straight after it was opened", () =>
+    Effect.gen(function* () {
+      const { service } = yield* desktopHost(() => fakeDesktop({ _tag: "none" }));
+      yield* service.open({ threadId: otherThreadId, relativePath: "cube.blend" });
+      yield* service.quit({ threadId: otherThreadId, save: false });
+      expect(
+        (yield* service
+          .threadState(otherThreadId)
+          .pipe(Stream.runHead, Effect.map(Option.getOrThrow))).status,
+      ).toBe("stopped");
+      yield* service.openMaster({ threadId, relativePath: "cube.blend" });
+      yield* service.quit({ threadId, save: false, role: "master" });
+      expect(yield* firstMaster(service, threadId)).toMatchObject({ status: "notOpen" });
     }).pipe(Effect.scoped),
   );
 

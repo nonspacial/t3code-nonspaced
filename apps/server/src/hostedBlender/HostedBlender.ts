@@ -412,6 +412,7 @@ const make = Effect.gen(function* () {
     new Map(),
   );
   const userResourcesLock = yield* Semaphore.make(1);
+  const masterLock = yield* Semaphore.make(1);
   const rootDir = path.join(config.stateDir, "hosted-blender");
 
   const masterStateOf = (threadId: ThreadId): HostedBlenderMasterState => {
@@ -714,7 +715,7 @@ const make = Effect.gen(function* () {
    * A master's listener is reached only through the ports of the agent threads using it, each
    * open while that thread may copy back and the listener is ready.
    */
-  const syncForwards = (instance: Instance) =>
+  const syncForwards = Effect.fn("HostedBlender.syncForwards")((instance: Instance) =>
     instance.forwardLock.withPermits(1)(
       Effect.gen(function* () {
         const ready = instance.agentListener === "ready" && !instance.agentListenerRevoked;
@@ -737,9 +738,11 @@ const make = Effect.gen(function* () {
           else yield* Scope.close(scope, Exit.void);
         }
       }),
-    );
+    ),
+  );
 
   /** Granted once Blender has shown it has the launch file open, and a master an agent too. */
+  // Runs for every control line; it shares the instance's run span.
   const maybeGrant = Effect.fnUntraced(function* (instance: Instance) {
     if (
       instance.agentListenerGranted &&
@@ -1085,6 +1088,7 @@ const make = Effect.gen(function* () {
    * A `.blend` the thread may open: inside its workspace, really (no symlink out), and a file.
    * Opening is the pane's first use, by a caller allowed to start programs here.
    */
+  // Runs inside open's or openMaster's span.
   const checkedBlend = Effect.fnUntraced(function* (threadId: ThreadId, relativePath: string) {
     yield* setup.ensureChecked;
     const tools = yield* setup.readiness.pipe(Stream.runHead, Effect.map(Option.getOrNull));
@@ -1114,6 +1118,7 @@ const make = Effect.gen(function* () {
     return { tools, relativePath: resolved.relativePath, blendPath: real[1] };
   });
 
+  // Runs inside open's or openMaster's span; the instance's own work has HostedBlender.run.
   const startInstance = Effect.fnUntraced(function* (
     input: {
       readonly role: HostedBlenderRole;
@@ -1175,7 +1180,11 @@ const make = Effect.gen(function* () {
     };
     instances.set(instance.key, instance);
     yield* publishNow();
-    instance.fiber = yield* run(instance, tools).pipe(Effect.forkIn(serviceScope));
+    // Started now, so a quit straight after still runs its cleanup; a fiber interrupted before
+    // it starts never does.
+    instance.fiber = yield* run(instance, tools).pipe(
+      Effect.forkIn(serviceScope, { startImmediately: true }),
+    );
     return instance;
   });
 
@@ -1237,6 +1246,7 @@ const make = Effect.gen(function* () {
     return yield* quitInstance(instance, save);
   });
 
+  // Runs inside quit's or releaseMaster's span.
   const quitInstance = Effect.fnUntraced(function* (instance: Instance, save: boolean) {
     const control = instance.control;
     const forceQuit = Effect.gen(function* () {
@@ -1615,83 +1625,101 @@ const make = Effect.gen(function* () {
     function* ({ threadId, relativePath }, options) {
       yield* Effect.annotateCurrentSpan({ threadId, agent: options?.agent === true });
       const file = yield* checkedBlend(threadId, relativePath);
-      let instance = instances.get(masterKey(file.blendPath));
-      // Copy back writes into a master; a working Blender never shares its file.
-      if (
-        instance === undefined &&
-        [...instances.values()].some((other) => other.blendPath === file.blendPath)
-      ) {
-        return yield* new HostedBlenderError({ reason: "openInAnotherThread" });
-      }
       const previous = threadMasters.get(threadId);
       if (previous !== undefined && previous.blendPath !== file.blendPath) {
         yield* releaseMaster(threadId);
       }
-      const known = {
-        blendPath: file.blendPath,
-        relativePath: file.relativePath,
-        desktop: null as "open" | "noAddon" | null,
-        desktopDirty: false,
-        agent: options?.agent === true || previous?.agent === true,
-      };
-      threadMasters.set(threadId, known);
-      let desktopUnchecked = false;
-      if (instance === undefined && Option.isSome(desktop)) {
-        // The desktop Blender keeps a master it has open; a different file there is ignored.
-        const probe = yield* desktop.value.probe;
-        if (probe._tag === "open" && (yield* realPathOr(probe.filepath)) === file.blendPath) {
-          known.desktop = "open";
-          known.desktopDirty = probe.dirty;
-          yield* publishNow();
-          return { _tag: "desktop" as const };
-        }
-        if (probe._tag === "noAddon") {
-          known.desktop = "noAddon";
-          desktopUnchecked = true;
-        }
-      }
-      if (instance === undefined) {
-        failedMasters.delete(file.blendPath);
-        instance = yield* startInstance(
-          {
-            role: "master",
-            threadId,
-            relativePath: file.relativePath,
-            blendPath: file.blendPath,
-            agentWorkingCopy: false,
-          },
-          file.tools,
-        );
-      }
-      instance.masterThreads.add(threadId);
-      if (known.agent) {
-        instance.agentThreads.add(threadId);
-        yield* maybeGrant(instance);
-        yield* syncForwards(instance);
-      }
-      yield* publishNow();
-      return { _tag: "hosted" as const, desktopUnchecked };
+      // One at a time, so two threads opening one master can't both start a Blender for it.
+      return yield* masterLock.withPermits(1)(joinMaster(threadId, file, previous, options));
     },
   );
+
+  // Runs inside openMaster's span.
+  const joinMaster = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    file: Effect.Success<ReturnType<typeof checkedBlend>>,
+    previous: { readonly agent: boolean } | undefined,
+    options: { readonly agent?: boolean } | undefined,
+  ) {
+    let instance = instances.get(masterKey(file.blendPath));
+    // Copy back writes into a master; a working Blender never shares its file.
+    if (
+      instance === undefined &&
+      [...instances.values()].some((other) => other.blendPath === file.blendPath)
+    ) {
+      return yield* new HostedBlenderError({ reason: "openInAnotherThread" });
+    }
+    const known = {
+      blendPath: file.blendPath,
+      relativePath: file.relativePath,
+      desktop: null as "open" | "noAddon" | null,
+      desktopDirty: false,
+      agent: options?.agent === true || previous?.agent === true,
+    };
+    threadMasters.set(threadId, known);
+    let desktopUnchecked = false;
+    if (instance === undefined && Option.isSome(desktop)) {
+      // The desktop Blender keeps a master it has open; a different file there is ignored.
+      const probe = yield* desktop.value.probe;
+      if (probe._tag === "open" && (yield* realPathOr(probe.filepath)) === file.blendPath) {
+        known.desktop = "open";
+        known.desktopDirty = probe.dirty;
+        yield* publishNow();
+        return { _tag: "desktop" as const };
+      }
+      if (probe._tag === "noAddon") {
+        known.desktop = "noAddon";
+        desktopUnchecked = true;
+      }
+    }
+    if (instance === undefined) {
+      failedMasters.delete(file.blendPath);
+      instance = yield* startInstance(
+        {
+          role: "master",
+          threadId,
+          relativePath: file.relativePath,
+          blendPath: file.blendPath,
+          agentWorkingCopy: false,
+        },
+        file.tools,
+      );
+    }
+    instance.masterThreads.add(threadId);
+    if (known.agent) {
+      instance.agentThreads.add(threadId);
+      yield* maybeGrant(instance);
+      yield* syncForwards(instance);
+    }
+    yield* publishNow();
+    return { _tag: "hosted" as const, desktopUnchecked };
+  });
 
   const releaseMaster: HostedBlender["Service"]["releaseMaster"] = Effect.fn(
     "HostedBlender.releaseMaster",
   )(function* (threadId) {
     const known = threadMasters.get(threadId);
     if (known === undefined) return;
-    threadMasters.delete(threadId);
     const instance = instances.get(masterKey(known.blendPath));
+    // The last thread keeps a master with unsaved changes in view, so someone can save or quit
+    // it; only its agent's access ends.
+    if (
+      instance?.dirty === true &&
+      instance.masterThreads.size === 1 &&
+      instance.masterThreads.has(threadId)
+    ) {
+      known.agent = false;
+      instance.agentThreads.delete(threadId);
+      yield* syncForwards(instance);
+      return yield* publishNow();
+    }
+    threadMasters.delete(threadId);
     if (instance !== undefined) {
       instance.masterThreads.delete(threadId);
       instance.agentThreads.delete(threadId);
       yield* syncForwards(instance);
-      if (instance.masterThreads.size === 0) {
-        // Quitting would lose unsaved edits; the user quits it, keeping or dropping them.
-        if (instance.dirty) {
-          yield* Effect.logInfo("a master Blender no thread uses has unsaved changes; kept open");
-        } else {
-          yield* quitInstance(instance, false).pipe(Effect.ignore);
-        }
+      if (instance.masterThreads.size === 0 && !instance.dirty) {
+        yield* quitInstance(instance, false).pipe(Effect.ignore);
       }
     }
     yield* publishNow();
@@ -1721,7 +1749,8 @@ const make = Effect.gen(function* () {
       yield* desktop.value.saveAndQuit(known.blendPath).pipe(
         Effect.catch((error) =>
           Effect.gen(function* () {
-            if (error.reason === "otherFile") {
+            // What T3 saw there no longer holds; the pane offers opening it here instead.
+            if (error.reason !== "didNotQuit") {
               known.desktop = null;
               yield* publishNow();
             }
