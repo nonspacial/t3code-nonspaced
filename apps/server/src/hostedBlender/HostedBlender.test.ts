@@ -3043,8 +3043,8 @@ def control():
     server.bind(t3[1])
     server.listen(1)
     connection, _ = server.accept()
-    def state(filepath):
-        connection.sendall((json.dumps({"type": "state", "filepath": filepath, "dirty": False,
+    def state(filepath, dirty=False):
+        connection.sendall((json.dumps({"type": "state", "filepath": filepath, "dirty": dirty,
                                         "agentListener": listener[0]}) + "\n").encode())
     after = os.environ.get("STANDIN_AFTER")
     # Another file already open by the time T3 hears, claiming its listener is ready.
@@ -3067,9 +3067,17 @@ def control():
         if kind == "quit" and command.get("save"):
             # As Blender does: saved, then quitting, reading no more commands (T3's stop
             # included) while it writes its quit copy and exits.
+            import time
             for reply in ({"type": "saving"}, {"type": "saved"}):
                 connection.sendall((json.dumps(reply) + "\n").encode())
-            import time
+            if after == "offAfterSaved":
+                # The add-on ended the grant on saving; its next state says the listener is off,
+                # then (dirty again) marks that T3 has read both.
+                listener[0] = "off"
+                state(blend)
+                state(blend, dirty=True)
+                while not os.path.exists(os.environ["STANDIN_ARGS"] + ".hold"):
+                    time.sleep(0.02)
             time.sleep(0.3)
             event({"type": "exited", "process": "blender", "code": 0, "signal": None})
             os._exit(0)
@@ -3102,7 +3110,7 @@ describe("Agent access at launch", () => {
   const launch = Effect.fn(function* (
     host: Pick<Host, "runtimeMode" | "interactionMode" | "agentPort" | "revocations">,
     options: { readonly agentWorkingCopy?: boolean } = { agentWorkingCopy: true },
-    after?: "otherFile" | "otherFileFirst" | "holdOnStop",
+    after?: "otherFile" | "otherFileFirst" | "holdOnStop" | "offAfterSaved",
   ) {
     const dir = yield* tempDir("agent-access");
     const bin = fakeTools(dir);
@@ -3230,6 +3238,28 @@ describe("Agent access at launch", () => {
         Stream.filter((state) => state.status === "stopped"),
         Stream.runHead,
       );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("Save and quit ends the agent's access as revoked once Blender says it saved", () =>
+    Effect.gen(function* () {
+      const { service, release } = yield* launch(
+        { agentPort: 41234 },
+        { agentWorkingCopy: true },
+        "offAfterSaved",
+      );
+      expect((yield* service.agentListener(threadId))?.state).toBe("ready");
+      const quitting = yield* service.quit({ threadId, save: true }).pipe(Effect.forkChild);
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "running" && state.dirty),
+        Stream.runHead,
+      );
+      expect(yield* service.agentListener(threadId)).toMatchObject({
+        state: "off",
+        ended: "revoked",
+      });
+      release();
+      yield* Fiber.join(quitting);
     }).pipe(Effect.scoped),
   );
 

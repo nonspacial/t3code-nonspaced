@@ -1185,6 +1185,8 @@ const make = Effect.gen(function* () {
         return;
       case "saved":
         instance.saved = true;
+        // The add-on ended the grant before saying so; Blender quits next.
+        yield* revokeAgentListener(instance);
         yield* writeRunFacts(instance);
         if (instance.saveReplies) yield* Queue.offer(instance.saveReplies, "saved");
         return;
