@@ -433,8 +433,10 @@ interface Instance {
   saveConfirmed: boolean;
   /** The file Blender has open, whose copy this run's end keeps. */
   endFile: EndFile;
-  /** Blender last reported `endFile` clean. */
+  /** Blender last reported `endFile` clean, before it began quitting. */
   clean: boolean;
+  /** The add-on said it is quitting without saving. */
+  quitHeard: boolean;
   /** What T3 had asked when the helper exited; later asks can't make a crash look closed. */
   exitIntent: { readonly ending: boolean; readonly quitting: boolean } | null;
   /** The add-on said it is saving or writing its quit copy; stopping it now could cut that short. */
@@ -640,11 +642,10 @@ const make = Effect.gen(function* () {
   const keepCopy = Effect.fn("HostedBlender.keepCopy")(function* (input: {
     readonly threadId: ThreadId;
     readonly endFile: EndFile;
-    readonly clean: boolean;
     readonly kind: RecoveryRecord["kind"];
     readonly tmpDir: string;
   }) {
-    const { file, path: filePath, since } = input.endFile;
+    const { file, since } = input.endFile;
     const key = fileKeyOf(file);
     const names = yield* fileSystem
       .readDirectory(input.tmpDir)
@@ -661,19 +662,13 @@ const make = Effect.gen(function* () {
     const files = yield* Effect.forEach(names, (name) =>
       mtimeOf(path.join(input.tmpDir, name)).pipe(Effect.map((mtimeMs) => ({ name, mtimeMs }))),
     );
-    const saved = filePath === null ? -1 : yield* mtimeOf(filePath);
-    const snapshot = snapshotOf(
-      files,
-      {
-        stem:
-          file.kind === "untitled"
-            ? null
-            : path.basename(file.kind === "workspace" ? file.relativePath : file.path, ".blend"),
-        since,
-      },
-      input.clean,
-      saved < 0 ? null : saved,
-    );
+    const snapshot = snapshotOf(files, {
+      stem:
+        file.kind === "untitled"
+          ? null
+          : path.basename(file.kind === "workspace" ? file.relativePath : file.path, ".blend"),
+      since,
+    });
     const existing = records.get(input.threadId)?.get(key);
     if (snapshot === undefined && existing !== undefined) return;
     yield* fileSystem.makeDirectory(copyDir(input.threadId, key), { recursive: true });
@@ -733,7 +728,6 @@ const make = Effect.gen(function* () {
     run: {
       readonly threadId: ThreadId;
       readonly endFile: EndFile;
-      readonly clean: boolean;
       readonly tmpDir: string;
     },
     cleanup: ReturnType<typeof cleanupOf>,
@@ -847,7 +841,6 @@ const make = Effect.gen(function* () {
           {
             threadId,
             endFile: facts.endFile,
-            clean: facts.clean,
             tmpDir: path.join(launchDir, "tmp"),
           },
           cleanupOf({ ...facts, ending }),
@@ -1255,7 +1248,9 @@ const make = Effect.gen(function* () {
           }
         }
         if (message.value.dirty) instance.saved = false;
-        instance.clean = !message.value.dirty;
+        // Its quit pushes an undo step for the quit copy, so a report after "quitting" is
+        // always unsaved and says nothing about the person's work.
+        if (!instance.quitHeard) instance.clean = !message.value.dirty;
         if (switched) {
           instance.openRealPath =
             openFile === null
@@ -1295,6 +1290,7 @@ const make = Effect.gen(function* () {
       }
       case "quitting":
         instance.acknowledged = true;
+        instance.quitHeard = true;
         return;
       case "saved":
         instance.saved = true;
@@ -1555,12 +1551,12 @@ const make = Effect.gen(function* () {
             {
               threadId: instance.threadId,
               endFile: instance.endFile,
-              clean: instance.clean,
               tmpDir: path.join(stateDir, "tmp"),
             },
             cleanupOf({
               restore: instance.restore,
               saved: instance.saved,
+              clean: instance.clean,
               ending: endingOf({
                 wasRunning: instance.status === "running",
                 ending: intent.ending || (instance.saveConfirmed && !instance.saved),
@@ -1856,6 +1852,7 @@ const make = Effect.gen(function* () {
       saveConfirmed: false,
       endFile: { file: launchFile, path: real[1], since: 0 },
       clean: false,
+      quitHeard: false,
       exitIntent: null,
       acknowledged: false,
       stopNow: false,

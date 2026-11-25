@@ -14,8 +14,6 @@ describe("snapshotOf", () => {
           { name: "hero_102_autosave.blend", mtimeMs: 20 },
         ],
         hero,
-        false,
-        null,
       ),
     ).toBe("quit.blend");
     expect(
@@ -27,8 +25,6 @@ describe("snapshotOf", () => {
           { name: "blender_x1y2", mtimeMs: 50 },
         ],
         hero,
-        false,
-        null,
       ),
     ).toBe("hero_102_autosave.blend");
   });
@@ -39,29 +35,13 @@ describe("snapshotOf", () => {
       { name: "hero_101_autosave.blend", mtimeMs: 10 },
       { name: "101_autosave.blend", mtimeMs: 40 },
     ];
-    expect(snapshotOf(files, hero, false, null)).toBe("hero_101_autosave.blend");
-    expect(snapshotOf(files, { stem: "hero", since: 20 }, false, null)).toBeUndefined();
-    expect(snapshotOf(files, { stem: null, since: 0 }, false, null)).toBe("101_autosave.blend");
+    expect(snapshotOf(files, hero)).toBe("hero_101_autosave.blend");
+    expect(snapshotOf(files, { stem: "hero", since: 20 })).toBeUndefined();
+    expect(snapshotOf(files, { stem: null, since: 0 })).toBe("101_autosave.blend");
     // A stem is matched as text, never as a pattern.
     expect(
-      snapshotOf(
-        [{ name: "h_r_101_autosave.blend", mtimeMs: 1 }],
-        { stem: "h.r", since: 0 },
-        false,
-        null,
-      ),
+      snapshotOf([{ name: "h_r_101_autosave.blend", mtimeMs: 1 }], { stem: "h.r", since: 0 }),
     ).toBeUndefined();
-  });
-
-  it("drops a clean file's snapshot only when none is newer than its last save", () => {
-    const quit = [{ name: "quit.blend", mtimeMs: 30 }];
-    const autosave = [{ name: "hero_101_autosave.blend", mtimeMs: 10 }];
-    expect(snapshotOf(autosave, hero, true, 20)).toBeUndefined();
-    // Scripted edits can leave Blender's dirty bit clear: a newer snapshot is still kept.
-    expect(snapshotOf(quit, hero, true, 20)).toBe("quit.blend");
-    expect(snapshotOf(autosave, hero, false, 20)).toBe("hero_101_autosave.blend");
-    expect(snapshotOf(autosave, { stem: null, since: 0 }, true, null)).toBeUndefined();
-    expect(snapshotOf(quit, { stem: null, since: 0 }, true, null)).toBe("quit.blend");
   });
 });
 
@@ -123,7 +103,7 @@ describe("endingOf", () => {
 });
 
 describe("cleanupOf", () => {
-  const run = { restore: "none", saved: false, ending: "closed" } as const;
+  const run = { restore: "none", saved: false, ending: "closed", clean: false } as const;
 
   it("keeps a closed or crashed run's snapshot of the file it ended on", () => {
     expect(cleanupOf(run)).toEqual({ action: "keep", kind: "closed" });
@@ -134,6 +114,16 @@ describe("cleanupOf", () => {
   it("forgets the file's copy once its last word was a confirmed save", () => {
     expect(cleanupOf({ ...run, saved: true })).toEqual({ action: "forget" });
     expect(cleanupOf({ ...run, ending: "crashed", saved: true })).toEqual({ action: "forget" });
+  });
+
+  it("keeps nothing new for a file Blender last reported clean, but a crash's autosave", () => {
+    expect(cleanupOf({ ...run, clean: true })).toEqual({ action: "leave" });
+    expect(cleanupOf({ ...run, clean: true, restore: "ok" })).toEqual({ action: "leave" });
+    expect(cleanupOf({ ...run, clean: true, ending: "crashed" })).toEqual({
+      action: "keep",
+      kind: "crashed",
+    });
+    expect(cleanupOf({ ...run, clean: true, saved: true })).toEqual({ action: "forget" });
   });
 
   it("leaves every copy alone after a quit, a failed start, or a restore that never succeeded", () => {

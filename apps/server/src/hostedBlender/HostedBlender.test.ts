@@ -229,6 +229,8 @@ event({"type": "ready", "capture": "extImageCopyCapture", "target": "window",
 if scenario != "never-shows":
     event({"type": "windowCaptured", "title": "3D Viewport"})
 def send(connection, value):
+    if value.get("type") == "state":
+        state["open"] = value["filepath"]
     connection.sendall((json.dumps(value) + "\n").encode())
 # A 1x1 PNG, as the add-on renders the viewport into the control socket's private folder.
 PIXEL = bytes.fromhex(
@@ -263,7 +265,7 @@ def control():
     # Blender reports the file it has open by its full path, as it was given.
     opened = next(arg for arg in rest if arg.endswith(".blend"))
     first = {"type": "state", "filepath": opened,
-             "dirty": scenario not in ("clean", "clean-opens-other", "switches", "matrix")}
+             "dirty": scenario not in ("switches", "matrix")}
     if "--t3-recover" in t3 and scenario != "restore-silent":
         first["restore"] = "failed" if scenario == "restore-fails" else matrix.get("restore", "ok")
         if scenario == "restored-elsewhere":
@@ -290,9 +292,6 @@ def control():
         # Opens another file and edits it: once T3 sees it dirty, it has seen the switch.
         other = os.path.join(os.path.dirname(opened), "other.blend")
         send(connection, dict(first, filepath=other, dirty=True))
-    if scenario == "clean-opens-other" and os.path.exists(os.environ["STANDIN_BIND"]):
-        # Once the test creates STANDIN_BIND, the person switches files without editing either.
-        send(connection, dict(first, filepath=os.path.join(os.path.dirname(opened), "other.blend")))
     saves = 0
     view = {"position": [7, -7, 5], "target": [0, 0, 1]}
     outstanding = [0]
@@ -308,6 +307,8 @@ def control():
             if scenario == "ignores-quit":
                 continue
             send(connection, {"type": "quitting"})
+            # As the add-on does: its quit pushes an undo step, so its next report is unsaved.
+            send(connection, {"type": "state", "filepath": state.get("open", opened), "dirty": True})
             state["finishing"].clear()
             if scenario in ("slow-quit", "late-slow-quit"):
                 # Still writing its quit copy past T3's shutdown deadline.
@@ -828,7 +829,8 @@ const runCell = Effect.fn(function* (cell: Cell) {
     } else {
       crash();
     }
-    yield* until((state) => state.status === "closed" || state.status === "crashed");
+    // Gone: a card, or none when nothing was kept.
+    yield* until((state) => state.status !== "running" && state.status !== "starting");
   }
   const copies = yield* service.keptCopies(threadId);
   const threadDir = NodePath.join(
@@ -836,7 +838,8 @@ const runCell = Effect.fn(function* (cell: Cell) {
     "recovery",
     Buffer.from(threadId).toString("base64url"),
   );
-  const misfiled = NodeFS.readdirSync(threadDir).filter((folder) => {
+  const folders = NodeFS.existsSync(threadDir) ? NodeFS.readdirSync(threadDir) : [];
+  const misfiled = folders.filter((folder) => {
     const record = JSON.parse(
       NodeFS.readFileSync(NodePath.join(threadDir, folder, "record.json"), "utf8"),
     );
@@ -849,6 +852,7 @@ const runCell = Effect.fn(function* (cell: Cell) {
     return folder !== NodeCrypto.createHash("sha256").update(key).digest("hex");
   });
   return {
+    service,
     before,
     misfiled,
     copies: new Map(copies.map((copy) => [copy.key, copy])),
@@ -887,6 +891,12 @@ describe("One recovery copy per file", () => {
               expect(copies.size, label).toBe(1);
               return;
             }
+            if (cell.ending === "settle" && !cell.dirty) {
+              // Blender's last word was clean: nothing new is kept, and no copy is touched.
+              expect(cube, label).toEqual(before);
+              expect(copies.size, label).toBe(cell.waiting ? 1 : 0);
+              return;
+            }
             if (cell.end === "same") {
               // A newer copy of the same file replaces its older one.
               expect(cube?.contents, label).toMatch(snapshot);
@@ -906,6 +916,51 @@ describe("One recovery copy per file", () => {
           }),
         { discard: true },
       ).pipe(Effect.scoped),
+  );
+
+  it.live("a clean look at a file keeps nothing, and the file opens normally after", () =>
+    Effect.gen(function* () {
+      const { copies, cube, service } = yield* runCell({
+        waiting: false,
+        restore: "none",
+        dirty: false,
+        end: "same",
+        ending: "settle",
+      });
+      expect(cube).toBeNull();
+      expect(copies.size).toBe(0);
+      expect((yield* firstState(service)).status).toBe("stopped");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a clean look at a file whose copy waits leaves that copy as it was", () =>
+    Effect.gen(function* () {
+      const { before, copies, cube } = yield* runCell({
+        waiting: true,
+        restore: "none",
+        dirty: false,
+        end: "same",
+        ending: "settle",
+      });
+      expect(cube).toEqual(before);
+      expect(cube?.contents).toBe("waiting copy");
+      expect(copies.get(CUBE)).toMatchObject({ kind: "closed", recovery: true });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a file left unsaved replaces its waiting copy with the newer one", () =>
+    Effect.gen(function* () {
+      const { copies, cube } = yield* runCell({
+        waiting: true,
+        restore: "none",
+        dirty: true,
+        end: "same",
+        ending: "settle",
+      });
+      expect(cube?.contents).toMatch(/^quit copy /);
+      expect(copies.get(CUBE)).toMatchObject({ kind: "closed", recovery: true });
+    }).pipe(Effect.scoped),
   );
 
   it.live(
@@ -932,25 +987,23 @@ describe("One recovery copy per file", () => {
       }).pipe(Effect.scoped),
   );
 
-  it.live(
-    "M11: a scripted edit that leaves the dirty bit clear on another file is still kept",
-    () =>
-      Effect.gen(function* () {
-        const { before, copies, cube, end } = yield* runCell({
-          waiting: true,
-          restore: "none",
-          dirty: false,
-          end: "other",
-          ending: "settle",
-        });
-        expect(cube).toEqual(before);
-        expect(end?.contents).toMatch(/^quit copy /);
-        expect(end?.record).toMatchObject({
-          file: { kind: "workspace", relativePath: "other.blend" },
-          recovery: true,
-        });
-        expect([...copies.keys()]).toEqual([OTHER, CUBE]);
-      }).pipe(Effect.scoped),
+  it.live("M11: an agent edit on another file, which the add-on reports unsaved, is kept", () =>
+    Effect.gen(function* () {
+      const { before, copies, cube, end } = yield* runCell({
+        waiting: true,
+        restore: "none",
+        dirty: true,
+        end: "other",
+        ending: "settle",
+      });
+      expect(cube).toEqual(before);
+      expect(end?.contents).toMatch(/^quit copy /);
+      expect(end?.record).toMatchObject({
+        file: { kind: "workspace", relativePath: "other.blend" },
+        recovery: true,
+      });
+      expect([...copies.keys()]).toEqual([OTHER, CUBE]);
+    }).pipe(Effect.scoped),
   );
 });
 
@@ -1125,18 +1178,27 @@ describe("Salvaging what a stopped server left", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect(
-    "keeps a clean run's snapshot newer than its last save, which scripts may not mark",
-    () =>
-      Effect.gen(function* () {
-        const dir = yield* tempDir("salvage-unchanged");
-        const { hostedDir } = leftover(dir, {
-          facts: { restore: "none", saved: false, changed: false },
-          waiting: "waiting copy",
-        });
-        expect((yield* firstState(yield* idleService(dir))).status).toBe("closed");
-        expect(recoveryOf(hostedDir)?.contents).toBe("left behind");
-      }).pipe(Effect.scoped),
+  it.effect("keeps nothing of a run that ended with its file clean", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage-unchanged");
+      const { hostedDir } = leftover(dir, {
+        facts: { restore: "none", saved: false, changed: false },
+      });
+      expect((yield* firstState(yield* idleService(dir))).status).toBe("stopped");
+      expect(recoveryOf(hostedDir)).toBeNull();
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps the waiting copy a clean run didn't restore, though its snapshot is newer", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage-unrestored");
+      const { hostedDir } = leftover(dir, {
+        facts: { restore: "none", saved: false, changed: false },
+        waiting: "waiting copy",
+      });
+      expect((yield* firstState(yield* idleService(dir))).status).toBe("closed");
+      expect(recoveryOf(hostedDir)?.contents).toBe("waiting copy");
+    }).pipe(Effect.scoped),
   );
 
   it.effect("keeps the waiting copy when a clean run left nothing newer than its last save", () =>
@@ -1158,7 +1220,7 @@ describe("Salvaging what a stopped server left", () => {
     Effect.gen(function* () {
       const dir = yield* tempDir("salvage-switched");
       const { hostedDir } = leftover(dir, {
-        facts: { restore: "none", saved: false, changed: false, relativePath: "other.blend" },
+        facts: { restore: "none", saved: false, changed: true, relativePath: "other.blend" },
         waiting: "waiting copy",
       });
       expect(yield* firstState(yield* idleService(dir))).toEqual({
@@ -1701,33 +1763,6 @@ describe("Endings and recovery", () => {
       yield* service.quit({ threadId, save: false });
       expect((yield* firstState(service)).status).toBe("closed");
       expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
-    }).pipe(Effect.scoped),
-  );
-
-  it.live("a file opened as last saved, then left for another, keeps both files' copies", () =>
-    Effect.gen(function* () {
-      const { dir, service, awaitStatus, hostedDir, bind } = yield* standIn(
-        "unchanged-switched",
-        "clean-opens-other",
-      );
-      NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
-      yield* service.open({ threadId, relativePath: "cube.blend" });
-      yield* awaitStatus("running");
-      yield* service.closeOnSettle({ threadId });
-      yield* awaitStatus("closed");
-      const kept = recoveryOf(hostedDir);
-      bind();
-      yield* service.reopen({ threadId, key: CUBE, restore: false });
-      yield* awaitStatus("running");
-      yield* service.closeOnSettle({ threadId });
-      expect(yield* awaitStatus("closed")).toEqual({
-        status: "closed",
-        relativePath: "other.blend",
-        recovery: true,
-        alsoKept: [CUBE],
-      });
-      expect(recoveryOf(hostedDir)).toEqual(kept);
-      expect(recoveryOf(hostedDir, OTHER)?.contents).toMatch(/^quit copy /);
     }).pipe(Effect.scoped),
   );
 
@@ -3064,6 +3099,13 @@ def _edit(*_args):
         return
     bpy.context.scene.collection.objects.link(bpy.data.objects.new("T3Edit", None))
     open(marker, "w").close()
+    # Recorded as an undo step, as an edit through Blender's UI or an agent call is, so
+    # Blender reports the file unsaved.
+    def _push():
+        window = bpy.context.window_manager.windows[0]
+        with bpy.context.temp_override(window=window):
+            bpy.ops.ed.undo_push(message="T3 test edit")
+    bpy.app.timers.register(_push, first_interval=0.2)
 
 def register():
     bpy.app.handlers.load_post.append(_edit)
@@ -3402,7 +3444,7 @@ def control():
     server.bind(t3[1])
     server.listen(1)
     connection, _ = server.accept()
-    def state(filepath, dirty=False, **extra):
+    def state(filepath, dirty=os.environ.get("STANDIN_DIRTY") == "1", **extra):
         connection.sendall((json.dumps({"type": "state", "filepath": filepath, "dirty": dirty,
                                         "agentListener": listener[0], **extra}) + "\n").encode())
     after = os.environ.get("STANDIN_AFTER")
@@ -3482,7 +3524,9 @@ for line in sys.stdin:
 describe("Agent access at launch", () => {
   const launch = Effect.fn(function* (
     host: Pick<Host, "runtimeMode" | "interactionMode" | "agentPort" | "revocations">,
-    options: { readonly agentWorkingCopy?: boolean } = { agentWorkingCopy: true },
+    options: { readonly agentWorkingCopy?: boolean; readonly edited?: boolean } = {
+      agentWorkingCopy: true,
+    },
     after?:
       | "otherFile"
       | "otherFileFirst"
@@ -3510,6 +3554,8 @@ describe("Agent access at launch", () => {
           XDG_RUNTIME_DIR: runtime,
           STANDIN_ARGS: argsLog,
           ...(after === undefined ? {} : { STANDIN_AFTER: after }),
+          // The agent edited the working copy, so Blender reports it unsaved.
+          ...(options.edited ? { STANDIN_DIRTY: "1" } : {}),
         },
         helper: NodePath.join(bin, "helper"),
         workspaceRoot: dir,
@@ -3517,7 +3563,10 @@ describe("Agent access at launch", () => {
         ...host,
       }),
     );
-    yield* service.open({ threadId, relativePath: "cube.blend" }, options);
+    yield* service.open(
+      { threadId, relativePath: "cube.blend" },
+      { agentWorkingCopy: options.agentWorkingCopy === true },
+    );
     yield* service.threadState(threadId).pipe(
       Stream.filter((state) => state.status === "running"),
       Stream.runHead,
@@ -3593,7 +3642,7 @@ describe("Agent access at launch", () => {
     Effect.gen(function* () {
       const { service, controlLog, release, argsLog } = yield* launch(
         { agentPort: 41234 },
-        undefined,
+        { agentWorkingCopy: true, edited: true },
         "holdOnStop",
       );
       expect((yield* service.agentListener(threadId))?.state).toBe("ready");
@@ -3665,7 +3714,10 @@ describe("Agent access at launch", () => {
 
   it.live("gives a reopened working copy no agent access: it was the person's to reopen", () =>
     Effect.gen(function* () {
-      const { service, lastArgs } = yield* launch({ agentPort: 41234 });
+      const { service, lastArgs } = yield* launch(
+        { agentPort: 41234 },
+        { agentWorkingCopy: true, edited: true },
+      );
       expect(lastArgs()).toContain("--t3-mcp-listen");
       yield* service.closeOnSettle({ threadId });
       yield* service.threadState(threadId).pipe(

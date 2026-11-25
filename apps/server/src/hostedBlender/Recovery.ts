@@ -54,14 +54,11 @@ const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&
 
 /**
  * Blender's snapshot of the file it ended on: its quit copy, or an autosave named for that file
- * (`<stem>_<pid>_autosave.blend`, `<pid>_autosave.blend` untitled) since it opened it. None when
- * Blender reported it clean and no snapshot is newer than its last save (`savedMs`).
+ * (`<stem>_<pid>_autosave.blend`, `<pid>_autosave.blend` untitled) since it opened it.
  */
 export const snapshotOf = (
   files: ReadonlyArray<{ readonly name: string; readonly mtimeMs: number }>,
   file: { readonly stem: string | null; readonly since: number },
-  clean: boolean,
-  savedMs: number | null,
 ): string | undefined => {
   const autosave =
     file.stem === null
@@ -74,9 +71,7 @@ export const snapshotOf = (
         (entry.name === "quit.blend" || (autosave.test(entry.name) && entry.mtimeMs >= file.since)),
     )
     .toSorted((a, b) => b.mtimeMs - a.mtimeMs)[0];
-  if (newest === undefined) return undefined;
-  if (clean && savedMs !== null && newest.mtimeMs <= savedMs) return undefined;
-  return newest.name;
+  return newest?.name;
 };
 
 export type RestoreState = "none" | "pending" | "ok" | "failed";
@@ -95,6 +90,8 @@ export const cleanupOf = (run: {
   /** A confirmed save of the file it ended on was its last word on that file. */
   readonly saved: boolean;
   readonly ending: Ending;
+  /** Blender's last report for that file, before it began quitting, was clean. */
+  readonly clean: boolean;
 }): Cleanup => {
   // A restore that never succeeded had the saved file open, never the copy's work.
   if (run.restore === "pending" || run.restore === "failed") return { action: "leave" };
@@ -102,5 +99,9 @@ export const cleanupOf = (run: {
   // Quit by the person, or by Blender's own File menu: nothing more to keep, and nothing to
   // remove but by Discard.
   if (run.ending === "stopped" || run.ending === "failed") return { action: "leave" };
+  // Closed clean: nothing new is kept, and a waiting copy of the file stays as it was. Every
+  // agent call marks the file unsaved, so what this gives up is a person's own script that
+  // bypasses undo. A crash keeps an autosave of the file newer than its opening, if any.
+  if (run.clean && run.ending === "closed") return { action: "leave" };
   return { action: "keep", kind: run.ending };
 };
