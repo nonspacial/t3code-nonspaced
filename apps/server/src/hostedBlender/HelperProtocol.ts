@@ -22,6 +22,8 @@ const HelperEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("frameSize"), width: Schema.Number, height: Schema.Number }),
   Schema.Struct({ type: Schema.Literal("windowCaptured"), title: Schema.String }),
   Schema.Struct({ type: Schema.Literal("windowClosed") }),
+  /** The hidden display's output changed size. */
+  Schema.Struct({ type: Schema.Literal("resized"), width: Schema.Number, height: Schema.Number }),
   /** Blender captured the mouse; its cursor left the display. */
   Schema.Struct({ type: Schema.Literal("cursorLeave") }),
   Schema.Struct({ type: Schema.Literal("cursorEnter") }),

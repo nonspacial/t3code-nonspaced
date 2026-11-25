@@ -2100,10 +2100,12 @@ export function requiredScopesForServerSettingsPatch(
     ...(changesAccess ? [AuthAccessWriteScope] : []),
     // Saving a script or a Blender or Blender MCP path is choosing a command for the host to run;
     // switching Hosted Blender on runs its setup check, as Check again does. Off runs nothing.
+    // The Timeline strip changes every running Blender's window, as operating one does.
     ...(carriesProjectScripts(patch) ||
     patch.blenderPath !== undefined ||
     patch.blenderMcpPath !== undefined ||
-    patch.hostedBlenderEnabled === true
+    patch.hostedBlenderEnabled === true ||
+    patch.hostedBlenderTimeline !== undefined
       ? [AuthOrchestrationOperateScope]
       : []),
   ];

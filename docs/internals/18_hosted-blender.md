@@ -45,14 +45,17 @@ for a master's agents.
 
 The hidden display helper streams, and makes fullscreen, the first window whose title contains
 "3D Viewport" ([`BlenderLaunch.ts`](../../apps/server/src/hostedBlender/BlenderLaunch.ts)), and
-Blender gives that title only to a window holding a lone 3D view; one with two areas is titled
-"Blender", like any other. So the control add-on opens T3's viewport window as a lone 3D view
-and adds the Timeline strip under it on a later pass, once the window is shown with that title
-([`controlAddon.ts`](../../apps/server/src/hostedBlender/controlAddon.ts)); on Blender 4.5 a
-split in the same pass leaves the window never made fullscreen. Once captured, the helper keeps
-the window whatever its title becomes. Screenshots, marks, view capture and view links read the
-3D view's own area and region, never the strip's; the stream and the pane's size follow the
-whole window.
+Blender gives that title only to a window holding a lone 3D view; split, it may become "Blender"
+(on 4.5 even a split made before the window is shown does, so it is never made fullscreen), and
+removing the strip doesn't give it back. So the control add-on opens each viewport window as a
+lone 3D view and adds the Timeline strip only once the helper has it: the add-on numbers the
+window and announces it over the control socket before it exists (closing every other one
+first), T3 answers `viewportShown` once the helper reports a live capture after that, and the
+add-on waits too for the window to fill the output, whose size T3 sends with `display`. With
+the whole output streamed there is nothing to wait for. Once captured, the helper keeps the
+window whatever its title becomes. Screenshots, marks, view capture and view links read the 3D
+view's own area and region, never the strip's; the stream and the pane's size follow the whole
+window.
 
 ## A change on disk Blender didn't make
 

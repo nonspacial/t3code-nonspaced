@@ -64,6 +64,11 @@ class _State:
     viewport_window = None
     # Whether that window has Blender's Timeline in a strip under its 3D view.
     timeline = TIMELINE
+    # Each viewport window this session opens is numbered; T3 says once the hidden display has
+    # captured that one, and the output's size it must fill (None: the whole output is streamed).
+    viewport_generation = 0
+    viewport_shown = 0
+    display = None
     # When Blender last loaded a file (open, revert, recover), epoch ms; T3 ignores autosaves
     # from before it.
     loaded_at = None
@@ -145,6 +150,7 @@ def _snapshot():
         "agentListener": _State.agent_listener,
         "agentActing": _agent_acting(_mcp_server()),
         "mcpVersion": _State.mcp_version,
+        "viewport": _State.viewport_generation,
     }
     if _State.restore is not None:
         snapshot["restore"] = _State.restore
@@ -422,9 +428,15 @@ def _handle(command):
     if kind == "stopAgentListener":
         _end_grant()
         return
-    if kind == "timeline":
+    if kind in ("timeline", "viewportShown", "display"):
+        if kind == "timeline":
+            _State.timeline = bool(command.get("shown"))
+        elif kind == "viewportShown":
+            _State.viewport_shown = command.get("generation", 0)
+        else:
+            width, height = command.get("width"), command.get("height")
+            _State.display = (width, height) if width and height else None
         # Applied on the viewport window's own pass, never in the pass that opens it.
-        _State.timeline = bool(command.get("shown"))
         if not bpy.app.timers.is_registered(_open_viewport_window):
             bpy.app.timers.register(_open_viewport_window, first_interval=TICK)
         return
@@ -916,8 +928,16 @@ def _open_viewport_window():
                 bpy.ops.wm.window_close()
         return 0.2
     if own:
+        # Split, its title is no longer the one the hidden display finds it by.
+        if _State.timeline and not _viewport_settled(own[0]):
+            return TICK
         _show_timeline(own[0], _State.timeline)
         return None
+    # Announced before it exists, so T3 counts only a capture that follows.
+    if _State.client is None:
+        return TICK
+    _State.viewport_generation += 1
+    _publish_state()
     areas = [area for area in window.screen.areas if area.type == "VIEW_3D"]
     if not areas:
         area = max(window.screen.areas, key=lambda area: area.width * area.height)
@@ -934,10 +954,16 @@ def _open_viewport_window():
     if opened:
         opened[-1].screen[VIEWPORT_MARKER] = True
         _State.viewport_window = opened[-1].as_pointer()
-        # The strip comes on the next pass: the hidden display finds the window by the title
-        # Blender gives a lone 3D view, which a window split before it is shown never has.
-        return 0.1
+        return TICK
     return None
+
+
+def _viewport_settled(window):
+    # The hidden display captured this window (T3 says so by its number) and made it fill the
+    # output, which Blender sees as the window's own size.
+    if _State.viewport_shown != _State.viewport_generation:
+        return False
+    return _State.display is None or (window.width, window.height) == _State.display
 
 
 def _show_timeline(window, shown):

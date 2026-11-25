@@ -55,6 +55,11 @@ export function HostedBlenderSetupSettings(props: { readonly environmentId: Envi
   const canOperate = useAtomValue(
     hostedBlenderEnvironment.checkSetup.permissionAtom(props.environmentId),
   );
+  // The same command as the pane's menu, gated the same way: it changes every running Blender.
+  const canSetTimeline = useAtomValue(
+    hostedBlenderEnvironment.setTimeline.permissionAtom(props.environmentId),
+  );
+  const setTimeline = useAtomCommand(hostedBlenderEnvironment.setTimeline);
   // Only a switched-on Hosted Blender is checked, so the subscription waits for the switch.
   const state = useHostedBlenderSetupState(enabled ? props.environmentId : null);
   const result = state?.result ?? null;
@@ -126,8 +131,12 @@ export function HostedBlenderSetupSettings(props: { readonly environmentId: Envi
             <ScopedSwitch
               settingKeys={["hostedBlenderTimeline"]}
               checked={settings.hostedBlenderTimeline}
+              disabled={!canSetTimeline}
               onCheckedChange={(checked) =>
-                updateSettings({ hostedBlenderTimeline: Boolean(checked) })
+                void setTimeline({
+                  environmentId: props.environmentId,
+                  input: { shown: Boolean(checked) },
+                })
               }
               aria-label={gt("Timeline in the Blender pane")}
             />

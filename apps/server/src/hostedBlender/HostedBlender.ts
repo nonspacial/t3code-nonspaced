@@ -130,6 +130,11 @@ export const LeftoverSignal = Context.Reference<(pid: number, signal: NodeJS.Sig
     },
   },
 );
+/** What the add-on waits for before splitting a viewport window; tests hold it back. */
+export const ViewportShownGate = Context.Reference<Effect.Effect<void>>(
+  "t3/hostedBlender/ViewportShownGate",
+  { defaultValue: () => Effect.void },
+);
 // A desktop Blender that doesn't answer by then counts as one T3 couldn't ask.
 const DESKTOP_PROBE_DEADLINE = Duration.seconds(8);
 // A start that shows no viewport window by then has failed (a broken file, no encoder).
@@ -163,6 +168,8 @@ const ControlMessage = Schema.Union([
     mcpVersion: Schema.optional(Schema.NullOr(Schema.String)),
     /** When Blender last loaded a file (open, revert, recover), epoch ms. */
     loadedAt: Schema.optional(Schema.Number),
+    /** The number of the viewport window Blender opened last, announced before it opens. */
+    viewport: Schema.optional(Schema.Int),
     /** The file on disk changed since Blender read or saved it. */
     stale: Schema.optional(Schema.Boolean),
     /** What holds the reload of a stale file. */
@@ -241,6 +248,20 @@ const encodeTimeline = Schema.encodeSync(
   Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("timeline"), shown: Schema.Boolean })),
 );
 const timelineCommand = (shown: boolean) => `${encodeTimeline({ type: "timeline", shown })}\n`;
+const encodeViewportShown = Schema.encodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({ type: Schema.Literal("viewportShown"), generation: Schema.Int }),
+  ),
+);
+const encodeDisplay = Schema.encodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      type: Schema.Literal("display"),
+      width: Schema.NullOr(Schema.Number),
+      height: Schema.NullOr(Schema.Number),
+    }),
+  ),
+);
 const encodeQuitRequest = Schema.encodeSync(
   Schema.fromJsonString(
     Schema.Struct({ type: Schema.Literals(["quitIfClean", "cancelQuit"]), id: Schema.Int }),
@@ -608,6 +629,12 @@ interface Instance {
   stats: { readonly encoder: string; readonly target: "window" | "output" } | null;
   memoryBytes: number | null;
   viewport: { readonly width: number; readonly height: number } | null;
+  /** The hidden display's output size, which a captured window fills once fullscreen. */
+  output: { readonly width: number; readonly height: number } | null;
+  /** The hidden display holds a window: captured, and not closed since. */
+  captureLive: boolean;
+  /** The viewport window Blender announced last, and whether the add-on has been told it shows. */
+  shownViewport: { readonly generation: number; shown: boolean } | null;
   lastKeyframeRequest: number;
   /** A keyframe request is waiting out the throttle. */
   keyframeDeferred: boolean;
@@ -785,6 +812,7 @@ const make = Effect.gen(function* () {
   >();
   const serviceScope = yield* Effect.scope;
   const signalProcess = yield* LeftoverSignal;
+  const viewportShownGate = yield* ViewportShownGate;
   // Runs live here, so on shutdown they are ended with recovery copies before it closes.
   const runScope = yield* Scope.fork(serviceScope);
   let screenshots = 0;
@@ -1586,6 +1614,11 @@ const make = Effect.gen(function* () {
     switch (event.type) {
       case "ready": {
         instance.stats = { encoder: event.encoder, target: event.target };
+        instance.output = { width: event.width, height: event.height };
+        yield* sendDisplay(instance);
+        if (event.target === "output" && instance.shownViewport !== null) {
+          yield* viewportShown(instance);
+        }
         // Sizes asked for before the helper ran went nowhere; ask for the wanted one now.
         instance.displaySize = `${event.width}x${event.height}`;
         yield* applySize(instance);
@@ -1598,7 +1631,12 @@ const make = Effect.gen(function* () {
         return;
       }
       case "windowCaptured":
+        instance.captureLive = true;
+        yield* viewportShown(instance);
         return yield* markRunning(instance);
+      case "resized":
+        instance.output = { width: event.width, height: event.height };
+        return yield* sendDisplay(instance);
       case "frameSize":
         instance.viewport = { width: event.width, height: event.height };
         return yield* broadcast(instance, { type: "viewport", ...instance.viewport });
@@ -1620,11 +1658,39 @@ const make = Effect.gen(function* () {
         return yield* broadcast(instance, { type: "cursor", captured });
       }
       case "windowClosed":
+        instance.captureLive = false;
         return;
     }
   });
 
   // Running once Blender shows its viewport window and any restore asked for has succeeded.
+  // The add-on splits a viewport window only once the hidden display has it: a capture live once
+  // the add-on announced the window (it closes every other one first), and the window filling
+  // the output, which the add-on checks itself.
+  const viewportShown = Effect.fnUntraced(function* (instance: Instance) {
+    const shown = instance.shownViewport;
+    if (shown === null || shown.shown) return;
+    shown.shown = true;
+    const control = instance.control;
+    if (control === null) return;
+    yield* viewportShownGate.pipe(
+      Effect.andThen(
+        control.write(
+          `${encodeViewportShown({ type: "viewportShown", generation: shown.generation })}\n`,
+        ),
+      ),
+      Effect.forkIn(serviceScope),
+    );
+  });
+
+  const sendDisplay = Effect.fnUntraced(function* (instance: Instance) {
+    if (!instance.control || instance.stats === null) return;
+    const output = instance.stats.target === "window" ? instance.output : null;
+    yield* instance.control.write(
+      `${encodeDisplay({ type: "display", width: output?.width ?? null, height: output?.height ?? null })}\n`,
+    );
+  });
+
   const markRunning = Effect.fnUntraced(function* (instance: Instance) {
     instance.shown = true;
     if (instance.status === "running" || instance.restore === "pending") return;
@@ -2001,6 +2067,14 @@ const make = Effect.gen(function* () {
         instance.pid = message.value.pid;
         return;
       case "state": {
+        const generation = message.value.viewport ?? 0;
+        if (generation > 0 && instance.shownViewport?.generation !== generation) {
+          instance.shownViewport = { generation, shown: false };
+          // Streaming the whole output, there's no capture to wait for.
+          if (instance.captureLive || instance.stats?.target === "output") {
+            yield* viewportShown(instance);
+          }
+        }
         if (message.value.restore !== undefined) {
           // Blender restores the path the copy was saved from; saving must not write elsewhere
           // than the file it reopened (a workspace moved, say), so then the copy is kept unsaved.
@@ -2171,6 +2245,7 @@ const make = Effect.gen(function* () {
       if (instance.agentListenerRevoked) yield* instance.control.write(STOP_AGENT_LISTENER);
       // Switched since the launch read it.
       yield* instance.control.write(timelineCommand(yield* timelineShown));
+      yield* sendDisplay(instance);
       const decoder = new TextDecoder();
       let buffer = "";
       return yield* Effect.forever(
@@ -2755,6 +2830,9 @@ const make = Effect.gen(function* () {
       stats: null,
       memoryBytes: null,
       viewport: null,
+      output: null,
+      captureLive: false,
+      shownViewport: null,
       lastKeyframeRequest: Number.NEGATIVE_INFINITY,
       keyframeDeferred: false,
       controlDir: null,

@@ -81,6 +81,8 @@ interface Host {
   readonly desktop?: DesktopBlender.DesktopBlender["Service"];
   /** The TCP tables a master's relay reads its clients' accounts from; the kernel's by default. */
   readonly tcpTables?: ReadonlyArray<string>;
+  /** Holds back telling Blender the hidden display has its viewport window. */
+  readonly viewportGate?: Effect.Effect<void>;
 }
 
 const blenderOnPath = (env: NodeJS.ProcessEnv) =>
@@ -183,6 +185,9 @@ const layerFor = (host: Host) =>
         host.tcpTables === undefined
           ? Layer.empty
           : Layer.succeed(LoopbackPeer.LoopbackTcpTables, host.tcpTables),
+        host.viewportGate === undefined
+          ? Layer.empty
+          : Layer.succeed(HostedBlender.ViewportShownGate, host.viewportGate),
         Layer.succeed(HostProcess.Environment, host.env),
         Layer.succeed(HostProcess.HomeDirectory, host.baseDir),
       ),
@@ -4727,6 +4732,7 @@ const LAYOUT_STARTUP_SCRIPT = `import json, os
 import bpy
 
 _queue = []
+_ticks = [0]
 
 def _areas(window):
     found = []
@@ -4759,6 +4765,13 @@ def _poll():
         if verb == "open":
             with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
                 bpy.ops.wm.open_mainfile(filepath=argument)
+        elif verb == "keys":
+            cube = bpy.data.objects["Cube"]
+            for frame, angle in ((10, 0.0), (70, 1.5)):
+                cube.rotation_euler.z = angle
+                cube.keyframe_insert("rotation_euler", frame=frame)
+            with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+                bpy.ops.ed.undo_push(message="T3 test keys")
         elif verb == "edit":
             bpy.context.scene.collection.objects.link(bpy.data.objects.new(argument, None))
             with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
@@ -4771,8 +4784,11 @@ def _poll():
                 view.type = argument
             elif verb == "strip" and strip is not None:
                 strip.type = argument
+    _ticks[0] += 1
     layout = {
+        "tick": _ticks[0],
         "pid": os.getpid(),
+        "mark": bpy.context.scene.get("t3_mark"),
         "frame": bpy.context.scene.frame_current,
         "windows": [{"pointer": window.as_pointer(), "width": window.width, "height": window.height,
                      "areas": _areas(window)} for window in _viewport_windows()],
@@ -4805,7 +4821,11 @@ interface LayoutArea {
   readonly frames?: readonly [number, number];
 }
 interface Layout {
+  /** Blender's own count of the script's ticks. */
+  readonly tick: number;
   readonly pid: number;
+  /** What the last outside write marked the scene with. */
+  readonly mark: number | null;
   readonly frame: number;
   readonly windows: ReadonlyArray<{
     readonly pointer: number;
@@ -4829,7 +4849,7 @@ cube.location.z = 6
 cube.keyframe_insert("location", frame=100)
 scene.frame_set(1)`;
 
-  const launch = Effect.fn(function* (prefix: string) {
+  const launch = Effect.fn(function* (prefix: string, viewportGate?: Effect.Effect<void>) {
     const dir = yield* tempDir(prefix);
     const workspace = NodePath.join(dir, "work");
     NodeFS.mkdirSync(workspace, { recursive: true });
@@ -4856,6 +4876,7 @@ scene.frame_set(1)`;
         helper: helperBuild,
         workspaceRoot: workspace,
         baseDir: dir,
+        ...(viewportGate === undefined ? {} : { viewportGate }),
       }),
     );
     const service = Context.get(context, HostedBlender.HostedBlender);
@@ -4877,7 +4898,34 @@ scene.frame_set(1)`;
         ),
         Effect.retry({ schedule: Schedule.spaced("200 millis"), times: ticks }),
       );
-    return { dir, workspace, service, settings, command, layoutWhen };
+    /** Another program writes the file, as #64's tests do: a copy saved, then moved over it. */
+    const writeOutside = (mark: number) => {
+      const own = NodePath.join(dir, "outside");
+      NodeFS.mkdirSync(NodePath.join(own, "tmp"), { recursive: true });
+      const blendPath = NodePath.join(workspace, "cube.blend");
+      const next = `${blendPath}.next.blend`;
+      NodeChildProcess.execFileSync(
+        "blender",
+        [
+          "--background",
+          "--factory-startup",
+          blendPath,
+          "--python-expr",
+          `import bpy; bpy.context.scene["t3_mark"] = ${mark}; bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(next)}, copy=True)`,
+        ],
+        {
+          env: {
+            PATH: hostEnvironment.PATH,
+            HOME: own,
+            TMPDIR: NodePath.join(own, "tmp"),
+            BLENDER_USER_RESOURCES: own,
+          },
+          stdio: "ignore",
+        },
+      );
+      NodeFS.renameSync(next, blendPath);
+    };
+    return { dir, workspace, service, settings, command, layoutWhen, writeOutside };
   });
 
   /** The first capture once the add-on's connection is up. */
@@ -4890,6 +4938,27 @@ scene.frame_set(1)`;
       }),
     );
 
+  /**
+   * The stream as it is now, not a frame already waiting: a viewer attached now starts on a
+   * keyframe of whatever the hidden display captures, at the size it says.
+   */
+  const freshFrame = (service: HostedBlender.HostedBlender["Service"]) =>
+    Effect.gen(function* () {
+      const viewer = yield* attach(service, false);
+      let size: string | null = null;
+      while (true) {
+        const output = yield* Queue.take(viewer.output);
+        if (output._tag !== "message") {
+          expect(output._tag).toBe("frame");
+          break;
+        }
+        if (output.message.type === "viewport") {
+          size = `${output.message.width}x${output.message.height}`;
+        }
+      }
+      expect(size).toBe("1280x720");
+    }).pipe(Effect.scoped);
+
   /** One T3 viewport window: a 3D view with the Timeline under it, or a lone 3D view. */
   const withStrip = (layout: Layout) =>
     layout.windows.length === 1 &&
@@ -4900,6 +4969,48 @@ scene.frame_set(1)`;
     layout.windows.length === 1 &&
     layout.windows[0]!.areas.length === 1 &&
     layout.windows[0]!.areas[0]!.type === "VIEW_3D";
+
+  it.live(
+    "S1: keeps a new viewport window whole until the hidden display has it filling the output, then adds the strip",
+    () =>
+      Effect.gen(function* () {
+        let held = yield* Deferred.make<void>();
+        const gate = Effect.suspend(() => Deferred.await(held));
+        const { service, command, layoutWhen } = yield* launch("timeline-gate", gate);
+        /** Held back: streamed at full size, the window stays a lone 3D view tick after tick. */
+        const staysWhole = (pointer?: number) =>
+          Effect.gen(function* () {
+            const shown = yield* layoutWhen(
+              (layout) =>
+                alone(layout) &&
+                layout.windows[0]!.pointer !== pointer &&
+                layout.windows[0]!.width === 1280 &&
+                layout.windows[0]!.height === 720,
+            );
+            yield* freshFrame(service);
+            const later = yield* layoutWhen((layout) => layout.tick >= shown.tick + 10);
+            expect(alone(later)).toBe(true);
+            expect(later.windows[0]!.pointer).toBe(shown.windows[0]!.pointer);
+            return shown.windows[0]!.pointer;
+          });
+        const first = yield* staysWhole();
+        yield* Deferred.succeed(held, undefined);
+        yield* layoutWhen((layout) => withStrip(layout) && layout.windows[0]!.pointer === first);
+        yield* freshFrame(service);
+
+        // A replacement window waits the same way.
+        held = yield* Deferred.make<void>();
+        command("view IMAGE_EDITOR");
+        const replacement = yield* staysWhole(first);
+        yield* Deferred.succeed(held, undefined);
+        const split = yield* layoutWhen(
+          (layout) => withStrip(layout) && layout.windows[0]!.pointer === replacement,
+        );
+        expect([split.windows[0]!.width, split.windows[0]!.height]).toEqual([1280, 720]);
+        yield* freshFrame(service);
+        yield* service.quit({ threadId, save: false, discard: true });
+      }).pipe(Effect.scoped),
+  );
 
   it.live(
     "shows the Timeline under the 3D view, scrubs it in control, and reads and moves only the 3D view",
@@ -5039,14 +5150,101 @@ scene.frame_set(1)`;
         expect((yield* service.captureView(threadId)).screenshot.width).toBe(shrunk.region!.width);
 
         // Turning the 3D view itself into another editor loses the viewport: a fresh window
-        // opens, with the strip.
+        // opens, with the strip, and the stream shows it at full size.
         command("view IMAGE_EDITOR");
         const fresh = yield* layoutWhen(
           (layout) => withStrip(layout) && layout.windows[0]!.pointer !== window.pointer,
         );
         expect(fresh.windows[0]!.areas[1]!.ui).toBe("TIMELINE");
         expect(fresh.pid).toBe(first.pid);
+        expect([fresh.windows[0]!.width, fresh.windows[0]!.height]).toEqual([1280, 720]);
+        yield* freshFrame(service);
         yield* service.quit({ threadId, save: false, discard: true });
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "a reload when the file changes on disk keeps one viewport window, the strip as switched and the view",
+    () =>
+      Effect.gen(function* () {
+        const { service, settings, layoutWhen, writeOutside } = yield* launch("timeline-reload");
+        // Reloads run while a pane is on screen.
+        const viewer = yield* attach(service, false);
+        yield* Queue.take(viewer.output).pipe(
+          Effect.repeat({ until: (output) => output._tag === "frame" }),
+        );
+        const first = yield* layoutWhen(withStrip);
+        const pointer = first.windows[0]!.pointer;
+        yield* service.setView({
+          threadId,
+          relativePath: "cube.blend",
+          view: { position: [6, -6, 5], target: [0, 0, 0] },
+        });
+        const same = (layout: Layout) =>
+          layout.windows.length === 1 && layout.windows[0]!.pointer === pointer;
+        const sameView = Effect.gen(function* () {
+          const view = yield* service.captureView(threadId);
+          view.cameraView.position.forEach((value, index) =>
+            expect(value).toBeCloseTo([6, -6, 5][index]!, 3),
+          );
+        });
+
+        writeOutside(4);
+        const reloaded = yield* layoutWhen((layout) => layout.mark === 4);
+        expect(withStrip(reloaded) && same(reloaded)).toBe(true);
+        yield* sameView;
+
+        // Switched off, a reload leaves it off.
+        yield* settings.updateSettings({ hostedBlenderTimeline: false });
+        yield* layoutWhen((layout) => alone(layout) && same(layout));
+        writeOutside(-3);
+        const again = yield* layoutWhen((layout) => layout.mark === -3);
+        expect(alone(again) && same(again)).toBe(true);
+        yield* sameView;
+        yield* freshFrame(service);
+        yield* service.quit({ threadId, save: false, discard: true });
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "Save and quit with unsaved edits and a frame picked in the strip ends saved, keeping nothing",
+    () =>
+      Effect.gen(function* () {
+        const { service, command, layoutWhen, workspace } = yield* launch("timeline-save-quit");
+        const first = yield* layoutWhen(withStrip);
+        const window = first.windows[0]!;
+        const band = window.areas[1]!.region!;
+        command("edit T3Edit;keys");
+        yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status === "running" && state.dirty),
+          Stream.runHead,
+        );
+        const operator = yield* attach(service, true);
+        yield* operator.input({ type: "takeControl", takeOver: false });
+        expect(yield* controller(operator).pipe(Effect.repeat({ until: (c) => c === "you" }))).toBe(
+          "you",
+        );
+        const x = Math.round(band.x + band.width * 0.4);
+        const y = Math.round(window.height - (band.y + 3));
+        yield* operator.input({ type: "pointer", x: x - 20, y });
+        yield* operator.input({ type: "pointer", x, y });
+        yield* operator.input({ type: "button", button: 272, pressed: true });
+        yield* operator.input({ type: "button", button: 272, pressed: false });
+        yield* layoutWhen((layout) => layout.frame > 10);
+        // The pane's menu takes focus off the stream, which gives control back.
+        yield* operator.input({ type: "releaseControl" });
+        expect(
+          yield* controller(operator).pipe(Effect.repeat({ until: (c) => c !== "you" })),
+        ).not.toBe("you");
+
+        yield* service.quit({ threadId, save: true });
+        const ended = yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status !== "running"),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        expect(card(ended)).toEqual({ status: "stopped" });
+        expect(objectsIn(NodePath.join(workspace, "cube.blend"))).toContain("T3Edit");
       }).pipe(Effect.scoped),
   );
 
@@ -5058,7 +5256,6 @@ scene.frame_set(1)`;
           yield* launch("timeline-switch-real");
         const first = yield* layoutWhen(withStrip);
         const pointer = first.windows[0]!.pointer;
-        const attached = yield* attach(service, false);
 
         yield* settings.updateSettings({ hostedBlenderTimeline: false });
         const off = yield* layoutWhen(alone);
@@ -5069,9 +5266,7 @@ scene.frame_set(1)`;
           expect(layout.pid).toBe(first.pid);
           expect(layout.windows[0]!.pointer).toBe(pointer);
         }
-        yield* Queue.take(attached.output).pipe(
-          Effect.repeat({ until: (output) => output._tag === "frame" }),
-        );
+        yield* freshFrame(service);
 
         // After a load the fresh viewport window has the strip as the switch says.
         yield* settings.updateSettings({ hostedBlenderTimeline: false });
