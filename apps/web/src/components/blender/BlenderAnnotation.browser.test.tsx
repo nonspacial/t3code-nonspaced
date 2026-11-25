@@ -67,6 +67,7 @@ vi.mock("~/state/hostedBlender", () => ({
     findHits: { label: "findHits" },
   },
   useHostedBlenderState: () => state,
+  useHostedBlenderMasterState: () => ({ status: "none" }),
   useHostedBlenderSetupState: () => null,
   useHostedBlenderStreamAccess: () => stream.access,
   refreshHostedBlenderStreamAccess: () => {},
