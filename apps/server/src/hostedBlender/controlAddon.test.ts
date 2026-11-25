@@ -163,11 +163,14 @@ def poll():
         try:
             done = client.check_fn()
         except Exception as error:
-            deferred_tool._deferred_clients.remove(client)
+            # Like 1.0.3's _remove_deferred, a client already closed by stop() is fine.
+            if client in deferred_tool._deferred_clients:
+                deferred_tool._deferred_clients.remove(client)
             _reply(client.conn, {"status": "error", "message": str(error)})
             continue
         if done is not None:
-            deferred_tool._deferred_clients.remove(client)
+            if client in deferred_tool._deferred_clients:
+                deferred_tool._deferred_clients.remove(client)
             _reply(client.conn, {"status": "ok", "result": done})
     _accept_clients()
     for client in _state.clients[:]:
@@ -205,6 +208,10 @@ def start(host, port):
 def stop():
     if _state.sock is not None: _state.sock.close()
     _state.sock = None
+    # Like 1.0.3's stop: deferred_tool.close_all(), so no checker is asked again.
+    for client in deferred_tool._deferred_clients:
+        client.conn.close()
+    deferred_tool._deferred_clients.clear()
 import os as _os
 if json.loads(_os.environ["STUB_STATE"]).get("brokenServer"):
     del _accept_clients
@@ -414,6 +421,20 @@ if _call is not None:
         _tick()
     if _server() is not None and _server().is_running():
         _server().poll()
+    _ending = _call.get("endWhilePending")
+    if _ending == "revoke":
+        # Allow agents switched off, or the session ending: T3's stop.
+        _t3.sendall(b'{"type": "stopAgentListener"}\n')
+        _tick()
+    elif _ending == "controlLost":
+        _t3.close()
+        _tick()
+    elif _ending == "otherFile":
+        bpy.data.filepath = "/work/other.blend"
+        _on_load_post()
+    _checks_at_end = getattr(bpy.data, "checks", 0)
+    if _ending is not None and _server() is not None and _server().is_running():
+        _server().poll()
     _client.settimeout(5)
     try:
         _reply = _client.recv(65536)
@@ -443,6 +464,7 @@ if _call is not None:
         "ran": getattr(bpy.data, "ran", False),
         "ranSecond": getattr(bpy.data, "ran_second", False),
         "checked": getattr(bpy.data, "checked", False),
+        "checksAfterEnd": getattr(bpy.data, "checks", 0) - _checks_at_end,
         "listenerAfter": _snapshot()["agentListener"],
         "undoPushes": sum(1 for line in open(os.environ["STUB_LOG"]) if '"Agent edit"' in line) if os.path.exists(os.environ["STUB_LOG"]) else 0,
         "dirty": bpy.data.is_dirty,
@@ -528,6 +550,8 @@ const runAddon = (input: {
     readonly controlBreaks?: boolean;
     /** Blender Lab drops the deferred call after its first poll, as on a disconnect. */
     readonly deferredDropped?: boolean;
+    /** The grant ends while the deferred part still waits for more work. */
+    readonly endWhilePending?: "revoke" | "controlLost" | "otherFile";
     /** The user saves while the deferred part runs. */
     readonly savedBetween?: boolean;
     /** The user edits (and pushes an undo step) while the deferred part runs. */
@@ -873,6 +897,38 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
         call: { code: deferredCode("    return None"), ...call },
       });
       expect(result.call.undoPushes).toBe(2);
+    });
+
+    // Writes on its first check after the user saved, then keeps waiting for more work.
+    const writesThenWaits = deferredCode(
+      "    bpy.data.checks = getattr(bpy.data, 'checks', 0) + 1\n    bpy.data.notes = 'written'\n    return None",
+    );
+
+    it.each([
+      ["Allow agents is switched off, or the session ends", "revoke"],
+      ["T3's control connection is lost", "controlLost"],
+    ] as const)(
+      "records pending deferred writes as a step when %s, running no more checks",
+      (_name, endWhilePending) => {
+        const result = runAddon({
+          ...granted,
+          call: { code: writesThenWaits, savedBetween: true, endWhilePending },
+        });
+        expect(result.call).toMatchObject({
+          dirty: true,
+          undoPushes: 2,
+          checksAfterEnd: 0,
+          listenerAfter: "off",
+        });
+      },
+    );
+
+    it("pushes nothing into another file opened while deferred work was pending", () => {
+      const result = runAddon({
+        ...granted,
+        call: { code: writesThenWaits, savedBetween: true, endWhilePending: "otherFile" },
+      });
+      expect(result.call).toMatchObject({ dirty: false, undoPushes: 1, checksAfterEnd: 0 });
     });
 
     it("runs no deferred checker after T3's stop arrived, even before a tick", () => {

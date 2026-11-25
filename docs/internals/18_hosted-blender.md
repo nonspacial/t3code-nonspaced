@@ -57,7 +57,9 @@ deferred call, the add-on reads what T3 has sent and runs nothing if the connect
 stop is waiting; it doesn't wait for its own timer. After the code it pushes one undo step, which
 is what marks the file unsaved; Blender's data API alone leaves it clean. A call is one step,
 plus one more when its deferred part can change the file: that step comes when the part finishes,
-fails or is dropped, and marks the file unsaved again if it was saved meanwhile. Change detection
+fails or is dropped, or when access ends while it is still pending (recorded on the way out of
+the grant, without asking the part again), and marks the file unsaved again if it was saved
+meanwhile. If access ended because another file was opened, nothing is pushed into that file. Change detection
 can't decide this (a Text or image pixel write triggers no depsgraph update), so the add-on
 decides by what the deferred part is. Only Blender Lab's renders, which defer through its file
 output checker with job `RENDER`, count as read-only; the agent's own deferred code and any path

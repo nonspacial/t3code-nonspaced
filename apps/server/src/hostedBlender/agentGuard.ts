@@ -316,6 +316,13 @@ def _finish_deferred(record):
     return _push_agent_undo() if record["writes"] else None
 
 
+def _record_pending_deferred():
+    # No callback runs: the step records whatever the deferred part has written so far. On a file
+    # that is no longer the authorized one, nothing is pushed into it.
+    for record in list(_Guard.deferred):
+        _finish_deferred(record)
+
+
 def _sweep_deferred():
     # Blender Lab drops a deferred call on disconnect or timeout without asking it again.
     if not _Guard.deferred:

@@ -542,6 +542,9 @@ def _check_guard():
 def _end_grant():
     if _State.grant == "ended":
         return
+    # Every ending passes here: deferred work that may already have written gets its step while
+    # the grant still covers the file, so it isn't left looking saved.
+    _record_pending_deferred()
     _State.grant = "ended"
     _stop_agent_listener()
     _disable_mcp()
