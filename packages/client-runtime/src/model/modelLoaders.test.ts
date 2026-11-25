@@ -113,7 +113,9 @@ describe("P6: the preview's byte limit", () => {
   });
 
   it("N5: reads at once share it, so a buffer past it is never read into memory", async () => {
-    onTestFinished(() => vi.unstubAllGlobals());
+    onTestFinished(() => {
+      vi.unstubAllGlobals();
+    });
     // Two 80-byte external buffers, each under the limit alone.
     const twoBuffers = JSON.stringify({
       ...JSON.parse(gltf),
@@ -233,7 +235,9 @@ describe("N6: a glTF's KTX2 texture", () => {
     });
     // KTX2Loader's worker pool looks for `self`, which Node lacks; no worker starts here.
     vi.stubGlobal("self", globalThis);
-    onTestFinished(() => vi.unstubAllGlobals());
+    onTestFinished(() => {
+      vi.unstubAllGlobals();
+    });
     const asked: string[] = [];
     const { missing } = await loadModel({
       format: "gltf",
