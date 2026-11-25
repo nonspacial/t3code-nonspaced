@@ -430,6 +430,9 @@ it("freezes the view to annotate and attaches its camera and what each mark cove
   drag(surface.element(), [0.9, 0.9], [0.95, 0.95]);
   await userEvent.click(screen.getByRole("button", { name: "Erase a mark" }));
   drag(surface.element(), [0.25, 0.8], [0.25, 0.8]);
+  // An arrow from an empty corner whose tip is where the region's middle is.
+  await userEvent.click(screen.getByRole("button", { name: "Arrow", exact: true }));
+  drag(surface.element(), [0.02, 0.98], [0.5, 0.5]);
   await userEvent.fill(screen.getByRole("textbox", { name: "Annotation comment" }), "Thicken");
   await userEvent.click(screen.getByRole("button", { name: "Add to chat" }));
 
@@ -447,8 +450,13 @@ it("freezes the view to annotate and attaches its camera and what each mark cove
   expect(hit?.object).toBeNull();
   expect(hit?.point[2]).toBeCloseTo((hit?.point[1] ?? Number.NaN) / 4, 2);
   // The drawings in the empty corners cover nothing.
-  expect(annotation.strokes).toHaveLength(2);
+  expect(annotation.strokes).toHaveLength(3);
   expect(annotation.strokes[0]).not.toHaveProperty("hit");
+  // The arrow reports what its tip is on, not where its shaft first meets the model.
+  const tip = annotation.strokes[2]?.hit;
+  expect(tip?.point[0]).toBeCloseTo(hit?.point[0] ?? Number.NaN, 2);
+  expect(tip?.point[1]).toBeCloseTo(hit?.point[1] ?? Number.NaN, 2);
+  expect(tip?.point[2]).toBeCloseTo(hit?.point[2] ?? Number.NaN, 2);
   expect(model.draft()?.images.map((image) => image.id)).toEqual([annotation.id]);
 });
 
