@@ -281,6 +281,8 @@ export function ModelAnnotationEditor(props: {
     event.stopPropagation();
     if (hasOwnText(event.target)) return;
     event.preventDefault();
+    // The change can disable the focused button (Add to chat with nothing left), losing the keys.
+    if (event.target instanceof HTMLButtonElement) rootRef.current?.focus();
     if (shortcut === "undo") undo();
     else redo();
   };

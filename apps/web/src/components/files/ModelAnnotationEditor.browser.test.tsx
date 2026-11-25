@@ -286,7 +286,7 @@ it("keeps marks inside the snapshot when the pane letterboxes it", async () => {
   await vi.waitFor(() => expect(paths(screen)).toHaveLength(0));
 });
 
-it("keeps the history keys in the editor when the focused Undo or Redo button runs out", async () => {
+it("keeps the history keys in the editor when the focused button they disable runs out", async () => {
   const { element, container } = setup();
   await using screen = await render(element, { container });
   const surface = surfaceOf(screen);
@@ -313,6 +313,14 @@ it("keeps the history keys in the editor when the focused Undo or Redo button ru
   expect(marks()).toBe(1);
   await userEvent.keyboard(`{${MOD}>}z{/${MOD}}`);
   expect(marks()).toBe(0);
+
+  // Any focused button the undo leaves disabled, such as Add to chat with no comment.
+  await userEvent.keyboard(`{${MOD}>}{Shift>}z{/Shift}{/${MOD}}`);
+  (screen.getByRole("button", { name: "Add to chat" }).element() as HTMLElement).focus();
+  await userEvent.keyboard(`{${MOD}>}z{/${MOD}}`);
+  expect(marks()).toBe(0);
+  await userEvent.keyboard(`{${MOD}>}{Shift>}z{/Shift}{/${MOD}}`);
+  expect(marks()).toBe(1);
 });
 
 it("draws new marks in the picked color and fill; earlier marks keep theirs", async () => {
