@@ -412,6 +412,12 @@ def _handle(command):
             bpy.ops.wm.quit_blender()
         return
     if kind == "quit":
+        expected = command.get("filepath")
+        if not command.get("save") and expected is not None and expected != bpy.data.filepath:
+            # The person's discard named the file T3 last heard of; another is open now, whose
+            # changes they never chose to lose.
+            _send({"type": "discardRefused"})
+            return
         if not command.get("save"):
             # T3 waits on this rather than stopping a Blender still writing its quit copy. It
             # carries the file and its unsaved bit as they are now, before the undo step below
@@ -981,10 +987,12 @@ def _on_save_post(*args):
     # is a confirmed save that T3 forgets the file's older copy on. A copy saved elsewhere names
     # another path than the open file's.
     target = args[0] if args and isinstance(args[0], str) else ""
-    if target and target == bpy.data.filepath:
-        _State.disk_revision = _revision(target)
-        _State.stale = None
-    if target and target == bpy.data.filepath and not _State.quit_saving:
+    if not target or target != bpy.data.filepath:
+        return
+    # The one fact of this save: what is on disk now is Blender's own.
+    _State.disk_revision = _revision(target)
+    _State.stale = None
+    if not _State.quit_saving:
         _send({
             "type": "saved",
             "filepath": bpy.data.filepath,

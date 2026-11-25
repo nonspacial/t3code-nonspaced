@@ -173,7 +173,7 @@ const webCodecsAvailable = () => "VideoDecoder" in globalThis && "EncodedVideoCh
 
 /**
  * Watches a thread's hosted Blender: SEMU-framed H.264 from `/api/hosted-blender-stream`,
- * decoded with WebCodecs onto `sink`, one acknowledged frame at a time.
+ * decoded with WebCodecs onto `sink`, acking each frame once the decoder can take more.
  */
 export function createHostedBlenderStreamClient(
   target: {
@@ -204,9 +204,16 @@ export function createHostedBlenderStreamClient(
   let live = false;
   // Whether the server last said this viewer controls Blender, on the current socket.
   let controlling = false;
-  // The server sends the next frame only after an ack, so holding it while the decoder is
-  // configured or behind keeps every delta's reference frame and bounds the decode queue.
-  let ackOwed = false;
+  // One ack per frame received, held while the decoder is configured or behind: the server keeps
+  // only a few frames unacked and sends nothing after a keyframe until it is acked, so holding
+  // acks bounds the decode queue, and losing one would cost a slot of its window for good.
+  let acksOwed = 0;
+  // Frames that arrive while a decoder is configured, decoded after its keyframe.
+  let held: Array<{
+    readonly data: Uint8Array;
+    readonly key: boolean | null;
+    readonly timestamp: number;
+  }> = [];
   let rate = { start: 0, frames: 0, bytes: 0 };
 
   const closeDecoder = () => {
@@ -216,14 +223,14 @@ export function createHostedBlenderStreamClient(
     decoder = null;
     decoderSps = null;
     configuring = false;
-    ackOwed = false;
+    acksOwed = 0;
+    held = [];
   };
 
-  const sendAck = () => {
-    if (!ackOwed || configuring || socket?.readyState !== WebSocket.OPEN) return;
+  const sendAcks = () => {
+    if (acksOwed === 0 || configuring || socket?.readyState !== WebSocket.OPEN) return;
     if ((decoder?.decodeQueueSize ?? 0) > SOFT_DECODE_QUEUE) return;
-    ackOwed = false;
-    socket.send(ACK);
+    for (; acksOwed > 0; acksOwed--) socket.send(ACK);
   };
 
   const countFrame = (bytes: number) => {
@@ -266,6 +273,7 @@ export function createHostedBlenderStreamClient(
     if (socket !== ws) return;
     if (!support.supported) {
       configuring = false;
+      held = [];
       stopped = true;
       events.onStatus("unsupported");
       ws.close();
@@ -288,31 +296,39 @@ export function createHostedBlenderStreamClient(
         if (decoder === next) reconnect();
       },
     });
-    next.addEventListener("dequeue", sendAck);
+    next.addEventListener("dequeue", sendAcks);
     next.configure(config);
     decoder = next;
     decoderSps = spsNal(sps).slice();
     configuring = false;
     decode(data, true, pts);
-    sendAck();
+    const after = held;
+    held = [];
+    for (const frame of after) onDecodable(ws, frame.data, frame.key, frame.timestamp);
+    sendAcks();
   };
 
   const onFrame = (ws: WebSocket, raw: ArrayBuffer) => {
     const packet = parseSemuPacket(raw);
-    const timestamp = packet.timestamp ?? 0;
     countFrame(raw.byteLength);
-    ackOwed = true;
-    const scanned = packet.isKey === false ? null : scanAccessUnit(packet.data);
+    acksOwed += 1;
+    onDecodable(ws, packet.data, packet.isKey, packet.timestamp ?? 0);
+    sendAcks();
+  };
+
+  const onDecodable = (ws: WebSocket, data: Uint8Array, key: boolean | null, timestamp: number) => {
+    if (configuring) {
+      held.push({ data, key, timestamp });
+      return;
+    }
+    const scanned = key === false ? null : scanAccessUnit(data);
     if (decoder?.state === "configured") {
       const resized =
         scanned?.isKey === true &&
         scanned.sps !== null &&
         decoderSps !== null &&
         !sameBytes(spsNal(scanned.sps), decoderSps);
-      if (!resized) {
-        decode(packet.data, packet.isKey ?? false, timestamp);
-        return sendAck();
-      }
+      if (!resized) return decode(data, key ?? false, timestamp);
       // The display resized. Some decoders (Android's WebView) keep the first frame size across
       // an in-band SPS change, so the new size starts a decoder of its own.
       try {
@@ -322,8 +338,8 @@ export function createHostedBlenderStreamClient(
       decoderSps = null;
     }
     // Without a decoder only a keyframe with its SPS can start one.
-    if (configuring || !scanned?.isKey || scanned.sps === null) return sendAck();
-    void configure(ws, scanned.sps, packet.data, timestamp);
+    if (!scanned?.isKey || scanned.sps === null) return;
+    void configure(ws, scanned.sps, data, timestamp);
   };
 
   const sendSize = () => {

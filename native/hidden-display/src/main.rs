@@ -445,11 +445,14 @@ fn session(
     state.start(&qh);
 
     let (commands, wake) = read_commands().map_err(|error| error.to_string())?;
+    // Detached, the helper outlives T3: Blender (which dies with it) finishes its quit copy.
+    let mut detached = false;
+    let mut input_open = true;
     loop {
         for event in state.events.drain(..) {
             emitter.emit(&event);
         }
-        if emitter.closed.load(Ordering::Relaxed) {
+        if emitter.closed.load(Ordering::Relaxed) && !detached {
             return Ok(ExitCode::SUCCESS);
         }
         connection.flush().map_err(|error| error.to_string())?;
@@ -468,7 +471,7 @@ fn session(
             .unwrap_or(-1);
         let mut fds = [
             poll_fd(wayland_fd),
-            poll_fd(wake.as_raw_fd()),
+            poll_fd(if input_open { wake.as_raw_fd() } else { -1 }),
             poll_fd(children.labwc.as_ref().map_or(-1, |fd| fd.as_raw_fd())),
             poll_fd(children.blender.as_ref().map_or(-1, |fd| fd.as_raw_fd())),
         ];
@@ -506,13 +509,22 @@ fn session(
         }
         while let Ok(line) = commands.try_recv() {
             let Some(line) = line else {
+                if detached {
+                    input_open = false;
+                    break;
+                }
                 return Ok(ExitCode::SUCCESS);
             };
             if line.trim().is_empty() {
                 continue;
             }
             match Command::parse(&line) {
+                Ok(Command::Quit) if detached => {}
                 Ok(Command::Quit) => return Ok(ExitCode::SUCCESS),
+                Ok(Command::Detach) => {
+                    detached = true;
+                    state.handle(Command::Pause, &qh);
+                }
                 Ok(command) => state.handle(command, &qh),
                 Err(message) => state.events.push(Event::Error {
                     message: format!("bad command: {message}"),

@@ -257,6 +257,23 @@ it("B6: a right click takes control and focus, and Blender gets that click, with
   ]);
 });
 
+it("N3: a right press dragged out of the pane and let go before the grant is never left held", async () => {
+  using _app = startup();
+  const pane = await paneBesideComposer();
+  await using _screen = pane.screen;
+  await control({ canOperate: true, controller: "unclaimed" });
+  await commands.pointerMove(...pane.inside);
+  await commands.pointerDown("right");
+  await commands.pointerMove(...pane.outside);
+  await commands.pointerUp("right");
+  await control({ canOperate: true, controller: "you" });
+  expect(stream.sent.filter((message) => message.type !== "pointer")).toEqual([
+    { type: "takeControl", takeOver: false },
+    { type: "button", button: 273, pressed: true },
+    { type: "button", button: 273, pressed: false },
+  ]);
+});
+
 it("B6: a view-only pane swallows the middle and thumb buttons", async () => {
   using _app = startup();
   const pane = await paneBesideComposer();
@@ -652,6 +669,37 @@ it("shows Agent editing for whichever Blender the agent acts in, master or worki
   expect(screen.container.textContent).not.toContain("Agent editing");
   await screen.getByRole("button", { name: "Master" }).click();
   await expect.element(screen.getByText("Agent editing")).toBeInTheDocument();
+});
+
+it("N8: shows the switch beside an agent's working copy whose master is only known, offering Open in T3 Code", async () => {
+  using _app = startup();
+  const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
+  const { Atom } = await import("effect/reactivity");
+  vi.spyOn(hostedBlenderEnvironment.openMaster, "permissionAtom").mockReturnValue(
+    Atom.make(true) as never,
+  );
+  stream.state = {
+    status: "running",
+    relativePath: "models/hero.wip-1a2b3c4d.blend",
+    dirty: false,
+  };
+  stream.master = {
+    status: "notOpen",
+    relativePath: "models/hero.blend",
+    desktop: null,
+    desktopDirty: false,
+  };
+  await using screen = await render(
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>,
+  );
+  await expect.element(screen.getByText("hero.wip-1a2b3c4d.blend")).toBeInTheDocument();
+  await screen.getByRole("button", { name: "Master" }).click();
+  await expect.element(screen.getByText("Master not open in T3 Code")).toBeInTheDocument();
+  await expect.element(screen.getByRole("button", { name: "Open in T3 Code" })).toBeVisible();
+  // Nothing streams a master Blender that isn't open.
+  expect(stream.clients).toBe(1);
 });
 
 it("shows no switch until the thread has a master", async () => {

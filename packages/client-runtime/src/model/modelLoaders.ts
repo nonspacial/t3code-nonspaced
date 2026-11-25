@@ -1,6 +1,7 @@
 // @effect-diagnostics globalFetch:off - This browser-only loader fetches signed companion files without an Effect runtime, like the device model.
 import {
   Box3,
+  type CompressedTexture,
   DoubleSide,
   Group,
   ImageLoader,
@@ -67,21 +68,49 @@ export interface ModelCompanions {
 // every referenced file is read through `companionFiles`, which applies the folder policy.
 const BLOCKED_URL = "about:blank#blocked";
 
+/** Bytes still free, shared by every read it is passed to, so concurrent reads can't overrun it. */
+interface ByteBudget {
+  readonly take: (bytes: number) => boolean;
+  readonly give: (bytes: number) => void;
+}
+
+const byteBudget = (limit: number): ByteBudget => {
+  let left = limit;
+  return {
+    take: (bytes) => {
+      if (bytes > left) return false;
+      left -= bytes;
+      return true;
+    },
+    give: (bytes) => {
+      left += bytes;
+    },
+  };
+};
+
 /**
  * A response's body, or null once it is over `limit` bytes. With a known length it reads into
  * one buffer of that size, so a large model is never held twice.
  */
-export async function readResponseBytes(
-  response: Response,
-  limit: number,
-): Promise<ArrayBuffer | null> {
-  if (!response.body) return response.arrayBuffer();
+export const readResponseBytes = (response: Response, limit: number) =>
+  readWithin(response, byteBudget(limit));
+
+/**
+ * A body taken out of `budget` as it is read: a known length is reserved before its buffer is
+ * allocated, an unknown one chunk by chunk. Null, with nothing taken, once it doesn't fit.
+ */
+async function readWithin(response: Response, budget: ByteBudget): Promise<ArrayBuffer | null> {
+  if (!response.body) {
+    const bytes = await response.arrayBuffer();
+    return budget.take(bytes.byteLength) ? bytes : null;
+  }
   const length = Number(response.headers.get("content-length")) || null;
-  if (length !== null && length > limit) {
+  if (length !== null && !budget.take(length)) {
     await response.body.cancel();
     return null;
   }
   const reader = response.body.getReader();
+  let taken = length ?? 0;
   try {
     if (length !== null) {
       const bytes = new Uint8Array(length);
@@ -93,32 +122,41 @@ export async function readResponseBytes(
         bytes.set(value, offset);
         offset += value.byteLength;
       }
+      budget.give(length - offset);
+      taken = offset;
       return offset === length ? bytes.buffer : bytes.buffer.slice(0, offset);
     }
     const chunks: Uint8Array[] = [];
-    let size = 0;
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      size += value.byteLength;
-      if (size > limit) return null;
+      if (!budget.take(value.byteLength)) {
+        budget.give(taken);
+        taken = 0;
+        return null;
+      }
+      taken += value.byteLength;
       chunks.push(value);
     }
-    const bytes = new Uint8Array(size);
+    const bytes = new Uint8Array(taken);
     let offset = 0;
     for (const chunk of chunks) {
       bytes.set(chunk, offset);
       offset += chunk.byteLength;
     }
     return bytes.buffer;
+  } catch (cause) {
+    budget.give(taken);
+    throw cause;
   } finally {
     await reader.cancel();
   }
 }
 
 function companionFiles(companions: ModelCompanions | null, signal: AbortSignal, maxBytes: number) {
-  // What the files read so far may still take, with the model's own bytes already counted.
-  let budget = maxBytes;
+  // What the files may still take, with the model's own bytes already counted: one budget for
+  // every file, so reads at once can't each see all of it.
+  const budget = byteBudget(maxBytes);
   let overBudget = false;
   const missing = new Set<string>();
   /** Missing files the model cannot render without, such as a glTF buffer. */
@@ -149,10 +187,15 @@ function companionFiles(companions: ModelCompanions | null, signal: AbortSignal,
     }
     return value;
   };
-  const fetchOk = async (url: string) => {
+  const fetchBytes = async (url: string, reference: string) => {
     const response = await fetch(url, { signal });
     if (!response.ok) throw new Error(`Companion request failed: ${response.status}`);
-    return response;
+    const bytes = await readWithin(response, budget);
+    if (bytes === null) {
+      overBudget = true;
+      throw new Error(`Companion over the preview's size limit: ${reference}`);
+    }
+    return bytes;
   };
   return {
     missing,
@@ -161,21 +204,20 @@ function companionFiles(companions: ModelCompanions | null, signal: AbortSignal,
       return overBudget;
     },
     bytes: (reference: string, needed?: boolean) =>
-      read(
-        reference,
-        async (url) => {
-          const bytes = await readResponseBytes(await fetchOk(url), budget);
-          if (bytes === null || bytes.byteLength > budget) {
-            overBudget = true;
-            throw new Error(`Companion over the preview's size limit: ${reference}`);
-          }
-          budget -= bytes.byteLength;
-          return bytes;
-        },
-        needed,
-      ),
-    text: (reference: string) => read(reference, async (url) => (await fetchOk(url)).text()),
-    image: (reference: string) => read(reference, (url) => images.loadAsync(url)),
+      read(reference, (url) => fetchBytes(url, reference), needed),
+    text: (reference: string) =>
+      read(reference, async (url) => new TextDecoder().decode(await fetchBytes(url, reference))),
+    image: (reference: string) =>
+      read(reference, async (url) => {
+        // Embedded images are already in memory; a file's bytes are counted before decoding.
+        if (/^(?:data|blob):/i.test(url)) return images.loadAsync(url);
+        const local = URL.createObjectURL(new Blob([await fetchBytes(url, reference)]));
+        try {
+          return await images.loadAsync(local);
+        } finally {
+          URL.revokeObjectURL(local);
+        }
+      }),
   };
 }
 
@@ -262,6 +304,37 @@ function defaultMaterial(geometry: BufferGeometry) {
   });
 }
 
+/**
+ * three's BasisU path hands a glTF's `.ktx2` straight to `KTX2Loader`, past the texture loader:
+ * a file it names is read through the companion policy and budget, and decoded from memory.
+ */
+function readKtx2Through(ktx2: Loader<CompressedTexture>, files: CompanionFiles) {
+  const load = ktx2.load.bind(ktx2);
+  ktx2.load = (url, onLoad, onProgress, onError) => {
+    if (/^(?:data|blob):/i.test(url)) return load(url, onLoad, onProgress, onError);
+    void files.bytes(url).then((bytes) => {
+      if (bytes === null) {
+        onError?.(new Error(`Texture unavailable: ${url}`));
+        return;
+      }
+      const local = URL.createObjectURL(new Blob([bytes]));
+      const done = () => URL.revokeObjectURL(local);
+      load(
+        local,
+        (texture) => {
+          done();
+          onLoad?.(texture);
+        },
+        onProgress,
+        (error) => {
+          done();
+          onError?.(error);
+        },
+      );
+    });
+  };
+}
+
 async function parseGltf(
   data: ArrayBuffer,
   manager: LoadingManager,
@@ -288,6 +361,7 @@ async function parseGltf(
     if (used.has("KHR_texture_basisu") && decoders.renderer !== null) {
       const { KTX2Loader } = await import("three/addons/loaders/KTX2Loader.js");
       const ktx2 = new KTX2Loader(decoderManager).detectSupport(decoders.renderer);
+      readKtx2Through(ktx2, files);
       loader.setKTX2Loader(ktx2);
       disposers.push(() => ktx2.dispose());
     }
@@ -423,6 +497,11 @@ export async function loadModel(input: {
     await Promise.all(textures.pending);
     // Some loaders (3MF, FBX) read embedded images on their own; wait before dropping unloaded maps.
     if (loading) await new Promise<void>((resolve) => (whenIdle = resolve));
+    // A texture or material over the limit is too large too, not a file that wasn't found.
+    if (files.overBudget) {
+      disposeModel(model);
+      throw new Error("Companions over the preview's size limit");
+    }
   } catch (cause) {
     await Promise.allSettled(textures.pending);
     if (files.overBudget) {

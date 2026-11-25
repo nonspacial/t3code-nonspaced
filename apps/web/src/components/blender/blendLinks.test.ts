@@ -50,10 +50,30 @@ describe("openBlendLink", () => {
       (surface) => surface.kind,
     );
 
+  it("N7: opens the file preview at once, asking for no Blender state, with Hosted Blender off", async () => {
+    const threadRef = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-blend-off"));
+    const openFile = vi.fn();
+    const readState = vi.fn(async () => running);
+    const readMasterState = vi.fn(async () => null);
+    await openBlendLink({
+      hostedBlenderEnabled: false,
+      threadRef,
+      path: "models/hero.blend",
+      workspaceRoot: "/work",
+      openFile,
+      readState,
+      readMasterState,
+    });
+    expect(openFile).toHaveBeenCalledOnce();
+    expect(readState).not.toHaveBeenCalled();
+    expect(readMasterState).not.toHaveBeenCalled();
+  });
+
   it("opens the Blender pane once the thread's Blender is known to have the file", async () => {
     const threadRef = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-blend-1"));
     const openFile = vi.fn();
     await openBlendLink({
+      hostedBlenderEnabled: true,
       threadRef,
       path: "models/hero.blend",
       workspaceRoot: "/work",
@@ -70,6 +90,7 @@ describe("openBlendLink", () => {
     const lookup = Promise.withResolvers<HostedBlenderThreadState | null>();
     const openFile = vi.fn();
     const opening = openBlendLink({
+      hostedBlenderEnabled: true,
       threadRef,
       path: "models/hero.blend",
       workspaceRoot: "/work",
@@ -89,6 +110,7 @@ describe("openBlendLink", () => {
     const setView = vi.fn(async () => "moved" as const);
     const view = { position: [6, -6, 5], target: [0, 0, 1] } as const;
     await openBlendLink({
+      hostedBlenderEnabled: true,
       threadRef,
       path: "models/hero.blend",
       workspaceRoot: "/work",
@@ -107,6 +129,7 @@ describe("openBlendLink", () => {
     const setView = vi.fn(async () => "moved" as const);
     const openFile = vi.fn();
     await openBlendLink({
+      hostedBlenderEnabled: true,
       threadRef,
       path: "models/other.blend",
       workspaceRoot: "/work",
@@ -124,6 +147,7 @@ describe("openBlendLink", () => {
     const threadRef = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-blend-5"));
     const openFile = vi.fn();
     await openBlendLink({
+      hostedBlenderEnabled: true,
       threadRef,
       path: "models/hero.blend",
       workspaceRoot: "/work",
@@ -144,6 +168,7 @@ describe("openBlendLink", () => {
     const asked = Promise.withResolvers<void>();
     const openFile = vi.fn();
     const opening = openBlendLink({
+      hostedBlenderEnabled: true,
       threadRef,
       path: "models/hero.blend",
       workspaceRoot: "/work",
@@ -175,6 +200,7 @@ describe("openBlendLink to a master", () => {
     const setView = vi.fn(async () => "moved" as const);
     const view = { position: [6, -6, 5], target: [0, 0, 1] } as const;
     await openBlendLink({
+      hostedBlenderEnabled: true,
       threadRef,
       path: "/work/models/hero.blend",
       workspaceRoot: "/work",
@@ -199,6 +225,7 @@ describe("openBlendLink to a master", () => {
   it("still opens the working copy's side for a link to the working copy", async () => {
     const threadRef = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-blend-wip"));
     await openBlendLink({
+      hostedBlenderEnabled: true,
       threadRef,
       path: "models/hero.blend",
       workspaceRoot: "/work",

@@ -47,6 +47,7 @@ const serve = (
       setView: () => Effect.die("unused"),
       openMaster: () => Effect.die("unused"),
       reopenMaster: () => Effect.die("unused"),
+      knowMaster: () => Effect.die("unused"),
       releaseMaster: () => Effect.void,
       moveIntoT3: () => Effect.die("unused"),
       masterState: () => Stream.empty,
