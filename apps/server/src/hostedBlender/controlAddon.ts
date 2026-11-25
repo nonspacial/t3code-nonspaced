@@ -340,26 +340,8 @@ def _tick():
             connection.close()
     except BlockingIOError:
         pass
+    _pump_control()
     if _State.client is not None:
-        try:
-            while True:
-                chunk = _State.client.recv(65536)
-                if not chunk:
-                    _drop_client()
-                    break
-                _State.buffer += chunk
-        except BlockingIOError:
-            pass
-        except OSError:
-            _drop_client()
-        # A stop already waiting wins over a grant queued before it.
-        for queued in _State.buffer.split(b"\n")[:-1]:
-            try:
-                if json.loads(queued).get("type") == "stopAgentListener":
-                    _end_grant()
-                    break
-            except ValueError:
-                pass
         while b"\n" in _State.buffer:
             line, _State.buffer = _State.buffer.split(b"\n", 1)
             try:
@@ -376,6 +358,33 @@ def _tick():
     _sweep_deferred()
     _publish_state()
     return TICK
+
+
+def _pump_control():
+    # Reads what T3 sent, so a lost connection or a waiting stop ends the grant now. Also run
+    # right before agent code, which can't wait for the next tick.
+    if _State.client is None:
+        return
+    try:
+        while True:
+            chunk = _State.client.recv(65536)
+            if not chunk:
+                _drop_client()
+                return
+            _State.buffer += chunk
+    except BlockingIOError:
+        pass
+    except OSError:
+        _drop_client()
+        return
+    # A stop already waiting wins over a grant queued before it.
+    for queued in _State.buffer.split(b"\n")[:-1]:
+        try:
+            if json.loads(queued).get("type") == "stopAgentListener":
+                _end_grant()
+                break
+        except ValueError:
+            pass
 
 
 def _publish_state():

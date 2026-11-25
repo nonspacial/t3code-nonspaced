@@ -42,7 +42,9 @@ on purpose (`SCM_RIGHTS`), or a proxy the owner runs, still has an owner-uid end
 
 Blender Lab is never in T3's settings copy, so Blender can't load it at startup from there. Each
 launch that may grant an agent gets its own snapshot of the user's copy, in that launch's private
-folder, checked to be whole and unchanged while it was copied. The control add-on loads only that
+folder, checked to be whole and unchanged while it was copied. The snapshot is disposable: it goes
+with the launch folder, and a folder left behind when T3 dies is reaped like any other launch's.
+The control add-on loads only that
 snapshot, as an extension repository of its own, and reads its version there. A startup script
 T3 writes into the copy, which Blender runs before it enables add-ons (at launch and on Reload
 Scripts), strips any Blender Lab entry from the settings and leaves proof that it ran. The add-on
@@ -50,11 +52,14 @@ grants nothing without that proof, if any Blender Lab module was already importe
 or if a Blender Lab listener is already running.
 
 Once granted, the add-on replaces two functions Blender Lab's `poll()` looks up by name. Accepting a
-connection applies the check above. Running the agent's own code first tells T3 the agent is
-acting, and runs nothing if that ended access. Afterwards it pushes an undo step, which is what
-marks the file unsaved; Blender's data API alone leaves it clean. Deferred work gets a second step
-when it finishes, fails, or is dropped. Any listener without a live, guarded grant is stopped, so
-Reload Scripts ends access.
+connection applies the check above. Before the agent's code runs, and before each check of a
+deferred call, the add-on reads what T3 has sent and runs nothing if the connection is gone or a
+stop is waiting; it doesn't wait for its own timer. After the code it pushes one undo step, which
+is what marks the file unsaved; Blender's data API alone leaves it clean. A deferred part (a
+render, a bake) gets a second step only if a depsgraph update shows it changed the scene, so a
+call stays one Ctrl+Z. The push reports success even when it records nothing, so the add-on reads
+Undo Steps and Global Undo itself and warns the agent. Any listener without a live, guarded grant
+is stopped, so Reload Scripts ends access.
 
 Because the guard reaches into Blender Lab's internals, nothing is enabled unless the snapshot's
 manifest has a top-level string `version`, parsed as TOML, that is in

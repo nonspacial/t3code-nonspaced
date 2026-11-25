@@ -40,12 +40,22 @@ context = types.SimpleNamespace(
     preferences=types.SimpleNamespace(
         addons=addons,
         is_dirty=True,
-        edit=types.SimpleNamespace(undo_steps=state.get("undoSteps", 32)),
+        edit=types.SimpleNamespace(
+            undo_steps=state.get("undoSteps", 32), use_global_undo=state.get("globalUndo", True)
+        ),
         extensions=types.SimpleNamespace(repos=Repos()),
     ),
     window_manager=types.SimpleNamespace(windows=[]),
+    mode="OBJECT",
 )
 data = types.SimpleNamespace(filepath=state.get("filepath", "/work/hero.wip-1a2b3c4d.blend"), is_dirty=False)
+# As in Blender, evaluating runs the update handlers for whatever was tagged since: here, code
+# that set data.tagged.
+def _evaluated_depsgraph_get():
+    if data.__dict__.pop("tagged", False):
+        for handler in list(app.handlers.depsgraph_update_post):
+            handler(None, types.SimpleNamespace(updates=[True]))
+context.evaluated_depsgraph_get = _evaluated_depsgraph_get
 from . import app, ops
 # Blender runs startup scripts (T3's gate), then registers the enabled add-ons, then --python.
 if not state.get("gateSkipped"):
@@ -67,7 +77,7 @@ timers = types.SimpleNamespace(
 from . import handlers
 `,
   "bpy/app/handlers.py":
-    "load_post = []\nsave_post = []\ndef persistent(function):\n    return function\n",
+    "load_post = []\nsave_post = []\ndepsgraph_update_post = []\ndef persistent(function):\n    return function\n",
   "bpy/ops.py": String.raw`
 import sys, types
 NAME = "${MCP}"
@@ -98,13 +108,8 @@ def _undo_push(message):
     # As in Blender: data edits leave the file clean; an undo push marks it modified.
     if not bpy.state.get("undoPushLeavesClean"):
         bpy.data.is_dirty = True
-    _undo.pushed = True
     return {"FINISHED"}
-_undo = types.SimpleNamespace(pushed=False)
-def _undo_poll():
-    import bpy
-    return _undo.pushed and not bpy.state.get("noUndoStep")
-ed = types.SimpleNamespace(undo_push=_undo_push, undo=types.SimpleNamespace(poll=_undo_poll))
+ed = types.SimpleNamespace(undo_push=_undo_push)
 `,
   // Imported at the top for the capture and hit tests, which register() never runs.
   "gpu.py": "",
@@ -400,6 +405,12 @@ if _call is not None:
     }) + "\0").encode())
     _server().poll()
     _dirty_first = bpy.data.is_dirty
+    if _call.get("deferredChanges"):
+        # The deferred part (a background job) changing the scene after the code returned.
+        bpy.data.tagged = True
+    if _call.get("revokeBeforeCheck"):
+        # T3's stop, sent while the deferred part runs; no tick has read it yet.
+        _t3.sendall(b'{"type": "stopAgentListener"}\n')
     _deferred = sys.modules.get("${MCP}.deferred_tool")
     if _call.get("deferredDropped") and _deferred is not None:
         # Blender Lab dropping a call whose client went away, without asking its checker again.
@@ -413,11 +424,29 @@ if _call is not None:
     except OSError:
         _reply = b""
     _acting = _snapshot()["agentActing"]
+    if _call.get("closeT3ThenSecondCall"):
+        # T3 gone during the acting linger, with everything read and the state already sent,
+        # so the second call's report has nothing new to write.
+        _publish_state()
+        _t3.setblocking(False)
+        try:
+            while _t3.recv(65536):
+                pass
+        except BlockingIOError:
+            pass
+        _t3.close()
+        _second = socket.create_connection(("127.0.0.1", int(MCP_PORT)))
+        _second.sendall((json.dumps({"type": "execute", "strict_json": False,
+            "code": "import bpy\nbpy.data.ran_second = True\nresult = {}"}) + "\0").encode())
+        if _server().is_running():
+            _server().poll()
     _Guard.acting_until = 0.0
     _called = {
         "reply": json.loads(_reply.rstrip(b"\0")) if _reply else None,
         "dirtyAfterFirstPoll": _dirty_first,
         "ran": getattr(bpy.data, "ran", False),
+        "ranSecond": getattr(bpy.data, "ran_second", False),
+        "checked": getattr(bpy.data, "checked", False),
         "listenerAfter": _snapshot()["agentListener"],
         "undoPushes": sum(1 for line in open(os.environ["STUB_LOG"]) if '"undo_push"' in line) if os.path.exists(os.environ["STUB_LOG"]) else 0,
         "dirty": bpy.data.is_dirty,
@@ -503,13 +532,19 @@ const runAddon = (input: {
     readonly controlBreaks?: boolean;
     /** Blender Lab drops the deferred call after its first poll, as on a disconnect. */
     readonly deferredDropped?: boolean;
+    /** The deferred part changes the scene after the code returned. */
+    readonly deferredChanges?: boolean;
+    /** T3 sends its stop while the deferred part runs. */
+    readonly revokeBeforeCheck?: boolean;
+    /** T3's connection closes after this call, and a second call follows. */
+    readonly closeT3ThenSecondCall?: boolean;
   };
   /** Blender skipped T3's startup gate, so enabled add-ons registered from the settings. */
   readonly gateSkipped?: boolean;
   /** Blender Lab is listening already when the grant arrives. */
   readonly listeningBeforeGrant?: boolean;
   readonly undoPushLeavesClean?: boolean;
-  readonly noUndoStep?: boolean;
+  readonly globalUndo?: boolean;
 }) => {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-control-addon-"));
   dirs.push(dir);
@@ -786,9 +821,9 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     });
 
     const deferredCode = (check: string) =>
-      `import bpy\nbpy.data.objects_changed = True\ndef check_is_finished():\n${check}\nresult = {}`;
+      `import bpy\nbpy.data.tagged = True\ndef check_is_finished():\n${check}\nresult = {}`;
 
-    it("pushes a step for a deferred call's first part, and another once its work finishes", () => {
+    it("gives a deferred call one undo step when its deferred part only answers", () => {
       const result = runAddon({
         ...granted,
         call: { code: deferredCode("    return {'rendered': 1}") },
@@ -796,24 +831,48 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       expect(result.call).toMatchObject({
         reply: { status: "ok", result: { rendered: 1 } },
         dirtyAfterFirstPoll: true,
-        undoPushes: 2,
+        undoPushes: 1,
       });
     });
 
-    it("still pushes a deferred call's last step when Blender Lab drops the call", () => {
+    it("adds a step only when the deferred part changed the scene", () => {
       const result = runAddon({
         ...granted,
-        call: { code: deferredCode("    return None"), deferredDropped: true },
+        call: { code: deferredCode("    bpy.data.tagged = True\n    return {'baked': 1}") },
       });
-      expect(result.call.undoPushes).toBe(2);
+      expect(result.call).toMatchObject({ reply: { status: "ok" }, undoPushes: 2 });
     });
 
-    it("still pushes a deferred call's last step when its checker raises", () => {
+    it.each([
+      ["Blender Lab drops the call", { deferredDropped: true }],
+      ["its checker raises", { code: deferredCode("    raise RuntimeError('bake failed')") }],
+    ] as const)("records the deferred part's changes when %s", (_name, call) => {
+      const changed = runAddon({
+        ...granted,
+        call: { code: deferredCode("    return None"), deferredChanges: true, ...call },
+      });
+      expect(changed.call.undoPushes).toBe(2);
+      const unchanged = runAddon({
+        ...granted,
+        call: { code: deferredCode("    return None"), ...call },
+      });
+      expect(unchanged.call.undoPushes).toBe(1);
+    });
+
+    it("runs no deferred checker after T3's stop arrived, even before a tick", () => {
       const result = runAddon({
         ...granted,
-        call: { code: deferredCode("    raise RuntimeError('render failed')") },
+        call: {
+          code: deferredCode("    bpy.data.checked = True\n    return {'done': 1}"),
+          revokeBeforeCheck: true,
+        },
       });
-      expect(result.call).toMatchObject({ reply: { status: "error" }, undoPushes: 2 });
+      expect(result.call).toMatchObject({ checked: false, listenerAfter: "off" });
+    });
+
+    it("runs nothing in a later call once T3's connection closed, before a tick sees it", () => {
+      const result = runAddon({ ...granted, call: { closeT3ThenSecondCall: true } });
+      expect(result.call).toMatchObject({ reply: ok, ranSecond: false, listenerAfter: "off" });
     });
 
     it("records nothing once the agent's code opened another file", () => {
@@ -829,7 +888,7 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     it.each([
       ["undo is off", { undoSteps: 0 }, "Undo Steps is 0"],
       ["Blender refuses the undo push", { undoPushFails: true }, "couldn't record an undo step"],
-      ["the push leaves no undo step", { noUndoStep: true }, "couldn't record an undo step"],
+      ["Global Undo is off", { globalUndo: false }, "Global Undo is off"],
       [
         "the file isn't marked unsaved",
         { undoPushLeavesClean: true },
