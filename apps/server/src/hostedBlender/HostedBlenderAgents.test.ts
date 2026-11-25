@@ -292,7 +292,11 @@ describe("HostedBlenderAgents.routeEnds on setup", () => {
         const taken = yield* ends.pipe(Stream.take(2), Stream.runCollect, Effect.forkScoped);
         yield* Queue.offer(changes, readyWith(2));
         yield* Queue.offer(changes, readyWith(null));
-        assert.deepEqual(Array.from(yield* Fiber.join(taken)), [null, null]);
+        // Each names the build it took back, so a server already on the new one is left alone.
+        assert.deepEqual(Array.from(yield* Fiber.join(taken)), [
+          { staleBuild: capture(1).build },
+          { staleBuild: capture(2).build },
+        ]);
       }).pipe(Effect.provide(layerFor({ readiness: readyWith(1), readinessChanges: changes })));
     }).pipe(Effect.scoped),
   );

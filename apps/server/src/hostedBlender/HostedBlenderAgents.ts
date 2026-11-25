@@ -1,6 +1,6 @@
 import type { ProviderDriverKind, ThreadId } from "@t3tools/contracts";
 import type { HostedBlenderMcpLaunch } from "@t3tools/provider-core/server/mcpSession";
-import { type BlenderMcpCapture, sameBuild } from "./blenderMcpStdio.ts";
+import { type BlenderMcpBuild, type BlenderMcpCapture, sameBuild } from "./blenderMcpStdio.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as NetService from "@t3tools/shared/Net";
 import * as Context from "effect/Context";
@@ -37,8 +37,8 @@ export interface HostedBlenderRevocation {
 export type HostedBlenderRole = "working" | "master";
 
 /**
- * A thread's agent losing a way to its hosted Blenders: one role's access ended (`role`), a
- * provider session ended (`session`), or every thread's when agents are switched off (null).
+ * A thread's agent losing a way to its hosted Blenders: one role's access ended (`role`), or a
+ * provider session ended (`session`).
  */
 export interface HostedBlenderRouteEnd {
   readonly threadId: ThreadId;
@@ -50,6 +50,15 @@ export interface HostedBlenderRouteEnd {
 
 const captureOf = (readiness: HostedBlenderSetup.HostedBlenderReadiness | null) =>
   readiness?.status === "ok" ? readiness.blenderMcpCapture : null;
+
+/**
+ * What `routeEnds` streams: one thread's ending, setup no longer vouching for the build whose
+ * tools sessions were shown (`staleBuild`), or agents switched off for every thread (null).
+ */
+export type HostedBlenderRouteEnded =
+  | HostedBlenderRouteEnd
+  | { readonly staleBuild: BlenderMcpBuild }
+  | null;
 
 /** The providers T3 adds the hosted Blender MCP to, the same two that get agentcast upstream. */
 const SUPPORTED_DRIVERS: ReadonlySet<string> = new Set(["claudeAgent", "codex"]);
@@ -108,11 +117,7 @@ export class HostedBlenderAgents extends Context.Service<
      * Every way a thread's agent loses its hosted Blenders, from the moment of subscribing: each
      * revocation, each role's access ending, and (null) setup's read of the server changing.
      */
-    readonly routeEnds: Effect.Effect<
-      Stream.Stream<HostedBlenderRouteEnd | null>,
-      never,
-      Scope.Scope
-    >;
+    readonly routeEnds: Effect.Effect<Stream.Stream<HostedBlenderRouteEnded>, never, Scope.Scope>;
     /** "Allow agents to start hosted Blenders", read now. */
     readonly agentsAllowed: Effect.Effect<boolean>;
     /**
@@ -137,7 +142,7 @@ const make = Effect.gen(function* () {
   // Every port handed out, so two threads or roles never share one.
   const assignedPorts = new Set<number>();
   const revoked = yield* PubSub.unbounded<HostedBlenderRevocation | null>();
-  const routeEnded = yield* PubSub.unbounded<HostedBlenderRouteEnd | null>();
+  const routeEnded = yield* PubSub.unbounded<HostedBlenderRouteEnded>();
   let readiness: HostedBlenderSetup.HostedBlenderReadiness | null = null;
   const portLock = yield* Semaphore.make(1);
   const tmpDir = path.join(config.stateDir, "hosted-blender", "mcp-tmp");
@@ -237,7 +242,7 @@ const make = Effect.gen(function* () {
                 after.command !== before.command ||
                 !sameBuild(after.build, before.build))
             ) {
-              yield* PubSub.publish(routeEnded, null);
+              yield* PubSub.publish(routeEnded, { staleBuild: before.build });
             }
             yield* Deferred.succeed(first, undefined);
           }),

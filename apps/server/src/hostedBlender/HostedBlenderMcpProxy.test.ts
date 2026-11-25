@@ -165,13 +165,16 @@ const setup = Effect.fnUntraced(function* (options?: { readonly command?: string
   };
   yield* fileSystem.writeFileString(log, "");
 
-  const ends = yield* PubSub.unbounded<HostedBlenderAgents.HostedBlenderRouteEnd | null>();
+  const ends = yield* PubSub.unbounded<HostedBlenderAgents.HostedBlenderRouteEnded>();
   const allowed = { value: true };
   const mode: { value: "default" | "plan" | "unreadable" } = { value: "default" };
   const grants = new Map<string, Grant>();
   // While on, each grant read waits for the test to release it, handing it a release here.
   const holdGrants = { value: false };
   const grantReads = yield* Queue.unbounded<Deferred.Deferred<void>>();
+  // The same for the thread's mode, which the gates read from the database.
+  const holdModes = { value: false };
+  const modeReads = yield* Queue.unbounded<Deferred.Deferred<void>>();
   const spawned: Array<Spawned> = [];
   // Each spawn as it happens, for a test that acts once a server is starting.
   const spawns = yield* Queue.unbounded<Spawned>();
@@ -229,9 +232,16 @@ const setup = Effect.fnUntraced(function* (options?: { readonly command?: string
           }),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadShell: () =>
-              mode.value === "unreadable"
-                ? Effect.fail(new Error("unreadable") as never)
-                : Effect.succeed({ interactionMode: mode.value } as never),
+              Effect.gen(function* () {
+                if (holdModes.value) {
+                  const release = Deferred.makeUnsafe<void>();
+                  Queue.offerUnsafe(modeReads, release);
+                  yield* Deferred.await(release);
+                }
+                return mode.value === "unreadable"
+                  ? yield* Effect.fail(new Error("unreadable") as never)
+                  : ({ interactionMode: mode.value } as never);
+              }),
           }),
           Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, recording),
           Layer.succeed(HostProcess.Environment, {
@@ -344,6 +354,8 @@ const setup = Effect.fnUntraced(function* (options?: { readonly command?: string
     grants,
     holdGrants,
     grantReads,
+    holdModes,
+    modeReads,
     sessions,
     hold: path.join(dir, "hold"),
     spawned,
@@ -615,6 +627,87 @@ describe("HostedBlenderMcpProxy", () => {
     ),
   );
 
+  it.live("withdraws a call cancelled during its first admission", () =>
+    run(
+      Effect.gen(function* () {
+        const t = yield* setup();
+        yield* t.startSession(a, 41000);
+        yield* t.callTool(a, "working", "echo");
+        t.holdModes.value = true;
+        const reply = yield* t
+          .send(a, "working", {
+            id: "early",
+            method: "tools/call",
+            params: { name: "echo", arguments: {} },
+          })
+          .pipe(Effect.forkChild);
+        // Before any server is chosen for it, the client cancels and goes on reading.
+        const admitting = yield* Queue.take(t.modeReads);
+        yield* t.send(a, "working", {
+          method: "notifications/cancelled",
+          params: { requestId: "early" },
+        });
+        t.holdModes.value = false;
+        yield* Deferred.succeed(admitting, undefined);
+        assert.deepStrictEqual(yield* t.collect(yield* Fiber.join(reply)), []);
+        yield* t.callTool(a, "working", "echo");
+        assert.deepStrictEqual(yield* t.calls, ["call echo", "call echo"]);
+      }),
+    ),
+  );
+
+  it.live("reads setup's capture in the final gate, after the mode read it waited on", () =>
+    run(
+      Effect.gen(function* () {
+        const t = yield* setup();
+        yield* t.startSession(a, 41000);
+        yield* t.callTool(a, "working", "echo");
+        const old = t.spawned[0]!;
+        t.holdModes.value = true;
+        const calling = yield* t.callTool(a, "working", "echo").pipe(Effect.forkChild);
+        yield* Deferred.succeed(yield* Queue.take(t.modeReads), undefined);
+        // The write's own mode read: setup's check fails while it waits, before any ending.
+        const writing = yield* Queue.take(t.modeReads);
+        t.capture.value = null;
+        t.holdModes.value = false;
+        yield* Deferred.succeed(writing, undefined);
+        const [refused] = yield* Fiber.join(calling);
+        assert.include(refused?.error.message, "Check again");
+        yield* old.exitCode;
+        assert.deepStrictEqual(yield* t.calls, ["call echo"]);
+      }),
+    ),
+  );
+
+  it.live("stops only the servers on the build setup took back", () =>
+    run(
+      Effect.gen(function* () {
+        const t = yield* setup();
+        yield* t.startSession(a, 41000);
+        yield* t.callTool(a, "working", "echo");
+        const before = t.capture.value!.build;
+        NodeFS.appendFileSync(t.script, "\n// a newer build\n");
+        t.capture.value = yield* captureBlenderMcp({
+          command: t.script,
+          environment: { PATH, FAKE_LOG: `${t.hold}.log` },
+          tmpDir: NodeOS.tmpdir(),
+        });
+        yield* t.callTool(a, "working", "echo");
+        assert.strictEqual(t.spawned.length, 2);
+        // The old build's late ending leaves the server already on its successor.
+        yield* PubSub.publish(t.ends, { staleBuild: before });
+        yield* t.callTool(a, "working", "echo");
+        assert.strictEqual(t.spawned.length, 2);
+        const replacement = t.spawned[1]!;
+        const waiting = yield* t.startWait(a, "on-new");
+        yield* PubSub.publish(t.ends, { staleBuild: t.capture.value!.build });
+        const [failed] = Array.from(yield* waiting.rest);
+        assert.include(failed?.error.message, "reinstalled");
+        yield* replacement.exitCode;
+      }),
+    ),
+  );
+
   it.live("stops a server whose session ends while it is still starting", () =>
     run(
       Effect.gen(function* () {
@@ -799,17 +892,16 @@ describe("HostedBlenderMcpProxy", () => {
       Effect.gen(function* () {
         const t = yield* setup();
         yield* t.startSession(a, 41000);
-        const ends: ReadonlyArray<
-          readonly [HostedBlenderAgents.HostedBlenderRouteEnd | null, string]
-        > = [
+        const ends: ReadonlyArray<readonly [HostedBlenderAgents.HostedBlenderRouteEnded, string]> =
           [
-            { threadId: threadA, role: "working", grant: "launch-41000" },
-            "Your access to this thread's hosted Blender ended",
-          ],
-          [{ threadId: threadA, session: "session-a" }, "This agent session ended"],
-          [{ threadId: threadA }, "This agent session ended"],
-          [null, "agents' access to hosted Blenders changed"],
-        ];
+            [
+              { threadId: threadA, role: "working", grant: "launch-41000" },
+              "Your access to this thread's hosted Blender ended",
+            ],
+            [{ threadId: threadA, session: "session-a" }, "This agent session ended"],
+            [{ threadId: threadA }, "This agent session ended"],
+            [null, 'switched off "Allow agents to start hosted Blenders"'],
+          ];
         for (const [index, [ended, reason]] of ends.entries()) {
           yield* t.callTool(a, "working", "echo");
           const child = t.spawned.at(-1)!;

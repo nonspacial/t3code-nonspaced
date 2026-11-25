@@ -85,8 +85,8 @@ const fakeHost = (dir: string) => {
 /**
  * Blender Lab's `blmcp`, as far as setup sees it: it answers `initialize` and `tools/list` over
  * stdio, and logs each start and the port it was given beside itself. A marker file beside it
- * breaks one answer: `silent` exits, `noinit` fails `initialize`, `toolserror` fails the tool
- * list and `notools` lists none.
+ * breaks one answer: `silent` exits, `noinit` fails `initialize`, `noserverinfo` leaves out its
+ * name, `toolserror` fails the tool list, `notools` lists none and `badtool` lists a nameless one.
  */
 const FAKE_BLMCP = `import json, os, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -103,12 +103,15 @@ def main():
             if broken("noinit"):
                 reply["error"] = {"code": -32603, "message": "broken"}
             else:
-                reply["result"] = {"protocolVersion": message["params"]["protocolVersion"], "capabilities": {"tools": {}}, "serverInfo": {"name": "blender-mcp", "version": "1.30.0"}}
+                reply["result"] = {"protocolVersion": message["params"]["protocolVersion"], "capabilities": {"tools": {}}}
+                if not broken("noserverinfo"):
+                    reply["result"]["serverInfo"] = {"name": "blender-mcp", "version": "1.30.0"}
         elif message.get("method") == "tools/list":
             if broken("toolserror"):
                 reply["error"] = {"code": -32603, "message": "broken"}
             else:
-                reply["result"] = {"tools": [] if broken("notools") else [{"name": "get_objects_summary", "inputSchema": {"type": "object"}}]}
+                tool = {} if broken("badtool") else {"name": "get_objects_summary", "inputSchema": {"type": "object"}}
+                reply["result"] = {"tools": [] if broken("notools") else [tool]}
         else:
             continue
         print(json.dumps(reply), flush=True)
@@ -403,7 +406,7 @@ describe("HostedBlenderSetup", () => {
 
   it.live("reports a server whose answers agents couldn't use as failed, however it fails", () =>
     Effect.gen(function* () {
-      for (const marker of ["noinit", "toolserror", "notools"]) {
+      for (const marker of ["noinit", "noserverinfo", "toolserror", "notools", "badtool"]) {
         const dir = yield* tempDir;
         const host = fakeHost(dir);
         const mcp = consoleScript(NodePath.join(dir, ".local", "bin", "blender-mcp"), "blmcp");
@@ -442,8 +445,24 @@ describe("HostedBlenderSetup", () => {
       expect(starts()).toBe(10);
       expect(Option.getOrThrow(yield* Stream.runHead(service.readiness))).toMatchObject({
         status: "ok",
-        blenderMcpCapture: { answers: { "*": { "tools/list": { result: { tools: [{}] } } } } },
+        blenderMcpCapture: {
+          answers: {
+            "*": {
+              "tools/list": {
+                result: {
+                  tools: [{ name: "get_objects_summary", inputSchema: { type: "object" } }],
+                },
+              },
+            },
+          },
+        },
       });
+      // Kept with a tool no MCP client could list: read again too.
+      const nameless = JSON.parse(NodeFS.readFileSync(kept, "utf8"));
+      nameless.answers["*"]["tools/list"].result.tools = [{}];
+      NodeFS.writeFileSync(kept, JSON.stringify(nameless));
+      yield* (yield* serviceFor({ host, home: dir })).ensureChecked;
+      expect(starts()).toBe(15);
     }).pipe(Effect.scoped),
   );
 

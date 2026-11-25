@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import type * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
@@ -70,6 +71,11 @@ export class HostedBlenderMcpProxy extends Context.Service<
       readonly protocolVersion: string | undefined;
       readonly message: unknown;
     }) => Effect.Effect<BlenderMcpReply>;
+    /**
+     * Why the session's Blender servers can't take calls now whatever its Blenders' listeners
+     * say: setup has no current read of the official server. Null when they can.
+     */
+    readonly unavailable: (caller: BlenderMcpCaller) => Effect.Effect<string | null>;
   }
 >()("t3/hostedBlender/HostedBlenderMcpProxy") {}
 
@@ -152,11 +158,21 @@ interface Child {
 
 const clientIdKey = (id: JsonRpcId) => `${typeof id}:${id}`;
 
+/** A tool call the client hasn't cancelled, from its arrival until its answer. */
+interface Request {
+  readonly key: string;
+  cancelled: boolean;
+}
+
 const ACCESS_ENDED =
   "Your access to this thread's hosted Blender ended, so T3 stopped its Blender Lab MCP server. Call blender_status to see why and how to get it back.";
 const SESSION_ENDED = "This agent session ended, so T3 stopped its Blender Lab MCP server.";
-const SETUP_CHANGED =
-  "T3 stopped this thread's Blender Lab MCP server because agents' access to hosted Blenders changed. Call blender_status to see why and how to get it back.";
+const AGENTS_OFF =
+  'The user switched off "Allow agents to start hosted Blenders" in Settings → Blender, so T3 stopped its Blender Lab MCP server.';
+const CAPTURE_MISSING =
+  "T3 Code has not read Blender Lab's MCP server's tools. Ask the user to press Check again in Settings → Blender.";
+const CAPTURE_STALE =
+  "Blender Lab's MCP server changed since T3 Code checked it. Ask the user to press Check again in Settings → Blender.";
 const BUILD_CHANGED =
   "Blender Lab's MCP server was reinstalled, so T3 stopped the one this session used. Call the tool again to use the new one.";
 const NOT_ANSWERING =
@@ -178,6 +194,13 @@ const make = Effect.gen(function* () {
   // Children are registered and stopped one at a time, so an ending never misses one.
   const lock = yield* Semaphore.make(1);
   const children = new Map<string, Child>();
+  // Each tool call from its arrival, so a cancel during its first admission still withdraws it.
+  const requests = new Map<string, Request>();
+  const requestKey = (caller: BlenderMcpCaller, role: string, id: JsonRpcId) =>
+    `${caller.providerSessionId}\0${role}\0${clientIdKey(id)}`;
+  const forget = (request: Request) => {
+    if (requests.get(request.key) === request) requests.delete(request.key);
+  };
 
   const respond = (call: Call, message: string) => {
     Queue.offerUnsafe(call.queue, message);
@@ -217,25 +240,25 @@ const make = Effect.gen(function* () {
       : undefined;
   });
 
-  /** Setup's capture of the official server, if it is still the build that runs. */
-  const currentCapture = Effect.fnUntraced(function* (launch: HostedBlenderMcpLaunch) {
+  /** The build `launch` runs now, read from the disk; none when it can't be read. */
+  const installedBuild = (launch: HostedBlenderMcpLaunch) =>
+    blenderMcpBuild(launch.command).pipe(Effect.provideContext(processContext), Effect.option);
+
+  /** Setup's capture, held in memory, if it describes `build`, the one installed now. */
+  const captureFor = Effect.fnUntraced(function* (
+    launch: HostedBlenderMcpLaunch,
+    build: Option.Option<BlenderMcpBuild>,
+  ) {
     const capture = yield* agents.blenderMcpCapture(launch.command);
-    if (capture === null) {
-      return yield* Effect.fail(
-        "T3 Code has not read Blender Lab's MCP server's tools. Ask the user to press Check again in Settings → Blender.",
-      );
-    }
-    const build = yield* blenderMcpBuild(launch.command).pipe(
-      Effect.provideContext(processContext),
-      Effect.option,
-    );
-    if (build._tag === "None" || !sameBuild(build.value, capture.build)) {
-      return yield* Effect.fail(
-        "Blender Lab's MCP server changed since T3 Code checked it. Ask the user to press Check again in Settings → Blender.",
-      );
+    if (capture === null) return yield* Effect.fail(CAPTURE_MISSING);
+    if (Option.isNone(build) || !sameBuild(build.value, capture.build)) {
+      return yield* Effect.fail(CAPTURE_STALE);
     }
     return capture;
   });
+
+  const currentCapture = (launch: HostedBlenderMcpLaunch) =>
+    installedBuild(launch).pipe(Effect.flatMap((build) => captureFor(launch, build)));
 
   /** Why the session can't reach the role's Blender now, and what gets it there. */
   const noGrantReason = (
@@ -259,28 +282,37 @@ const make = Effect.gen(function* () {
   const refuse = (reason: string, endsChild = true) => Effect.fail<Refusal>({ reason, endsChild });
 
   /**
-   * Every gate a Blender call passes, read now: the installed build and the thread's mode first
-   * (they read the disk), then the switch, the grant and the credential. Run under the lock,
-   * immediately before a call is written, so nothing admitted earlier is trusted.
+   * The gates that wait on the disk and the database, the installed build and the thread's mode,
+   * read immediately before the lock is taken.
    */
-  const gate = Effect.fnUntraced(function* (
-    caller: BlenderMcpCaller,
-    role: HostedBlenderAgents.HostedBlenderRole,
-    tool: unknown,
-  ) {
-    const asked = yield* currentLaunch(caller);
-    if (asked === undefined) {
+  const prepare = Effect.fnUntraced(function* (caller: BlenderMcpCaller, tool: unknown) {
+    const launch = yield* currentLaunch(caller);
+    if (launch === undefined) {
       return yield* refuse("Hosted Blender is not available to this agent session.");
     }
-    const capture = yield* currentCapture(asked).pipe(
-      Effect.mapError((reason) => ({ reason, endsChild: true })),
-    );
+    const build = yield* installedBuild(launch);
     if (!(yield* allowedByMode(caller.threadId, tool))) {
       return yield* refuse(
         `${String(tool)} can change the file, and Plan mode is read-only. Scene summaries, screenshots and doc search still work; ask the user to leave Plan mode first.`,
         false,
       );
     }
+    return { launch, build };
+  });
+
+  /**
+   * Every other gate, all held in memory: setup's capture of that build, the switch, the grant,
+   * and last the credential. Run under the lock immediately before a call is written or a
+   * server registered, so nothing admitted earlier is trusted.
+   */
+  const admit = Effect.fnUntraced(function* (
+    caller: BlenderMcpCaller,
+    role: HostedBlenderAgents.HostedBlenderRole,
+    prepared: Effect.Success<ReturnType<typeof prepare>>,
+  ) {
+    const capture = yield* captureFor(prepared.launch, prepared.build).pipe(
+      Effect.mapError((reason): Refusal => ({ reason, endsChild: true })),
+    );
     if (!(yield* agents.agentsAllowed)) {
       return yield* refuse(
         'The user switched off "Allow agents to start hosted Blenders" in Settings → Blender.',
@@ -421,29 +453,29 @@ const make = Effect.gen(function* () {
   });
 
   /** The child serves the grant and build the gates admitted now. */
-  const serves = (child: Child, admitted: Effect.Success<ReturnType<typeof gate>>) =>
+  const serves = (child: Child, admitted: Effect.Success<ReturnType<typeof admit>>) =>
     child.grant === admitted.grant && sameBuild(child.build, admitted.build);
 
   /**
    * The child for the caller's grant, started now if needed. A refusal that ends access, or a
    * new grant or build, stops the one the session had.
    */
-  const childFor = (input: {
+  const childFor = Effect.fnUntraced(function* (input: {
     readonly caller: BlenderMcpCaller;
     readonly role: HostedBlenderAgents.HostedBlenderRole;
     readonly tool: unknown;
     readonly protocolVersion: string;
-  }) =>
-    lock.withPermits(1)(
+  }) {
+    const key = `${input.caller.providerSessionId}\0${input.role}`;
+    const endsKnown = (refusal: Refusal) => {
+      const known = children.get(key);
+      return refusal.endsChild && known !== undefined ? stop(known, refusal.reason) : Effect.void;
+    };
+    const build = yield* prepare(input.caller, input.tool).pipe(Effect.tapError(endsKnown));
+    return yield* lock.withPermits(1)(
       Effect.gen(function* () {
-        const key = `${input.caller.providerSessionId}\0${input.role}`;
-        const admitted = yield* gate(input.caller, input.role, input.tool).pipe(
-          Effect.tapError((refusal) => {
-            const known = children.get(key);
-            return refusal.endsChild && known !== undefined
-              ? stop(known, refusal.reason)
-              : Effect.void;
-          }),
+        const admitted = yield* admit(input.caller, input.role, build).pipe(
+          Effect.tapError(endsKnown),
         );
         const known = children.get(key);
         if (known !== undefined && serves(known, admitted)) return known;
@@ -453,6 +485,7 @@ const make = Effect.gen(function* () {
         return yield* startChild({ ...input, ...admitted });
       }),
     );
+  });
 
   const cancel = (child: Child, childId: number, params?: JsonObject) =>
     child.connection === undefined
@@ -476,9 +509,12 @@ const make = Effect.gen(function* () {
     message: JsonObject,
     id: JsonRpcId,
     tool: unknown,
+    request: Request,
   ) =>
     Stream.unwrap(
       Effect.gen(function* () {
+        yield* Effect.addFinalizer(() => Effect.sync(() => forget(request)));
+        if (request.cancelled) return Stream.empty;
         if (child.stopped !== null) return Stream.make(errorMessage(id, child.stopped));
         const childId = child.nextId++;
         const queue = yield* Queue.unbounded<string, Cause.Done>();
@@ -496,15 +532,21 @@ const make = Effect.gen(function* () {
         );
         const write = Effect.gen(function* () {
           const connection = yield* Deferred.await(child.ready);
-          const pending = () => child.stopped === null && child.calls.get(childId) === call;
+          const pending = () =>
+            !request.cancelled && child.stopped === null && child.calls.get(childId) === call;
           const refused = (reason: string) =>
             Effect.sync(() => {
               if (finish(child, childId) !== undefined) respond(call, errorMessage(id, reason));
             });
+          const build = yield* prepare(caller, tool).pipe(Effect.result);
           yield* lock.withPermits(1)(
             Effect.gen(function* () {
               if (!pending()) return;
-              const admitted = yield* gate(caller, child.role, tool).pipe(Effect.result);
+              const admitted = yield* (
+                build._tag === "Failure"
+                  ? Effect.fail(build.failure)
+                  : admit(caller, child.role, build.success)
+              ).pipe(Effect.result);
               if (admitted._tag === "Failure") {
                 yield* refused(admitted.failure.reason);
                 if (admitted.failure.endsChild) yield* stop(child, admitted.failure.reason);
@@ -576,6 +618,10 @@ const make = Effect.gen(function* () {
       if (method === "notifications/cancelled" && Predicate.isReadonlyObject(message.params)) {
         const child = children.get(`${caller.providerSessionId}\0${role}`);
         const requestId = message.params.requestId;
+        const request = isJsonRpcId(requestId)
+          ? requests.get(requestKey(caller, role, requestId))
+          : undefined;
+        if (request !== undefined) request.cancelled = true;
         const childId =
           child === undefined || !isJsonRpcId(requestId)
             ? undefined
@@ -616,13 +662,19 @@ const make = Effect.gen(function* () {
       return { _tag: "Message", message: errorMessage(id, "Method not found", -32601) } as const;
     }
     const tool = Predicate.isReadonlyObject(message.params) ? message.params.name : undefined;
+    const request: Request = { key: requestKey(caller, role, id), cancelled: false };
+    requests.set(request.key, request);
     const child = yield* childFor({ caller, role, tool, protocolVersion: version }).pipe(
       Effect.result,
     );
     if (child._tag === "Failure") {
+      forget(request);
       return { _tag: "Message", message: errorMessage(id, child.failure.reason) } as const;
     }
-    return { _tag: "Stream", messages: forward(child.success, caller, message, id, tool) } as const;
+    return {
+      _tag: "Stream",
+      messages: forward(child.success, caller, message, id, tool, request),
+    } as const;
   });
 
   const routeEnds = yield* agents.routeEnds;
@@ -632,22 +684,27 @@ const make = Effect.gen(function* () {
       lock.withPermits(1)(
         Effect.suspend(() =>
           Effect.forEach(
-            [...children.values()].filter(
-              (child) =>
-                ended === null ||
-                (child.threadId === ended.threadId &&
-                  (ended.session === undefined || ended.session === child.session) &&
-                  (ended.role === undefined || ended.role === child.role) &&
-                  (ended.grant === undefined || ended.grant === child.grant)),
+            [...children.values()].filter((child) =>
+              ended === null
+                ? true
+                : "staleBuild" in ended
+                  ? // Only the servers on the build setup took back, not one already on its successor.
+                    sameBuild(child.build, ended.staleBuild)
+                  : child.threadId === ended.threadId &&
+                    (ended.session === undefined || ended.session === child.session) &&
+                    (ended.role === undefined || ended.role === child.role) &&
+                    (ended.grant === undefined || ended.grant === child.grant),
             ),
             (child) =>
               stop(
                 child,
                 ended === null
-                  ? SETUP_CHANGED
-                  : ended.role === undefined
-                    ? SESSION_ENDED
-                    : ACCESS_ENDED,
+                  ? AGENTS_OFF
+                  : "staleBuild" in ended
+                    ? BUILD_CHANGED
+                    : ended.role === undefined
+                      ? SESSION_ENDED
+                      : ACCESS_ENDED,
               ),
             { discard: true },
           ),
@@ -670,7 +727,18 @@ const make = Effect.gen(function* () {
     }),
   );
 
-  return HostedBlenderMcpProxy.of({ handle });
+  const unavailable: HostedBlenderMcpProxy["Service"]["unavailable"] = Effect.fn(
+    "HostedBlenderMcpProxy.unavailable",
+  )(function* (caller) {
+    const launch = yield* currentLaunch(caller);
+    if (launch === undefined) return "Hosted Blender is not available to this agent session.";
+    return yield* currentCapture(launch).pipe(
+      Effect.as(null),
+      Effect.catch((reason) => Effect.succeed(reason)),
+    );
+  });
+
+  return HostedBlenderMcpProxy.of({ handle, unavailable });
 });
 
 export const layer = Layer.effect(HostedBlenderMcpProxy, make);

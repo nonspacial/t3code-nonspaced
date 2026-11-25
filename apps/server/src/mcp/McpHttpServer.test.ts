@@ -2264,6 +2264,7 @@ it.effect("serves a thread's Blender servers to its own credential alone, over J
     Parameters<HostedBlenderMcpProxy.HostedBlenderMcpProxy["Service"]["handle"]>[0]
   > = [];
   const proxy = HostedBlenderMcpProxy.HostedBlenderMcpProxy.of({
+    unavailable: () => Effect.succeed(null),
     handle: (input) =>
       Effect.sync(() => {
         handled.push(input);
