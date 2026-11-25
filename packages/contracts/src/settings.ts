@@ -1408,6 +1408,8 @@ export const ServerSettings = Schema.Struct({
   hostedBlenderEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Agents may start hosted Blenders, through the official Blender Lab MCP. */
   hostedBlenderAllowAgents: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** Hosted Blenders show Blender's Timeline in a strip under the pane's 3D view. */
+  hostedBlenderTimeline: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   /** The official `blender-mcp` server. Empty finds it on PATH and in `~/.local/bin`. */
   blenderMcpPath: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   /** macOS only, Labs beta: clone new worktrees from a cached checkout instead of writing every file. */
@@ -1900,6 +1902,7 @@ export const ServerSettingsPatch = Schema.Struct({
   blenderPath: Schema.optionalKey(TrimmedString),
   hostedBlenderEnabled: Schema.optionalKey(Schema.Boolean),
   hostedBlenderAllowAgents: Schema.optionalKey(Schema.Boolean),
+  hostedBlenderTimeline: Schema.optionalKey(Schema.Boolean),
   blenderMcpPath: Schema.optionalKey(TrimmedString),
   fastWorktreeCheckout: Schema.optionalKey(Schema.Boolean),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),

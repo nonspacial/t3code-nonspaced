@@ -76,6 +76,8 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.hostedBlenderReopen,
       WS_METHODS.hostedBlenderDismiss,
       WS_METHODS.hostedBlenderSetView,
+      // The Timeline strip is part of the Blender window every viewer shares.
+      WS_METHODS.hostedBlenderSetTimeline,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
     }

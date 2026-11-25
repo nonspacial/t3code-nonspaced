@@ -1053,9 +1053,9 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     });
     const ready = { listener: "ready", listening: result.port, enabled: true };
     // T3's saved window swapped for one fresh, marked window; the user's own view kept; the
-    // agent's listener untouched.
+    // agent's listener untouched. A pass closes, one opens, and one more sets the strip.
     expect(result.steps.slice(-4)).toEqual([
-      { ...ready, windows: 3, fresh: 1, usersKept: true, closes: 2, runs: 1, marked: true },
+      { ...ready, windows: 3, fresh: 1, usersKept: true, closes: 2, runs: 2, marked: true },
       ready,
       off,
       off,

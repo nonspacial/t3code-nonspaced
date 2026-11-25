@@ -28,6 +28,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ServerConfig from "../config.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { HOSTED_STARTUP_GATE_SOURCE } from "./agentGuard.ts";
 import { startAgentWorkingCopy } from "./agentWorkingCopy.ts";
@@ -72,6 +73,8 @@ interface Host {
   readonly desktop?: DesktopBlender.DesktopBlender["Service"];
   /** The TCP tables a master's relay reads its clients' accounts from; the kernel's by default. */
   readonly tcpTables?: ReadonlyArray<string>;
+  /** "Timeline" in the pane's menu; on by default. */
+  readonly timeline?: boolean;
 }
 
 const blenderOnPath = (env: NodeJS.ProcessEnv) =>
@@ -144,6 +147,12 @@ const layerFor = (host: Host) =>
         WorkspacePaths.layer,
         NetService.layer,
         ServerConfig.layerTest(host.workspaceRoot, host.baseDir),
+      ),
+    ),
+    // Kept in the built context, so a test can switch settings as Settings would.
+    Layer.provideMerge(
+      ServerSettings.ServerSettingsService.layerTest(
+        host.timeline === undefined ? {} : { hostedBlenderTimeline: host.timeline },
       ),
     ),
     Layer.provide(

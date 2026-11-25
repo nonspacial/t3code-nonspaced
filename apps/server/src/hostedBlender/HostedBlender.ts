@@ -17,6 +17,7 @@ import {
   type HostedBlenderRunningState,
   HostedBlenderSetViewInput,
   type HostedBlenderStreamServerMessage,
+  type ServerSettingsError,
   type HostedBlenderViewerMessage,
   type HostedBlenderThreadState,
   ThreadId,
@@ -53,6 +54,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as ServerConfig from "../config.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import { threadWorkspaceRoot } from "../project/threadWorkspaceRoot.ts";
 import { isWithinRoot } from "../workspace/KnownWorkspaces.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
@@ -197,6 +199,10 @@ const STOP_AGENT_LISTENER = `${encodeListenerCommand({ type: "stopAgentListener"
 const GRANT_AGENT_LISTENER = `${encodeListenerCommand({ type: "grantAgentListener" })}\n`;
 // Quits only if Blender, asked at that moment, has no unsaved changes. A quit T3 gave up on is
 // cancelled by its id, so a late one never closes a master someone has joined since.
+const encodeTimeline = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("timeline"), shown: Schema.Boolean })),
+);
+const timelineCommand = (shown: boolean) => `${encodeTimeline({ type: "timeline", shown })}\n`;
 const encodeQuitRequest = Schema.encodeSync(
   Schema.fromJsonString(
     Schema.Struct({ type: Schema.Literals(["quitIfClean", "cancelQuit"]), id: Schema.Int }),
@@ -461,6 +467,8 @@ export class HostedBlender extends Context.Service<
     ) => Effect.Effect<HostedBlenderHits, HostedBlenderError>;
     /** Moves the person's viewport window, never the agent's main window. */
     readonly setView: (input: HostedBlenderSetViewInput) => Effect.Effect<void, HostedBlenderError>;
+    /** Shows or hides the Timeline strip in every hosted Blender, now and at later launches. */
+    readonly setTimeline: (shown: boolean) => Effect.Effect<void, ServerSettingsError>;
   }
 >()("t3/hostedBlender/HostedBlender") {}
 
@@ -637,6 +645,12 @@ const make = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const net = yield* NetService.NetService;
   const setup = yield* HostedBlenderSetup.HostedBlenderSetup;
+  const settings = yield* ServerSettings.ServerSettingsService;
+  // Unreadable settings show the strip, as it is by default.
+  const timelineShown = settings.getSettings.pipe(
+    Effect.map((value) => value.hostedBlenderTimeline),
+    Effect.orElseSucceed(() => true),
+  );
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
   const environment = yield* HostProcess.Environment;
   const homeDirectory = yield* HostProcess.HomeDirectory;
@@ -1713,6 +1727,8 @@ const make = Effect.gen(function* () {
       if (instance.retryQuit) yield* retryQuit(instance).pipe(Effect.forkIn(serviceScope));
       // Revoked before the add-on could hear it; a grant waits for its first state.
       if (instance.agentListenerRevoked) yield* instance.control.write(STOP_AGENT_LISTENER);
+      // Switched since the launch read it.
+      yield* instance.control.write(timelineCommand(yield* timelineShown));
       const decoder = new TextDecoder();
       let buffer = "";
       return yield* Effect.forever(
@@ -2025,6 +2041,7 @@ const make = Effect.gen(function* () {
               mcpPort,
               recover: instance.recover,
               mcpListen: agentPort !== null,
+              timeline: yield* timelineShown,
               ...(mcpSnapshot === null ? {} : { mcpSnapshot }),
               // Plan mode is read-only, whatever the runtime mode. A master serves threads of
               // any mode, so its embedded scripts never run.
@@ -2671,6 +2688,27 @@ const make = Effect.gen(function* () {
     instance.closeRequested = true;
     const deadline = yield* deadlineIn(QUIT_TIMEOUT, false);
     yield* end(instance, deadline).pipe(Effect.forkIn(serviceScope));
+  });
+
+  // The Timeline switch reaches every running Blender at once, without a restart.
+  const settingsChanges = yield* settings.subscribeChanges;
+  yield* settingsChanges.pipe(
+    Stream.map((value) => value.hostedBlenderTimeline),
+    Stream.changes,
+    Stream.runForEach((shown) =>
+      Effect.forEach(
+        [...instances.values()],
+        (instance) => instance.control?.write(timelineCommand(shown)) ?? Effect.void,
+        { discard: true },
+      ),
+    ),
+    Effect.forkIn(serviceScope),
+  );
+
+  const setTimeline: HostedBlender["Service"]["setTimeline"] = Effect.fn(
+    "HostedBlender.setTimeline",
+  )(function* (shown) {
+    yield* settings.updateSettings({ hostedBlenderTimeline: shown });
   });
 
   // Switching Hosted Blender off closes every hosted Blender as a settle does, copies kept.
@@ -3614,6 +3652,7 @@ const make = Effect.gen(function* () {
     captureView,
     findHits,
     setView,
+    setTimeline,
   });
 });
 

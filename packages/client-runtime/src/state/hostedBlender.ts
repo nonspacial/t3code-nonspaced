@@ -122,6 +122,10 @@ export function createHostedBlenderEnvironmentAtoms<R, E>(
       label: "environment-data:hosted-blender:set-view",
       tag: WS_METHODS.hostedBlenderSetView,
     }),
+    setTimeline: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:hosted-blender:set-timeline",
+      tag: WS_METHODS.hostedBlenderSetTimeline,
+    }),
     setupState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:hosted-blender:setup-state",
       tag: WS_METHODS.hostedBlenderSubscribeSetup,

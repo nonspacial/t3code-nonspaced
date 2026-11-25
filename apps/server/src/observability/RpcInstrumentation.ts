@@ -280,6 +280,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.hostedBlenderCaptureView]: "hostedBlender",
   [WS_METHODS.hostedBlenderFindHits]: "hostedBlender",
   [WS_METHODS.hostedBlenderSetView]: "hostedBlender",
+  [WS_METHODS.hostedBlenderSetTimeline]: "hostedBlender",
   [WS_METHODS.hostedBlenderSubscribeMaster]: "hostedBlender",
   [WS_METHODS.hostedBlenderOpenMaster]: "hostedBlender",
   [WS_METHODS.hostedBlenderMoveIntoT3]: "hostedBlender",

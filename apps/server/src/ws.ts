@@ -3576,6 +3576,7 @@ export const layerWsRpc = (
           hostedBlender.captureView(input.threadId, input.role),
         [WS_METHODS.hostedBlenderFindHits]: (input) => hostedBlender.findHits(input),
         [WS_METHODS.hostedBlenderSetView]: (input) => hostedBlender.setView(input),
+        [WS_METHODS.hostedBlenderSetTimeline]: (input) => hostedBlender.setTimeline(input.shown),
         [WS_METHODS.hostedBlenderSubscribeMaster]: (input) =>
           hostedBlender.masterState(input.threadId),
         [WS_METHODS.hostedBlenderOpenMaster]: (input) => hostedBlender.reopenMaster(input.threadId),
