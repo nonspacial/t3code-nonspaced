@@ -25,6 +25,7 @@ import { masterAccessHelp } from "./agentMaster.ts";
 import { workingAccessHelp } from "./agentWorkingCopy.ts";
 import {
   type BlenderMcpAnswer,
+  type BlenderMcpBuild,
   type BlenderMcpConnection,
   blenderMcpBuild,
   capturedAnswersFor,
@@ -91,15 +92,35 @@ const progressTokenOf = (params: unknown): unknown =>
     ? params._meta.progressToken
     : undefined;
 
-/** The agent never learns the port: its only route is the server T3 runs for it. */
-const withoutPort = (encoded: string, port: number) =>
-  encoded.replace(
-    new RegExp(
-      `(?:localhost|127\\.0\\.0\\.1|\\[::1\\]|::1):${port}(?!\\d)|port ${port}(?!\\d)`,
-      "g",
-    ),
-    "this thread's hosted Blender",
+// Blender Lab's own wording for a call whose Blender isn't listening, naming its address.
+const CANNOT_CONNECT = /^Error executing tool \S+: Cannot connect to Blender at \S+:\d+\./;
+const UNREACHABLE =
+  "Blender Lab's MCP server could not reach this thread's hosted Blender: it isn't listening for you now. Call blender_status to see why and how to get it back.";
+
+/** A failed call's connection diagnostic, told as what to do; everything else as it came. */
+const withAgentDiagnostic = (message: JsonObject): JsonObject => {
+  const result = message.result;
+  if (!Predicate.isReadonlyObject(result) || result.isError !== true) return message;
+  const original: unknown = result.content;
+  if (!Array.isArray(original)) return message;
+  const content = original.map((item: unknown) =>
+    Predicate.isReadonlyObject(item) &&
+    item.type === "text" &&
+    typeof item.text === "string" &&
+    CANNOT_CONNECT.test(item.text)
+      ? { ...item, text: UNREACHABLE }
+      : item,
   );
+  return content.some((item, index) => item !== original[index])
+    ? { ...message, result: { ...result, content } }
+    : message;
+};
+
+/** Why a gate refused a call, and whether that also ends the server it was for. */
+interface Refusal {
+  readonly reason: string;
+  readonly endsChild: boolean;
+}
 
 interface Call {
   readonly clientId: JsonRpcId;
@@ -116,7 +137,8 @@ interface Child {
   readonly role: HostedBlenderAgents.HostedBlenderRole;
   /** The grant it serves: a working Blender's launch, or this session's master relay. */
   readonly grant: string;
-  readonly port: number;
+  /** The installed build setup had read when it was admitted. */
+  readonly build: BlenderMcpBuild;
   readonly scope: Scope.Closeable;
   readonly ready: Deferred.Deferred<BlenderMcpConnection, string>;
   connection: BlenderMcpConnection | undefined;
@@ -133,6 +155,10 @@ const clientIdKey = (id: JsonRpcId) => `${typeof id}:${id}`;
 const ACCESS_ENDED =
   "Your access to this thread's hosted Blender ended, so T3 stopped its Blender Lab MCP server. Call blender_status to see why and how to get it back.";
 const SESSION_ENDED = "This agent session ended, so T3 stopped its Blender Lab MCP server.";
+const SETUP_CHANGED =
+  "T3 stopped this thread's Blender Lab MCP server because agents' access to hosted Blenders changed. Call blender_status to see why and how to get it back.";
+const BUILD_CHANGED =
+  "Blender Lab's MCP server was reinstalled, so T3 stopped the one this session used. Call the tool again to use the new one.";
 const NOT_ANSWERING =
   "Blender Lab's MCP server for this thread stopped answering, so T3 stopped it. Call the tool again to start it again.";
 
@@ -230,31 +256,47 @@ const make = Effect.gen(function* () {
       : workingAccessHelp(name, none.listener);
   };
 
+  const refuse = (reason: string, endsChild = true) => Effect.fail<Refusal>({ reason, endsChild });
+
   /**
-   * The live grant the caller may use now, checked against the current credential, the
-   * switch and the installed build. Runs under the lock, so no ending is processed meanwhile.
+   * Every gate a Blender call passes, read now: the installed build and the thread's mode first
+   * (they read the disk), then the switch, the grant and the credential. Run under the lock,
+   * immediately before a call is written, so nothing admitted earlier is trusted.
    */
-  const admit = Effect.fnUntraced(function* (
+  const gate = Effect.fnUntraced(function* (
     caller: BlenderMcpCaller,
     role: HostedBlenderAgents.HostedBlenderRole,
+    tool: unknown,
   ) {
-    const launch = yield* currentLaunch(caller);
-    if (launch === undefined) {
-      return yield* Effect.fail("Hosted Blender is not available to this agent session.");
+    const asked = yield* currentLaunch(caller);
+    if (asked === undefined) {
+      return yield* refuse("Hosted Blender is not available to this agent session.");
+    }
+    const capture = yield* currentCapture(asked).pipe(
+      Effect.mapError((reason) => ({ reason, endsChild: true })),
+    );
+    if (!(yield* allowedByMode(caller.threadId, tool))) {
+      return yield* refuse(
+        `${String(tool)} can change the file, and Plan mode is read-only. Scene summaries, screenshots and doc search still work; ask the user to leave Plan mode first.`,
+        false,
+      );
     }
     if (!(yield* agents.agentsAllowed)) {
-      return yield* Effect.fail(
+      return yield* refuse(
         'The user switched off "Allow agents to start hosted Blenders" in Settings → Blender.',
       );
     }
-    yield* currentCapture(launch);
     const grant = yield* hostedBlender.agentGrant({
       threadId: caller.threadId,
       role,
       session: caller.providerSessionId,
     });
-    if (grant._tag === "none") return yield* Effect.fail(noGrantReason(role, grant));
-    return { launch, grant: grant.grant, port: grant.port };
+    if (grant._tag === "none") return yield* refuse(noGrantReason(role, grant));
+    const launch = yield* currentLaunch(caller);
+    if (launch === undefined) {
+      return yield* refuse("Hosted Blender is not available to this agent session.");
+    }
+    return { launch, grant: grant.grant, port: grant.port, build: capture.build };
   });
 
   const onChildMessage = (child: Child) =>
@@ -264,7 +306,7 @@ const make = Effect.gen(function* () {
         const call = finish(child, message.id);
         if (call === undefined) return;
         child.lastActive = yield* Clock.currentTimeMillis;
-        respond(call, withoutPort(encodeJson({ ...message, id: call.clientId }), child.port));
+        respond(call, encodeJson({ ...withAgentDiagnostic(message), id: call.clientId }));
         return;
       }
       if (typeof message.method !== "string") return;
@@ -286,7 +328,7 @@ const make = Effect.gen(function* () {
         : undefined;
       for (const call of child.calls.values()) {
         if (call.progressToken !== undefined && call.progressToken === token) {
-          Queue.offerUnsafe(call.queue, withoutPort(encodeJson(message), child.port));
+          Queue.offerUnsafe(call.queue, encodeJson(message));
         }
       }
     });
@@ -298,6 +340,7 @@ const make = Effect.gen(function* () {
     readonly launch: HostedBlenderMcpLaunch;
     readonly grant: string;
     readonly port: number;
+    readonly build: BlenderMcpBuild;
     readonly protocolVersion: string;
   }) {
     const child: Child = {
@@ -306,7 +349,7 @@ const make = Effect.gen(function* () {
       session: input.caller.providerSessionId,
       role: input.role,
       grant: input.grant,
-      port: input.port,
+      build: input.build,
       scope: Scope.forkUnsafe(childScopes),
       ready: Deferred.makeUnsafe<BlenderMcpConnection, string>(),
       connection: undefined,
@@ -377,18 +420,36 @@ const make = Effect.gen(function* () {
     return child;
   });
 
-  /** The child for the caller's grant, started now if needed; a stale grant's child is stopped. */
+  /** The child serves the grant and build the gates admitted now. */
+  const serves = (child: Child, admitted: Effect.Success<ReturnType<typeof gate>>) =>
+    child.grant === admitted.grant && sameBuild(child.build, admitted.build);
+
+  /**
+   * The child for the caller's grant, started now if needed. A refusal that ends access, or a
+   * new grant or build, stops the one the session had.
+   */
   const childFor = (input: {
     readonly caller: BlenderMcpCaller;
     readonly role: HostedBlenderAgents.HostedBlenderRole;
+    readonly tool: unknown;
     readonly protocolVersion: string;
   }) =>
     lock.withPermits(1)(
       Effect.gen(function* () {
-        const admitted = yield* admit(input.caller, input.role);
-        const known = children.get(`${input.caller.providerSessionId}\0${input.role}`);
-        if (known !== undefined && known.grant === admitted.grant) return known;
-        if (known !== undefined) yield* stop(known, ACCESS_ENDED);
+        const key = `${input.caller.providerSessionId}\0${input.role}`;
+        const admitted = yield* gate(input.caller, input.role, input.tool).pipe(
+          Effect.tapError((refusal) => {
+            const known = children.get(key);
+            return refusal.endsChild && known !== undefined
+              ? stop(known, refusal.reason)
+              : Effect.void;
+          }),
+        );
+        const known = children.get(key);
+        if (known !== undefined && serves(known, admitted)) return known;
+        if (known !== undefined) {
+          yield* stop(known, known.grant === admitted.grant ? BUILD_CHANGED : ACCESS_ENDED);
+        }
         return yield* startChild({ ...input, ...admitted });
       }),
     );
@@ -409,7 +470,13 @@ const make = Effect.gen(function* () {
    * is still the session's then; a client that stops reading has given up, so the server is
    * told to cancel.
    */
-  const forward = (child: Child, caller: BlenderMcpCaller, message: JsonObject, id: JsonRpcId) =>
+  const forward = (
+    child: Child,
+    caller: BlenderMcpCaller,
+    message: JsonObject,
+    id: JsonRpcId,
+    tool: unknown,
+  ) =>
     Stream.unwrap(
       Effect.gen(function* () {
         if (child.stopped !== null) return Stream.make(errorMessage(id, child.stopped));
@@ -429,20 +496,28 @@ const make = Effect.gen(function* () {
         );
         const write = Effect.gen(function* () {
           const connection = yield* Deferred.await(child.ready);
+          const pending = () => child.stopped === null && child.calls.get(childId) === call;
+          const refused = (reason: string) =>
+            Effect.sync(() => {
+              if (finish(child, childId) !== undefined) respond(call, errorMessage(id, reason));
+            });
           yield* lock.withPermits(1)(
             Effect.gen(function* () {
-              if (child.calls.get(childId) !== call) return;
-              const admitted = yield* admit(caller, child.role).pipe(Effect.result);
-              if (admitted._tag === "Failure" || admitted.success.grant !== child.grant) {
-                if (finish(child, childId) !== undefined) {
-                  respond(
-                    call,
-                    errorMessage(id, admitted._tag === "Failure" ? admitted.failure : ACCESS_ENDED),
-                  );
-                }
-                if (admitted._tag === "Success") yield* stop(child, ACCESS_ENDED);
+              if (!pending()) return;
+              const admitted = yield* gate(caller, child.role, tool).pipe(Effect.result);
+              if (admitted._tag === "Failure") {
+                yield* refused(admitted.failure.reason);
+                if (admitted.failure.endsChild) yield* stop(child, admitted.failure.reason);
                 return;
               }
+              if (!serves(child, admitted.success)) {
+                const reason =
+                  child.grant === admitted.success.grant ? BUILD_CHANGED : ACCESS_ENDED;
+                yield* refused(reason);
+                return yield* stop(child, reason);
+              }
+              // A cancel or disconnect while the gates were read has withdrawn the call.
+              if (!pending()) return;
               yield* connection
                 .send({ ...message, id: childId })
                 .pipe(Effect.catch(() => stop(child, NOT_ANSWERING)));
@@ -541,38 +616,41 @@ const make = Effect.gen(function* () {
       return { _tag: "Message", message: errorMessage(id, "Method not found", -32601) } as const;
     }
     const tool = Predicate.isReadonlyObject(message.params) ? message.params.name : undefined;
-    if (!(yield* allowedByMode(caller.threadId, tool))) {
-      return {
-        _tag: "Message",
-        message: errorMessage(
-          id,
-          `${String(tool)} can change the file, and Plan mode is read-only. Scene summaries, screenshots and doc search still work; ask the user to leave Plan mode first.`,
-        ),
-      } as const;
-    }
-    const child = yield* childFor({ caller, role, protocolVersion: version }).pipe(Effect.result);
+    const child = yield* childFor({ caller, role, tool, protocolVersion: version }).pipe(
+      Effect.result,
+    );
     if (child._tag === "Failure") {
-      return { _tag: "Message", message: errorMessage(id, child.failure) } as const;
+      return { _tag: "Message", message: errorMessage(id, child.failure.reason) } as const;
     }
-    return { _tag: "Stream", messages: forward(child.success, caller, message, id) } as const;
+    return { _tag: "Stream", messages: forward(child.success, caller, message, id, tool) } as const;
   });
 
   const routeEnds = yield* agents.routeEnds;
   yield* routeEnds.pipe(
     Stream.runForEach((ended) =>
+      // Read under the lock, so a child registered while this waited is among them.
       lock.withPermits(1)(
-        Effect.forEach(
-          [...children.values()].filter(
+        Effect.suspend(() =>
+          Effect.forEach(
+            [...children.values()].filter(
+              (child) =>
+                ended === null ||
+                (child.threadId === ended.threadId &&
+                  (ended.session === undefined || ended.session === child.session) &&
+                  (ended.role === undefined || ended.role === child.role) &&
+                  (ended.grant === undefined || ended.grant === child.grant)),
+            ),
             (child) =>
-              ended === null ||
-              (child.threadId === ended.threadId &&
-                (ended.session === undefined || ended.session === child.session) &&
-                (ended.role === undefined || ended.role === child.role) &&
-                (ended.grant === undefined || ended.grant === child.grant)),
+              stop(
+                child,
+                ended === null
+                  ? SETUP_CHANGED
+                  : ended.role === undefined
+                    ? SESSION_ENDED
+                    : ACCESS_ENDED,
+              ),
+            { discard: true },
           ),
-          (child) =>
-            stop(child, ended !== null && ended.role === undefined ? SESSION_ENDED : ACCESS_ENDED),
-          { discard: true },
         ),
       ),
     ),

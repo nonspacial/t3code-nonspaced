@@ -217,7 +217,9 @@ const answersOnce = (command: string, env: Record<string, string>, protocolVersi
       const answers: Record<string, BlenderMcpAnswer> = {};
       const initialized = yield* ask("initialize", initializeParams(protocolVersion));
       answers.initialize = initialized;
-      if (initialized.error !== undefined) return yield* Effect.fail("it refused to initialize");
+      if (initialized.error !== undefined || !Predicate.isReadonlyObject(initialized.result)) {
+        return yield* Effect.fail("it did not initialize");
+      }
       yield* connection.send({ jsonrpc: "2.0", method: "notifications/initialized" });
       const capabilities = Predicate.isReadonlyObject(initialized.result)
         ? initialized.result.capabilities
@@ -250,21 +252,24 @@ export const blenderMcpBuild = Effect.fnUntraced(function* (command: string) {
   const realPath = yield* fileSystem.realPath(command);
   const info = yield* fileSystem.stat(realPath);
   const libDir = path.join(path.dirname(path.dirname(realPath)), "lib");
+  // Each candidate on its own: one unreadable or non-Python entry doesn't hide the rest.
+  const listed = (dir: string) =>
+    fileSystem.readDirectory(dir).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
   const distInfo = yield* Effect.gen(function* () {
-    for (const python of yield* fileSystem.readDirectory(libDir)) {
+    for (const python of yield* listed(libDir)) {
       const sitePackages = path.join(libDir, python, "site-packages");
-      for (const entry of yield* fileSystem.readDirectory(sitePackages)) {
+      for (const entry of yield* listed(sitePackages)) {
         const match = /^blender_mcp-(.+)\.dist-info$/.exec(entry);
         if (match === null) continue;
-        const metadata = yield* fileSystem.stat(path.join(sitePackages, entry, "METADATA"));
-        return {
-          version: match[1]!,
-          versionModifiedMs: millisOf(metadata.mtime),
-        };
+        const metadata = yield* fileSystem
+          .stat(path.join(sitePackages, entry, "METADATA"))
+          .pipe(Effect.option);
+        if (Option.isNone(metadata)) continue;
+        return { version: match[1]!, versionModifiedMs: millisOf(metadata.value.mtime) };
       }
     }
     return null;
-  }).pipe(Effect.orElseSucceed(() => null));
+  });
   return {
     realPath,
     size: Number(info.size),
@@ -290,7 +295,7 @@ export const captureBlenderMcp = Effect.fnUntraced(function* (input: {
     (version) => answersOnce(input.command, env, version),
     { concurrency: "unbounded" },
   );
-  return {
+  const capture = {
     command: input.command,
     build,
     answers: Object.fromEntries(
@@ -300,7 +305,30 @@ export const captureBlenderMcp = Effect.fnUntraced(function* (input: {
       ]),
     ),
   } satisfies BlenderMcpCapture;
+  if (!usableCapture(capture)) return yield* Effect.fail("it listed no tools");
+  return capture;
 });
+
+const answered = (answer: BlenderMcpAnswer | undefined) =>
+  answer !== undefined && answer.error === undefined && Predicate.isReadonlyObject(answer.result)
+    ? answer.result
+    : undefined;
+
+/**
+ * Every version initialized, with a tool list that has tools: what agents can use. Anything
+ * else, freshly read or kept on disk, is a server that didn't answer.
+ */
+export const usableCapture = (capture: BlenderMcpCapture) =>
+  [...CAPTURED_PROTOCOL_VERSIONS, "*"].every((version) => {
+    const initialized = answered(capture.answers[version]?.initialize);
+    const tools = answered(capture.answers[version]?.["tools/list"])?.tools;
+    return (
+      typeof initialized?.protocolVersion === "string" &&
+      Predicate.isReadonlyObject(initialized.capabilities) &&
+      Array.isArray(tools) &&
+      tools.length > 0
+    );
+  });
 
 export const sameBuild = (a: BlenderMcpBuild, b: BlenderMcpBuild) =>
   a.realPath === b.realPath &&

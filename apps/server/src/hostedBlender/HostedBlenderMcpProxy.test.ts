@@ -63,12 +63,17 @@ function handle(message) {
   }
   if (message.method === "initialize") {
     const asked = message.params.protocolVersion;
-    return send({ jsonrpc: "2.0", id: message.id, result: {
+    const answer = () => send({ jsonrpc: "2.0", id: message.id, result: {
       protocolVersion: ["2025-06-18", "2025-11-25"].includes(asked) ? asked : "2025-11-25",
       capabilities: { prompts: { listChanged: false }, tools: { listChanged: false } },
       serverInfo: { name: "blender-mcp", version: "1.30.0" },
       instructions: "Fake Blender \\u2014 \\u201cinspect\\u201d first.\\nLine two.",
     } });
+    // With "hold" beside its log, it answers only once that file is gone.
+    const hold = require("node:path").join(require("node:path").dirname(process.env.FAKE_LOG), "hold");
+    if (!fs.existsSync(hold)) return answer();
+    const timer = setInterval(() => { if (!fs.existsSync(hold)) { clearInterval(timer); answer(); } }, 20);
+    return;
   }
   if (message.method === "tools/list") {
     return send({ jsonrpc: "2.0", id: message.id, result: { tools: [
@@ -90,6 +95,7 @@ function handle(message) {
     send({ jsonrpc: "2.0", method: "notifications/message", params: { level: "info", data: "unrouted" } });
     return text("rendered");
   }
+  if (name === "named") return text("Object named port 41000, near localhost:41000.");
   if (name === "unreachable") {
     // Blender Lab's own wording when nothing listens on its port.
     return send({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "Error executing tool unreachable: Cannot connect to Blender at localhost:" + process.env.BLENDER_MCP_PORT + ". Ensure Blender is running with the MCP addon enabled and the server started." }], isError: true } });
@@ -163,18 +169,25 @@ const setup = Effect.fnUntraced(function* (options?: { readonly command?: string
   const allowed = { value: true };
   const mode: { value: "default" | "plan" | "unreadable" } = { value: "default" };
   const grants = new Map<string, Grant>();
+  // While on, each grant read waits for the test to release it, handing it a release here.
+  const holdGrants = { value: false };
+  const grantReads = yield* Queue.unbounded<Deferred.Deferred<void>>();
   const spawned: Array<Spawned> = [];
+  // Each spawn as it happens, for a test that acts once a server is starting.
+  const spawns = yield* Queue.unbounded<Spawned>();
   const real = yield* ChildProcessSpawner.ChildProcessSpawner;
   const recording = ChildProcessSpawner.make((spawnCommand) =>
     real.spawn(spawnCommand).pipe(
       Effect.tap((handle) =>
         Effect.sync(() => {
-          spawned.push({
+          const entry = {
             env:
               (spawnCommand._tag === "StandardCommand" ? spawnCommand.options.env : undefined) ??
               {},
             exitCode: Effect.exit(handle.exitCode),
-          });
+          };
+          spawned.push(entry);
+          Queue.offerUnsafe(spawns, entry);
         }),
       ),
     ),
@@ -192,12 +205,17 @@ const setup = Effect.fnUntraced(function* (options?: { readonly command?: string
           }),
           Layer.mock(HostedBlender.HostedBlender)({
             agentGrant: ({ threadId, role, session }) =>
-              Effect.sync(() => {
+              Effect.gen(function* () {
+                if (holdGrants.value) {
+                  const release = Deferred.makeUnsafe<void>();
+                  Queue.offerUnsafe(grantReads, release);
+                  yield* Deferred.await(release);
+                }
                 const grant = grants.get(`${threadId}:${role}`);
                 return grant !== undefined &&
                   (grant.session === undefined || grant.session === session)
                   ? { _tag: "granted", grant: grant.grant, port: grant.port }
-                  : {
+                  : ({
                       _tag: "none",
                       relativePath: role === "working" ? "models/hero.wip-a1.blend" : null,
                       listener: {
@@ -206,7 +224,7 @@ const setup = Effect.fnUntraced(function* (options?: { readonly command?: string
                         openFile: undefined,
                         mcpVersion: null,
                       },
-                    };
+                    } as const);
               }),
           }),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -324,7 +342,12 @@ const setup = Effect.fnUntraced(function* (options?: { readonly command?: string
     allowed,
     mode,
     grants,
+    holdGrants,
+    grantReads,
+    sessions,
+    hold: path.join(dir, "hold"),
     spawned,
+    spawns,
     layerScope,
     startSession,
     send,
@@ -517,6 +540,146 @@ describe("HostedBlenderMcpProxy", () => {
     ),
   );
 
+  it.live("stops the server an ending reaches while its registration still waits", () =>
+    run(
+      Effect.gen(function* () {
+        const t = yield* setup();
+        yield* t.startSession(a, 41000);
+        t.holdGrants.value = true;
+        const calling = yield* t.callTool(a, "working", "echo").pipe(Effect.forkChild);
+        // Registration holds the lock while it reads the grant; the session ends meanwhile.
+        const registering = yield* Queue.take(t.grantReads);
+        yield* PubSub.publish(t.ends, { threadId: threadA, session: "session-a" });
+        t.holdGrants.value = false;
+        yield* Deferred.succeed(registering, undefined);
+        const [ended] = yield* Fiber.join(calling);
+        assert.include(ended?.error.message, "This agent session ended");
+        yield* t.spawned[0]!.exitCode;
+        assert.deepStrictEqual(yield* t.calls, []);
+      }),
+    ),
+  );
+
+  it.live("reads the credential again after the slower gates, just before the write", () =>
+    run(
+      Effect.gen(function* () {
+        const t = yield* setup();
+        yield* t.startSession(a, 41000);
+        yield* t.callTool(a, "working", "echo");
+        t.holdGrants.value = true;
+        const calling = yield* t.callTool(a, "working", "echo").pipe(Effect.forkChild);
+        yield* Deferred.succeed(yield* Queue.take(t.grantReads), undefined);
+        // The write's own read of the grant: the session's credential is gone by its end.
+        const writing = yield* Queue.take(t.grantReads);
+        yield* t.sessions.clear(threadA);
+        t.holdGrants.value = false;
+        yield* Deferred.succeed(writing, undefined);
+        const [refused] = yield* Fiber.join(calling);
+        assert.strictEqual(
+          refused?.error.message,
+          "Hosted Blender is not available to this agent session.",
+        );
+        assert.deepStrictEqual(yield* t.calls, ["call echo"]);
+      }),
+    ),
+  );
+
+  it.live("never writes a call cancelled while its gates were read", () =>
+    run(
+      Effect.gen(function* () {
+        const t = yield* setup();
+        yield* t.startSession(a, 41000);
+        yield* t.callTool(a, "working", "echo");
+        t.holdGrants.value = true;
+        const reply = yield* t
+          .send(a, "working", {
+            id: "late",
+            method: "tools/call",
+            params: { name: "echo", arguments: {} },
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.succeed(yield* Queue.take(t.grantReads), undefined);
+        const reading = yield* Fiber.join(reply).pipe(Effect.flatMap(t.collect), Effect.forkChild);
+        const writing = yield* Queue.take(t.grantReads);
+        yield* t.send(a, "working", {
+          method: "notifications/cancelled",
+          params: { requestId: "late" },
+        });
+        t.holdGrants.value = false;
+        yield* Deferred.succeed(writing, undefined);
+        assert.deepStrictEqual(yield* Fiber.join(reading), []);
+        // Ordered after the cancel on the server's stdin.
+        yield* t.callTool(a, "working", "echo");
+        assert.deepStrictEqual(yield* t.calls, ["call echo", "call echo"]);
+      }),
+    ),
+  );
+
+  it.live("stops a server whose session ends while it is still starting", () =>
+    run(
+      Effect.gen(function* () {
+        const t = yield* setup();
+        yield* t.startSession(a, 41000);
+        NodeFS.writeFileSync(t.hold, "");
+        const calling = yield* t.callTool(a, "working", "echo").pipe(Effect.forkChild);
+        const starting = yield* Queue.take(t.spawns);
+        yield* PubSub.publish(t.ends, { threadId: threadA, session: "session-a" });
+        const [ended] = yield* Fiber.join(calling);
+        assert.include(ended?.error.message, "This agent session ended");
+        yield* starting.exitCode;
+        NodeFS.rmSync(t.hold);
+      }),
+    ),
+  );
+
+  it.live("refuses a write when the thread entered Plan mode while it waited for its server", () =>
+    run(
+      Effect.gen(function* () {
+        const t = yield* setup();
+        yield* t.startSession(a, 41000);
+        NodeFS.writeFileSync(t.hold, "");
+        const reply = yield* t.send(a, "working", {
+          id: 1,
+          method: "tools/call",
+          params: { name: "execute_blender_code", arguments: { code: "x" } },
+        });
+        // Admitted in Default mode; the server is still starting when the user switches.
+        const reading = yield* t.collect(reply).pipe(Effect.forkChild);
+        t.mode.value = "plan";
+        NodeFS.rmSync(t.hold);
+        const [refused] = yield* Fiber.join(reading);
+        assert.include(refused?.error.message, "Plan mode is read-only");
+        assert.deepStrictEqual(yield* t.calls, []);
+      }),
+    ),
+  );
+
+  it.live("replaces the server when setup reads a new build, and stops it when a check fails", () =>
+    run(
+      Effect.gen(function* () {
+        const t = yield* setup();
+        yield* t.startSession(a, 41000);
+        yield* t.callTool(a, "working", "echo");
+        // Reinstalled in place and checked again: the old server is not the one now described.
+        NodeFS.appendFileSync(t.script, "\n// a newer build\n");
+        t.capture.value = yield* captureBlenderMcp({
+          command: t.script,
+          environment: { PATH, FAKE_LOG: `${t.hold}.log` },
+          tmpDir: NodeOS.tmpdir(),
+        });
+        const [answered] = yield* t.callTool(a, "working", "echo");
+        assert.strictEqual(answered?.result.content[0].text, '{"from":"session-a"}');
+        yield* t.spawned[0]!.exitCode;
+        assert.strictEqual(t.spawned.length, 2);
+        // A check that failed takes the server with it, not just later calls.
+        t.capture.value = null;
+        const [refused] = yield* t.callTool(a, "working", "echo");
+        assert.include(refused?.error.message, "Check again");
+        yield* t.spawned[1]!.exitCode;
+      }),
+    ),
+  );
+
   it.live("refuses Blender's write tools in Plan mode, and when the mode can't be read", () =>
     run(
       Effect.gen(function* () {
@@ -573,10 +736,30 @@ describe("HostedBlenderMcpProxy", () => {
           });
           const [asked] = yield* t.callTool(a, "working", "ask");
           assert.strictEqual(asked?.result.content[0].text, "refused -32601");
+          // Blender Lab's connection diagnostic is told as what to do, without its address.
           const [unreachable] = yield* t.callTool(a, "working", "unreachable");
-          const text: string = unreachable?.result.content[0].text;
-          assert.include(text, "Cannot connect to Blender at this thread's hosted Blender.");
-          assert.notInclude(text, "41000");
+          assert.deepStrictEqual(unreachable?.result, {
+            content: [
+              {
+                type: "text",
+                text: "Blender Lab's MCP server could not reach this thread's hosted Blender: it isn't listening for you now. Call blender_status to see why and how to get it back.",
+              },
+            ],
+            isError: true,
+          });
+          // Everything else passes untouched: a scene's own text, the client's id and token.
+          const named = yield* t.collect(
+            yield* t.send(a, "working", {
+              id: "localhost:41000",
+              method: "tools/call",
+              params: { name: "named", arguments: {}, _meta: { progressToken: "port 41000" } },
+            }),
+          );
+          assert.strictEqual(named[0]?.id, "localhost:41000");
+          assert.strictEqual(
+            named[0]?.result.content[0].text,
+            "Object named port 41000, near localhost:41000.",
+          );
           const [message] = yield* t.collect(
             yield* t.send(a, "working", {
               id: "client-string-id",
@@ -625,7 +808,7 @@ describe("HostedBlenderMcpProxy", () => {
           ],
           [{ threadId: threadA, session: "session-a" }, "This agent session ended"],
           [{ threadId: threadA }, "This agent session ended"],
-          [null, "Your access to this thread's hosted Blender ended"],
+          [null, "agents' access to hosted Blenders changed"],
         ];
         for (const [index, [ended, reason]] of ends.entries()) {
           yield* t.callTool(a, "working", "echo");

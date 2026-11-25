@@ -14,6 +14,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../config.ts";
@@ -62,6 +63,8 @@ const layerFor = (input: {
   readonly enabled?: boolean;
   readonly allowAgents?: boolean;
   readonly readiness?: HostedBlenderSetup.HostedBlenderReadiness;
+  /** What setup reports after its first readiness, as checks run. */
+  readonly readinessChanges?: Queue.Queue<HostedBlenderSetup.HostedBlenderReadiness>;
   readonly checks?: Array<"check">;
   /** What the loopback probe answers, in turn, instead of real free ports. */
   readonly probes?: Array<number>;
@@ -83,7 +86,12 @@ const layerFor = (input: {
               input.checks?.push("check");
             }),
             installWithAgent: Effect.die("not used"),
-            readiness: Stream.concat(Stream.succeed(input.readiness ?? READY), Stream.never),
+            readiness: Stream.concat(
+              Stream.succeed(input.readiness ?? READY),
+              input.readinessChanges === undefined
+                ? Stream.never
+                : Stream.fromQueue(input.readinessChanges),
+            ),
           }),
         ),
         McpProviderSessions.layer,
@@ -255,6 +263,38 @@ describe("HostedBlenderAgents.routeEnds", () => {
         null,
       ]);
     }).pipe(Effect.scoped, Effect.provide(layerFor({}))),
+  );
+});
+
+describe("HostedBlenderAgents.routeEnds on setup", () => {
+  const capture = (modifiedMs: number) => ({
+    command: "/home/user/.local/bin/blender-mcp",
+    build: {
+      realPath: "/home/user/.local/share/uv/tools/blender-mcp/bin/blender-mcp",
+      size: 1,
+      modifiedMs,
+      version: "1.0.3",
+      versionModifiedMs: 1,
+    },
+    answers: {},
+  });
+  const readyWith = (modifiedMs: number | null): HostedBlenderSetup.HostedBlenderReadiness => ({
+    ...(READY as Extract<HostedBlenderSetup.HostedBlenderReadiness, { status: "ok" }>),
+    blenderMcpCapture: modifiedMs === null ? null : capture(modifiedMs),
+  });
+
+  it.effect("ends every session's server when setup reads another build, or none", () =>
+    Effect.gen(function* () {
+      const changes = yield* Queue.unbounded<HostedBlenderSetup.HostedBlenderReadiness>();
+      return yield* Effect.gen(function* () {
+        const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
+        const ends = yield* agents.routeEnds;
+        const taken = yield* ends.pipe(Stream.take(2), Stream.runCollect, Effect.forkScoped);
+        yield* Queue.offer(changes, readyWith(2));
+        yield* Queue.offer(changes, readyWith(null));
+        assert.deepEqual(Array.from(yield* Fiber.join(taken)), [null, null]);
+      }).pipe(Effect.provide(layerFor({ readiness: readyWith(1), readinessChanges: changes })));
+    }).pipe(Effect.scoped),
   );
 });
 

@@ -46,6 +46,7 @@ import {
   blenderMcpBuild,
   captureBlenderMcp,
   sameBuild,
+  usableCapture,
 } from "./blenderMcpStdio.ts";
 import * as HiddenDisplayBinary from "./HiddenDisplayBinary.ts";
 import {
@@ -301,10 +302,13 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
         Effect.map(decodeCapture),
         Effect.orElseSucceed(() => Option.none<BlenderMcpCapture>()),
       );
+      // Reused only for a build T3 can tell apart from the next, and one agents could use.
       if (
         Option.isSome(kept) &&
         kept.value.command === command &&
-        sameBuild(kept.value.build, build.value)
+        build.value.version !== null &&
+        sameBuild(kept.value.build, build.value) &&
+        usableCapture(kept.value)
       ) {
         return kept.value;
       }

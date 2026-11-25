@@ -1,6 +1,6 @@
 import type { ProviderDriverKind, ThreadId } from "@t3tools/contracts";
 import type { HostedBlenderMcpLaunch } from "@t3tools/provider-core/server/mcpSession";
-import type { BlenderMcpCapture } from "./blenderMcpStdio.ts";
+import { type BlenderMcpCapture, sameBuild } from "./blenderMcpStdio.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as NetService from "@t3tools/shared/Net";
 import * as Context from "effect/Context";
@@ -47,6 +47,9 @@ export interface HostedBlenderRouteEnd {
   /** With `role`: the grant that ended (a working Blender's launch, or a master relay). */
   readonly grant?: string;
 }
+
+const captureOf = (readiness: HostedBlenderSetup.HostedBlenderReadiness | null) =>
+  readiness?.status === "ok" ? readiness.blenderMcpCapture : null;
 
 /** The providers T3 adds the hosted Blender MCP to, the same two that get agentcast upstream. */
 const SUPPORTED_DRIVERS: ReadonlySet<string> = new Set(["claudeAgent", "codex"]);
@@ -103,7 +106,7 @@ export class HostedBlenderAgents extends Context.Service<
     ) => Effect.Effect<void>;
     /**
      * Every way a thread's agent loses its hosted Blenders, from the moment of subscribing: each
-     * revocation, and each role's access ending.
+     * revocation, each role's access ending, and (null) setup's read of the server changing.
      */
     readonly routeEnds: Effect.Effect<
       Stream.Stream<HostedBlenderRouteEnd | null>,
@@ -223,9 +226,21 @@ const make = Effect.gen(function* () {
       const first = yield* Deferred.make<void>();
       yield* stream.pipe(
         Stream.runForEach((next) =>
-          Effect.sync(() => {
+          Effect.gen(function* () {
+            const before = captureOf(readiness);
             readiness = next;
-          }).pipe(Effect.andThen(Deferred.succeed(first, undefined))),
+            const after = captureOf(next);
+            // A server a session runs must be the build whose tools it was shown.
+            if (
+              before !== null &&
+              (after === null ||
+                after.command !== before.command ||
+                !sameBuild(after.build, before.build))
+            ) {
+              yield* PubSub.publish(routeEnded, null);
+            }
+            yield* Deferred.succeed(first, undefined);
+          }),
         ),
         Effect.forkScoped,
       );

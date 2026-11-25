@@ -82,35 +82,70 @@ const fakeHost = (dir: string) => {
   };
 };
 
-/** A pip console script, as `uv tool install` and `pipx` write it, importing `module`. */
 /**
  * Blender Lab's `blmcp`, as far as setup sees it: it answers `initialize` and `tools/list` over
- * stdio, and logs each start and the port it was given beside itself. With `silent` beside it,
- * it exits without answering.
+ * stdio, and logs each start and the port it was given beside itself. A marker file beside it
+ * breaks one answer: `silent` exits, `noinit` fails `initialize`, `toolserror` fails the tool
+ * list and `notools` lists none.
  */
 const FAKE_BLMCP = `import json, os, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 def main():
     with open(os.path.join(HERE, "starts.log"), "a") as log:
         log.write(os.environ.get("BLENDER_MCP_PORT", "none") + "\\n")
-    if os.path.exists(os.path.join(HERE, "silent")):
+    broken = lambda name: os.path.exists(os.path.join(HERE, name))
+    if broken("silent"):
         return 1
     for line in sys.stdin:
         message = json.loads(line)
+        reply = {"jsonrpc": "2.0", "id": message.get("id")}
         if message.get("method") == "initialize":
-            result = {"protocolVersion": message["params"]["protocolVersion"], "capabilities": {"tools": {}}, "serverInfo": {"name": "blender-mcp", "version": "1.30.0"}}
+            if broken("noinit"):
+                reply["error"] = {"code": -32603, "message": "broken"}
+            else:
+                reply["result"] = {"protocolVersion": message["params"]["protocolVersion"], "capabilities": {"tools": {}}, "serverInfo": {"name": "blender-mcp", "version": "1.30.0"}}
         elif message.get("method") == "tools/list":
-            result = {"tools": [{"name": "get_objects_summary", "inputSchema": {"type": "object"}}]}
+            if broken("toolserror"):
+                reply["error"] = {"code": -32603, "message": "broken"}
+            else:
+                reply["result"] = {"tools": [] if broken("notools") else [{"name": "get_objects_summary", "inputSchema": {"type": "object"}}]}
         else:
             continue
-        print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
+        print(json.dumps(reply), flush=True)
     return 0
 `;
 
+/**
+ * A pip console script, as `uv tool install` and `pipx` write it, importing `module`. Blender
+ * Lab's gets its environment's `blender_mcp-*.dist-info` too, beside a stray file under `lib`.
+ */
+/** Where setup keeps the official server's answers, under the test's state folder. */
+const keptCapture = (home: string): string => {
+  const found = NodeFS.readdirSync(home, { recursive: true, encoding: "utf8" }).find((entry) =>
+    entry.endsWith("blender-mcp-capture.json"),
+  );
+  if (found === undefined) throw new Error("no kept capture");
+  return NodePath.join(home, found);
+};
+
 const consoleScript = (file: string, module: string) => {
   NodeFS.mkdirSync(NodePath.dirname(file), { recursive: true });
-  if (module === "blmcp")
+  if (module === "blmcp") {
     NodeFS.writeFileSync(NodePath.join(NodePath.dirname(file), "blmcp.py"), FAKE_BLMCP);
+    const lib = NodePath.join(NodePath.dirname(NodePath.dirname(file)), "lib");
+    const distInfo = NodePath.join(
+      lib,
+      "python3.12",
+      "site-packages",
+      "blender_mcp-1.0.3.dist-info",
+    );
+    NodeFS.mkdirSync(distInfo, { recursive: true });
+    NodeFS.writeFileSync(
+      NodePath.join(distInfo, "METADATA"),
+      "Name: blender-mcp\nVersion: 1.0.3\n",
+    );
+    NodeFS.writeFileSync(NodePath.join(lib, "README"), "not a Python\n");
+  }
   NodeFS.writeFileSync(
     file,
     `#!/usr/bin/python3\n# -*- coding: utf-8 -*-\nimport sys\nfrom ${module} import main\nif __name__ == "__main__":\n    sys.exit(main())\n`,
@@ -363,6 +398,68 @@ describe("HostedBlenderSetup", () => {
       expect(starts()).toHaveLength(10);
       assert(reread.status === "ok");
       expect(reread.blenderMcpCapture?.build).not.toEqual(first.blenderMcpCapture.build);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("reports a server whose answers agents couldn't use as failed, however it fails", () =>
+    Effect.gen(function* () {
+      for (const marker of ["noinit", "toolserror", "notools"]) {
+        const dir = yield* tempDir;
+        const host = fakeHost(dir);
+        const mcp = consoleScript(NodePath.join(dir, ".local", "bin", "blender-mcp"), "blmcp");
+        NodeFS.writeFileSync(NodePath.join(dir, ".local", "bin", marker), "");
+        const service = yield* serviceFor({ host, home: dir });
+        yield* service.ensureChecked;
+        const result = checkedResult(
+          yield* (yield* watch(service))((state) => state.result !== null),
+        );
+        expect.soft(result.checks, marker).toContainEqual({
+          item: "blenderMcp",
+          status: "failed",
+          found: mcp,
+        });
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("reads the server again when its kept answers couldn't serve agents", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir;
+      const host = fakeHost(dir);
+      consoleScript(NodePath.join(dir, ".local", "bin", "blender-mcp"), "blmcp");
+      const starts = () =>
+        NodeFS.readFileSync(NodePath.join(dir, ".local", "bin", "starts.log"), "utf8")
+          .split("\n")
+          .filter(Boolean).length;
+      yield* (yield* serviceFor({ host, home: dir })).ensureChecked;
+      expect(starts()).toBe(5);
+      // Kept for this very build, but with nothing agents could be shown.
+      const kept = keptCapture(dir);
+      const capture = JSON.parse(NodeFS.readFileSync(kept, "utf8"));
+      NodeFS.writeFileSync(kept, JSON.stringify({ ...capture, answers: {} }));
+      const service = yield* serviceFor({ host, home: dir });
+      yield* service.ensureChecked;
+      expect(starts()).toBe(10);
+      expect(Option.getOrThrow(yield* Stream.runHead(service.readiness))).toMatchObject({
+        status: "ok",
+        blenderMcpCapture: { answers: { "*": { "tools/list": { result: { tools: [{}] } } } } },
+      });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("never reuses kept answers for a build it can't identify", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir;
+      const host = fakeHost(dir);
+      consoleScript(NodePath.join(dir, ".local", "bin", "blender-mcp"), "blmcp");
+      NodeFS.rmSync(NodePath.join(dir, ".local", "lib", "python3.12"), { recursive: true });
+      const starts = () =>
+        NodeFS.readFileSync(NodePath.join(dir, ".local", "bin", "starts.log"), "utf8")
+          .split("\n")
+          .filter(Boolean).length;
+      yield* (yield* serviceFor({ host, home: dir })).ensureChecked;
+      yield* (yield* serviceFor({ host, home: dir })).ensureChecked;
+      expect(starts()).toBe(10);
     }).pipe(Effect.scoped),
   );
 
