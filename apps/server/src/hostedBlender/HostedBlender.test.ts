@@ -2384,6 +2384,7 @@ describe("Endings and recovery", () => {
           status: "running",
           relativePath: "cube.blend",
           dirty: true,
+          openFile: { kind: "workspace", relativePath: "cube.blend" },
           memoryBytes: expect.any(Number),
         },
       ]);
@@ -3419,6 +3420,7 @@ print("T3-RESULT", json.dumps(results))`,
         status: "running",
         relativePath: "models/cube.blend",
         dirty: false,
+        openFile: { kind: "workspace", relativePath: "models/cube.blend" },
       });
       // Opening the same file again is a no-op; another file waits for this one to quit.
       yield* service.open({ threadId, relativePath: "models/cube.blend" });
@@ -5055,6 +5057,7 @@ describe("Master Blenders", () => {
         status: "running",
         relativePath: "cube.blend",
         dirty: true,
+        openFile: { kind: "workspace", relativePath: "cube.blend" },
       });
       expect(host.launches()).toBe(1);
       // A master never shows as the thread's working Blender.
