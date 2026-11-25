@@ -114,6 +114,26 @@ export function HostedBlenderSetupSettings(props: { readonly environmentId: Envi
           }
         />
       ) : null}
+      {enabled ? (
+        <SettingsRow
+          {...setting("hosted-blender-timeline")}
+          serverScoped
+          settingKeys={["hostedBlenderTimeline"]}
+          description={gt(
+            "Show Blender's Timeline under the 3D view in the Blender pane, for every hosted Blender on this server.",
+          )}
+          control={
+            <ScopedSwitch
+              settingKeys={["hostedBlenderTimeline"]}
+              checked={settings.hostedBlenderTimeline}
+              onCheckedChange={(checked) =>
+                updateSettings({ hostedBlenderTimeline: Boolean(checked) })
+              }
+              aria-label={gt("Timeline in the Blender pane")}
+            />
+          }
+        />
+      ) : null}
       {enabled ? <BlenderMcpPathRow /> : null}
     </>
   );

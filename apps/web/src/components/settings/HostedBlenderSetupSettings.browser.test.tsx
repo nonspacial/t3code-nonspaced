@@ -146,6 +146,16 @@ describe("HostedBlenderSetupSettings", () => {
     expect(state.check).toHaveBeenCalledWith({ environmentId, input: {} });
   });
 
+  it("B16: shows the Timeline switch, on by default, beside the other Hosted Blender switches", async () => {
+    state.settings = { hostedBlenderEnabled: true };
+    state.setup = checked(OK);
+    await using screen = await render(<HostedBlenderSetupSettings environmentId={environmentId} />);
+    const timeline = screen.getByRole("switch", { name: "Timeline in the Blender pane" });
+    await expect.element(timeline).toBeChecked();
+    await userEvent.click(timeline);
+    expect(state.updateSettings).toHaveBeenCalledWith({ hostedBlenderTimeline: false });
+  });
+
   it("offers an agent or the commands for what is missing, and warns about the GPU", async () => {
     state.settings = { hostedBlenderEnabled: true };
     state.setup = checked(

@@ -904,3 +904,38 @@ it("moves the master it shows, and warns over a master a desktop Blender may sha
     .element(screen.getByText(/couldn't check may also have this file open/))
     .toBeInTheDocument();
 });
+
+it("B16: Timeline in the pane's menu shows or hides the strip for everyone, for those who may operate Blender", async () => {
+  using _app = startup();
+  const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
+  const { Atom } = await import("effect/reactivity");
+  const ui = () => (
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>
+  );
+  // A viewer who may only watch gets no menu, so nothing to switch.
+  {
+    await using watching = await render(ui());
+    await control({ canOperate: false, controller: "unclaimed" });
+    await expect.element(watching.getByText("Watching")).toBeInTheDocument();
+    await expect
+      .element(watching.getByRole("button", { name: "Blender menu" }))
+      .not.toBeInTheDocument();
+  }
+
+  vi.spyOn(hostedBlenderEnvironment.setTimeline, "permissionAtom").mockReturnValue(
+    Atom.make(true) as never,
+  );
+  await using screen = await render(ui());
+  await control({ canOperate: false, controller: "unclaimed" });
+  await screen.getByRole("button", { name: "Blender menu" }).click();
+  // On until the server's setting says otherwise.
+  const item = screen.getByRole("menuitemcheckbox", { name: "Timeline" });
+  await expect.element(item).toHaveAttribute("aria-checked", "true");
+  await item.click();
+  expect(stream.commands.at(-1)).toEqual({
+    label: "environment-data:hosted-blender:set-timeline",
+    value: { environmentId: threadRef.environmentId, input: { shown: false } },
+  });
+});

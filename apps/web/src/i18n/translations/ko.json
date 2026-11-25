@@ -13349,5 +13349,9 @@
   "ec2bc06507d0d9af": "호스팅 blender 종료 메모리 3d 스레드",
   "37d76dab21a26b2a": "blender hosted 설정 설치 확인 labwc gstreamer 인코더 gpu 숨겨진 디스플레이 linux 에이전트 명령",
   "f74fb1f1e951cb67": "blender hosted 에이전트 mcp 시작 허용",
-  "3cf7f8ed35b33c5f": "blender lab mcp 서버 경로 실행 파일 설치 uv pipx"
+  "3cf7f8ed35b33c5f": "blender lab mcp 서버 경로 실행 파일 설치 uv pipx",
+  "0b7950be09ae6c3f": "타임라인",
+  "05d1fff2e7325939": "이 서버의 모든 호스팅된 Blender에서 Blender 창의 3D 뷰 아래에 Blender 타임라인을 표시합니다.",
+  "138dedd43ae601b2": "Blender 창의 타임라인",
+  "d75cc4b1152e0425": "blender 호스팅 타임라인 애니메이션 키프레임 재생 프레임"
 }

@@ -13423,5 +13423,9 @@
   "ec2bc06507d0d9af": "värdbaserad blender avsluta minne 3d tråd",
   "37d76dab21a26b2a": "blender hosted konfiguration installera kontrollera labwc gstreamer kodare gpu dold skärm linux agent kommandon",
   "f74fb1f1e951cb67": "blender hosted agenter mcp starta tillåt",
-  "3cf7f8ed35b33c5f": "blender lab mcp server sökväg program installera uv pipx"
+  "3cf7f8ed35b33c5f": "blender lab mcp server sökväg program installera uv pipx",
+  "0b7950be09ae6c3f": "Tidslinje",
+  "05d1fff2e7325939": "Visar Blenders tidslinje under 3D-vyn i Blender-panelen, för varje värdad Blender på den här servern.",
+  "138dedd43ae601b2": "Tidslinje i Blender-panelen",
+  "d75cc4b1152e0425": "blender värdad tidslinje animering nyckelrutor uppspelning rutor remsa"
 }

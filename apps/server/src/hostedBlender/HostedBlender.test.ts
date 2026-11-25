@@ -20,6 +20,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
@@ -79,8 +80,6 @@ interface Host {
   readonly desktop?: DesktopBlender.DesktopBlender["Service"];
   /** The TCP tables a master's relay reads its clients' accounts from; the kernel's by default. */
   readonly tcpTables?: ReadonlyArray<string>;
-  /** "Timeline" in the pane's menu; on by default. */
-  readonly timeline?: boolean;
 }
 
 const blenderOnPath = (env: NodeJS.ProcessEnv) =>
@@ -97,6 +96,21 @@ const readinessFor = (host: Host): HostedBlenderSetup.HostedBlenderReadiness => 
     ? { status: "notSetUp", missing: ["helper"] }
     : { status: "ok", helper: host.helper, blender, blenderMcp: null, blenderMcpCapture: null };
 };
+
+/** Test settings whose writes reach `subscribeChanges`, which `layerTest` never streams. */
+const changingSettings = Layer.effect(
+  ServerSettings.ServerSettingsService,
+  Effect.gen(function* () {
+    const base = yield* ServerSettings.ServerSettingsService;
+    const changes = yield* PubSub.unbounded<Effect.Success<typeof base.getSettings>>();
+    return {
+      ...base,
+      updateSettings: (patch) =>
+        base.updateSettings(patch).pipe(Effect.tap((next) => PubSub.publish(changes, next))),
+      subscribeChanges: Effect.map(PubSub.subscribe(changes), Stream.fromSubscription),
+    };
+  }),
+).pipe(Layer.provide(ServerSettings.ServerSettingsService.layerTest()));
 
 const layerFor = (host: Host) =>
   HostedBlender.layer.pipe(
@@ -160,11 +174,7 @@ const layerFor = (host: Host) =>
       ),
     ),
     // Kept in the built context, so a test can switch settings as Settings would.
-    Layer.provideMerge(
-      ServerSettings.ServerSettingsService.layerTest(
-        host.timeline === undefined ? {} : { hostedBlenderTimeline: host.timeline },
-      ),
-    ),
+    Layer.provideMerge(changingSettings),
     Layer.provide(
       Layer.mergeAll(
         Layer.succeed(HostProcess.Platform, "linux"),
@@ -1581,6 +1591,7 @@ describe("Endings and recovery", () => {
       expect(reopened.slice(reopened.indexOf("--t3-recover"))).toEqual([
         "--t3-recover",
         recovery?.session,
+        "--t3-timeline",
       ]);
       // Blender opens the user's file; the copy is restored over it, so saves still go there.
       expect(reopened).toContain(NodeFS.realpathSync(NodePath.join(hostedDir, "../../cube.blend")));
@@ -3710,6 +3721,398 @@ def unregister():
     pass
 `;
 
+// Writes T3's viewport windows to HB_TEST_DIR/layout.json each tick, and runs HB_TEST_DIR/command
+// as a person would, one a tick (";" chains): "strip <type>" switches the strip's editor, "view
+// <type>" the 3D view's, "open <path>" is File > Open, "edit <name>" adds an object through undo.
+const LAYOUT_STARTUP_SCRIPT = `import json, os
+import bpy
+
+_queue = []
+
+def _areas(window):
+    found = []
+    for area in window.screen.areas:
+        regions = {region.type: region for region in area.regions}
+        main = regions.get("WINDOW")
+        entry = {"type": area.type, "ui": area.ui_type, "x": area.x, "y": area.y,
+                 "width": area.width, "height": area.height}
+        if main is not None:
+            entry["region"] = {"x": main.x, "y": main.y, "width": main.width, "height": main.height}
+            if area.type == "DOPESHEET_EDITOR":
+                entry["frames"] = [main.view2d.region_to_view(0, 0)[0],
+                                   main.view2d.region_to_view(main.width, 0)[0]]
+        found.append(entry)
+    return sorted(found, key=lambda entry: -entry["y"])
+
+def _viewport_windows():
+    windows = bpy.context.window_manager.windows
+    return [window for index, window in enumerate(windows) if index > 0 and window.screen.get("t3_viewport")]
+
+def _poll():
+    folder = os.environ.get("HB_TEST_DIR", "")
+    command_path = os.path.join(folder, "command")
+    if os.path.exists(command_path):
+        _queue.extend(open(command_path).read().split(";"))
+        os.remove(command_path)
+    if _queue:
+        verb, _, argument = _queue.pop(0).partition(" ")
+        windows = _viewport_windows()
+        if verb == "open":
+            with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+                bpy.ops.wm.open_mainfile(filepath=argument)
+        elif verb == "edit":
+            bpy.context.scene.collection.objects.link(bpy.data.objects.new(argument, None))
+            with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+                bpy.ops.ed.undo_push(message="T3 test edit")
+        elif windows:
+            window = windows[0]
+            view = next(area for area in window.screen.areas if area.type == "VIEW_3D")
+            strip = next((area for area in window.screen.areas if area.type != "VIEW_3D"), None)
+            if verb == "view":
+                view.type = argument
+            elif verb == "strip" and strip is not None:
+                strip.type = argument
+    layout = {
+        "pid": os.getpid(),
+        "frame": bpy.context.scene.frame_current,
+        "windows": [{"pointer": window.as_pointer(), "width": window.width, "height": window.height,
+                     "areas": _areas(window)} for window in _viewport_windows()],
+    }
+    with open(os.path.join(folder, "layout.json.part"), "w") as out:
+        json.dump(layout, out)
+    os.replace(os.path.join(folder, "layout.json.part"), os.path.join(folder, "layout.json"))
+    return 0.2
+
+def register():
+    bpy.app.timers.register(_poll, first_interval=1.0, persistent=True)
+
+def unregister():
+    pass
+`;
+
+interface LayoutArea {
+  readonly type: string;
+  readonly ui: string;
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  readonly region?: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  };
+  readonly frames?: readonly [number, number];
+}
+interface Layout {
+  readonly pid: number;
+  readonly frame: number;
+  readonly windows: ReadonlyArray<{
+    readonly pointer: number;
+    readonly width: number;
+    readonly height: number;
+    /** Top first. */
+    readonly areas: ReadonlyArray<LayoutArea>;
+  }>;
+}
+
+describe.skipIf(!canHostBlender)("a real hosted Blender's Timeline strip", () => {
+  const KEY_LEFTCTRL = 29;
+  // The cube rises from z 0 at frame 1 to z 6 at frame 100.
+  const KEYFRAMED_CUBE = `cube = bpy.data.objects["Cube"]
+scene = bpy.context.scene
+scene.frame_start, scene.frame_end = 1, 100
+scene.frame_set(1)
+cube.location.z = 0
+cube.keyframe_insert("location", frame=1)
+cube.location.z = 6
+cube.keyframe_insert("location", frame=100)
+scene.frame_set(1)`;
+
+  const launch = Effect.fn(function* (prefix: string) {
+    const dir = yield* tempDir(prefix);
+    const workspace = NodePath.join(dir, "work");
+    NodeFS.mkdirSync(workspace, { recursive: true });
+    for (const name of ["cube.blend", "other.blend"]) {
+      NodeChildProcess.execFileSync("blender", [
+        "--background",
+        "--factory-startup",
+        "--python-expr",
+        `import bpy\n${KEYFRAMED_CUBE}\nbpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(NodePath.join(workspace, name))})`,
+      ]);
+    }
+    const configHome = NodePath.join(dir, "config");
+    const startup = NodePath.join(configHome, "blender", "5.3", "scripts", "startup");
+    NodeFS.mkdirSync(startup, { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(startup, "t3_test_layout.py"), LAYOUT_STARTUP_SCRIPT);
+    const context = yield* Layer.build(
+      layerFor({
+        env: {
+          PATH: hostEnvironment.PATH,
+          XDG_RUNTIME_DIR: hostEnvironment.XDG_RUNTIME_DIR,
+          XDG_CONFIG_HOME: configHome,
+          HB_TEST_DIR: dir,
+        },
+        helper: helperBuild,
+        workspaceRoot: workspace,
+        baseDir: dir,
+      }),
+    );
+    const service = Context.get(context, HostedBlender.HostedBlender);
+    const settings = Context.get(context, ServerSettings.ServerSettingsService);
+    yield* service.open({ threadId, relativePath: "cube.blend" });
+    const command = (text: string) => NodeFS.writeFileSync(NodePath.join(dir, "command"), text);
+    /** The layout once `ready` holds for it: Blender reports it each tick. */
+    const layoutWhen = (ready: (layout: Layout) => boolean, ticks = 150) =>
+      Effect.sync((): Layout | null => {
+        try {
+          return JSON.parse(NodeFS.readFileSync(NodePath.join(dir, "layout.json"), "utf8"));
+        } catch {
+          return null;
+        }
+      }).pipe(
+        Effect.filterOrFail(
+          (layout): layout is Layout => layout !== null && ready(layout),
+          (layout) => `not yet: ${JSON.stringify(layout)}`,
+        ),
+        Effect.retry({ schedule: Schedule.spaced("200 millis"), times: ticks }),
+      );
+    return { dir, workspace, service, settings, command, layoutWhen };
+  });
+
+  /** The first capture once the add-on's connection is up. */
+  const firstCapture = (service: HostedBlender.HostedBlender["Service"]) =>
+    service.captureView(threadId).pipe(
+      Effect.retry({
+        while: (error) => error.reason === "noReply" || error.reason === "noViewport",
+        schedule: Schedule.spaced("500 millis"),
+        times: 40,
+      }),
+    );
+
+  /** One T3 viewport window: a 3D view with the Timeline under it, or a lone 3D view. */
+  const withStrip = (layout: Layout) =>
+    layout.windows.length === 1 &&
+    layout.windows[0]!.areas.length === 2 &&
+    layout.windows[0]!.areas[0]!.type === "VIEW_3D" &&
+    layout.windows[0]!.areas[1]!.type === "DOPESHEET_EDITOR";
+  const alone = (layout: Layout) =>
+    layout.windows.length === 1 &&
+    layout.windows[0]!.areas.length === 1 &&
+    layout.windows[0]!.areas[0]!.type === "VIEW_3D";
+
+  it.live(
+    "shows the Timeline under the 3D view, scrubs it in control, and reads and moves only the 3D view",
+    () =>
+      Effect.gen(function* () {
+        const { service, command, layoutWhen } = yield* launch("timeline-strip");
+        const first = yield* layoutWhen(withStrip);
+        const window = first.windows[0]!;
+        const [view, strip] = window.areas as [LayoutArea, LayoutArea];
+        // It still fills the display: the hidden display found it by its lone 3D view's title
+        // before the strip came.
+        expect([window.width, window.height]).toEqual([1280, 720]);
+        // Blender's own Timeline, about as tall as in its default layout; the 3D view has the rest.
+        expect(strip.ui).toBe("TIMELINE");
+        expect(strip.height).toBeGreaterThan(30);
+        expect(strip.height).toBeLessThan(80);
+        expect(view.height).toBeGreaterThan(window.height - strip.height - 10);
+
+        // Screenshots draw the 3D view's own region, not the whole window.
+        const capture = yield* firstCapture(service);
+        expect([capture.screenshot.width, capture.screenshot.height]).toEqual([
+          view.region!.width,
+          view.region!.height,
+        ]);
+        const centre = (projection: typeof capture.projection) =>
+          service.findHits({
+            threadId,
+            projection,
+            marks: [[{ x: 0.5, y: 0.5 }]],
+          });
+        // A link's view frames the 3D view, and a mark in its middle finds the cube.
+        yield* service.setView({
+          threadId,
+          relativePath: "cube.blend",
+          view: { position: [0, -12, 1], target: [0, 0, 1] },
+        });
+        const framed = yield* service.captureView(threadId);
+        framed.cameraView.position.forEach((value, index) =>
+          expect(value).toBeCloseTo([0, -12, 1][index]!, 3),
+        );
+        expect((yield* centre(framed.projection))[0]?.object).toBe("Cube");
+
+        // In control, a drag along the strip scrubs, and the 3D view follows: the cube rises
+        // out of the middle of the view.
+        const operator = yield* attach(service, true);
+        yield* operator.input({ type: "takeControl", takeOver: false });
+        expect(yield* controller(operator).pipe(Effect.repeat({ until: (c) => c === "you" }))).toBe(
+          "you",
+        );
+        const band = strip.region!;
+        const scrubY = window.height - (band.y + band.height - 6);
+        yield* operator.input({ type: "pointer", x: band.x + band.width * 0.3, y: scrubY });
+        yield* operator.input({ type: "button", button: 272, pressed: true });
+        yield* operator.input({ type: "pointer", x: band.x + band.width * 0.5, y: scrubY });
+        yield* operator.input({ type: "pointer", x: band.x + band.width * 0.7, y: scrubY });
+        yield* operator.input({ type: "button", button: 272, pressed: false });
+        const scrubbed = yield* layoutWhen((layout) => layout.frame > 10);
+        expect(scrubbed.frame).toBeLessThanOrEqual(100);
+        const risen = yield* service.captureView(threadId);
+        expect((yield* centre(risen.projection))[0]?.object ?? null).toBeNull();
+
+        // The wheel over the strip reaches the Timeline: Ctrl+wheel moves its frame range.
+        const span = (layout: Layout) => layout.windows[0]!.areas[1]!.frames!;
+        const before = span(scrubbed);
+        yield* operator.input({ type: "pointer", x: band.x + band.width * 0.5, y: scrubY });
+        yield* operator.input({ type: "key", code: KEY_LEFTCTRL, pressed: true });
+        yield* operator.input({
+          type: "scroll",
+          axis: "vertical",
+          source: "wheel",
+          value: 45,
+          steps: 3,
+        });
+        yield* operator.input({ type: "key", code: KEY_LEFTCTRL, pressed: false });
+        const panned = yield* layoutWhen(
+          (layout) =>
+            withStrip(layout) && (span(layout)[0] !== before[0] || span(layout)[1] !== before[1]),
+        );
+        expect(panned.windows[0]!.pointer).toBe(window.pointer);
+
+        // The strip is the person's to size: the window stays T3's viewport, screenshots follow
+        // the 3D view's new size, and the wheel below the scrubbing band zooms the range.
+        // Dragged by its top edge: Blender's screen operators refuse scripts in a temporary window.
+        // A drag Blender read all at once under load is made again.
+        const edge = Math.round(window.height - (strip.y + strip.height + view.y) / 2);
+        const middle = Math.round(band.x + band.width * 0.5);
+        const drag = Effect.gen(function* () {
+          yield* operator.input({ type: "pointer", x: middle, y: edge });
+          yield* operator.input({ type: "button", button: 272, pressed: true });
+          for (const step of [5, 10, 20, 30, 40, 50, 60]) {
+            yield* operator.input({ type: "pointer", x: middle, y: edge - step });
+          }
+          yield* operator.input({ type: "button", button: 272, pressed: false });
+        });
+        const grown = yield* drag.pipe(
+          Effect.andThen(
+            layoutWhen(
+              (layout) =>
+                withStrip(layout) && layout.windows[0]!.areas[1]!.height > strip.height + 30,
+              25,
+            ),
+          ),
+          Effect.retry({ times: 3 }),
+        );
+        expect(grown.windows[0]!.pointer).toBe(window.pointer);
+        const shrunk = grown.windows[0]!.areas[0]!;
+        const shot = yield* service.captureView(threadId);
+        expect([shot.screenshot.width, shot.screenshot.height]).toEqual([
+          shrunk.region!.width,
+          shrunk.region!.height,
+        ]);
+        const tall = grown.windows[0]!.areas[1]!.region!;
+        const wide = span(grown)[1] - span(grown)[0];
+        yield* operator.input({
+          type: "pointer",
+          x: tall.x + tall.width * 0.5,
+          y: window.height - (tall.y + 10),
+        });
+        yield* operator.input({
+          type: "scroll",
+          axis: "vertical",
+          source: "wheel",
+          value: 45,
+          steps: 3,
+        });
+        yield* layoutWhen(
+          (layout) => withStrip(layout) && Math.abs(span(layout)[1] - span(layout)[0] - wide) > 1,
+        );
+
+        // Or to switch to another animation editor.
+        command("strip GRAPH_EDITOR");
+        const graph = yield* layoutWhen(
+          (layout) => layout.windows[0]?.areas[1]?.type === "GRAPH_EDITOR",
+        );
+        expect(graph.windows).toHaveLength(1);
+        expect(graph.windows[0]!.pointer).toBe(window.pointer);
+        expect((yield* service.captureView(threadId)).screenshot.width).toBe(shrunk.region!.width);
+
+        // Turning the 3D view itself into another editor loses the viewport: a fresh window
+        // opens, with the strip.
+        command("view IMAGE_EDITOR");
+        const fresh = yield* layoutWhen(
+          (layout) => withStrip(layout) && layout.windows[0]!.pointer !== window.pointer,
+        );
+        expect(fresh.windows[0]!.areas[1]!.ui).toBe("TIMELINE");
+        expect(fresh.pid).toBe(first.pid);
+        yield* service.quit({ threadId, save: false, discard: true });
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "switches the strip on a running Blender without restarting it, and keeps it as switched after a load and a reopen",
+    () =>
+      Effect.gen(function* () {
+        const { service, settings, command, layoutWhen, workspace } =
+          yield* launch("timeline-switch-real");
+        const first = yield* layoutWhen(withStrip);
+        const pointer = first.windows[0]!.pointer;
+        const attached = yield* attach(service, false);
+
+        yield* settings.updateSettings({ hostedBlenderTimeline: false });
+        const off = yield* layoutWhen(alone);
+        yield* settings.updateSettings({ hostedBlenderTimeline: true });
+        const on = yield* layoutWhen(withStrip);
+        // The same Blender and the same window, so the stream never restarted.
+        for (const layout of [off, on]) {
+          expect(layout.pid).toBe(first.pid);
+          expect(layout.windows[0]!.pointer).toBe(pointer);
+        }
+        yield* Queue.take(attached.output).pipe(
+          Effect.repeat({ until: (output) => output._tag === "frame" }),
+        );
+
+        // After a load the fresh viewport window has the strip as the switch says.
+        yield* settings.updateSettings({ hostedBlenderTimeline: false });
+        yield* layoutWhen(alone);
+        command(`open ${NodePath.join(workspace, "other.blend")}`);
+        const loaded = yield* layoutWhen(
+          (layout) => alone(layout) && layout.windows[0]!.pointer !== pointer,
+        );
+        expect(loaded.pid).toBe(first.pid);
+        yield* settings.updateSettings({ hostedBlenderTimeline: true });
+        yield* layoutWhen(
+          (layout) =>
+            withStrip(layout) && layout.windows[0]!.pointer === loaded.windows[0]!.pointer,
+        );
+        command(`open ${NodePath.join(workspace, "cube.blend")};edit T3Edit`);
+        yield* layoutWhen(
+          (layout) =>
+            withStrip(layout) && layout.windows[0]!.pointer !== loaded.windows[0]!.pointer,
+        );
+        yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status === "running" && state.dirty),
+          Stream.runHead,
+        );
+
+        // A reopen of its kept copy restores into a new Blender, strip and all.
+        yield* service.closeOnSettle({ threadId });
+        yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status === "closed"),
+          Stream.runHead,
+        );
+        yield* service.reopen({ threadId, key: CUBE, restore: true });
+        const reopened = yield* layoutWhen(
+          (layout) => withStrip(layout) && layout.pid !== first.pid,
+        );
+        expect(reopened.windows[0]!.areas[1]!.ui).toBe("TIMELINE");
+        yield* service.quit({ threadId, save: false, discard: true });
+      }).pipe(Effect.scoped),
+  );
+});
+
 describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
   it.live(
     "N1: a quit names the file Blender has open, and a discard named for another is refused",
@@ -4396,6 +4799,9 @@ def control():
                 # Someone opens another file through Blender's own UI.
                 state(os.environ.get("STANDIN_OTHER", "/elsewhere/other.blend"))
         command = json.loads(line)
+        if kind == "timeline" and after == "echoTimeline":
+            # Answers each Timeline switch with a state T3 publishes: unsaved while it's off.
+            state(blend, dirty=not command["shown"])
         if kind == "quit" and command.get("save"):
             # As Blender does: saved, then quitting, reading no more commands (T3's stop
             # included) while it writes its quit copy and exits.
@@ -4493,6 +4899,86 @@ for line in sys.stdin:
                 time.sleep(0.02)
         break
 `;
+
+describe("The Timeline switch", () => {
+  it.live("reaches every running hosted Blender at once, and each launch after", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("timeline-switch");
+      const bin = fakeTools(dir);
+      NodeFS.writeFileSync(NodePath.join(bin, "helper"), `#!${python}\n${ARGS_HELPER}`, {
+        mode: 0o755,
+      });
+      const runtime = NodePath.join(dir, "run");
+      NodeFS.mkdirSync(runtime);
+      NodeFS.writeFileSync(NodePath.join(dir, "cube.blend"), "");
+      const argsLog = NodePath.join(dir, "args.log");
+      const context = yield* Layer.build(
+        layerFor({
+          env: {
+            PATH: bin,
+            XDG_RUNTIME_DIR: runtime,
+            STANDIN_ARGS: argsLog,
+            STANDIN_AFTER: "echoTimeline",
+            // Its first report reads unsaved, so only an answered switch reads as shown.
+            STANDIN_DIRTY: "1",
+          },
+          helper: NodePath.join(bin, "helper"),
+          workspaceRoot: dir,
+          baseDir: dir,
+        }),
+      );
+      const service = Context.get(context, HostedBlender.HostedBlender);
+      const settings = Context.get(context, ServerSettings.ServerSettingsService);
+      const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+      yield* service.threadState(threadId).pipe(
+        Stream.runForEach((state) => Queue.offer(states, state)),
+        Effect.forkScoped,
+      );
+      const awaitShown = (shown: boolean) =>
+        Queue.take(states).pipe(
+          Effect.repeat({ until: (state) => state.status === "running" && state.dirty === !shown }),
+        );
+      const args = () => NodeFS.readFileSync(argsLog, "utf8").split("\n");
+      const switches = () =>
+        NodeFS.readFileSync(`${argsLog}.control`, "utf8")
+          .split("\n")
+          .filter((line) => line.includes('"timeline"'))
+          .map((line) => JSON.parse(line).shown);
+
+      // On by default: Blender opens its viewport window with the strip, and hears the switch
+      // again once T3 is connected, in case it changed in between.
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      // Its first report, then its answer to the switch T3 sends on connecting.
+      yield* awaitShown(false);
+      yield* awaitShown(true);
+      expect(args()).toContain("--t3-timeline");
+      expect(switches()).toEqual([true]);
+
+      // Switched in Settings or the pane's menu: the running Blender hears it, no restart.
+      yield* settings.updateSettings({ hostedBlenderTimeline: false });
+      yield* awaitShown(false);
+      yield* settings.updateSettings({ hostedBlenderTimeline: true });
+      yield* awaitShown(true);
+      // The pane's menu writes the same setting.
+      yield* service.setTimeline(false);
+      yield* awaitShown(false);
+      yield* service.setTimeline(true);
+      yield* awaitShown(true);
+      expect(switches()).toEqual([true, false, true, false, true]);
+      expect(NodeFS.readFileSync(`${argsLog}.launches`, "utf8")).toBe("launch\n");
+
+      // The next launch starts as the switch was left.
+      yield* service.quit({ threadId, save: false, discard: true });
+      yield* service.setTimeline(false);
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* Queue.take(states).pipe(
+        Effect.repeat({ until: (state) => state.status === "running" }),
+      );
+      expect(args()).not.toContain("--t3-timeline");
+      expect((yield* settings.getSettings).hostedBlenderTimeline).toBe(false);
+    }).pipe(Effect.scoped),
+  );
+});
 
 describe("Agent access at launch", () => {
   const launch = Effect.fn(function* (

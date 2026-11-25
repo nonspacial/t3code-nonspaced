@@ -41,6 +41,19 @@ session, and a master's only through relays, one per agent thread and session, o
 current session and closed when that session's access ends. With no agent thread, nothing listens
 for a master's agents.
 
+## The viewport window is found by its title
+
+The hidden display helper streams, and makes fullscreen, the first window whose title contains
+"3D Viewport" ([`BlenderLaunch.ts`](../../apps/server/src/hostedBlender/BlenderLaunch.ts)), and
+Blender gives that title only to a window holding a lone 3D view; one with two areas is titled
+"Blender", like any other. So the control add-on opens T3's viewport window as a lone 3D view
+and adds the Timeline strip under it on a later pass, once the window is shown with that title
+([`controlAddon.ts`](../../apps/server/src/hostedBlender/controlAddon.ts)); on Blender 4.5 a
+split in the same pass leaves the window never made fullscreen. Once captured, the helper keeps
+the window whatever its title becomes. Screenshots, marks, view capture and view links read the
+3D view's own area and region, never the strip's; the stream and the pane's size follow the
+whole window.
+
 ## The stream's window and acks change together
 
 The server keeps a few frames per viewer unacked and sends nothing after a keyframe until that
