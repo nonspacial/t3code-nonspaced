@@ -153,6 +153,32 @@ export const HostedBlenderThreadState = Schema.Union([
 ]);
 export type HostedBlenderThreadState = typeof HostedBlenderThreadState.Type;
 
+/**
+ * Which of a thread's hosted Blenders: its own working Blender, or the master Blender it shares
+ * with the other threads working on the same master file. Absent means `working`.
+ */
+export const HostedBlenderRole = Schema.Literals(["working", "master"]);
+export type HostedBlenderRole = typeof HostedBlenderRole.Type;
+
+/**
+ * The thread's master file and where it is open. `none`: the thread has named no master yet.
+ * `notOpen`: no master Blender has it; `desktop` is what T3 last found in the user's desktop
+ * Blender: `open` there (Move into T3 can take it), or `noAddon`, a desktop Blender T3 can't ask.
+ */
+export const HostedBlenderMasterState = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("none") }),
+  Schema.Struct({
+    status: Schema.Literal("notOpen"),
+    relativePath: TrimmedNonEmptyString,
+    desktop: Schema.NullOr(Schema.Literals(["open", "noAddon"])),
+    /** The desktop Blender has unsaved changes in it, which Move into T3 saves. */
+    desktopDirty: Schema.Boolean,
+  }),
+  Schema.Struct({ status: Schema.Literal("failed"), relativePath: TrimmedNonEmptyString }),
+  HostedBlenderRunningState,
+]);
+export type HostedBlenderMasterState = typeof HostedBlenderMasterState.Type;
+
 export const HostedBlenderSubscribeInput = Schema.Struct({ threadId: ThreadId });
 export type HostedBlenderSubscribeInput = typeof HostedBlenderSubscribeInput.Type;
 
@@ -167,10 +193,15 @@ export const HostedBlenderQuitInput = Schema.Struct({
   threadId: ThreadId,
   /** Save the file before quitting. */
   save: Schema.Boolean,
+  /** Quitting the master Blender quits it for every thread sharing it. */
+  role: Schema.optionalKey(HostedBlenderRole),
 });
 export type HostedBlenderQuitInput = typeof HostedBlenderQuitInput.Type;
 
-export const HostedBlenderThreadInput = Schema.Struct({ threadId: ThreadId });
+export const HostedBlenderThreadInput = Schema.Struct({
+  threadId: ThreadId,
+  role: Schema.optionalKey(HostedBlenderRole),
+});
 export type HostedBlenderThreadInput = typeof HostedBlenderThreadInput.Type;
 
 const Fraction = Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }));
@@ -204,6 +235,7 @@ const WindowSample = Schema.Struct({ x: Fraction, y: Fraction });
 
 export const HostedBlenderFindHitsInput = Schema.Struct({
   threadId: ThreadId,
+  role: Schema.optionalKey(HostedBlenderRole),
   projection: HostedBlenderViewProjection,
   /** Each mark's samples, tried in order until one meets a surface. */
   marks: Schema.Array(Schema.Array(WindowSample).check(Schema.isMaxLength(256))).check(
@@ -245,6 +277,10 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "noReply",
       "noViewport",
       "noScreenshot",
+      "noMaster",
+      "desktopUnreachable",
+      "desktopOtherFile",
+      "desktopDidNotQuit",
     ]),
   },
 ) {
@@ -276,6 +312,14 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "The hosted Blender has no viewport window open.";
       case "noScreenshot":
         return "The hosted Blender couldn't take a picture of its viewport.";
+      case "noMaster":
+        return "This thread hasn't named a master file yet.";
+      case "desktopUnreachable":
+        return "T3 Code can't reach the desktop Blender's MCP add-on, so it can't move the file. Save and close it there, then open the master here.";
+      case "desktopOtherFile":
+        return "The desktop Blender no longer has this master open.";
+      case "desktopDidNotQuit":
+        return "The desktop Blender didn't save and quit. Check it for an error, then try again.";
     }
   }
 }
@@ -415,7 +459,7 @@ export type HostedBlenderToolStartResult = typeof HostedBlenderToolStartResult.T
 export const HostedBlenderToolStatusResult = Schema.Struct({
   blenders: Schema.Array(
     Schema.Struct({
-      role: Schema.Literal("working"),
+      role: HostedBlenderRole,
       status: Schema.Literals(["starting", "running", "failed"]),
       /** The open file's absolute path; absent for a start that failed. */
       file: Schema.optionalKey(Schema.String),
@@ -433,6 +477,25 @@ export const HostedBlenderToolStatusResult = Schema.Struct({
   ),
 });
 export type HostedBlenderToolStatusResult = typeof HostedBlenderToolStatusResult.Type;
+
+export const HostedBlenderToolMasterOpenInput = Schema.Struct({
+  path: TrimmedNonEmptyString.annotate({
+    description:
+      "The master `.blend`, not your working copy: absolute or relative to the thread's workspace.",
+  }),
+});
+export type HostedBlenderToolMasterOpenInput = typeof HostedBlenderToolMasterOpenInput.Type;
+
+export const HostedBlenderToolMasterOpenResult = Schema.Struct({
+  master: Schema.String,
+  /** `desktop`: the user's desktop Blender has it open, so copy back goes through `blender`. */
+  status: Schema.Literals(["desktop", "starting", "running"]),
+  /** The MCP server to copy back through. */
+  mcpServer: Schema.String,
+  /** A desktop Blender is running that T3 couldn't ask; it may have the master open too. */
+  desktopUnchecked: Schema.optionalKey(Schema.Boolean),
+});
+export type HostedBlenderToolMasterOpenResult = typeof HostedBlenderToolMasterOpenResult.Type;
 
 export const HostedBlenderToolQuitInput = Schema.Struct({
   save: Schema.Boolean.annotate({

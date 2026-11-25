@@ -27,6 +27,7 @@ const platformLayer = NodeHttpPlatform.layer.pipe(Layer.provideMerge(NodeService
 const serve = (
   scopes: ReadonlyArray<AuthEnvironmentScope>,
   attachViewer: HostedBlender.HostedBlender["Service"]["attachViewer"],
+  query = "",
 ) =>
   Effect.gen(function* () {
     const blender = HostedBlender.HostedBlender.of({
@@ -69,7 +70,7 @@ const serve = (
     return yield* Effect.acquireRelease(
       Effect.sync(() => {
         const socket = new WebSocket(
-          `${origin}/api/hosted-blender-stream/ws?threadId=thread-1&wsTicket=ticket`,
+          `${origin}/api/hosted-blender-stream/ws?threadId=thread-1&wsTicket=ticket${query}`,
         );
         socket.binaryType = "arraybuffer";
         return socket;
@@ -120,7 +121,7 @@ it.effect(
       yield* Effect.promise(() => acked.promise);
       expect(messages).toEqual([{ type: "viewport", width: 1280, height: 720 }]);
       expect(frames).toEqual([frame]);
-      expect(attached).toEqual([["thread-1", { canOperate: false }]]);
+      expect(attached).toEqual([["thread-1", { canOperate: false, role: "working" }]]);
     }),
 );
 
@@ -152,6 +153,22 @@ it.effect("refuses sessions that can't read threads", () =>
     );
     expect(closed).not.toBe(HOSTED_BLENDER_STREAM_STOPPED_CLOSE_CODE);
     expect(attached).toBe(false);
+  }),
+);
+
+it.effect("watches the thread's master Blender when the pane asks for it", () =>
+  Effect.gen(function* () {
+    const roles = Promise.withResolvers<unknown>();
+    yield* serve(
+      [AuthOrchestrationReadScope],
+      (_threadId, options) =>
+        Effect.sync(() => {
+          roles.resolve(options.role);
+          return { _tag: "stopped" as const };
+        }),
+      "&role=master",
+    );
+    expect(yield* Effect.promise(() => roles.promise)).toBe("master");
   }),
 );
 

@@ -49,6 +49,8 @@ export class HostedBlenderAgents extends Context.Service<
      * connections, any local process could reach this port.
      */
     readonly listenerPort: (threadId: ThreadId) => Effect.Effect<number | null>;
+    /** The port the thread's `blender-master` entry dials, on the same terms as `listenerPort`. */
+    readonly masterListenerPort: (threadId: ThreadId) => Effect.Effect<number | null>;
     /**
      * Threads whose agents lost access to their hosted Blender: the thread's session ended, or
      * null when "Allow agents" was switched off for every thread.
@@ -148,6 +150,15 @@ const make = Effect.gen(function* () {
     return port;
   });
 
+  const masterListenerPort: HostedBlenderAgents["Service"]["masterListenerPort"] = Effect.fn(
+    "HostedBlenderAgents.masterListenerPort",
+  )(function* (threadId) {
+    const session = yield* mcpSessions.read(threadId);
+    return session?.hostedBlender !== undefined && (yield* agentsAllowed)
+      ? session.hostedBlender.masterPort
+      : null;
+  });
+
   // Setup answers its current readiness on subscribe; sessions after this see it.
   const followSetup: HostedBlenderAgents["Service"]["followSetup"] = Effect.fnUntraced(
     function* (stream) {
@@ -177,6 +188,7 @@ const make = Effect.gen(function* () {
   return HostedBlenderAgents.of({
     sessionLaunch,
     listenerPort,
+    masterListenerPort,
     revocations: Stream.fromPubSub(revoked),
     sessionEnded: Effect.fn("HostedBlenderAgents.sessionEnded")(function* (threadId) {
       yield* PubSub.publish(revoked, threadId);

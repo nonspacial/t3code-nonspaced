@@ -368,6 +368,7 @@ import {
 import {
   HostedBlenderError,
   HostedBlenderFindHitsInput,
+  HostedBlenderMasterState,
   HostedBlenderHits,
   HostedBlenderOpenInput,
   HostedBlenderQuitInput,
@@ -612,6 +613,9 @@ export const WS_METHODS = {
   hostedBlenderCaptureView: "hostedBlender.captureView",
   hostedBlenderFindHits: "hostedBlender.findHits",
   hostedBlenderSetView: "hostedBlender.setView",
+  hostedBlenderSubscribeMaster: "hostedBlender.subscribeMaster",
+  hostedBlenderOpenMaster: "hostedBlender.openMaster",
+  hostedBlenderMoveIntoT3: "hostedBlender.moveIntoT3",
   hostedBlenderSubscribeSetup: "hostedBlender.subscribeSetup",
   hostedBlenderCheckSetup: "hostedBlender.checkSetup",
   hostedBlenderInstallWithAgent: "hostedBlender.installWithAgent",
@@ -2191,6 +2195,29 @@ const WsHostedBlenderSubscribeThreadRpc = Rpc.make(WS_METHODS.hostedBlenderSubsc
   stream: true,
 });
 
+/** The thread's master file, and whether a master Blender or the desktop Blender has it open. */
+const WsHostedBlenderSubscribeMasterRpc = Rpc.make(WS_METHODS.hostedBlenderSubscribeMaster, {
+  payload: HostedBlenderSubscribeInput,
+  success: HostedBlenderMasterState,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+/**
+ * Opens the thread's master in its master Blender, unless the desktop Blender has it open; then
+ * the master state offers Move into T3 instead.
+ */
+const WsHostedBlenderOpenMasterRpc = Rpc.make(WS_METHODS.hostedBlenderOpenMaster, {
+  payload: HostedBlenderSubscribeInput,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+/** Has the desktop Blender save and quit, then opens the master in a master Blender. */
+const WsHostedBlenderMoveIntoT3Rpc = Rpc.make(WS_METHODS.hostedBlenderMoveIntoT3, {
+  payload: HostedBlenderSubscribeInput,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
 /** The setup check's last result; the first subscriber starts the first check. */
 const WsHostedBlenderSubscribeSetupRpc = Rpc.make(WS_METHODS.hostedBlenderSubscribeSetup, {
   payload: Schema.Struct({}),
@@ -2812,6 +2839,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsHostedBlenderCaptureViewRpc,
   WsHostedBlenderFindHitsRpc,
   WsHostedBlenderSetViewRpc,
+  WsHostedBlenderSubscribeMasterRpc,
+  WsHostedBlenderOpenMasterRpc,
+  WsHostedBlenderMoveIntoT3Rpc,
   WsHostedBlenderSubscribeSetupRpc,
   WsHostedBlenderCheckSetupRpc,
   WsHostedBlenderInstallWithAgentRpc,

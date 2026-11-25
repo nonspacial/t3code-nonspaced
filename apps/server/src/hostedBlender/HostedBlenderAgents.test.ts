@@ -165,10 +165,12 @@ describe("HostedBlenderAgents.listenerPort", () => {
     Effect.gen(function* () {
       const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
       assert.isNull(yield* agents.listenerPort(threadId));
+      assert.isNull(yield* agents.masterListenerPort(threadId));
 
       const launch = yield* agents.sessionLaunch({ threadId, driver: claude });
       yield* startSession(launch);
       assert.equal(yield* agents.listenerPort(threadId), launch?.hostedPort);
+      assert.equal(yield* agents.masterListenerPort(threadId), launch?.masterPort);
     }).pipe(Effect.provide(layerFor({}))),
   );
 
@@ -180,6 +182,7 @@ describe("HostedBlenderAgents.listenerPort", () => {
         hostedBlenderAllowAgents: false,
       });
       assert.isNull(yield* agents.listenerPort(threadId));
+      assert.isNull(yield* agents.masterListenerPort(threadId));
     }).pipe(Effect.provide(layerFor({}))),
   );
 
