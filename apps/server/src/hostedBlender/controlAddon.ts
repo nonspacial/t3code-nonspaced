@@ -139,6 +139,15 @@ def _lone_3d_view(window):
     return len(window.screen.areas) == 1 and window.screen.areas[0].type == "VIEW_3D"
 
 
+def _viewport_lost():
+    tracked = [
+        window
+        for window in bpy.context.window_manager.windows
+        if window.as_pointer() == _State.viewport_window
+    ]
+    return bool(tracked) and not _lone_3d_view(tracked[0])
+
+
 def _viewport():
     # The person's viewport window: the one _open_viewport_window made, never the main window.
     windows = bpy.context.window_manager.windows
@@ -370,6 +379,10 @@ def _tick():
         # an undo step sets it again, so the user is still asked to save the restored work.
         _State.restored = False
         _push_undo_step()
+    # T3's viewport window turned into another editor is no longer its viewport: a fresh one
+    # opens, as on a first open.
+    if _viewport_lost() and not bpy.app.timers.is_registered(_open_viewport_window):
+        bpy.app.timers.register(_open_viewport_window, first_interval=0.2)
     if _State.client is not None:
         try:
             while True:
@@ -603,7 +616,8 @@ def _open_viewport_window():
         and other.as_pointer() != _State.viewport_window
         and other.as_pointer() not in _State.closed_viewports
     ]
-    _State.replace_recovered = bool(restored)
+    # Only the windows the copy itself brought back, seen on the first pass after loading it.
+    _State.replace_recovered = False
     if restored:
         for other in restored:
             _State.closed_viewports.add(other.as_pointer())

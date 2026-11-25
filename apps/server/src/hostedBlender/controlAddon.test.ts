@@ -205,7 +205,7 @@ elif _then in ("saveAndQuit", "failedSaveAndQuit"):
     # Save and quit as T3 asks for it: Blender's own operators stood in for.
     import contextlib, types
     _windows = bpy.context.window_manager.windows
-    _windows[:] = [types.SimpleNamespace()]
+    _windows[:] = [types.SimpleNamespace(as_pointer=lambda: 0)]
     bpy.context.temp_override = lambda **_kwargs: contextlib.nullcontext()
     def _save_mainfile():
         if _then == "failedSaveAndQuit":
@@ -217,7 +217,7 @@ elif _then in ("saveAndQuit", "failedSaveAndQuit"):
     bpy.ops.wm = types.SimpleNamespace(save_mainfile=_save_mainfile, quit_blender=_quit_blender)
     _t3.sendall(b'{"type": "quit", "save": true}\n')
     _tick()
-elif _then in ("replaceViewport", "stuckViewport", "ownChanged"):
+elif _then in ("replaceViewport", "stuckViewport", "ownChanged", "lateMarked"):
     # The file was saved with T3's viewport window open, and the user's own second 3D view:
     # after a recovery the add-on swaps T3's for its own, and always leaves the user's alone.
     import contextlib, types
@@ -260,15 +260,28 @@ elif _then in ("replaceViewport", "stuckViewport", "ownChanged"):
         _recover()
     # The timer runs until it returns None; a stuck close must not keep it going.
     _runs = 0
+    _late = _Window("VIEW_3D", marked=True)
     while _open_viewport_window() is not None and _runs < 10:
         _runs += 1
+        if _then == "lateMarked" and _runs == 1:
+            # A marked window seen only after the first pass isn't the copy's to replace.
+            _windows.append(_late)
+    if _then == "lateMarked":
+        _steps.append(dict(lateKept=_late in _windows))
     if _then == "ownChanged":
-        # The person turns T3's window into another editor: it's no longer T3's viewport.
+        # The person turns T3's window into another editor: it's no longer T3's viewport, and
+        # Blender's own tick, with nothing else asking, opens a fresh one.
         _opened[0].screen.areas[0].type = "IMAGE_EDITOR"
         _changed = _viewport()
-        _open_viewport_window()
+        bpy.app.registered.clear()
+        _tick()
+        _scheduled = [function for function in bpy.app.registered if function is _open_viewport_window]
+        for function in _scheduled:
+            bpy.app.registered.remove(function)
+            function()
         _steps.append(dict(
             stillOwn=_changed is not None and _changed[0] is _opened[0],
+            scheduled=len(_scheduled),
             reopened=_viewport() is not None and _viewport()[0] is _opened[-1],
             fresh=len(_opened),
         ))
@@ -331,6 +344,7 @@ const runAddon = (input: {
   readonly then?:
     | "stuckViewport"
     | "ownChanged"
+    | "lateMarked"
     | "revoke"
     | "drop"
     | "otherFile"
@@ -476,8 +490,22 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     });
     expect(result.steps.find((step: { stillOwn?: boolean }) => "stillOwn" in step)).toEqual({
       stillOwn: false,
+      scheduled: 1,
       reopened: true,
       fresh: 2,
+    });
+  });
+
+  it("replaces only the windows a recovery copy brought back, not one marked after", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      recover: true,
+      then: "lateMarked",
+    });
+    expect(result.steps.find((step: { lateKept?: boolean }) => "lateKept" in step)).toEqual({
+      lateKept: true,
     });
   });
 
