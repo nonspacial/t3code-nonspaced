@@ -257,6 +257,23 @@ it("B6: a right click takes control and focus, and Blender gets that click, with
   ]);
 });
 
+it("N3: a right press dragged out of the pane and let go before the grant is never left held", async () => {
+  using _app = startup();
+  const pane = await paneBesideComposer();
+  await using _screen = pane.screen;
+  await control({ canOperate: true, controller: "unclaimed" });
+  await commands.pointerMove(...pane.inside);
+  await commands.pointerDown("right");
+  await commands.pointerMove(...pane.outside);
+  await commands.pointerUp("right");
+  await control({ canOperate: true, controller: "you" });
+  expect(stream.sent.filter((message) => message.type !== "pointer")).toEqual([
+    { type: "takeControl", takeOver: false },
+    { type: "button", button: 273, pressed: true },
+    { type: "button", button: 273, pressed: false },
+  ]);
+});
+
 it("B6: a view-only pane swallows the middle and thumb buttons", async () => {
   using _app = startup();
   const pane = await paneBesideComposer();
