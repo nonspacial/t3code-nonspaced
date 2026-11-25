@@ -46,9 +46,10 @@ export const HostedBlenderSetupCheck = Schema.Struct({
   item: HostedBlenderSetupItem,
   /**
    * `warning` works, but slowly or only partly: no GPU. `unrecognized` is a program by the right
-   * name that isn't the expected one, such as PyPI's unrelated `blender-mcp`.
+   * name that isn't the expected one, such as PyPI's unrelated `blender-mcp`. `failed` is the
+   * expected program, which didn't answer when started.
    */
-  status: Schema.Literals(["ok", "missing", "outdated", "warning", "unrecognized"]),
+  status: Schema.Literals(["ok", "missing", "outdated", "warning", "unrecognized", "failed"]),
   /** What was found: a version, a path or an encoder. */
   found: Schema.optionalKey(Schema.String),
 });

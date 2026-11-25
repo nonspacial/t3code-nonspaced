@@ -34,6 +34,7 @@ const serve = (
       open: () => Effect.void,
       quit: () => Effect.void,
       reopen: () => Effect.void,
+      agentGrant: () => Effect.die("unused"),
       dismiss: () => Effect.void,
       keptCopies: () => Effect.succeed([]),
       closeOnSettle: () => Effect.void,

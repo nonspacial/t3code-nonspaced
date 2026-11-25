@@ -10,8 +10,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 
-import { openAgentMaster } from "../../../hostedBlender/agentMaster.ts";
-import { untestedBlenderLabReason } from "../../../hostedBlender/agentGuard.ts";
+import { masterAccessHelp, openAgentMaster } from "../../../hostedBlender/agentMaster.ts";
 import {
   startAgentWorkingCopy,
   workingAccessHelp,
@@ -141,19 +140,6 @@ const workingStatus = Effect.fnUntraced(function* (threadId: ThreadId) {
     ...kept,
   ] as const;
 });
-
-/** A master this thread can't reach: a session joins it through `blender_master_open`. */
-const masterAccessHelp = (
-  name: string,
-  listener: HostedBlender.AgentListenerReport | null,
-): string =>
-  listener?.state === "untested"
-    ? untestedBlenderLabReason(
-        name,
-        listener.mcpVersion,
-        "Then ask the user to quit the master Blender from the Blender pane's Master view, and call blender_master_open again.",
-      )
-    : `Call blender_master_open with ${name} to reach the master Blender from this session. If that says your access ended, ask the user to quit the master Blender from the Blender pane's Master view, then call blender_master_open again.`;
 
 const handlers = {
   blender_start: McpToolAccess.actsAsCaller((input) =>

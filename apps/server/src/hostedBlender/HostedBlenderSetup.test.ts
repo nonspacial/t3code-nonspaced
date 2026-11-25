@@ -28,6 +28,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as HiddenDisplayBinary from "./HiddenDisplayBinary.ts";
 import * as HostedBlenderSetup from "./HostedBlenderSetup.ts";
@@ -82,8 +83,34 @@ const fakeHost = (dir: string) => {
 };
 
 /** A pip console script, as `uv tool install` and `pipx` write it, importing `module`. */
+/**
+ * Blender Lab's `blmcp`, as far as setup sees it: it answers `initialize` and `tools/list` over
+ * stdio, and logs each start and the port it was given beside itself. With `silent` beside it,
+ * it exits without answering.
+ */
+const FAKE_BLMCP = `import json, os, sys
+HERE = os.path.dirname(os.path.abspath(__file__))
+def main():
+    with open(os.path.join(HERE, "starts.log"), "a") as log:
+        log.write(os.environ.get("BLENDER_MCP_PORT", "none") + "\\n")
+    if os.path.exists(os.path.join(HERE, "silent")):
+        return 1
+    for line in sys.stdin:
+        message = json.loads(line)
+        if message.get("method") == "initialize":
+            result = {"protocolVersion": message["params"]["protocolVersion"], "capabilities": {"tools": {}}, "serverInfo": {"name": "blender-mcp", "version": "1.30.0"}}
+        elif message.get("method") == "tools/list":
+            result = {"tools": [{"name": "get_objects_summary", "inputSchema": {"type": "object"}}]}
+        else:
+            continue
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
+    return 0
+`;
+
 const consoleScript = (file: string, module: string) => {
   NodeFS.mkdirSync(NodePath.dirname(file), { recursive: true });
+  if (module === "blmcp")
+    NodeFS.writeFileSync(NodePath.join(NodePath.dirname(file), "blmcp.py"), FAKE_BLMCP);
   NodeFS.writeFileSync(
     file,
     `#!/usr/bin/python3\n# -*- coding: utf-8 -*-\nimport sys\nfrom ${module} import main\nif __name__ == "__main__":\n    sys.exit(main())\n`,
@@ -192,6 +219,7 @@ const setupFor = (options: Options) =>
         Layer.succeed(HostProcess.Platform, options.platform ?? "linux"),
         Layer.succeed(HostProcess.Environment, { PATH: options.host.bin }),
         Layer.succeed(HostProcess.HomeDirectory, options.home),
+        ServerConfig.layerTest(options.home, NodePath.join(options.home, "t3")),
       ),
     ),
     Layer.provideMerge(NodeServices.layer),
@@ -303,6 +331,61 @@ describe("HostedBlenderSetup", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("reads the official server's tools as it checks it, once per installed build", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir;
+      const host = fakeHost(dir);
+      const mcp = consoleScript(NodePath.join(dir, ".local", "bin", "blender-mcp"), "blmcp");
+      const starts = () =>
+        NodeFS.readFileSync(NodePath.join(dir, ".local", "bin", "starts.log"), "utf8")
+          .split("\n")
+          .filter(Boolean);
+      const readiness = Effect.fnUntraced(function* (check: "ensure" | "again") {
+        const service = yield* serviceFor({ host, home: dir });
+        yield* check === "ensure" ? service.ensureChecked : service.check;
+        return Option.getOrThrow(yield* Stream.runHead(service.readiness));
+      });
+      const first = yield* readiness("ensure");
+      assert(first.status === "ok" && first.blenderMcpCapture !== null);
+      expect(first.blenderMcp).toBe(mcp);
+      expect(first.blenderMcpCapture.answers["2025-11-25"]?.["tools/list"]).toEqual({
+        result: { tools: [{ name: "get_objects_summary", inputSchema: { type: "object" } }] },
+      });
+      // One process per protocol version, none with a Blender to reach.
+      expect(starts()).toEqual(["0", "0", "0", "0", "0"]);
+      // A restart, and Check again, of an unchanged install start nothing.
+      expect(yield* readiness("ensure")).toEqual(first);
+      expect(yield* readiness("again")).toEqual(first);
+      expect(starts()).toHaveLength(5);
+      // Reinstalled in place: read again.
+      NodeFS.appendFileSync(mcp, "# reinstalled\n");
+      const reread = yield* readiness("again");
+      expect(starts()).toHaveLength(10);
+      assert(reread.status === "ok");
+      expect(reread.blenderMcpCapture?.build).not.toEqual(first.blenderMcpCapture.build);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("reports an official server that doesn't answer as failed, giving agents nothing", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir;
+      const host = fakeHost(dir);
+      const mcp = consoleScript(NodePath.join(dir, ".local", "bin", "blender-mcp"), "blmcp");
+      NodeFS.writeFileSync(NodePath.join(dir, ".local", "bin", "silent"), "");
+      const service = yield* serviceFor({ host, home: dir });
+      yield* service.ensureChecked;
+      const result = checkedResult(
+        yield* (yield* watch(service))((state) => state.result !== null),
+      );
+      expect(result.checks).toContainEqual({ item: "blenderMcp", status: "failed", found: mcp });
+      expect(Option.getOrThrow(yield* Stream.runHead(service.readiness))).toMatchObject({
+        status: "ok",
+        blenderMcp: null,
+        blenderMcpCapture: null,
+      });
+    }).pipe(Effect.scoped),
+  );
+
   it.live("hands agents the official Blender MCP, never the third-party one", () =>
     Effect.gen(function* () {
       const dir = yield* tempDir;
@@ -376,6 +459,7 @@ describe("HostedBlenderSetup", () => {
         helper: host.helper,
         blender: host.blender,
         blenderMcp: null,
+        blenderMcpCapture: null,
       });
 
       NodeFS.rmSync(NodePath.join(host.bin, "gst-inspect-1.0"));

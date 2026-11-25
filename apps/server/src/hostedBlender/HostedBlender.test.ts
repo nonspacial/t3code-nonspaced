@@ -61,6 +61,7 @@ interface Host {
   readonly accessEnded?: Queue.Queue<{
     readonly threadId: ThreadId;
     readonly role: HostedBlenderAgents.HostedBlenderRole;
+    readonly grant: string;
   }>;
   /** Each thread's `blender-master` port, held by its agent session. */
   readonly masterPorts?: ReadonlyMap<ThreadId, number>;
@@ -90,7 +91,7 @@ const readinessFor = (host: Host): HostedBlenderSetup.HostedBlenderReadiness => 
   const blender = blenderOnPath(host.env);
   return host.helper == null || blender === undefined
     ? { status: "notSetUp", missing: ["helper"] }
-    : { status: "ok", helper: host.helper, blender, blenderMcp: null };
+    : { status: "ok", helper: host.helper, blender, blenderMcp: null, blenderMcpCapture: null };
 };
 
 const layerFor = (host: Host) =>
@@ -141,10 +142,10 @@ const layerFor = (host: Host) =>
           ).pipe(Effect.provide(NetService.layer)),
           agentsAllowed: Effect.succeed(host.agentsAllowed ?? true),
           revocations: host.revocations ?? Stream.never,
-          agentAccessEnded: (id, role) =>
+          agentAccessEnded: (id, role, grant) =>
             host.accessEnded === undefined
               ? Effect.void
-              : Queue.offer(host.accessEnded, { threadId: id, role }).pipe(Effect.asVoid),
+              : Queue.offer(host.accessEnded, { threadId: id, role, grant }).pipe(Effect.asVoid),
         }),
         host.desktop === undefined
           ? Layer.empty
@@ -4288,6 +4289,7 @@ describe("Agent access at launch", () => {
         const accessEnded = yield* Queue.unbounded<{
           readonly threadId: ThreadId;
           readonly role: HostedBlenderAgents.HostedBlenderRole;
+          readonly grant: string;
         }>();
         // Taken one at a time, so the sentinel is taken only once the revocation before it is handled.
         const handled = yield* Deferred.make<void>();
@@ -4304,6 +4306,9 @@ describe("Agent access at launch", () => {
           accessEnded,
         });
         expect((yield* service.agentListener(threadId))?.state).toBe("ready");
+        const granted = yield* service.agentGrant({ threadId, role: "working", session: "any" });
+        assert(granted._tag === "granted");
+        expect(granted.port).toBe(41234);
         // The thread's session ending (an idle release, say) leaves the launch's grant: the next
         // session reaches the same Blender through its own Blender Lab server.
         yield* Queue.offer(revoked, { threadId, session: "session-1" });
@@ -4311,8 +4316,19 @@ describe("Agent access at launch", () => {
         yield* Deferred.await(handled);
         expect((yield* service.agentListener(threadId, { wait: false }))?.state).toBe("ready");
         expect(controlLog()).not.toContain("stopAgentListener");
+        expect(yield* service.agentGrant({ threadId, role: "working", session: "next" })).toEqual(
+          granted,
+        );
         yield* Queue.offer(revoked, null);
-        expect(yield* Queue.take(accessEnded)).toEqual({ threadId, role: "working" });
+        // Named by this launch, so it never stops a server serving a later one.
+        expect(yield* Queue.take(accessEnded)).toEqual({
+          threadId,
+          role: "working",
+          grant: granted.grant,
+        });
+        expect(
+          (yield* service.agentGrant({ threadId, role: "working", session: "next" }))._tag,
+        ).toBe("none");
         yield* service.threadState(threadId).pipe(
           Stream.filter((state) => state.status === "stopped"),
           Stream.runHead,
@@ -6129,6 +6145,7 @@ describe("Agent access to a master, by session", () => {
       const accessEnded = yield* Queue.unbounded<{
         readonly threadId: ThreadId;
         readonly role: HostedBlenderAgents.HostedBlenderRole;
+        readonly grant: string;
       }>();
       const host = yield* masterHost({
         masterPorts: ports,
@@ -6144,6 +6161,16 @@ describe("Agent access to a master, by session", () => {
       expect((yield* host.service.agentListener(threadId, { role: "master" }))?.state).toBe(
         "ready",
       );
+      // A relay serves the session it was opened for, on the thread's own port.
+      const relay = yield* host.service.agentGrant({
+        threadId: otherThreadId,
+        role: "master",
+        session: "session-1",
+      });
+      expect(relay).toMatchObject({ _tag: "granted", port: ports.get(otherThreadId) });
+      expect(
+        (yield* host.service.agentGrant({ threadId, role: "master", session: "session-2" }))._tag,
+      ).toBe("none");
       // A credential replaced before this one was granted: nothing of this session's ends.
       yield* Queue.offer(revoked, { threadId, session: "session-0" });
       yield* Queue.offer(revoked, { threadId: otherThreadId, session: "session-1" });
@@ -6153,7 +6180,11 @@ describe("Agent access to a master, by session", () => {
       expect(yield* ping(ports.get(threadId)!)).toBe("pong");
       expect(yield* ping(ports.get(otherThreadId)!)).toBe("ECONNREFUSED");
       // Its relay's closing stops that session's Blender Lab server too, and no other.
-      expect(yield* Queue.take(accessEnded)).toEqual({ threadId: otherThreadId, role: "master" });
+      expect(yield* Queue.take(accessEnded)).toEqual({
+        threadId: otherThreadId,
+        role: "master",
+        grant: relay._tag === "granted" ? relay.grant : "",
+      });
       expect(yield* Queue.size(accessEnded)).toBe(0);
       yield* host.service.quit({ threadId, save: false, role: "master" });
     }).pipe(Effect.scoped, Effect.provide(NetService.layer)),

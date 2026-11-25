@@ -35,9 +35,11 @@ Agents reach a hosted Blender only through Blender Lab's own `blender-mcp`, adde
 T3 serves both over its own authenticated MCP endpoint
 ([`HostedBlenderMcpProxy.ts`](../../apps/server/src/hostedBlender/HostedBlenderMcpProxy.ts)), so a
 session that never touches Blender starts no Python: `initialize` and the lists are the official
-server's own answers, captured from it once per command and protocol version and never edited,
-and a session's first call starts its own `blender-mcp`, which ends with that session's access.
-The credential picks the session and so the ports; nothing a caller sends selects a Blender.
+server's own answers, read by setup when it checks the server (kept per installed build, never
+edited). A tool call starts the session's own `blender-mcp` only while the session holds a live
+grant for that role, and that server ends with the grant or the session. The credential picks
+the session, and T3's records the port; nothing a caller sends selects a Blender, and no port
+reaches the agent: a working Blender listens on a private port of its own launch.
 T3's own tools cover lifecycle (`blender_start`, `blender_master_open`, `blender_status`,
 `blender_quit`) and never run
 Blender code. T3 does not ship its own code-running bridge: Blender Lab's tools, docs and sandbox

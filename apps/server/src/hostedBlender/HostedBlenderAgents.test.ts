@@ -30,6 +30,7 @@ const READY: HostedBlenderSetup.HostedBlenderReadiness = {
   helper: "/opt/t3/hidden-display",
   blender: "/usr/bin/blender",
   blenderMcp: "/home/user/.local/bin/blender-mcp",
+  blenderMcpCapture: null,
 };
 
 /** Test settings whose writes reach `subscribeChanges`, which `layerTest` never streams. */
@@ -118,8 +119,7 @@ describe("HostedBlenderAgents.sessionLaunch", () => {
       assert.isDefined(forClaude);
       assert.equal(forClaude.command, READY.status === "ok" ? READY.blenderMcp : "");
       assert.equal(forClaude.blenderPath, "/usr/bin/blender");
-      assert.notEqual(forClaude.hostedPort, forClaude.masterPort);
-      assert.notInclude([forClaude.hostedPort, forClaude.masterPort], 9876);
+      assert.notEqual(forClaude.masterPort, 9876);
       // The ports belong to the thread, so a later session reuses them.
       const forCodex = yield* agents.sessionLaunch({ threadId, driver: codex });
       assert.deepEqual(forCodex, forClaude);
@@ -127,7 +127,7 @@ describe("HostedBlenderAgents.sessionLaunch", () => {
         threadId: ThreadId.make("thread-other"),
         driver: claude,
       });
-      assert.notEqual(other?.hostedPort, forClaude.hostedPort);
+      assert.notEqual(other?.masterPort, forClaude.masterPort);
     }).pipe(Effect.provide(layerFor({}))),
   );
 
@@ -156,7 +156,13 @@ describe("HostedBlenderAgents.sessionLaunch", () => {
     Effect.gen(function* () {
       const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
       assert.isUndefined(yield* agents.sessionLaunch({ threadId, driver: claude }));
-    }).pipe(Effect.provide(layerFor({ readiness: { ...READY, blenderMcp: null } }))),
+    }).pipe(
+      Effect.provide(
+        layerFor({
+          readiness: { ...READY, blenderMcp: null } as HostedBlenderSetup.HostedBlenderReadiness,
+        }),
+      ),
+    ),
   );
 });
 
@@ -169,7 +175,12 @@ describe("HostedBlenderAgents.listenerPort", () => {
 
       const launch = yield* agents.sessionLaunch({ threadId, driver: claude });
       yield* startSession(launch);
-      assert.equal(yield* agents.listenerPort(threadId), launch?.hostedPort);
+      // Each launch gets a port of its own, which no session's config names.
+      const first = yield* agents.listenerPort(threadId);
+      const second = yield* agents.listenerPort(threadId);
+      assert.isNotNull(first);
+      assert.notEqual(first, second);
+      assert.notInclude([first, second], launch?.masterPort);
       assert.equal(yield* agents.masterListenerPort(threadId), launch?.masterPort);
     }).pipe(Effect.provide(layerFor({}))),
   );
@@ -194,13 +205,8 @@ describe("HostedBlenderAgents.listenerPort", () => {
         threadId: ThreadId.make("thread-second"),
         driver: codex,
       });
-      assert.deepEqual(
-        [first?.hostedPort, first?.masterPort, second?.hostedPort, second?.masterPort],
-        [41000, 41001, 41002, 41003],
-      );
-    }).pipe(
-      Effect.provide(layerFor({ probes: [41000, 41000, 41001, 41001, 41000, 41002, 41003] })),
-    ),
+      assert.deepEqual([first?.masterPort, second?.masterPort], [41000, 41001]);
+    }).pipe(Effect.provide(layerFor({ probes: [41000, 41000, 41001] }))),
   );
 });
 
@@ -239,13 +245,13 @@ describe("HostedBlenderAgents.routeEnds", () => {
       const ends = yield* agents.routeEnds;
       const taken = yield* ends.pipe(Stream.take(3), Stream.runCollect, Effect.forkScoped);
       yield* agents.sessionEnded(threadId, "provider-session-1");
-      yield* agents.agentAccessEnded(threadId, "master");
+      yield* agents.agentAccessEnded(threadId, "master", "relay-1");
       yield* (yield* ServerSettings.ServerSettingsService).updateSettings({
         hostedBlenderAllowAgents: false,
       });
       assert.deepEqual(Array.from(yield* Fiber.join(taken)), [
         { threadId, session: "provider-session-1" },
-        { threadId, role: "master" },
+        { threadId, role: "master", grant: "relay-1" },
         null,
       ]);
     }).pipe(Effect.scoped, Effect.provide(layerFor({}))),
@@ -276,9 +282,9 @@ describe("HostedBlenderAgents private ports", () => {
       const launch = yield* agents.sessionLaunch({ threadId, driver: claude });
       // The probe keeps offering the thread's ports, idle since the session took them.
       const own = yield* agents.reservePrivatePort;
-      assert.notInclude([launch?.hostedPort, launch?.masterPort], own);
-      assert.equal(own, 41002);
-    }).pipe(Effect.provide(layerFor({ probes: [41000, 41001, 41000, 41001, 41002] }))),
+      assert.notEqual(launch?.masterPort, own);
+      assert.equal(own, 41001);
+    }).pipe(Effect.provide(layerFor({ probes: [41000, 41000, 41001] }))),
   );
 });
 

@@ -29,6 +29,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import type { ChildProcessSpawner } from "effect/process";
 
 import * as BlenderDetection from "../blend/BlenderDetection.ts";
 import { expandHome } from "../blend/BlenderDetection.ts";
@@ -38,7 +39,14 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import {
+  BlenderMcpCapture,
+  blenderMcpBuild,
+  captureBlenderMcp,
+  sameBuild,
+} from "./blenderMcpStdio.ts";
 import * as HiddenDisplayBinary from "./HiddenDisplayBinary.ts";
 import {
   type CheckedSetup,
@@ -70,6 +78,8 @@ export type HostedBlenderReadiness =
       readonly helper: string;
       readonly blender: string;
       readonly blenderMcp: string | null;
+      /** The official server's own answers, read from it when setup checked it. */
+      readonly blenderMcpCapture: BlenderMcpCapture | null;
     }
   | Extract<HostedBlenderThreadState, { status: "unavailable" | "notSetUp" }>;
 
@@ -98,6 +108,7 @@ interface Internal {
     readonly helper: string;
     readonly blender: string;
     readonly blenderMcp: string | null;
+    readonly blenderMcpCapture: BlenderMcpCapture | null;
   } | null;
   /** From the last check, for the install prompt. */
   readonly osRelease: OsRelease | null;
@@ -152,6 +163,8 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
   >();
   const lookupContext = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
   const serviceScope = yield* Effect.scope;
+  const config = yield* ServerConfig.ServerConfig;
+  const spawnContext = yield* Effect.context<ChildProcessSpawner.ChildProcessSpawner>();
   const system = (...segments: ReadonlyArray<string>) => path.join(options.systemRoot, ...segments);
 
   // Hosts T3 ships no helper for are known without running anything, so they start answered.
@@ -270,6 +283,50 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
     return { path: found, official: OFFICIAL_MCP_ENTRY_POINT.test(script) };
   });
 
+  // Kept across restarts, so a check of an unchanged install starts no Python.
+  const capturePath = path.join(config.stateDir, "hosted-blender", "blender-mcp-capture.json");
+  const mcpTmpDir = path.join(config.stateDir, "hosted-blender", "mcp-tmp");
+  const decodeCapture = Schema.decodeUnknownOption(Schema.fromJsonString(BlenderMcpCapture));
+  const encodeCapture = Schema.encodeEffect(Schema.fromJsonString(BlenderMcpCapture));
+
+  /** The official server's answers for the build `command` runs now, or null if it gave none. */
+  const officialCapture = Effect.fnUntraced(
+    function* (command: string) {
+      const build = yield* blenderMcpBuild(command).pipe(
+        Effect.provideContext(lookupContext),
+        Effect.option,
+      );
+      if (Option.isNone(build)) return null;
+      const kept = yield* fileSystem.readFileString(capturePath).pipe(
+        Effect.map(decodeCapture),
+        Effect.orElseSucceed(() => Option.none<BlenderMcpCapture>()),
+      );
+      if (
+        Option.isSome(kept) &&
+        kept.value.command === command &&
+        sameBuild(kept.value.build, build.value)
+      ) {
+        return kept.value;
+      }
+      yield* fileSystem.makeDirectory(mcpTmpDir, { recursive: true });
+      yield* fileSystem.chmod(mcpTmpDir, 0o700);
+      const captured = yield* captureBlenderMcp({ command, environment, tmpDir: mcpTmpDir }).pipe(
+        Effect.provideContext(spawnContext),
+        Effect.provideContext(lookupContext),
+        Effect.tapError((reason) =>
+          Effect.logWarning("Blender Lab's MCP server did not answer setup", { command, reason }),
+        ),
+        Effect.option,
+      );
+      if (Option.isNone(captured)) return null;
+      const staging = `${capturePath}.${process.pid}.tmp`;
+      yield* fileSystem.writeFileString(staging, yield* encodeCapture(captured.value));
+      yield* fileSystem.rename(staging, capturePath);
+      return captured.value;
+    },
+    Effect.orElseSucceed(() => null),
+  );
+
   const isExecutable = (candidate: string) =>
     fileSystem.stat(candidate).pipe(
       Effect.map((info) => info.type === "File" && (info.mode & 0o111) !== 0),
@@ -279,6 +336,7 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
   const gather = Effect.gen(function* (): Effect.fn.Return<{
     readonly facts: SetupFacts;
     readonly helper: string | null;
+    readonly blenderMcpCapture: BlenderMcpCapture | null;
   }> {
     const helper = yield* hiddenDisplay.resolve.pipe(
       Effect.map((resolved): string | null | "unsupported" => resolved),
@@ -301,11 +359,13 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
       renderNodes: { total: 0, accessible: 0 },
       blenderMcp: null,
     } satisfies SetupFacts;
-    if (platform !== "linux" || helper === "unsupported") return { facts: base, helper: null };
+    if (platform !== "linux" || helper === "unsupported") {
+      return { facts: base, helper: null, blenderMcpCapture: null };
+    }
     const current = yield* settings.getSettings.pipe(
       Effect.orElseSucceed(() => ({ blenderMcpPath: "" })),
     );
-    const [osRelease, detected, labwcVersion, gstreamerVersion, gpu, nvidia, blenderMcp] =
+    const [osRelease, detected, labwcVersion, gstreamerVersion, gpu, nvidia, foundMcp] =
       yield* Effect.all(
         [
           readOsRelease,
@@ -320,6 +380,15 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
         ],
         { concurrency: "unbounded" },
       );
+    // Only the official server is started, and only to read what it offers agents.
+    const blenderMcpCapture =
+      foundMcp?.official === true ? yield* officialCapture(foundMcp.path) : null;
+    const blenderMcp =
+      foundMcp === null
+        ? null
+        : foundMcp.official
+          ? { ...foundMcp, answered: blenderMcpCapture !== null }
+          : foundMcp;
     const blender =
       detected === null
         ? null
@@ -361,13 +430,14 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
         blenderMcp,
       },
       helper,
+      blenderMcpCapture,
     };
   });
 
   const runCheck = Effect.gen(function* () {
     yield* update((internal) => ({ ...internal, state: { ...internal.state, checking: true } }));
     // A fresh lookup each time: the shared cache keeps misses, which would hide a new install.
-    const { facts, helper } = yield* gather.pipe(
+    const { facts, helper, blenderMcpCapture } = yield* gather.pipe(
       Effect.provideService(CommandResolutionCache, new Map()),
     );
     const evaluated = evaluateSetup(facts);
@@ -382,7 +452,8 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
           ? {
               helper,
               blender: facts.blender.path,
-              blenderMcp: facts.blenderMcp?.official === true ? facts.blenderMcp.path : null,
+              blenderMcp: blenderMcpCapture === null ? null : blenderMcpCapture.command,
+              blenderMcpCapture,
             }
           : null,
       osRelease: facts.osRelease,
