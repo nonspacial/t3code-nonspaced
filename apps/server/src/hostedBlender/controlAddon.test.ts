@@ -201,31 +201,71 @@ elif _then == "saveAs":
     _on_save_post()
 elif _then == "revert":
     _on_load_post()
-elif _then == "replaceViewport":
-    # The working copy was saved with a viewport window open: the add-on swaps it for its own.
+elif _then in ("saveAndQuit", "failedSaveAndQuit"):
+    # Save and quit as T3 asks for it: Blender's own operators stood in for.
+    import contextlib, types
+    _windows = bpy.context.window_manager.windows
+    _windows[:] = [types.SimpleNamespace()]
+    bpy.context.temp_override = lambda **_kwargs: contextlib.nullcontext()
+    def _save_mainfile():
+        if _then == "failedSaveAndQuit":
+            raise RuntimeError("cannot write")
+        return {"FINISHED"}
+    def _quit_blender():
+        # What the agent's listener was when Blender began to quit.
+        _addons.log("quit", _snapshot()["agentListener"], "${MCP}" in _addons.registered)
+    bpy.ops.wm = types.SimpleNamespace(save_mainfile=_save_mainfile, quit_blender=_quit_blender)
+    _t3.sendall(b'{"type": "quit", "save": true}\n')
+    _tick()
+elif _then in ("replaceViewport", "stuckViewport"):
+    # The working copy was saved with T3's viewport window open, and the user's own second
+    # 3D view: the add-on swaps T3's for its own and leaves the user's alone.
     import contextlib, types
     class _Area:
         def __init__(self, kind):
             self.type = kind; self.width = 100; self.height = 100
             self.regions = [types.SimpleNamespace(type="WINDOW")]
-    class _Window:
+    class _Screen(dict):
         def __init__(self, kind):
-            self.screen = types.SimpleNamespace(areas=[_Area(kind)])
+            super().__init__(); self.areas = [_Area(kind)]
+    class _Window:
+        def __init__(self, kind, marked=False):
+            self.screen = _Screen(kind)
+            if marked:
+                self.screen["t3_viewport"] = True
         def as_pointer(self): return id(self)
     _windows = bpy.context.window_manager.windows
-    _windows[:] = [_Window("VIEW_3D"), _Window("VIEW_3D")]
+    _users = _Window("VIEW_3D")
+    _saved = _Window("VIEW_3D", marked=True)
+    _windows[:] = [_Window("VIEW_3D"), _users, _saved]
     _opened = []
+    _closes = []
+    _current = [None]
+    def _override(**kwargs):
+        _current[0] = kwargs.get("window")
+        return contextlib.nullcontext()
     def _close():
-        _windows.pop()
+        _closes.append(_current[0])
+        if _then != "stuckViewport":
+            _windows.remove(_current[0])
     def _dupli(_mode):
         window = _Window("VIEW_3D"); _windows.append(window); _opened.append(window)
-    bpy.context.temp_override = lambda **_kwargs: contextlib.nullcontext()
+    bpy.context.temp_override = _override
     bpy.ops.wm = types.SimpleNamespace(window_close=_close)
     bpy.ops.screen = types.SimpleNamespace(area_dupli=_dupli)
-    _again = _open_viewport_window()
-    if _again is not None:
-        _open_viewport_window()
-    _steps.append(dict(_report(), windows=len(_windows), fresh=len(_opened)))
+    # The timer runs until it returns None; a stuck close must not keep it going.
+    _runs = 0
+    while _open_viewport_window() is not None and _runs < 10:
+        _runs += 1
+    _steps.append(dict(
+        _report(),
+        windows=len(_windows),
+        fresh=len(_opened),
+        usersKept=_users in _windows,
+        closes=len(_closes),
+        runs=_runs,
+        marked=all(window.screen.get("t3_viewport") for window in _opened),
+    ))
     _tick()
     _steps.append(_report())
     # A file opened after that still ends the agent's access.
@@ -271,7 +311,16 @@ const runAddon = (input: {
   readonly pressStartBeforeGrant?: boolean;
   /** Another file is open by the time T3's grant arrives. */
   readonly fileBeforeGrant?: boolean;
-  readonly then?: "revoke" | "drop" | "otherFile" | "saveAs" | "revert" | "replaceViewport";
+  readonly then?:
+    | "stuckViewport"
+    | "revoke"
+    | "drop"
+    | "otherFile"
+    | "saveAs"
+    | "revert"
+    | "replaceViewport"
+    | "saveAndQuit"
+    | "failedSaveAndQuit";
 }) => {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-control-addon-"));
   dirs.push(dir);
@@ -343,6 +392,20 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     expect(result.steps).toEqual([pending, pending, pending, pending]);
   });
 
+  it("ends the grant once Save and quit has saved, before Blender begins to quit", () => {
+    const saved = runAddon({ installed: [MCP], enabled: [MCP], listen: true, then: "saveAndQuit" });
+    expect(saved.calls).toContainEqual(["quit", "off", false]);
+    // A save that fails leaves Blender open, and the agent's access with it.
+    const failed = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      then: "failedSaveAndQuit",
+    });
+    expect(failed.calls.some((call: ReadonlyArray<unknown>) => call[0] === "quit")).toBe(false);
+    expect(after(failed)).toEqual({ listener: "ready", listening: failed.port, enabled: true });
+  });
+
   it("keeps the grant when it replaces a viewport window the working copy brought back", () => {
     const result = runAddon({
       installed: [MCP],
@@ -351,8 +414,25 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       then: "replaceViewport",
     });
     const ready = { listener: "ready", listening: result.port, enabled: true };
-    // Exactly one viewport window, its own, and the agent's listener untouched.
-    expect(result.steps.slice(-4)).toEqual([{ ...ready, windows: 2, fresh: 1 }, ready, off, off]);
+    // T3's saved window swapped for one fresh, marked window; the user's own view kept; the
+    // agent's listener untouched.
+    expect(result.steps.slice(-4)).toEqual([
+      { ...ready, windows: 3, fresh: 1, usersKept: true, closes: 1, runs: 1, marked: true },
+      ready,
+      off,
+      off,
+    ]);
+  });
+
+  it("stops trying to close a saved viewport window that won't close", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      then: "stuckViewport",
+    });
+    expect(result.steps.at(-4)).toMatchObject({ closes: 1, usersKept: true, fresh: 1 });
+    expect(result.steps.at(-4).runs).toBeLessThan(10);
   });
 
   it("never starts it when T3 revokes before it grants", () => {

@@ -47,6 +47,8 @@ class _State:
     restore = None
     # The viewport window this session opened, by pointer: one a loaded file brings back is not.
     viewport_window = None
+    # Restored viewport windows already asked to close, by pointer.
+    closed_viewports = set()
 
 
 def _listen():
@@ -134,11 +136,14 @@ def _push_undo_step():
 def _viewport():
     # The person's viewport window: the one _open_viewport_window made, never the main window.
     windows = bpy.context.window_manager.windows
-    for index, window in enumerate(windows):
-        areas = window.screen.areas
-        if index == 0 or len(areas) != 1 or areas[0].type != "VIEW_3D":
-            continue
-        area = areas[0]
+    candidates = [window for window in _viewport_windows() if window.as_pointer() == _State.viewport_window]
+    candidates += [
+        window
+        for index, window in enumerate(windows)
+        if index > 0 and len(window.screen.areas) == 1 and window.screen.areas[0].type == "VIEW_3D"
+    ]
+    for window in candidates:
+        area = window.screen.areas[0]
         region = next((region for region in area.regions if region.type == "WINDOW"), None)
         if region is not None:
             return window, area, region, area.spaces.active
@@ -334,6 +339,9 @@ def _handle(command):
             if not _save():
                 _send({"type": "quitFailed", "reason": "saveFailed"})
                 return
+            # Saved, so Blender quits next: the agent's grant ends now, as T3's stop would
+            # come too late once quitting begins.
+            _end_grant()
             _send({"type": "saved"})
         window = _main_window()
         with bpy.context.temp_override(window=window):
@@ -553,12 +561,18 @@ def _has_viewport_window():
     return _viewport() is not None
 
 
+# Marks T3's viewport window on its screen, which a saved file keeps, so a file brings it back
+# recognisably while a second 3D view the person made is never mistaken for it.
+VIEWPORT_MARKER = "t3_viewport"
+
+
 def _viewport_windows():
+    # T3's viewport windows: this session's, and any a loaded file brought back.
     windows = bpy.context.window_manager.windows
     return [
         window
         for index, window in enumerate(windows)
-        if index > 0 and len(window.screen.areas) == 1 and window.screen.areas[0].type == "VIEW_3D"
+        if index > 0 and window.screen.get(VIEWPORT_MARKER)
     ]
 
 
@@ -568,17 +582,25 @@ def _open_viewport_window():
     if window is None:
         return None
     found = _viewport_windows()
-    restored = [other for other in found if other.as_pointer() != _State.viewport_window]
-    if not restored and found:
-        return None
+    own = [other for other in found if other.as_pointer() == _State.viewport_window]
+    # A file saved with T3's viewport window open (a recovery copy, or a save from here) brings
+    # it back in its saved fullscreen state, which the compositor's fullscreen toggle then
+    # undoes. It is replaced by a fresh one, which fills the display as on a first open. One
+    # that didn't close when asked is left be rather than asked again forever.
+    restored = [
+        other
+        for other in found
+        if other.as_pointer() != _State.viewport_window
+        and other.as_pointer() not in _State.closed_viewports
+    ]
     if restored:
-        # A file saved with a viewport window open (a recovery copy, or a save from here) brings
-        # it back in its saved fullscreen state, which the compositor's fullscreen toggle then
-        # undoes. A fresh one fills the display as on a first open, and stays the only one.
         for other in restored:
+            _State.closed_viewports.add(other.as_pointer())
             with bpy.context.temp_override(window=other):
                 bpy.ops.wm.window_close()
         return 0.2
+    if own:
+        return None
     areas = [area for area in window.screen.areas if area.type == "VIEW_3D"]
     if not areas:
         area = max(window.screen.areas, key=lambda area: area.width * area.height)
@@ -586,10 +608,15 @@ def _open_viewport_window():
         areas = [area]
     area = max(areas, key=lambda area: area.width * area.height)
     region = next(region for region in area.regions if region.type == "WINDOW")
+    before = {other.as_pointer() for other in bpy.context.window_manager.windows}
     with bpy.context.temp_override(window=window, screen=window.screen, area=area, region=region):
         bpy.ops.screen.area_dupli("INVOKE_DEFAULT")
-    opened = _viewport_windows()
-    _State.viewport_window = opened[-1].as_pointer() if opened else None
+    opened = [
+        other for other in bpy.context.window_manager.windows if other.as_pointer() not in before
+    ]
+    if opened:
+        opened[-1].screen[VIEWPORT_MARKER] = True
+        _State.viewport_window = opened[-1].as_pointer()
     return None
 
 

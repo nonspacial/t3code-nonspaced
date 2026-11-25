@@ -245,10 +245,18 @@ def control():
     connection, _ = server.accept()
     state["connection"] = connection
     send(connection, {"type": "hello", "pid": os.getpid()})
-    first = {"type": "state", "filepath": "cube.blend", "dirty": scenario != "clean"}
+    # Blender reports the file it has open by its full path, as it was given.
+    opened = next(arg for arg in rest if arg.endswith(".blend"))
+    first = {"type": "state", "filepath": opened, "dirty": scenario != "clean"}
     if "--t3-recover" in t3:
         first["restore"] = "failed" if scenario == "restore-fails" else "ok"
+        if scenario == "restored-elsewhere":
+            # The copy brings back the path it was saved from, which isn't where it reopened.
+            first["filepath"] = "/elsewhere/cube.blend"
     send(connection, first)
+    if scenario == "opens-other" and "--t3-recover" not in t3:
+        # The person opens another file of the workspace from Blender's own File menu.
+        send(connection, dict(first, filepath=os.path.join(os.path.dirname(opened), "other.blend")))
     saves = 0
     view = {"position": [7, -7, 5], "target": [0, 0, 1]}
     outstanding = [0]
@@ -341,7 +349,7 @@ def control():
         if scenario == "saved-then-exit":
             # Saved, then a moment before Blender is gone; "clean" marks the moment.
             connection.sendall(b'{"type": "saved"}\n')
-            connection.sendall(b'{"type": "state", "filepath": "cube.blend", "dirty": false}\n')
+            send(connection, {"type": "state", "filepath": opened, "dirty": False})
             connection.close()
             threading.Timer(1.0, lambda: os._exit(0)).start()
             return
@@ -918,6 +926,41 @@ describe("Endings and recovery", () => {
       yield* service.reopen({ threadId, restore: false });
       yield* awaitDirty(true);
       expect(launches().at(-1)).not.toContain("--t3-recover");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("keeps the copy under the file Blender had open, and reopens that file", () =>
+    Effect.gen(function* () {
+      const { dir, service, awaitStatus, launches } = yield* standIn("opens-other", "opens-other");
+      NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitStatus("running");
+      yield* service.closeOnSettle({ threadId });
+      expect(yield* awaitStatus("closed")).toEqual({
+        status: "closed",
+        relativePath: "other.blend",
+        recovery: true,
+      });
+      yield* service.reopen({ threadId, restore: true });
+      yield* awaitStatus("running");
+      expect(launches().at(-1)).toContain(NodeFS.realpathSync(NodePath.join(dir, "other.blend")));
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("keeps a restored copy whose save target isn't the reopened file, unsaved", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, hostedDir } = yield* standIn(
+        "restored-elsewhere",
+        "restored-elsewhere",
+      );
+      yield* openReady;
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      const kept = recoveryOf(hostedDir)?.contents;
+      yield* service.reopen({ threadId, restore: true });
+      // Saving would write somewhere else, so it never reaches running: the copy stays.
+      expect(yield* awaitStatus("closed")).toMatchObject({ recovery: true, restoreFailed: true });
+      expect(recoveryOf(hostedDir)?.contents).toBe(kept);
     }).pipe(Effect.scoped),
   );
 
@@ -2912,6 +2955,16 @@ def control():
             if after == "otherFile":
                 # Someone opens another file through Blender's own UI.
                 state("/elsewhere/other.blend")
+        command = json.loads(line)
+        if kind == "quit" and command.get("save"):
+            # As Blender does: saved, then quitting, reading no more commands (T3's stop
+            # included) while it writes its quit copy and exits.
+            for reply in ({"type": "saving"}, {"type": "saved"}):
+                connection.sendall((json.dumps(reply) + "\n").encode())
+            import time
+            time.sleep(0.3)
+            event({"type": "exited", "process": "blender", "code": 0, "signal": None})
+            os._exit(0)
         if kind == "stopAgentListener" and after == "holdOnStop":
             # Quitting: its connection drops at once, but it is gone only once the test says.
             connection.shutdown(socket.SHUT_RDWR)
@@ -3057,6 +3110,36 @@ describe("Agent access at launch", () => {
         Stream.filter((state) => state.status === "closed"),
         Stream.runHead,
       );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("Save and quit of the agent's Blender ends while Blender quits without waiting", () =>
+    Effect.gen(function* () {
+      const { service } = yield* launch({ agentPort: 41234 });
+      expect((yield* service.agentListener(threadId))?.state).toBe("ready");
+      yield* service.quit({ threadId, save: true });
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "stopped"),
+        Stream.runHead,
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a shutdown ends the agent's access as revoked, though the connection drops first", () =>
+    Effect.gen(function* () {
+      const seen = yield* Deferred.make<string | null | undefined>();
+      // The shutdown's fast stop ends the held stand-in.
+      yield* Effect.gen(function* () {
+        const launched = yield* launch({ agentPort: 41234 }, undefined, "holdOnStop");
+        expect((yield* launched.service.agentListener(threadId))?.state).toBe("ready");
+        // Read once T3 has seen the connection drop and asked the helper to stop Blender.
+        yield* fileAppears(NodePath.dirname(launched.argsLog), `${launched.argsLog}.stopping`).pipe(
+          Effect.andThen(launched.service.agentListener(threadId, { wait: false })),
+          Effect.flatMap((report) => Deferred.succeed(seen, report?.ended)),
+          Effect.forkDetach,
+        );
+      }).pipe(Effect.scoped);
+      expect(yield* Deferred.await(seen)).toBe("revoked");
     }).pipe(Effect.scoped),
   );
 

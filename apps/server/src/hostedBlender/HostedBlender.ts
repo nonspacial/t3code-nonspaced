@@ -210,6 +210,8 @@ const RunFacts = Schema.fromJsonString(
     restore: Schema.Literals(["none", "pending", "ok", "failed"]),
     saved: Schema.Boolean,
     changed: Schema.Boolean,
+    /** The workspace file Blender has open, when the person opened another one there. */
+    relativePath: Schema.optional(TrimmedNonEmptyString),
   }),
 );
 const decodeRunFacts = Schema.decodeUnknownOption(RunFacts);
@@ -405,6 +407,8 @@ interface Instance {
   /** T3 lost its control connection: nothing can save through it any more. */
   controlLost: boolean;
   openFile: string | null | undefined;
+  /** The workspace's real path, which the open file is named under. */
+  readonly workspaceRoot: string;
   /**
    * Which viewer controls the mouse and keyboard. There is no agent side: the agent works
    * through its own MCP connection, so a viewer in control never pauses it.
@@ -604,6 +608,20 @@ const make = Effect.gen(function* () {
     return true;
   });
 
+  /**
+   * The file a Blender's session is of, under its workspace: the one Blender has open, which a
+   * person may have changed from its File menu. Its quit copy restores that file's path. One
+   * outside the workspace (or no file yet) leaves the file it was opened with.
+   */
+  const openRelativePath = (instance: Instance) => {
+    const open = instance.openFile;
+    if (typeof open !== "string" || open === instance.blendPath) return instance.relativePath;
+    const relative = path.relative(instance.workspaceRoot, open);
+    return relative === "" || relative.startsWith("..") || path.isAbsolute(relative)
+      ? instance.relativePath
+      : relative;
+  };
+
   /** Saved beside the launch as they change, so salvage can apply the same cleanup. */
   const writeRunFacts = (instance: Instance) =>
     instance.stateDir === null
@@ -615,6 +633,7 @@ const make = Effect.gen(function* () {
               restore: instance.restore,
               saved: instance.saved,
               changed: instance.changed,
+              relativePath: openRelativePath(instance),
             }),
           ),
         ).pipe(Effect.ignore);
@@ -717,15 +736,18 @@ const make = Effect.gen(function* () {
           fileSystem
             .readFileString(path.join(launchDir, name))
             .pipe(Effect.orElseSucceed(() => ""));
-        const facts = Option.getOrElse(decodeRunFacts(yield* read("run.json")), () => ({
-          restore: "none" as const,
-          saved: false,
-          changed: true,
-        }));
+        const facts: typeof RunFacts.Type = Option.getOrElse(
+          decodeRunFacts(yield* read("run.json")),
+          () => ({ restore: "none" as const, saved: false, changed: true }),
+        );
         // T3 was closing it, or it stopped with the server: a crash, for all T3 knows.
         const ending = (yield* read("outcome")) === "closing" ? "closed" : "crashed";
         yield* applyCleanup(
-          { threadId, relativePath, tmpDir: path.join(launchDir, "tmp") },
+          {
+            threadId,
+            relativePath: facts.relativePath ?? relativePath,
+            tmpDir: path.join(launchDir, "tmp"),
+          },
           cleanupOf({ ...facts, ending }),
         );
       }
@@ -1079,13 +1101,25 @@ const make = Effect.gen(function* () {
         return;
       case "state": {
         if (message.value.restore !== undefined) {
-          yield* updateRestore(instance, message.value.restore);
+          // Blender restores the path the copy was saved from; saving must not write elsewhere
+          // than the file it reopened (a workspace moved, say), so then the copy is kept unsaved.
+          const target = message.value.filepath;
+          const saves =
+            target === instance.blendPath ||
+            (target !== "" &&
+              (yield* fileSystem.realPath(target).pipe(Effect.orElseSucceed(() => ""))) ===
+                instance.blendPath);
+          yield* updateRestore(instance, message.value.restore === "ok" && saves ? "ok" : "failed");
         }
         if (message.value.dirty && !instance.ending && !instance.changed) {
           instance.changed = true;
           yield* writeRunFacts(instance);
         }
-        instance.openFile = message.value.filepath === "" ? null : message.value.filepath;
+        const openFile = message.value.filepath === "" ? null : message.value.filepath;
+        if (openFile !== instance.openFile) {
+          instance.openFile = openFile;
+          yield* writeRunFacts(instance);
+        }
         // Only the working copy T3 opened may reach the agent, so the file is checked before
         // any listener state is taken; the add-on closes it too.
         const listener = message.value.agentListener;
@@ -1257,7 +1291,7 @@ const make = Effect.gen(function* () {
           yield* applyCleanup(
             {
               threadId: instance.threadId,
-              relativePath: instance.relativePath,
+              relativePath: openRelativePath(instance),
               tmpDir: path.join(stateDir, "tmp"),
             },
             cleanupOf({
@@ -1549,6 +1583,7 @@ const make = Effect.gen(function* () {
       agentListenerGrantSent: false,
       controlLost: false,
       openFile: undefined,
+      workspaceRoot: real[0],
       session: new SessionControl(null),
       held: new HeldInput(),
       cursorCaptured: false,
@@ -1670,7 +1705,9 @@ const make = Effect.gen(function* () {
   /** Quits without saving, so Blender writes its quit copy, which the run keeps to reopen. */
   const end = Effect.fn("HostedBlender.end")(function* (instance: Instance, given: Deadline) {
     yield* Effect.annotateCurrentSpan({ threadId: instance.threadId, shutdown: given.shutdown });
-    // A Blender T3 is closing is no longer the agent's, whatever happens to the close.
+    // A Blender T3 is closing is no longer the agent's, whatever happens to the close. Marked
+    // first, so a connection dropping during the stop reads as this close, not a loss.
+    instance.closeRequested = true;
     yield* revokeAgentListener(instance);
     let deadline = given;
     // A Save and quit already under way decides first; only a failed one leaves work to keep.
