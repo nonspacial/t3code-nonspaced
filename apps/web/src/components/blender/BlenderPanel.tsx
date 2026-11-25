@@ -1031,6 +1031,8 @@ function BlenderStream(props: {
       client.send({ type: "takeControl", takeOver: false });
       containerRef.current?.focus();
     }
+    // A grant that stalls must not land as minutes of scrolling at once.
+    if (takeScrollsRef.current.length >= MAX_TAKE_SCROLLS) return;
     takeScrollsRef.current.push({
       scroll: wheelScroll(event),
       clientX: event.clientX,
@@ -1180,6 +1182,7 @@ function BlenderStream(props: {
 // The middle button (autoscroll, and on Linux pasting the primary selection on release) and the
 // thumb buttons (history) mean something to the browser everywhere on the pane, in control or not.
 const BROWSER_BUTTONS = new Set([1, 3, 4]);
+const MAX_TAKE_SCROLLS = 120;
 const MIDDLE_BIT = 4;
 const RIGHT_BIT = 2;
 const swallowBrowserButton = (event: ReactMouseEvent) => {
