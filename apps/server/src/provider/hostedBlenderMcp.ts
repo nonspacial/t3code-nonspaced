@@ -1,10 +1,10 @@
-import type { HostedBlenderMcpLaunch } from "@t3tools/provider-core/server/mcpSession";
+import type { McpProviderSessionConfig } from "@t3tools/provider-core/server/mcpSession";
 import type * as Schema from "effect/Schema";
 
 /**
- * Each thread's session gets the official Blender Lab MCP twice beside `t3-code`, the way
- * upstream attaches agentcast: `blender-hosted` for its working Blender and `blender-master` for
- * its master Blender. The user's own `blender` entry, for their desktop Blender, is never touched.
+ * The official Blender Lab MCP twice beside `t3-code`: `blender-hosted` for the thread's working
+ * Blender, `blender-master` for its master, both served by T3 (`HostedBlenderMcpProxy.ts`). The
+ * user's own `blender` entry, for their desktop Blender, is never touched.
  */
 export const BLENDER_HOSTED_MCP_SERVER = "blender-hosted";
 export const BLENDER_MASTER_MCP_SERVER = "blender-master";
@@ -49,30 +49,26 @@ const BLENDER_MCP_WRITE_TOOLS = [
 // Code and renders can take a while in a big scene.
 const CODEX_BLENDER_TOOL_TIMEOUT_SEC = 300;
 
-export interface HostedBlenderStdioServer {
+type BlenderSession = Pick<
+  McpProviderSessionConfig,
+  "endpoint" | "authorizationHeader" | "hostedBlender"
+>;
+
+export interface HostedBlenderHttpServer {
   readonly name: string;
-  readonly command: string;
-  readonly args: ReadonlyArray<string>;
-  readonly env: Readonly<Record<string, string>>;
+  readonly url: string;
+  readonly authorizationHeader: string;
 }
 
-export function hostedBlenderStdioServers(
-  launch: HostedBlenderMcpLaunch,
-): ReadonlyArray<HostedBlenderStdioServer> {
-  const server = (name: string, port: number): HostedBlenderStdioServer => ({
+/** The session's own credential picks the thread and its ports; the URL names only the role. */
+export function hostedBlenderHttpServers(
+  session: BlenderSession,
+): ReadonlyArray<HostedBlenderHttpServer> {
+  return [BLENDER_HOSTED_MCP_SERVER, BLENDER_MASTER_MCP_SERVER].map((name) => ({
     name,
-    command: launch.command,
-    args: [],
-    env: {
-      BLENDER_MCP_PORT: String(port),
-      BLENDER_PATH: launch.blenderPath,
-      TMPDIR: launch.tmpDir,
-    },
-  });
-  return [
-    server(BLENDER_HOSTED_MCP_SERVER, launch.hostedPort),
-    server(BLENDER_MASTER_MCP_SERVER, launch.masterPort),
-  ];
+    url: `${session.endpoint}/${name}`,
+    authorizationHeader: session.authorizationHeader,
+  }));
 }
 
 interface ModePolicy {
@@ -100,23 +96,24 @@ const accessFor = (policy: ModePolicy | undefined): BlenderToolAccess => {
 };
 
 export function claudeHostedBlenderOverrides(
-  launch: HostedBlenderMcpLaunch | undefined,
+  session: BlenderSession | undefined,
   policy: ModePolicy,
 ): {
   readonly mcpServers: Record<
     string,
     {
-      readonly type: "stdio";
-      readonly command: string;
-      readonly args: Array<string>;
-      readonly env: Record<string, string>;
+      readonly type: "http";
+      readonly url: string;
+      readonly headers: Record<string, string>;
     }
   >;
   readonly allowedTools: ReadonlyArray<string>;
   readonly disallowedTools: ReadonlyArray<string>;
 } {
-  if (launch === undefined) return { mcpServers: {}, allowedTools: [], disallowedTools: [] };
-  const servers = hostedBlenderStdioServers(launch);
+  if (session?.hostedBlender === undefined) {
+    return { mcpServers: {}, allowedTools: [], disallowedTools: [] };
+  }
+  const servers = hostedBlenderHttpServers(session);
   const access = accessFor(policy);
   const named = (tools: ReadonlyArray<string>) =>
     servers.flatMap((server) => tools.map((tool) => `mcp__${server.name}__${tool}`));
@@ -125,10 +122,9 @@ export function claudeHostedBlenderOverrides(
       servers.map((server) => [
         server.name,
         {
-          type: "stdio" as const,
-          command: server.command,
-          args: [...server.args],
-          env: { ...server.env },
+          type: "http" as const,
+          url: server.url,
+          headers: { Authorization: server.authorizationHeader },
         },
       ]),
     ),
@@ -156,18 +152,17 @@ const codexApprovals = (access: BlenderToolAccess): Record<string, Schema.Json> 
 };
 
 export function codexHostedBlenderConfig(
-  launch: HostedBlenderMcpLaunch | undefined,
+  session: BlenderSession | undefined,
   policy: ModePolicy | undefined,
 ): Record<string, Schema.Json> {
-  if (launch === undefined) return {};
+  if (session?.hostedBlender === undefined) return {};
   const approvals = codexApprovals(accessFor(policy));
   return Object.fromEntries(
-    hostedBlenderStdioServers(launch).map((server) => [
+    hostedBlenderHttpServers(session).map((server) => [
       `mcp_servers.${server.name}`,
       {
-        command: server.command,
-        args: [...server.args],
-        env: { ...server.env },
+        url: server.url,
+        http_headers: { Authorization: server.authorizationHeader },
         tool_timeout_sec: CODEX_BLENDER_TOOL_TIMEOUT_SEC,
         ...approvals,
       },
@@ -180,12 +175,12 @@ export function codexHostedBlenderConfig(
  * config only when it loads a thread, so a turn whose key differs must load the thread again.
  */
 export function codexHostedBlenderApprovalsKey(
-  launch: HostedBlenderMcpLaunch | undefined,
+  session: BlenderSession | undefined,
   policy: ModePolicy | undefined,
 ): string | undefined {
-  return launch === undefined
+  return session?.hostedBlender === undefined
     ? undefined
-    : JSON.stringify(codexHostedBlenderConfig(launch, policy));
+    : JSON.stringify(codexHostedBlenderConfig(session, policy));
 }
 
 const HOSTED_BLENDER_SERVERS: ReadonlySet<string> = new Set([

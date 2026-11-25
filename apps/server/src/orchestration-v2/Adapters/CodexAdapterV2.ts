@@ -1755,7 +1755,7 @@ function codexThreadRuntimeParams(input: {
               omit_tools_from: ["code_mode", "deferred"],
             },
           }),
-      ...codexHostedBlenderConfig(mcpSession?.hostedBlender, input.runtimePolicy),
+      ...codexHostedBlenderConfig(mcpSession, input.runtimePolicy),
     },
   };
 }
@@ -2404,7 +2404,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           mcpSession: McpProviderSession.McpProviderSessionConfig | undefined,
           runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy | undefined,
         ) => {
-          const key = codexHostedBlenderApprovalsKey(mcpSession?.hostedBlender, runtimePolicy);
+          const key = codexHostedBlenderApprovalsKey(mcpSession, runtimePolicy);
           if (key === undefined) blenderApprovalsByThread.delete(nativeThreadId);
           else blenderApprovalsByThread.set(nativeThreadId, key);
         };
@@ -8042,7 +8042,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             mcpSession: McpProviderSession.McpProviderSessionConfig | undefined,
             runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy | undefined,
           ) {
-            const wanted = codexHostedBlenderApprovalsKey(mcpSession?.hostedBlender, runtimePolicy);
+            const wanted = codexHostedBlenderApprovalsKey(mcpSession, runtimePolicy);
             if (blenderApprovalsByThread.get(nativeThreadId) === wanted) return false;
             if (!threadClosings.has(nativeThreadId)) {
               threadClosings.set(nativeThreadId, yield* Deferred.make<void>());

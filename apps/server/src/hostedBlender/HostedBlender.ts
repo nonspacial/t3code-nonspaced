@@ -550,8 +550,6 @@ interface Instance {
   desktopUnchecked: boolean;
   /** Answered when the add-on won't quit a master with unsaved changes. */
   quitRefused: { readonly id: number; readonly done: Deferred.Deferred<void> } | null;
-  /** A working copy's agent session, whose end ends its listener. */
-  agentSession: string | undefined;
   /** Answered when the add-on has dropped the quit T3 gave up on. */
   quitCancelled: { readonly id: number; readonly done: Deferred.Deferred<void> } | null;
   openFile: string | null | undefined;
@@ -1377,6 +1375,10 @@ const make = Effect.gen(function* () {
     instance.agentListener = state;
     // A master's agents are told it's ready only once their ports reach it.
     if (instance.role === "master") yield* syncForwards(instance);
+    // A master's agents lose it with their relays; a working copy's with its listener.
+    else if (state !== "ready" && Option.isSome(agents)) {
+      yield* agents.value.agentAccessEnded(instance.threadId, "working");
+    }
     if (state !== "starting") yield* Deferred.succeed(instance.agentListenerSettled, undefined);
   });
 
@@ -1405,6 +1407,7 @@ const make = Effect.gen(function* () {
           const listenPort = yield* agents.value.masterListenerPort(threadId);
           if (listenPort === null) continue;
           const scope = yield* Scope.make();
+          yield* Scope.addFinalizer(scope, agents.value.agentAccessEnded(threadId, "master"));
           const opened = yield* forwardLoopbackPort({
             listenPort,
             targetPort: instance.mcpPort,
@@ -1903,10 +1906,6 @@ const make = Effect.gen(function* () {
           : instance.agentWorkingCopy
             ? yield* agents.value.listenerPort(instance.threadId)
             : null;
-      if (agentPort !== null && instance.role === "working" && Option.isSome(agents)) {
-        instance.agentSession =
-          (yield* agents.value.currentSession(instance.threadId)) ?? undefined;
-      }
       if (agentPort === null) yield* setAgentListener(instance, "off");
       const mcpSnapshot =
         agentPort === null
@@ -2233,7 +2232,6 @@ const make = Effect.gen(function* () {
       desktopUnchecked: false,
       quitRefused: null,
       quitCancelled: null,
-      agentSession: undefined,
       openFile: undefined,
       openRealPath: input.blendPath,
       workspaceRoot: input.workspaceRoot,
@@ -2990,11 +2988,10 @@ const make = Effect.gen(function* () {
             [...instances.values()],
             (instance) => {
               if (revocation === null) return revokeAgentListener(instance);
-              if (instance.role === "working") {
-                return forThread(instance.threadId) && ended(instance.agentSession)
-                  ? revokeAgentListener(instance)
-                  : Effect.void;
-              }
+              // A working copy's grant lasts for its launch, as a master's does: the ended
+              // session loses its own Blender Lab server, and the thread's next session reaches
+              // the same Blender through a new one.
+              if (instance.role === "working") return Effect.void;
               // One thread's access to a shared master ends, its relay at once; others keep theirs.
               // A relay opened for the ended session closes even when a newer grant is recorded;
               // the sync then opens a fresh one for that grant.

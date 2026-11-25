@@ -247,6 +247,8 @@ describe("hosted Blender MCP tools", () => {
     Effect.gen(function* () {
       const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
       expect(status.structuredContent).toMatchObject({ blenders: [{ agentAccess: false }] });
+      // Nothing to do yet but wait.
+      expect(JSON.stringify(status.structuredContent)).not.toContain("agentAccessHelp");
     }).pipe(Effect.provide(layerFor({ state: running, listener: "starting" }))),
   );
 
@@ -297,6 +299,10 @@ describe("hosted Blender MCP tools", () => {
             file: "/home/user/acme/app/models/bracket-4.blend",
             agentAccess: false,
             agentAccessEnded: "otherFile",
+            // What blender_start would say, so an agent that only asks for status knows the way back.
+            agentAccessHelp: expect.stringContaining(
+              "call blender_quit with save: true, then blender_start",
+            ),
           },
         ],
       });
@@ -571,8 +577,18 @@ describe("hosted Blender MCP tools", () => {
       const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
       expect(status.structuredContent).toMatchObject({
         blenders: [
-          { role: "working", agentAccess: false, agentAccessRefused: "untestedBlenderLab" },
-          { role: "master", agentAccess: false, agentAccessRefused: "untestedBlenderLab" },
+          {
+            role: "working",
+            agentAccess: false,
+            agentAccessRefused: "untestedBlenderLab",
+            agentAccessHelp: expect.stringContaining("blender_start"),
+          },
+          {
+            role: "master",
+            agentAccess: false,
+            agentAccessRefused: "untestedBlenderLab",
+            agentAccessHelp: expect.stringContaining("blender_master_open again"),
+          },
         ],
       });
     }).pipe(

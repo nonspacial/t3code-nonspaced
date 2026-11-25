@@ -232,6 +232,26 @@ describe("HostedBlenderAgents.revocations", () => {
   );
 });
 
+describe("HostedBlenderAgents.routeEnds", () => {
+  it.effect("reports every way a thread's agent loses its Blenders, from subscribing on", () =>
+    Effect.gen(function* () {
+      const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
+      const ends = yield* agents.routeEnds;
+      const taken = yield* ends.pipe(Stream.take(3), Stream.runCollect, Effect.forkScoped);
+      yield* agents.sessionEnded(threadId, "provider-session-1");
+      yield* agents.agentAccessEnded(threadId, "master");
+      yield* (yield* ServerSettings.ServerSettingsService).updateSettings({
+        hostedBlenderAllowAgents: false,
+      });
+      assert.deepEqual(Array.from(yield* Fiber.join(taken)), [
+        { threadId, session: "provider-session-1" },
+        { threadId, role: "master" },
+        null,
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(layerFor({}))),
+  );
+});
+
 describe("HostedBlenderAgents.layerFollowSetup", () => {
   it.effect.each([
     { allowAgents: true, checks: ["check"] },

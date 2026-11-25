@@ -11,7 +11,11 @@ import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 
 import { openAgentMaster } from "../../../hostedBlender/agentMaster.ts";
-import { startAgentWorkingCopy } from "../../../hostedBlender/agentWorkingCopy.ts";
+import { untestedBlenderLabReason } from "../../../hostedBlender/agentGuard.ts";
+import {
+  startAgentWorkingCopy,
+  workingAccessHelp,
+} from "../../../hostedBlender/agentWorkingCopy.ts";
 import * as HostedBlender from "../../../hostedBlender/HostedBlender.ts";
 import * as HostedBlenderAgents from "../../../hostedBlender/HostedBlenderAgents.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -130,10 +134,26 @@ const workingStatus = Effect.fnUntraced(function* (threadId: ThreadId) {
       ...(listener?.state === "untested"
         ? { agentAccessRefused: "untestedBlenderLab" as const }
         : {}),
+      ...(listener?.state === "ready" || listener?.state === "starting"
+        ? {}
+        : { agentAccessHelp: workingAccessHelp(path.basename(state.relativePath), listener) }),
     },
     ...kept,
   ] as const;
 });
+
+/** A master this thread can't reach: a session joins it through `blender_master_open`. */
+const masterAccessHelp = (
+  name: string,
+  listener: HostedBlender.AgentListenerReport | null,
+): string =>
+  listener?.state === "untested"
+    ? untestedBlenderLabReason(
+        name,
+        listener.mcpVersion,
+        "Then ask the user to quit the master Blender from the Blender pane's Master view, and call blender_master_open again.",
+      )
+    : `Call blender_master_open with ${name} to reach the master Blender from this session. If that says your access ended, ask the user to quit the master Blender from the Blender pane's Master view, then call blender_master_open again.`;
 
 const handlers = {
   blender_start: McpToolAccess.actsAsCaller((input) =>
@@ -203,6 +223,11 @@ const handlers = {
             ...(listener?.state === "untested"
               ? { agentAccessRefused: "untestedBlenderLab" as const }
               : {}),
+            ...(listener?.state === "ready" || listener?.state === "starting"
+              ? {}
+              : {
+                  agentAccessHelp: masterAccessHelp(path.basename(master.relativePath), listener),
+                }),
           },
         ],
       } satisfies HostedBlenderToolStatusResult;

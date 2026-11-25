@@ -54,6 +54,7 @@ import * as ServerConfig from "../config.ts";
 import * as ServerHttp from "../http.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
+import * as HostedBlenderMcpProxy from "../hostedBlender/HostedBlenderMcpProxy.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
@@ -2244,3 +2245,133 @@ it.effect("lists optional tools to a deferring client only after tool_search loa
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
+
+it.effect("serves a thread's Blender servers to its own credential alone, over JSON or SSE", () => {
+  const layerAuth = Layer.mergeAll(EnvironmentAuth.layer, McpSessionRegistry.layer).pipe(
+    Layer.provideMerge(
+      Layer.mock(ServerEnvironment.ServerEnvironment)({
+        getEnvironmentId: Effect.succeed(environmentId),
+      }),
+    ),
+    Layer.provideMerge(Sqlite.layerMemory),
+    Layer.provide(ServerSecretStore.layer),
+    Layer.provide(ManagedPolicy.layerTest()),
+    Layer.provideMerge(ServerEnvironment.layerIdentity),
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-blender-route-test-" })),
+    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  );
+  const handled: Array<
+    Parameters<HostedBlenderMcpProxy.HostedBlenderMcpProxy["Service"]["handle"]>[0]
+  > = [];
+  const proxy = HostedBlenderMcpProxy.HostedBlenderMcpProxy.of({
+    handle: (input) =>
+      Effect.sync(() => {
+        handled.push(input);
+        const message = input.message as { readonly id?: number; readonly method: string };
+        if (message.id === undefined) return { _tag: "Accepted" } as const;
+        if (message.method !== "tools/call") {
+          return {
+            _tag: "Message",
+            message: JSON.stringify({ jsonrpc: "2.0", id: message.id, result: {} }),
+          } as const;
+        }
+        return {
+          _tag: "Stream",
+          messages: Stream.make(
+            JSON.stringify({ jsonrpc: "2.0", method: "notifications/progress", params: {} }),
+            JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [] } }),
+          ),
+        } as const;
+      }),
+  });
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const registry = yield* McpSessionRegistry.McpSessionRegistry;
+      const withBlender = yield* registry.issue({
+        threadId,
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        capabilities: new Set(["hosted-blender"]),
+      });
+      const without = yield* registry.issue({
+        threadId: ThreadId.make("thread-mcp-test-no-blender"),
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      });
+      yield* HttpRouter.serve(
+        McpHttpServer.layerHostedBlenderMcpRoutes.pipe(
+          Layer.provide(Layer.succeed(HostedBlenderMcpProxy.HostedBlenderMcpProxy, proxy)),
+          Layer.provide(ServerSettings.layerTest()),
+        ),
+        { disableListenLog: true, disableLogger: true },
+      ).pipe(Layer.build);
+      const httpClient = yield* HttpClient.HttpClient;
+      const post = (
+        path: string,
+        body: unknown,
+        headers: Record<string, string> = {
+          authorization: withBlender.config.authorizationHeader,
+          accept: "application/json, text/event-stream",
+        },
+      ) =>
+        httpClient.post(path, {
+          headers: { "mcp-protocol-version": "2025-06-18", ...headers },
+          body: HttpBody.text(JSON.stringify(body), "application/json"),
+        });
+      const call = { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "x" } };
+
+      expect((yield* post("/mcp/blender-hosted", call, {})).status).toBe(401);
+      expect(
+        (yield* post("/mcp/blender-hosted", call, {
+          authorization: without.config.authorizationHeader,
+        })).status,
+      ).toBe(403);
+      expect(
+        (yield* post("/mcp/blender-hosted", call, {
+          authorization: withBlender.config.authorizationHeader,
+          origin: "https://example.com",
+        })).status,
+      ).toBe(403);
+      expect(handled).toEqual([]);
+
+      const initialized = yield* post("/mcp/blender-master", {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-06-18", threadId: "another-thread" },
+      });
+      expect(initialized.status).toBe(200);
+      expect(yield* initialized.json).toEqual({ jsonrpc: "2.0", id: 1, result: {} });
+      // The credential, not the body, names the caller.
+      expect(handled[0]).toMatchObject({
+        caller: {
+          threadId,
+          providerSessionId: withBlender.config.providerSessionId,
+        },
+        role: "master",
+        protocolVersion: "2025-06-18",
+      });
+
+      const streamed = yield* post("/mcp/blender-hosted", call);
+      expect(streamed.headers["content-type"]).toContain("text/event-stream");
+      expect(yield* streamed.text).toBe(
+        `data: {"jsonrpc":"2.0","method":"notifications/progress","params":{}}\n\n` +
+          `data: {"jsonrpc":"2.0","id":2,"result":{"content":[]}}\n\n`,
+      );
+      expect(handled.at(-1)?.role).toBe("working");
+      const plain = yield* post("/mcp/blender-hosted", call, {
+        authorization: withBlender.config.authorizationHeader,
+        accept: "application/json",
+      });
+      expect(yield* plain.json).toEqual({ jsonrpc: "2.0", id: 2, result: { content: [] } });
+
+      const notified = yield* post("/mcp/blender-hosted", {
+        jsonrpc: "2.0",
+        method: "notifications/initialized",
+      });
+      expect(notified.status).toBe(202);
+      const got = yield* httpClient.get("/mcp/blender-hosted", {
+        headers: { authorization: withBlender.config.authorizationHeader },
+      });
+      expect(got.status).toBe(405);
+    }),
+  ).pipe(Effect.provide(layerAuth.pipe(Layer.provideMerge(NodeHttpServer.layerTest))));
+});

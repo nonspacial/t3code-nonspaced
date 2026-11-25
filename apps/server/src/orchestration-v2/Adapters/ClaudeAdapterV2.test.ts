@@ -833,17 +833,14 @@ describe("ClaudeAdapterV2 MCP query overrides", () => {
         runtimePolicy,
       });
 
-    it("adds blender-hosted and blender-master beside t3-code, leaving the user's blender alone", () => {
+    it("serves blender-hosted and blender-master beside t3-code, leaving the user's blender alone", () => {
       const servers = overridesFor(policyFor("full-access")).mcpServers ?? {};
       assert.deepEqual(Object.keys(servers), ["t3-code", "blender-hosted", "blender-master"]);
-      assert.deepInclude(servers["blender-master"], {
-        type: "stdio",
-        command: hostedBlender.command,
-        env: {
-          BLENDER_MCP_PORT: "41002",
-          BLENDER_PATH: "/usr/bin/blender",
-          TMPDIR: "/tmp/t3hb-mcp",
-        },
+      // Served by T3 beside t3-code, with the session's own credential; no process per session.
+      assert.deepEqual(servers["blender-master"], {
+        type: "http",
+        url: "http://127.0.0.1:43123/mcp/blender-master",
+        headers: { Authorization: "Bearer secret-claude-token" },
       });
       assert.deepEqual(
         Object.keys(

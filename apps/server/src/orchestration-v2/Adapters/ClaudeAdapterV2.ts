@@ -2903,7 +2903,7 @@ export function claudeMcpQueryOverrides(input: {
     ? CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS
     : [CLAUDE_T3_MCP_TOOL_WILDCARD];
   const blender = claudeHostedBlenderOverrides(
-    session.hostedBlender,
+    session,
     input.runtimePolicy ?? {
       runtimeMode: "approval-required",
       ...(input.readOnlySandbox ? { sandboxPolicy: { type: "readOnly" } } : {}),
