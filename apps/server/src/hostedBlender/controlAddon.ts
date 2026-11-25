@@ -329,7 +329,8 @@ def _handle(command):
         if command.get("id") in _State.cancelled_quits:
             return
         # Decided here, at the moment of quitting, with no dialog nobody could answer: T3's last
-        # word on unsaved changes may be stale.
+        # word on unsaved changes may be stale. A departed agent's pending deferred writes count.
+        _record_pending_deferred()
         if not _session_is_clean():
             _send({"type": "quitRefused", "id": command.get("id")})
             return

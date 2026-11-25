@@ -1131,6 +1131,17 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       },
     );
 
+    it("records pending deferred writes before deciding a quit, so the master is kept", () => {
+      // A departed agent's deferred part has written since the user saved, and still waits.
+      const result = runAddon({
+        ...granted,
+        call: { code: writesThenWaits, savedBetween: true },
+        sendAfterCall: ["quitIfClean"],
+      });
+      expect(result.calls.some((call: Array<unknown>) => call[0] === "quit_blender")).toBe(false);
+      expect(result.received).toContain("quitRefused");
+    });
+
     it("pushes nothing into another file opened while deferred work was pending", () => {
       const result = runAddon({
         ...granted,

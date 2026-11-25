@@ -814,14 +814,6 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  /** A master's grant is one per launch: once no agent thread is left, it ends in Blender too. */
-  const endUnusedMasterGrant = (instance: Instance) =>
-    instance.role === "master" &&
-    instance.agentListenerGrantSent &&
-    instance.agentThreads.size === 0
-      ? revokeAgentListener(instance)
-      : Effect.void;
-
   /** The agent session that asked for the thread's master is still the thread's. */
   const sessionCurrent = Effect.fnUntraced(function* (threadId: ThreadId) {
     const session = threadMasters.get(threadId)?.agentSession ?? null;
@@ -1914,7 +1906,6 @@ const make = Effect.gen(function* () {
               if (stale) instance.forwards.delete(revocation.threadId);
               return (stale ? Scope.close(relay.scope, Exit.void) : Effect.void).pipe(
                 Effect.andThen(syncForwards(instance)),
-                Effect.andThen(endUnusedMasterGrant(instance)),
               );
             },
             { discard: true },
@@ -2132,7 +2123,6 @@ const make = Effect.gen(function* () {
       threadMasters.delete(threadId);
     }
     yield* publishNow();
-    return outcome;
   });
 
   /** In the master's queue, finished even when the caller stops waiting. */
@@ -2150,15 +2140,11 @@ const make = Effect.gen(function* () {
         instance.agentThreads.delete(threadId);
         yield* syncForwards(instance);
         if (instance.masterThreads.size > 1) {
-          yield* endUnusedMasterGrant(instance);
           instance.masterThreads.delete(threadId);
           if (threadMasters.get(threadId) === known) threadMasters.delete(threadId);
           return yield* publishNow();
         }
-        // Asked first: a master that quits needs no stop, and one that stays keeps no grant.
-        if ((yield* decideQuit(instance, threadId)) !== "quit") {
-          yield* endUnusedMasterGrant(instance);
-        }
+        yield* decideQuit(instance, threadId);
       }),
     );
     // Takes its place in the queue now, as called, and finishes even if the caller goes.

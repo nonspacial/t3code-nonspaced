@@ -11,12 +11,14 @@ shuts down, or when the user or agent quits it. A master Blender is the one exce
 the threads that chose its master file and kept until the last of them leaves (and then only if
 it has nothing unsaved). Agent access is narrower still: it lasts only while T3 holds the control
 connection, Allow agents is on, and the launch file (the working copy, or the master) is still the
-open file; a working Blender also needs its thread's session alive, and a master at least one
-agent thread whose session asked for it. Once any of those ends, access stays ended until that
-Blender restarts ([`controlAddon.ts`](../../apps/server/src/hostedBlender/controlAddon.ts)). Do
-not add a path that grants access again in place; every such path was a way to hand the agent a
-file the user opened. A master's agents reach Blender Lab only through relays, one per agent
-thread and session, which T3 closes on its own when that thread's access ends.
+open file; a working Blender also needs its thread's session alive. Once any of those ends, access
+stays ended until that Blender restarts
+([`controlAddon.ts`](../../apps/server/src/hostedBlender/controlAddon.ts)). Do not add a path that
+grants access again in place; every such path was a way to hand the agent a file the user opened.
+A master's grant lasts for its launch, since later sessions and threads copy back into it too;
+its agents reach Blender Lab only through relays, one per agent thread and session, opened for a
+current session and closed when that session's access ends. With no agent thread, nothing listens
+for them.
 
 ## Agents use only the official Blender Lab MCP
 

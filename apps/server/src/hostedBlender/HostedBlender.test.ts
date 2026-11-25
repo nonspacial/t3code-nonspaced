@@ -2267,44 +2267,67 @@ describe("Master Blenders", () => {
       }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
   );
 
-  it.live("ends the master's grant once its last agent thread's access ends", () =>
-    Effect.gen(function* () {
-      const net = yield* NetService.NetService;
-      const ports = new Map([
-        [threadId, yield* net.reserveLoopbackPort()],
-        [otherThreadId, yield* net.reserveLoopbackPort()],
-      ]);
-      const revoked = yield* Queue.unbounded<HostedBlenderAgents.HostedBlenderRevocation | null>();
-      const host = yield* masterHost({
-        masterPorts: ports,
-        revocations: Stream.fromQueue(revoked),
-      });
-      const { service } = host;
-      for (const id of [threadId, otherThreadId]) {
+  it.live(
+    "keeps a master's grant for its launch, each agent session reaching it by its own relay",
+    () =>
+      Effect.gen(function* () {
+        const net = yield* NetService.NetService;
+        const ports = new Map([
+          [threadId, yield* net.reserveLoopbackPort()],
+          [otherThreadId, yield* net.reserveLoopbackPort()],
+        ]);
+        const sessions = new Map<ThreadId, string>();
+        const revoked =
+          yield* Queue.unbounded<HostedBlenderAgents.HostedBlenderRevocation | null>();
+        const host = yield* masterHost({
+          masterPorts: ports,
+          revocations: Stream.fromQueue(revoked),
+          sessions,
+        });
+        const { service } = host;
         yield* service.openMaster(
-          { threadId: id, relativePath: "cube.blend" },
+          { threadId, relativePath: "cube.blend" },
           { agentSession: "session-1" },
         );
-      }
-      for (const id of [threadId, otherThreadId]) {
-        expect((yield* service.agentListener(id, { role: "master" }))?.state).toBe("ready");
-      }
-      expect(yield* ping(ports.get(otherThreadId)!)).toBe("pong");
+        expect((yield* service.agentListener(threadId, { role: "master" }))?.state).toBe("ready");
+        expect(yield* ping(ports.get(threadId)!)).toBe("pong");
 
-      // One thread leaves: only its relay closes; Blender Lab keeps serving the other.
-      yield* Queue.offer(revoked, { threadId, session: undefined });
-      yield* service
-        .agentListener(threadId, { role: "master" })
-        .pipe(Effect.repeat({ until: (report) => report?.state === "off" }));
-      expect(yield* ping(ports.get(otherThreadId)!)).toBe("pong");
-      expect(host.controlLog()).not.toContain("stopAgentListener");
+        // The thread's only agent session ends: no agent thread is left, and no relay listens.
+        yield* Queue.offer(revoked, { threadId, session: "session-1" });
+        yield* service
+          .agentListener(threadId, { role: "master" })
+          .pipe(Effect.repeat({ until: (report) => report?.state === "off" }));
+        expect(yield* ping(ports.get(threadId)!)).toBe("ECONNREFUSED");
+        expect(yield* ping(ports.get(otherThreadId)!)).toBe("ECONNREFUSED");
 
-      // The last one leaves: nothing is left to serve, so the grant ends in Blender too.
-      const stopped = yield* watchMaster(service, otherThreadId);
-      yield* Queue.offer(revoked, { threadId: otherThreadId, session: undefined });
-      yield* stopped;
-      expect(host.controlLog()).toContain("stopAgentListener");
-    }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
+        // The same thread's next session reaches the running master through a fresh relay.
+        sessions.set(threadId, "session-2");
+        yield* service.openMaster(
+          { threadId, relativePath: "cube.blend" },
+          { agentSession: "session-2" },
+        );
+        expect((yield* service.agentListener(threadId, { role: "master" }))?.state).toBe("ready");
+        expect(yield* ping(ports.get(threadId)!)).toBe("pong");
+
+        // So does a second thread arriving after the first one's access ended.
+        yield* Queue.offer(revoked, { threadId, session: "session-2" });
+        yield* service
+          .agentListener(threadId, { role: "master" })
+          .pipe(Effect.repeat({ until: (report) => report?.state === "off" }));
+        yield* service.openMaster(
+          { threadId: otherThreadId, relativePath: "cube.blend" },
+          { agentSession: "session-1" },
+        );
+        expect((yield* service.agentListener(otherThreadId, { role: "master" }))?.state).toBe(
+          "ready",
+        );
+        expect(yield* ping(ports.get(otherThreadId)!)).toBe("pong");
+
+        // One grant for the launch, never ended by a thread leaving.
+        expect(host.controlLog().match(/grantAgentListener/g)).toHaveLength(1);
+        expect(host.controlLog()).not.toContain("stopAgentListener");
+        expect(host.launches()).toBe(1);
+      }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
   );
 
   // The relay checks its clients against the kernel's own tables, which only Linux has.
