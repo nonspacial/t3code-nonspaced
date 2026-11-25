@@ -991,6 +991,9 @@ const make = Effect.gen(function* () {
     yield* fileSystem.rename(partial, target);
   });
 
+  // Record writes and removals, one at a time, so a removal checked against one copy never
+  // takes another written meanwhile.
+  const recordLock = yield* Semaphore.make(1);
   const writeRecordFile = (record: RecoveryRecord) =>
     writeAtomically(
       path.join(copyDir(record.threadId, fileKeyOf(record.file)), "record.json"),
@@ -1010,8 +1013,10 @@ const make = Effect.gen(function* () {
    * A save retires the file's copy only once the scene holds that copy's work. A copy a reload
    * or a restore displaced never was in it, until it is restored and not reloaded since.
    */
-  const copyRetiredBySave = (instance: Instance, loadedAt: number | undefined) => {
-    const record = records.get(ownerOf(instance))?.get(fileKeyOf(instance.endFile.file));
+  const copyRetiredBySave = (instance: Instance, key: string, loadedAt: number | undefined) => {
+    // Saved under another name, the scene came from no copy of that file.
+    if (key !== fileKeyOf(instance.endFile.file)) return null;
+    const record = records.get(ownerOf(instance))?.get(key);
     if (record === undefined) return null;
     if (record.reloaded !== true) return record.keptAt;
     const contained = instance.contained;
@@ -1029,6 +1034,14 @@ const make = Effect.gen(function* () {
    * ended. No other file's copy is read or touched.
    */
   const keepCopy = Effect.fn("HostedBlender.keepCopy")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly endFile: EndFile;
+    readonly kind: RecoveryRecord["kind"];
+    readonly tmpDir: string;
+  }) {
+    yield* recordLock.withPermits(1)(keepSnapshot(input));
+  });
+  const keepSnapshot = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly endFile: EndFile;
     readonly kind: RecoveryRecord["kind"];
@@ -1060,6 +1073,10 @@ const make = Effect.gen(function* () {
     });
     const existing = records.get(input.threadId)?.get(key);
     if (snapshot === undefined && existing !== undefined) return;
+    // An autosave or quit copy never replaces work of the file captured after it, such as work
+    // staged before a reload.
+    const captured = files.find((entry) => entry.name === snapshot)?.mtimeMs ?? 0;
+    if (existing?.recovery === true && existing.keptAt > captured) return;
     yield* fileSystem.makeDirectory(copyDir(input.threadId, key), { recursive: true });
     if (snapshot === undefined) {
       yield* fileSystem.remove(sessionPath(input.threadId, key), { force: true });
@@ -1078,22 +1095,29 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /** With `keptAt`, only while the file's copy is still that very one. */
   const forgetCopy = Effect.fn("HostedBlender.forgetCopy")(function* (
     threadId: string,
     key: string,
+    keptAt?: number,
   ) {
-    failedRestores.delete(copyId(threadId, key));
-    const kept = records.get(threadId);
-    if (!kept?.delete(key)) return false;
-    if (kept.size === 0) records.delete(threadId);
-    yield* fileSystem
-      .remove(copyDir(threadId, key), { recursive: true, force: true })
-      .pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("couldn't remove a hosted Blender's recovery copy", { cause }),
-        ),
-      );
-    return true;
+    return yield* recordLock.withPermits(1)(
+      Effect.gen(function* () {
+        const kept = records.get(threadId);
+        if (keptAt !== undefined && kept?.get(key)?.keptAt !== keptAt) return false;
+        failedRestores.delete(copyId(threadId, key));
+        if (!kept?.delete(key)) return false;
+        if (kept.size === 0) records.delete(threadId);
+        yield* fileSystem
+          .remove(copyDir(threadId, key), { recursive: true, force: true })
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("couldn't remove a hosted Blender's recovery copy", { cause }),
+            ),
+          );
+        return true;
+      }),
+    );
   });
 
   /** Saved beside the launch as they change, so salvage can apply the same cleanup. */
@@ -1130,11 +1154,8 @@ const make = Effect.gen(function* () {
     const key = fileKeyOf(run.endFile.file);
     if (cleanup.action === "keep") {
       yield* keepCopy({ ...run, kind: cleanup.kind });
-    } else if (
-      cleanup.action === "forget" &&
-      (run.retires === "any" || records.get(run.threadId)?.get(key)?.keptAt === run.retires)
-    ) {
-      yield* forgetCopy(run.threadId, key);
+    } else if (cleanup.action === "forget" && run.retires !== null) {
+      yield* forgetCopy(run.threadId, key, run.retires === "any" ? undefined : run.retires);
     }
   });
 
@@ -1873,22 +1894,34 @@ const make = Effect.gen(function* () {
       file,
       kind: "closed",
       recovery: true,
-      keptAt: yield* Clock.currentTimeMillis,
+      // When Blender captured it, which an older autosave never replaces.
+      keptAt: Option.match(info.value.mtime, {
+        onNone: () => 0,
+        onSome: (date) => date.getTime(),
+      }),
       reloaded: true,
     };
+    return yield* recordLock.withPermits(1)(moveStaged(input.owner, key, record, from));
+  });
+  const moveStaged = Effect.fnUntraced(function* (
+    owner: ThreadId,
+    key: string,
+    record: RecoveryRecord,
+    from: string,
+  ) {
     // Record, move, then note, so a crash at any step leaves salvage what it needs to finish;
     // the copy is offered only once both are in place.
-    yield* fileSystem.makeDirectory(copyDir(input.owner, key), { recursive: true });
+    yield* fileSystem.makeDirectory(copyDir(owner, key), { recursive: true });
     yield* writeRecordFile(record);
     // On the same disk a rename, which costs nothing however large the file is.
     yield* fileSystem
-      .rename(from, sessionPath(input.owner, key))
+      .rename(from, sessionPath(owner, key))
       .pipe(
         Effect.catch(() =>
-          writeAtomically(sessionPath(input.owner, key), (to) => fileSystem.copyFile(from, to)),
+          writeAtomically(sessionPath(owner, key), (to) => fileSystem.copyFile(from, to)),
         ),
       );
-    failedRestores.delete(copyId(input.owner, key));
+    failedRestores.delete(copyId(owner, key));
     rememberRecord(record);
     yield* fileSystem.remove(from.replace(/\.blend$/, ".json"), { force: true });
     return key;
@@ -2024,20 +2057,23 @@ const make = Effect.gen(function* () {
       case "saved":
         // A save retires the copy whose work it held, judged against the load it was saved from
         // (a revert saved at once holds none); a restore that never succeeded held none.
+        // The file it names is the one saved, which a Save As makes another than the open one.
+        const savedKey = fileKeyOf(
+          instance.role === "master"
+            ? masterFileOf(message.value.filepath)
+            : keptFileOf(message.value.filepath, instance.workspaceRoot, path.relative),
+        );
         const retires =
           instance.restore === "pending" || instance.restore === "failed"
             ? null
-            : copyRetiredBySave(instance, message.value.loadedAt ?? instance.loadedAt);
+            : copyRetiredBySave(instance, savedKey, message.value.loadedAt ?? instance.loadedAt);
         if (message.value.quit === false) {
           yield* noteFile(instance, message.value.filepath, message.value.dirty, {
             saved: true,
             savedAt: yield* Clock.currentTimeMillis,
             retires,
           });
-          if (
-            retires !== null &&
-            (yield* forgetCopy(ownerOf(instance), fileKeyOf(instance.endFile.file)))
-          ) {
+          if (retires !== null && (yield* forgetCopy(ownerOf(instance), savedKey, retires))) {
             yield* publishNow();
           }
           return;

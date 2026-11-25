@@ -624,6 +624,8 @@ if _scenario.get("diskChanges") is not None:
             out.write("v" * (_writes[0] + 1))
     def _open_mainfile(filepath, **options):
         _addons.log("open_mainfile", filepath == _path, options.get("load_ui"))
+        if _scenario.get("loadFails"):
+            return {"CANCELLED"}
         _on_load_pre(filepath)
         bpy.data.is_dirty = False
         _on_load_post(filepath)
@@ -1042,6 +1044,8 @@ const runAddon = (input: {
   >;
   /** Another program writes the open file while Blender keeps its unsaved work. */
   readonly writtenDuringCopy?: boolean;
+  /** Blender can't load the file as it is on disk. */
+  readonly loadFails?: boolean;
 }) => {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-control-addon-"));
   dirs.push(dir);
@@ -1203,6 +1207,19 @@ describe("B13: a file changed on disk", () => {
       call: agentCall,
     });
     expect(names(gone)).toContain("agent code");
+  });
+
+  it("S3: asks T3 again when the file moved on from a revision that failed to load", () => {
+    const result = runAddon({
+      ...granted,
+      loadFails: true,
+      diskChanges: ["outsideChangeShown", "changeUnheard"],
+      call: agentCall,
+    });
+    expect(changes(result, 2)[0]!.blocked).toBe("loadFailed");
+    expect(names(result)).not.toContain("agent code");
+    expect(result.call.reply.message).toMatch(/still being written/);
+    expect(result.received).toContain("checkDisk");
   });
 
   it("S3: answers the agent with why, and runs nothing, while a stale scene can't reload", () => {

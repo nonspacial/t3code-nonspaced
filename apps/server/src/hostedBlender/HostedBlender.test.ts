@@ -432,6 +432,22 @@ def control():
                     send(connection, {"type": "saved", "filepath": opened, "dirty": False, "quit": False})
                     send(connection, {"type": "state", "filepath": opened, "dirty": False,
                                       "loadedAt": state["loadedAt"]})
+                named = os.path.join(folder, "save-as")
+                if os.path.exists(named):
+                    # Save As under another name, which Blender has open from then on.
+                    target = open(named).read()
+                    os.remove(named)
+                    send(connection, {"type": "saved", "filepath": target, "dirty": False, "quit": False})
+                    send(connection, {"type": "state", "filepath": target, "dirty": False})
+                if triggered("stage-quietly"):
+                    # Staged before a reload T3 never kept, beside an autosave from before it;
+                    # Blender then quits without a quit copy.
+                    autosave = os.path.join(tmp, "cube_4242_autosave.blend")
+                    open(autosave, "w").write("older autosave")
+                    os.utime(autosave, (time.time() - 5, time.time() - 5))
+                    open(os.path.join(tmp, "t3-reload-5.blend"), "w").write("staged work")
+                    open(os.path.join(tmp, "t3-reload-5.json"), "w").write(json.dumps({"filepath": opened}))
+                    open(os.path.join(folder, "staged-quietly"), "w").close()
                 if triggered("poke"):
                     # The agent called on a file written before T3's word: T3 is asked to look.
                     send(connection, {"type": "checkDisk"})
@@ -466,7 +482,16 @@ def control():
             loaded = time.time() * 1000
             result = {"outcome": "restored" if os.path.exists(command["path"]) else "failed",
                       "loadedAt": loaded}
+            if command.get("replace") and state.get("dirty"):
+                # What it replaces is staged to keep, as the add-on does.
+                open(os.path.join(tmp, "t3-reload-9.blend"), "w").write("displaced by the restore")
+                open(os.path.join(tmp, "t3-reload-9.json"), "w").write(json.dumps({"filepath": opened}))
+                result.update(copy="t3-reload-9.blend", filepath=opened)
             connection.sendall((json.dumps({"type": "reply", "id": command["id"], "result": result}) + "\n").encode())
+            state["loadedAt"] = loaded
+            if os.path.exists(os.path.join(os.path.dirname(os.environ["STANDIN_SAVES"]), "save-after-restore")):
+                # The person saves the restored scene at once, before T3 has kept what it replaced.
+                send(connection, {"type": "saved", "filepath": opened, "dirty": False, "quit": False})
             send(connection, {"type": "state", "filepath": opened, "dirty": True, "loadedAt": loaded})
             continue
         if command.get("type") == "quit" and command.get("save") and scenario == "reloads" and revision() != disk[0]:
@@ -497,7 +522,8 @@ def control():
             if scenario in ("slow-quit", "late-slow-quit"):
                 # Still writing its quit copy past T3's shutdown deadline.
                 time.sleep(5)
-            if scenario != "no-quit-copy":
+            quiet = os.path.join(os.path.dirname(os.environ["STANDIN_SAVES"]), "staged-quietly")
+            if scenario != "no-quit-copy" and not os.path.exists(quiet):
                 open(os.path.join(tmp, "quit.blend"), "w").write("quit copy %d" % os.getpid())
             event({"type": "exited", "process": "blender", "code": 0, "signal": None})
             connection.close()
@@ -3340,6 +3366,66 @@ describe("B13: a file changed on disk", () => {
         .reopen({ threadId, key: CUBE, restore: true })
         .pipe(Effect.flip);
       expect(second.reason).toBe("restoreFailed");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "S12: Save As retires neither the copy of the file it left nor that of its new name",
+    () =>
+      Effect.gen(function* () {
+        const host = yield* standIn("disk-save-as", "reloads");
+        const other = NodePath.join(host.dir, "other.blend");
+        NodeFS.writeFileSync(other, "");
+        // Each file left a copy of its unsaved work; the cube's is restored.
+        for (const relativePath of ["other.blend", "cube.blend"]) {
+          yield* host.service.open({ threadId, relativePath });
+          yield* host.awaitDirty(true);
+          yield* host.service.closeOnSettle({ threadId });
+          yield* host.awaitStatus("closed");
+        }
+        yield* host.service.reopen({ threadId, key: CUBE, restore: true });
+        yield* host.awaitDirty(true);
+        NodeFS.writeFileSync(NodePath.join(host.dir, "save-as"), NodeFS.realpathSync(other));
+        yield* host.service.threadState(threadId).pipe(
+          Stream.filter(
+            (state) =>
+              "openFile" in state &&
+              state.openFile?.kind === "workspace" &&
+              state.openFile.relativePath === "other.blend" &&
+              !state.dirty,
+          ),
+          Stream.runHead,
+        );
+        expect(recoveryOf(host.hostedDir, OTHER)?.record.recovery).toBe(true);
+        expect(recoveryOf(host.hostedDir, CUBE)?.record.recovery).toBe(true);
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("S12: a save right after a restore never takes the copy that restore displaced", () =>
+    Effect.gen(function* () {
+      const host = yield* reloadedWithCopy("disk-save-displaced");
+      // Restored, then edited, so the next restore displaces that work.
+      yield* host.service.reopen({ threadId, key: CUBE, restore: true });
+      yield* host.awaitDirty(true);
+      NodeFS.writeFileSync(NodePath.join(host.dir, "save-after-restore"), "");
+      yield* host.service.reopen({ threadId, key: CUBE, restore: true, replaceUnsaved: true });
+      yield* host.service.threadState(threadId).pipe(
+        Stream.filter((state) => "reloadKept" in state),
+        Stream.runHead,
+      );
+      expect(recoveryOf(host.hostedDir)?.contents).toBe("displaced by the restore");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("S15: a run's end keeps staged work over an autosave older than it", () =>
+    Effect.gen(function* () {
+      const host = yield* standIn("disk-end-autosave", "reloads");
+      yield* host.openReady;
+      NodeFS.writeFileSync(NodePath.join(host.dir, "stage-quietly"), "");
+      yield* fileAppears(host.dir, NodePath.join(host.dir, "staged-quietly"));
+      yield* host.service.closeOnSettle({ threadId });
+      yield* host.awaitStatus("closed");
+      expect(recoveryOf(host.hostedDir)?.contents).toBe("staged work");
     }).pipe(Effect.scoped),
   );
 
@@ -6681,6 +6767,42 @@ describe("Master Blenders' endings", () => {
         NodeFS.writeFileSync(NodePath.join(launchDir, "tmp", "t3-reload-1.blend"), "staged work");
         NodeFS.writeFileSync(
           NodePath.join(launchDir, "tmp", "t3-reload-1.json"),
+          JSON.stringify({ filepath: NodePath.join(NodeFS.realpathSync(dir), "cube.blend") }),
+        );
+        yield* firstState(yield* idleService(dir));
+        expect(recoveryOf(hostedDir)?.contents).toBe("staged work");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "S15: restart salvage keeps staged work over an autosave older than it, though newer than the load",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tempDir("salvage-staged-autosave");
+        const { hostedDir } = leftover(dir, {
+          facts: { restore: "none", saved: false, changed: true, retires: null },
+        });
+        const launchDir = NodePath.join(hostedDir, "launches", "left");
+        NodeFS.writeFileSync(
+          NodePath.join(launchDir, "launch.json"),
+          JSON.stringify({
+            threadId,
+            relativePath: "cube.blend",
+            role: "working",
+            workspaceRoot: NodeFS.realpathSync(dir),
+          }),
+        );
+        // No quit copy: Blender crashed. Its autosave predates the staged work.
+        const tmp = NodePath.join(launchDir, "tmp");
+        NodeFS.rmSync(NodePath.join(tmp, "quit.blend"), { force: true });
+        const now = NodeFS.statSync(launchDir).mtimeMs / 1000;
+        const autosave = NodePath.join(tmp, "cube_4242_autosave.blend");
+        NodeFS.writeFileSync(autosave, "older autosave");
+        NodeFS.utimesSync(autosave, now - 10, now - 10);
+        NodeFS.writeFileSync(NodePath.join(tmp, "t3-reload-1.blend"), "staged work");
+        NodeFS.utimesSync(NodePath.join(tmp, "t3-reload-1.blend"), now - 5, now - 5);
+        NodeFS.writeFileSync(
+          NodePath.join(tmp, "t3-reload-1.json"),
           JSON.stringify({ filepath: NodePath.join(NodeFS.realpathSync(dir), "cube.blend") }),
         );
         yield* firstState(yield* idleService(dir));

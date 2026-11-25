@@ -1127,14 +1127,16 @@ def _reload_if_stale():
     # current, "changing" while it is being written again, or what holds the reload.
     if _State.stale is None or not bpy.data.filepath:
         return None
+    # Moved on from the revision T3 named: what held that one no longer applies.
+    if _revision(bpy.data.filepath) != _State.stale:
+        _State.blocked = None
+        return "changing"
     if _State.stale == _State.reload_failed:
         _State.blocked = "loadFailed"
         return _State.blocked
     if any(record["writes"] for record in _Guard.deferred):
         _State.blocked = "agentWork"
         return _State.blocked
-    if _revision(bpy.data.filepath) != _State.stale:
-        return "changing"
     # Edited images and asset catalogs live outside the .blend, where no copy could keep them.
     if any(image.is_dirty for image in bpy.data.images):
         _State.blocked = "images"
