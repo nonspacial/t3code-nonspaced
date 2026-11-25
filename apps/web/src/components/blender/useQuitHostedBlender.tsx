@@ -34,11 +34,13 @@ export function useQuitHostedBlender(
   const quit = useAtomCommand(hostedBlenderEnvironment.quit, { reportFailure: false });
   const [confirming, setConfirming] = useState(false);
   const [quitting, setQuitting] = useState(false);
-  const quitBlender = async (save: boolean) => {
+  // `discard` only from the dialog's Quit without saving: a file believed clean may have
+  // changed since its last report, and the server then keeps what Blender says is unsaved.
+  const quitBlender = async (save: boolean, discard = false) => {
     setQuitting(true);
     const result = await quit({
       environmentId: threadRef.environmentId,
-      input: { threadId: threadRef.threadId, save, ...target },
+      input: { threadId: threadRef.threadId, save, ...(discard ? { discard } : {}), ...target },
     });
     setQuitting(false);
     setConfirming(false);
@@ -74,7 +76,7 @@ export function useQuitHostedBlender(
               variant="outline"
               size="sm"
               disabled={quitting}
-              onClick={() => void quitBlender(false)}
+              onClick={() => void quitBlender(false, true)}
             >
               <T>Quit without saving</T>
             </Button>

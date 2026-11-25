@@ -24,6 +24,18 @@ export interface BlenderInputOptions {
   readonly scrollPreference: () => HostedBlenderScrollPreference;
   /** Keys T3 keeps while in control, such as its focus shortcuts. */
   readonly passThrough: (event: KeyboardEvent) => boolean;
+  /**
+   * The middle or right press that took control, by its `PointerEvent.buttons` bit, which Blender
+   * gets where it was made: still held, so a drag goes on, or as a whole click if released.
+   */
+  readonly takePress?: TakePress;
+}
+
+export interface TakePress {
+  readonly bit: number;
+  readonly clientX: number;
+  readonly clientY: number;
+  readonly released: boolean;
 }
 
 export interface BlenderInput {
@@ -34,7 +46,6 @@ export interface BlenderInput {
   readonly dispose: () => void;
 }
 
-const MIDDLE_BUTTON = 1;
 // MouseEvent.button → its PointerEvent.buttons bit: primary, middle, secondary, back, forward.
 const BUTTON_FOR_INDEX = [1, 4, 2, 8, 16];
 // PointerEvent.buttons bits: primary, secondary, auxiliary (middle), back, forward.
@@ -126,15 +137,20 @@ export function attachBlenderInput(options: BlenderInputOptions): BlenderInput {
     }
   };
 
-  const onPointerMove = (event: PointerEvent) => {
+  const pointAt = (clientX: number, clientY: number) => {
     const { rect, x, y } = scale();
+    return {
+      x: Math.min(Math.max((clientX - rect.left) * x, 0), Math.max(canvas.width - 1, 0)),
+      y: Math.min(Math.max((clientY - rect.top) * y, 0), Math.max(canvas.height - 1, 0)),
+    };
+  };
+
+  const onPointerMove = (event: PointerEvent) => {
     if (captured) {
+      const { x, y } = scale();
       motion = { dx: motion.dx + event.movementX * x, dy: motion.dy + event.movementY * y };
     } else {
-      position = {
-        x: Math.min(Math.max((event.clientX - rect.left) * x, 0), Math.max(canvas.width - 1, 0)),
-        y: Math.min(Math.max((event.clientY - rect.top) * y, 0), Math.max(canvas.height - 1, 0)),
-      };
+      position = pointAt(event.clientX, event.clientY);
     }
     schedule();
     syncButtons(
@@ -144,6 +160,7 @@ export function attachBlenderInput(options: BlenderInputOptions): BlenderInput {
   };
 
   const onPointerDown = (event: PointerEvent) => {
+    swallowMenu = event.button === 2;
     onPointerMove(event);
     // Keeps a drag's moves coming once it leaves the pane.
     if (!captured && surface.hasPointerCapture?.(event.pointerId) === false) {
@@ -155,11 +172,15 @@ export function attachBlenderInput(options: BlenderInputOptions): BlenderInput {
 
   const onPointerCancel = () => syncButtons(0);
 
-  // Middle-click starts autoscroll on press and pastes the primary selection on click.
-  const suppressMiddle = (event: MouseEvent) => {
-    if (event.button === MIDDLE_BUTTON) event.preventDefault();
-  };
   const suppress = (event: Event) => event.preventDefault();
+  // A right drag that ends outside the pane opens the context menu where it ends on Windows.
+  let swallowMenu = false;
+  const onContextMenu = (event: Event) => {
+    if (!swallowMenu) return;
+    swallowMenu = false;
+    event.preventDefault();
+    event.stopPropagation();
+  };
 
   const onWheel = (event: WheelEvent) => {
     event.preventDefault();
@@ -214,9 +235,8 @@ export function attachBlenderInput(options: BlenderInputOptions): BlenderInput {
     [surface, "pointerdown", onPointerDown as EventListener],
     [surface, "pointerup", onPointerMove as EventListener],
     [surface, "pointercancel", onPointerCancel],
-    [surface, "mousedown", suppressMiddle as EventListener],
-    [surface, "auxclick", suppressMiddle as EventListener],
     [surface, "contextmenu", suppress],
+    [window, "contextmenu", onContextMenu, { capture: true }],
     [surface, "wheel", onWheel as EventListener, { passive: false }],
     [surface, "blur", releaseAll],
     [document, "pointerlockchange", onPointerLockChange],
@@ -224,6 +244,20 @@ export function attachBlenderInput(options: BlenderInputOptions): BlenderInput {
   ];
   for (const [target, type, listener, listenerOptions] of listeners) {
     target.addEventListener(type, listener, listenerOptions);
+  }
+
+  const take = options.takePress;
+  const takeButton = BUTTON_BITS.find(([bit]) => bit === take?.bit)?.[1];
+  if (take !== undefined && takeButton !== undefined) {
+    position = pointAt(take.clientX, take.clientY);
+    flush();
+    send({ type: "button", button: takeButton, pressed: true });
+    if (take.released) {
+      send({ type: "button", button: takeButton, pressed: false });
+    } else {
+      heldButtons.add(takeButton);
+      lastButtons = take.bit;
+    }
   }
 
   return {

@@ -7,10 +7,12 @@ declare module "vite-plus/test/browser" {
   interface BrowserCommands {
     /** Defined in vite.config.ts. Moves Playwright's mouse off the page. */
     resetPointer: () => Promise<void>;
-    /** Defined in vite.config.ts. Presses the primary button where the mouse is, without releasing. */
-    pointerDown: () => Promise<void>;
-    /** Defined in vite.config.ts. Releases the primary button. */
-    pointerUp: () => Promise<void>;
+    /** Defined in vite.config.ts. Presses a button (primary by default) where the mouse is, without releasing. */
+    pointerDown: (button?: "left" | "middle" | "right") => Promise<void>;
+    /** Defined in vite.config.ts. Releases a button, primary by default. */
+    pointerUp: (button?: "left" | "middle" | "right") => Promise<void>;
+    /** Defined in vite.config.ts. Moves the mouse to a point of the page, as real input. */
+    pointerMove: (x: number, y: number) => Promise<void>;
   }
 }
 

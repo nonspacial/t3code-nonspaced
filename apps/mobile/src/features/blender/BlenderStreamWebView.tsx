@@ -1,5 +1,12 @@
-import blenderStreamScript from "@t3tools/mobile-blender-stream";
-import { useEffectEvent, useImperativeHandle, useLayoutEffect, useRef, type Ref } from "react";
+import {
+  useEffect,
+  useEffectEvent,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type Ref,
+} from "react";
 import { useGT } from "gt-react-native";
 import { Platform } from "react-native";
 import { WebView } from "react-native-webview";
@@ -16,11 +23,7 @@ export interface BlenderStreamRef {
   readonly command: (command: BlenderStreamCommand) => void;
 }
 
-/** The thread's hosted Blender in a WebView, decoded with the shared H.264 stream player. */
-export function BlenderStreamWebView({
-  ref,
-  ...props
-}: {
+interface BlenderStreamWebViewProps {
   readonly ref?: Ref<BlenderStreamRef>;
   readonly access: BlenderStreamConfiguration["access"];
   readonly threadId: string;
@@ -28,7 +31,47 @@ export function BlenderStreamWebView({
   readonly onMessage: (message: BlenderStreamMessage) => void;
   /** The WebView's page died or never loaded; a new view recovers it. */
   readonly onFailed: () => void;
-}) {
+}
+
+// The stream player is about half a megabyte of JS, so it loads when a Blender screen first
+// opens rather than with the app.
+let loadedScript: string | null = null;
+let loadingScript: Promise<string> | null = null;
+const loadBlenderStreamScript = () =>
+  (loadingScript ??= import("@t3tools/mobile-blender-stream").then((module) => {
+    loadedScript = module.default;
+    return module.default;
+  }));
+
+/** The thread's hosted Blender in a WebView, decoded with the shared H.264 stream player. */
+export function BlenderStreamWebView(props: BlenderStreamWebViewProps) {
+  const [script, setScript] = useState(loadedScript);
+  const failed = useEffectEvent(() => props.onFailed());
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads the stream player's module, which isn't part of the app's startup
+  useEffect(() => {
+    if (script !== null) return;
+    let live = true;
+    loadBlenderStreamScript().then(
+      (loaded) => {
+        if (live) setScript(loaded);
+      },
+      () => {
+        loadingScript = null;
+        if (live) failed();
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [script]);
+  return script === null ? null : <BlenderStreamPage {...props} script={script} />;
+}
+
+function BlenderStreamPage({
+  ref,
+  script,
+  ...props
+}: BlenderStreamWebViewProps & { readonly script: string }) {
   const gt = useGT();
   const webView = useRef<WebView<object>>(null);
   const configuration = JSON.stringify({
@@ -63,7 +106,7 @@ export function BlenderStreamWebView({
   const source = {
     html: deviceStreamDocument(
       configuration,
-      blenderStreamScript,
+      script,
       gt("Blender viewer stopped unexpectedly."),
       "T3BlenderStream",
     ),

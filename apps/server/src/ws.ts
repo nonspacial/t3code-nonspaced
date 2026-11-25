@@ -3208,22 +3208,7 @@ export const layerWsRpc = (
                 Effect.forkScoped,
               ),
           ),
-        [WS_METHODS.assetsReadBlendPreview]: (input) =>
-          blendPreview.readAttachment(input).pipe(
-            Effect.mapError(
-              (cause) =>
-                new BlendPreviewError({
-                  relativePath: input.attachmentId,
-                  failure:
-                    cause._tag === "BlendAttachmentNotFoundError"
-                      ? "attachment_not_found"
-                      : cause.problem === "too_large"
-                        ? "blend_file_too_large"
-                        : "unreadable_blend_file",
-                  cause,
-                }),
-            ),
-          ),
+        [WS_METHODS.assetsReadBlendPreview]: (input) => blendPreview.readAttachment(input),
         [WS_METHODS.projectsWriteFile]: (input) =>
           workspaceFileSystem.writeFile(input).pipe(
             Effect.mapError(

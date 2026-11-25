@@ -13,16 +13,17 @@ export interface ControlConnection {
 export type SaveReply = "saving" | "saved" | "quitFailed";
 
 /**
- * Asks the add-on to save and quit. True only once it confirms the file is written. The add-on
- * answers `saving` before a save that can take as long as a big file needs, so only the write
- * and that first answer are timed; losing the connection or Blender at any point fails it.
+ * Asks the add-on to save and quit. True only once it confirms the file is written. Only the
+ * write is timed: once written, the command waits in Blender however long its main thread is
+ * busy, and Blender still saves and quits when it frees up, so only losing the connection or
+ * Blender, or the add-on's own failure, fails it.
  */
 export const requestSave = Effect.fn("HostedBlender.requestSave")(function* (input: {
   readonly connection: ControlConnection;
   readonly replies: Queue.Dequeue<SaveReply>;
   readonly ended: Effect.Effect<void>;
   readonly command: string;
-  readonly replyTimeout: Duration.Input;
+  readonly writeTimeout: Duration.Input;
 }) {
   const lost = Effect.raceFirst(Deferred.await(input.connection.closed), input.ended).pipe(
     Effect.as("lost" as const),
@@ -36,15 +37,14 @@ export const requestSave = Effect.fn("HostedBlender.requestSave")(function* (inp
     ),
   );
   // Closure only unblocks a stuck write; every reply is read through `next`, queue first.
-  const started = yield* input.connection.write(input.command).pipe(
-    Effect.as("written" as const),
-    Effect.raceFirst(lost),
-    Effect.filterOrElse(
-      (written) => written === "lost",
-      () => next,
-    ),
-    Effect.timeoutOption(input.replyTimeout),
-  );
-  if (Option.isNone(started) || started.value !== "saving") return false;
+  const written = yield* input.connection
+    .write(input.command)
+    .pipe(
+      Effect.as("written" as const),
+      Effect.raceFirst(lost),
+      Effect.timeoutOption(input.writeTimeout),
+    );
+  if (Option.isNone(written) || written.value === "lost") return false;
+  if ((yield* next) !== "saving") return false;
   return (yield* next) === "saved";
 });

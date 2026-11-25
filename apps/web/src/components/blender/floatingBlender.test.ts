@@ -90,6 +90,16 @@ describe("decideFloatingBlender", () => {
     );
   });
 
+  it("S5: remembers only the threads visited most recently", () => {
+    resetFloatingBlenderDecisionsForTests();
+    expect(decideFloatingBlender("thread-a", inThread)).toBe("float");
+    expect(decideFloatingBlender("thread-b", inThread)).toBe("float");
+    for (let index = 0; index < 63; index += 1) decideFloatingBlender(`other-${index}`, inThread);
+    // 64 threads are remembered: B's dismissal stays, A's, visited before it, is forgotten.
+    expect(decideFloatingBlender("thread-b", inThread)).toBe("none");
+    expect(decideFloatingBlender("thread-a", inThread)).toBe("float");
+  });
+
   it("decides nothing until the saved settings have loaded", () => {
     resetFloatingBlenderDecisionsForTests();
     expect(decideFloatingBlender("thread-a", { ...inThread, autoShowFloatingPreview: null })).toBe(

@@ -369,6 +369,26 @@ elif _then == "loadTime":
     _before = _snapshot().get("loadedAt")
     _on_load_post()
     _steps.append(dict(loadedBefore=_before, loadedAfter=type(_snapshot().get("loadedAt")).__name__))
+elif _then == "saveInBlender":
+    # Ctrl+S in the pane, then a copy saved elsewhere, which leaves the open file as it was.
+    _on_save_post(bpy.data.filepath)
+    bpy.data.is_dirty = True
+    _on_save_post("/work/hero-copy.blend")
+    _t3.setblocking(False)
+    _heard = b""
+    try:
+        while True:
+            _chunk = _t3.recv(65536)
+            if not _chunk:
+                break
+            _heard += _chunk
+    except BlockingIOError:
+        pass
+    _addons.log("heard", [
+        [message["type"], message.get("filepath"), message.get("dirty"), message.get("quit")]
+        for message in map(json.loads, _heard.decode().splitlines())
+        if message["type"] == "saved"
+    ])
 elif _then in ("saveAndQuit", "failedSaveAndQuit", "pendingSaveAndQuit", "quitWithoutSaving"):
     # Save and quit as T3 asks for it: Blender's own operators stood in for.
     import contextlib, types
@@ -381,6 +401,8 @@ elif _then in ("saveAndQuit", "failedSaveAndQuit", "pendingSaveAndQuit", "quitWi
     def _save_mainfile():
         if _then == "failedSaveAndQuit":
             raise RuntimeError("cannot write")
+        # As Blender does, with the path it saved.
+        _on_save_post(bpy.data.filepath)
         return {"FINISHED"}
     def _quit_blender():
         # What the agent's listener was when Blender began to quit, and what T3 had heard.
@@ -777,6 +799,7 @@ const runAddon = (input: {
     | "revert"
     | "replaceViewport"
     | "saveAndQuit"
+    | "saveInBlender"
     | "pendingSaveAndQuit"
     | "quitWithoutSaving"
     | "loadTime"
@@ -963,6 +986,16 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     expect(heardOf(pending)).toEqual([["saved", "/work/hero.wip-1a2b3c4d.blend", true]]);
     const plain = runAddon({ installed: [MCP], enabled: [MCP], listen: true, then: "saveAndQuit" });
     expect(heardOf(plain)).toEqual([["saved", "/work/hero.wip-1a2b3c4d.blend", false]]);
+  });
+
+  it("B3: tells T3 of a save made in Blender of the open file, never of a copy saved elsewhere", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      then: "saveInBlender",
+    });
+    expect(heardOf(result)).toEqual([["saved", "/work/hero.wip-1a2b3c4d.blend", false, false]]);
   });
 
   it("says which file it quits and whether it was unsaved, before its quit's own undo step", () => {

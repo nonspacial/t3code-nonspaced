@@ -65,6 +65,8 @@ class _State:
     cancelled_quits = set()
     # Seen with unsaved asset catalogs, until a save or an askable asset browser says otherwise.
     catalogs_unsaved = False
+    # Save and quit is saving: its own result answers T3, not save_post's.
+    quit_saving = False
 
 
 def _listen():
@@ -401,7 +403,12 @@ def _handle(command):
         else:
             # Answered before the save, which blocks Blender for as long as a big file takes.
             _send({"type": "saving"})
-            if not _save():
+            _State.quit_saving = True
+            try:
+                saved = _save()
+            finally:
+                _State.quit_saving = False
+            if not saved:
                 _send({"type": "quitFailed", "reason": "saveFailed"})
                 return
             # Saved, so Blender quits next: the agent's grant ends now, as T3's stop would
@@ -843,11 +850,22 @@ def _open_viewport_window():
 
 
 @persistent
-def _on_save_post(*_args):
+def _on_save_post(*args):
     _State.restored = False
     _check_authorized_file()
     # Saving the .blend saves its asset catalogs too.
     _State.catalogs_unsaved = False
+    # A save of the open file made in Blender (Ctrl+S, or code), which Blender stays open after,
+    # is a confirmed save that T3 forgets the file's older copy on. A copy saved elsewhere names
+    # another path than the open file's.
+    target = args[0] if args and isinstance(args[0], str) else ""
+    if target and target == bpy.data.filepath and not _State.quit_saving:
+        _send({
+            "type": "saved",
+            "filepath": bpy.data.filepath,
+            "dirty": bool(bpy.data.is_dirty),
+            "quit": False,
+        })
 
 
 @persistent

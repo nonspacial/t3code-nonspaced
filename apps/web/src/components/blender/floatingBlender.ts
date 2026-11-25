@@ -44,7 +44,9 @@ export function floatingBlenderAction(input: FloatingBlenderInput): {
 }
 
 // Per scoped thread, so a float the user closed stays closed while they visit other threads.
+// The threads visited most recently; one visited longer ago decides its turn afresh.
 const decidedTurns = new Map<string, string>();
+const REMEMBERED_THREADS = 64;
 
 /** `floatingBlenderAction` for `threadKey`, remembering which turn it last decided. */
 export function decideFloatingBlender(
@@ -55,7 +57,13 @@ export function decideFloatingBlender(
     ...input,
     decidedTurnId: decidedTurns.get(threadKey) ?? null,
   });
-  if (decidedTurnId !== null) decidedTurns.set(threadKey, decidedTurnId);
+  if (decidedTurnId !== null) {
+    decidedTurns.delete(threadKey);
+    decidedTurns.set(threadKey, decidedTurnId);
+    if (decidedTurns.size > REMEMBERED_THREADS) {
+      decidedTurns.delete(decidedTurns.keys().next().value!);
+    }
+  }
   return action;
 }
 

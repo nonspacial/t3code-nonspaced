@@ -6,7 +6,9 @@ import {
   type ModelPreviewFacts,
   type ModelSnapshot,
   type ModelViewer,
+  readResponseBytes,
 } from "@t3tools/client-runtime/model/preview-scene";
+import { MODEL_DECODER_FILES } from "@t3tools/client-runtime/model/decoders";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import type { AssetResource, EnvironmentId, ProjectId } from "@t3tools/contracts";
 import type { ModelPreviewFormat } from "@t3tools/shared/filePreview";
@@ -54,7 +56,7 @@ const SIZE_UNITS: Partial<Record<ModelPreviewFormat, string>> = {
   "3mf": "mm",
 };
 
-type FailureCode = ModelPreviewErrorCode | "context-lost" | "file-load-failed" | "model-too-large";
+type FailureCode = ModelPreviewErrorCode | "context-lost" | "file-load-failed";
 
 const FAILURE_MESSAGES = {
   "webgl-unavailable": msg(
@@ -85,7 +87,7 @@ type ModelView =
     };
 
 type ModelBytes =
-  | { readonly data: ArrayBuffer }
+  | { readonly data: ArrayBuffer; readonly companionBytes: number }
   | { readonly confirm: number | null }
   | { readonly tooLarge: true };
 
@@ -98,25 +100,13 @@ async function readModelBytes(
   if (!response.ok || !response.body) throw new Error(`Model request failed: ${response.status}`);
   const length = Number(response.headers.get("content-length")) || null;
   const limit = allowLarge ? MODEL_MAX_BYTES : MODEL_CONFIRM_BYTES;
-  if (length !== null && length > limit) {
-    await response.body.cancel();
-    return length > MODEL_MAX_BYTES ? { tooLarge: true } : { confirm: length };
+  const data = await readResponseBytes(response, limit);
+  if (data === null) {
+    if (allowLarge) return { tooLarge: true };
+    return length !== null && length > MODEL_MAX_BYTES ? { tooLarge: true } : { confirm: length };
   }
-  const reader = response.body.getReader();
-  const chunks: Uint8Array<ArrayBuffer>[] = [];
-  let size = 0;
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > limit) return allowLarge ? { tooLarge: true } : { confirm: null };
-      chunks.push(value);
-    }
-  } finally {
-    await reader.cancel();
-  }
-  return { data: await new Blob(chunks).arrayBuffer() };
+  // What the files it references may add before the same limit is reached.
+  return { data, companionBytes: limit - data.byteLength };
 }
 
 const failedContextLost: ModelView = { phase: "failed", code: "context-lost", missing: [] };
@@ -280,6 +270,8 @@ export function ModelFilePreview(props: {
         data: bytes.data,
         companions: modelPath === null ? null : { modelPath, workspaceRoot, mint: mintCompanion },
         signal: controller.signal,
+        maxBytes: bytes.companionBytes,
+        decoderFiles: MODEL_DECODER_FILES,
         blenderSource,
       });
       if (controller.signal.aborted) return;
@@ -288,6 +280,11 @@ export function ModelFilePreview(props: {
       setInScene({ viewer, view });
     })().catch((cause: unknown) => {
       if (controller.signal.aborted) return;
+      // Its buffers took it past the size that asks first.
+      if (!allowLarge && isModelPreviewError(cause) && cause.code === "model-too-large") {
+        setView({ phase: "confirm", bytes: null });
+        return;
+      }
       console.warn("3D preview could not load", cause);
       setView(failedView(cause));
     });

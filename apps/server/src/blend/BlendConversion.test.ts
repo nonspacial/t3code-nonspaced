@@ -389,6 +389,42 @@ describe("BlendConversion", () => {
   );
 
   it.effect(
+    "P7: never admits a GLB larger than the cache can hold, keeping every other entry",
+    () =>
+      Effect.gen(function* () {
+        const { root, fileSystem } = yield* workspace;
+        const conversion = yield* BlendConversion.BlendConversion;
+        const statuses: Array<BlendConversionStatus> = [];
+        for (const relativePath of ["bracket.blend", "assembly.blend"]) {
+          yield* conversion.convert({ cwd: root, relativePath }, (progress) =>
+            Effect.sync(() => void statuses.push(progress)),
+          );
+        }
+        const kept = statuses.flatMap((status) =>
+          status.status === "ready" ? [cacheFileNameOf(status.relativeUrl)] : [],
+        );
+        expect(kept).toHaveLength(1);
+        expect(statuses.at(-1)).toMatchObject({ status: "failed" });
+        // Only the bracket's entry, and no work folder left behind.
+        expect(yield* fileSystem.readDirectory(yield* cacheDirectory)).toEqual(kept);
+      }).pipe(
+        Effect.provide(
+          layerFor({
+            cacheMaxBytes: 25,
+            // The assembly converts to 30 bytes, over the 25 the cache holds.
+            run: (input) =>
+              Effect.gen(function* () {
+                const fileSystem = yield* FileSystem.FileSystem;
+                const large = input.args.some((arg) => arg.endsWith("assembly.blend"));
+                yield* fileSystem.writeFileString(input.args.at(-1)!, "x".repeat(large ? 30 : 10));
+                return output();
+              }).pipe(Effect.provide(NodeServices.layer), Effect.orDie),
+          }),
+        ),
+      ),
+  );
+
+  it.effect(
     "while watched, converts again when the file or a file it links changes, until it is closed",
     () => {
       const runs: Array<RunInput> = [];

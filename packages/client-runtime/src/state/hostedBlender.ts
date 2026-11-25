@@ -8,6 +8,23 @@ import {
   createEnvironmentRpcSubscriptionAtomFamily,
 } from "./runtime.ts";
 
+// Unwatched Blender state lets go at once, as a conversion's does: a thread opened and left
+// holds no stream.
+const STATE_IDLE_TTL_MS = 1_000;
+
+/**
+ * The thread a chat view watches for a hosted Blender: none where the environment hasn't
+ * switched Hosted Blender on, or before its settings are known, so nobody who never uses
+ * Blender pays for a stream per thread opened.
+ */
+export const chatHostedBlenderThread = <T>(
+  serverConfig:
+    | { readonly settings: { readonly hostedBlenderEnabled: boolean } }
+    | null
+    | undefined,
+  thread: T | null,
+): T | null => (serverConfig?.settings.hostedBlenderEnabled === true ? thread : null);
+
 export function createHostedBlenderEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {
@@ -26,6 +43,7 @@ export function createHostedBlenderEnvironmentAtoms<R, E>(
   return {
     threadState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:hosted-blender:thread-state",
+      idleTtlMs: STATE_IDLE_TTL_MS,
       tag: WS_METHODS.hostedBlenderSubscribeThread,
     }),
     open: createEnvironmentRpcCommand(runtime, {
@@ -54,10 +72,12 @@ export function createHostedBlenderEnvironmentAtoms<R, E>(
     }),
     runningBlenders: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:hosted-blender:running",
+      idleTtlMs: STATE_IDLE_TTL_MS,
       tag: WS_METHODS.hostedBlenderSubscribeRunning,
     }),
     masterState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:hosted-blender:master-state",
+      idleTtlMs: STATE_IDLE_TTL_MS,
       tag: WS_METHODS.hostedBlenderSubscribeMaster,
     }),
     openMaster: createEnvironmentRpcCommand(runtime, {

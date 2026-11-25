@@ -54,8 +54,8 @@ export class HostedBlenderAgents extends Context.Service<
     /**
      * For the thread's hosted Blender starting now: the port the official add-on listens on for
      * the thread's agent, or null to keep it off. It listens only while the thread's session
-     * holds the MCP and agents are allowed. Until T3's wrapper drops other OS users'
-     * connections, any local process could reach this port.
+     * holds the MCP and agents are allowed. T3's guard on the listener drops any connection from
+     * another OS user's process (see `agentGuard.ts`).
      */
     readonly listenerPort: (threadId: ThreadId) => Effect.Effect<number | null>;
     /**

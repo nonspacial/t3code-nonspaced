@@ -54,7 +54,7 @@ const pointer = (target: EventTarget, type: string, init: PointerEventInit) => {
   return event;
 };
 
-it("sends absolute positions in stream pixels and buttons as evdev, without autoscroll or paste", async () => {
+it("sends absolute positions in stream pixels and buttons as evdev", async () => {
   using stream = setup();
   const { canvas, sent } = stream;
   pointer(canvas, "pointermove", { clientX: 60, clientY: 45 });
@@ -62,18 +62,26 @@ it("sends absolute positions in stream pixels and buttons as evdev, without auto
   // Moves within a frame merge into the newest position.
   await vi.waitFor(() => expect(sent).toEqual([{ type: "pointer", x: 200, y: 100 }]));
 
-  const middle = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 1 });
   pointer(canvas, "pointerdown", { button: 1, buttons: 4, clientX: 110, clientY: 70 });
-  canvas.dispatchEvent(middle);
-  const auxclick = new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1 });
-  canvas.dispatchEvent(auxclick);
   pointer(canvas, "pointerup", { button: 1, buttons: 0, clientX: 110, clientY: 70 });
-  expect(middle.defaultPrevented).toBe(true);
-  expect(auxclick.defaultPrevented).toBe(true);
   expect(sent.slice(1)).toEqual([
     { type: "button", button: 274, pressed: true },
     { type: "button", button: 274, pressed: false },
   ]);
+});
+
+it("B6: opens no context menu where a right drag from the pane ends", () => {
+  using stream = setup();
+  pointer(stream.canvas, "pointerdown", { button: 2, buttons: 2, clientX: 20, clientY: 30 });
+  pointer(document.body, "pointerup", { button: 2, buttons: 0, clientX: 500, clientY: 500 });
+  // As Windows does, on the release, wherever it is.
+  const menu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 });
+  document.body.dispatchEvent(menu);
+  expect(menu.defaultPrevented).toBe(true);
+  // Only that one: a later right click elsewhere in T3 has its menu.
+  const later = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 });
+  document.body.dispatchEvent(later);
+  expect(later.defaultPrevented).toBe(false);
 });
 
 it("sends physical keys once each, with the keymap first, and leaves T3's focus keys alone", () => {
