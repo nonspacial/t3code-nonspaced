@@ -315,9 +315,9 @@ const answered = (answer: BlenderMcpAnswer | undefined) =>
     : undefined;
 
 /**
- * Every version initialized and named, with tools an MCP client can list (each named, with an
- * object input schema): what agents can use. Checked, never changed, so replies stay the
- * server's own bytes. Anything else, freshly read or kept on disk, is a server that didn't answer.
+ * Every version initialized, with a named and versioned server and tools an MCP client can
+ * list (each named, with an object input schema): what agents can use. Checked, never changed,
+ * so replies stay the server's own bytes. Anything else, fresh or kept, didn't answer.
  */
 export const usableCapture = (capture: BlenderMcpCapture) =>
   [...CAPTURED_PROTOCOL_VERSIONS, "*"].every((version) => {
@@ -327,6 +327,7 @@ export const usableCapture = (capture: BlenderMcpCapture) =>
       typeof initialized?.protocolVersion === "string" &&
       Predicate.isReadonlyObject(initialized.serverInfo) &&
       typeof initialized.serverInfo.name === "string" &&
+      typeof initialized.serverInfo.version === "string" &&
       Predicate.isReadonlyObject(initialized.capabilities) &&
       Array.isArray(tools) &&
       tools.length > 0 &&
@@ -335,7 +336,7 @@ export const usableCapture = (capture: BlenderMcpCapture) =>
           Predicate.isReadonlyObject(tool) &&
           typeof tool.name === "string" &&
           Predicate.isReadonlyObject(tool.inputSchema) &&
-          !Array.isArray(tool.inputSchema),
+          tool.inputSchema.type === "object",
       )
     );
   });

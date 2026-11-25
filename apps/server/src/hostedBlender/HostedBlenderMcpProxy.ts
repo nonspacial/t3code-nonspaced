@@ -465,12 +465,13 @@ const make = Effect.gen(function* () {
     readonly role: HostedBlenderAgents.HostedBlenderRole;
     readonly tool: unknown;
     readonly protocolVersion: string;
+    readonly request: Request;
   }) {
     const key = `${input.caller.providerSessionId}\0${input.role}`;
-    const endsKnown = (refusal: Refusal) => {
-      const known = children.get(key);
-      return refusal.endsChild && known !== undefined ? stop(known, refusal.reason) : Effect.void;
-    };
+    // Only the server this call saw before its slow reads: one started since is another's.
+    const observed = children.get(key);
+    const endsKnown = (refusal: Refusal) =>
+      refusal.endsChild && observed !== undefined ? stop(observed, refusal.reason) : Effect.void;
     const build = yield* prepare(input.caller, input.tool).pipe(Effect.tapError(endsKnown));
     return yield* lock.withPermits(1)(
       Effect.gen(function* () {
@@ -479,6 +480,8 @@ const make = Effect.gen(function* () {
         );
         const known = children.get(key);
         if (known !== undefined && serves(known, admitted)) return known;
+        // Cancelled while it was admitted: no server is started for it.
+        if (input.request.cancelled) return yield* refuse("cancelled", false);
         if (known !== undefined) {
           yield* stop(known, known.grant === admitted.grant ? BUILD_CHANGED : ACCESS_ENDED);
         }
@@ -513,7 +516,6 @@ const make = Effect.gen(function* () {
   ) =>
     Stream.unwrap(
       Effect.gen(function* () {
-        yield* Effect.addFinalizer(() => Effect.sync(() => forget(request)));
         if (request.cancelled) return Stream.empty;
         if (child.stopped !== null) return Stream.make(errorMessage(id, child.stopped));
         const childId = child.nextId++;
@@ -662,19 +664,25 @@ const make = Effect.gen(function* () {
       return { _tag: "Message", message: errorMessage(id, "Method not found", -32601) } as const;
     }
     const tool = Predicate.isReadonlyObject(message.params) ? message.params.name : undefined;
-    const request: Request = { key: requestKey(caller, role, id), cancelled: false };
-    requests.set(request.key, request);
-    const child = yield* childFor({ caller, role, tool, protocolVersion: version }).pipe(
-      Effect.result,
+    // Registered on arrival and removed with the response, however it ends, disconnects included.
+    const messages = Stream.unwrap(
+      Effect.gen(function* () {
+        const request: Request = { key: requestKey(caller, role, id), cancelled: false };
+        requests.set(request.key, request);
+        yield* Effect.addFinalizer(() => Effect.sync(() => forget(request)));
+        const child = yield* childFor({
+          caller,
+          role,
+          tool,
+          protocolVersion: version,
+          request,
+        }).pipe(Effect.result);
+        if (request.cancelled) return Stream.empty;
+        if (child._tag === "Failure") return Stream.make(errorMessage(id, child.failure.reason));
+        return forward(child.success, caller, message, id, tool, request);
+      }),
     );
-    if (child._tag === "Failure") {
-      forget(request);
-      return { _tag: "Message", message: errorMessage(id, child.failure.reason) } as const;
-    }
-    return {
-      _tag: "Stream",
-      messages: forward(child.success, caller, message, id, tool, request),
-    } as const;
+    return { _tag: "Stream", messages } as const;
   });
 
   const routeEnds = yield* agents.routeEnds;
