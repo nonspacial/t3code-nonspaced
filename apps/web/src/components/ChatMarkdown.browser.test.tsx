@@ -111,10 +111,13 @@ vi.mock(import("../state/hostedBlender"), async (original) => ({
   setHostedBlenderView: hostedBlender.setView as never,
 }));
 const threadWorktrees = vi.hoisted(() => new Map<string, string>());
+// A link to a hosted Blender's file asks for its state only where Hosted Blender is on.
+const hostedBlenderSetting = vi.hoisted(() => ({ enabled: false }));
 vi.mock(import("../state/entities"), async (original) => {
   const actual = await original();
   return {
     ...actual,
+    readEnvironmentHostedBlenderEnabled: () => hostedBlenderSetting.enabled,
     readThreadShell: ((ref: { threadId: string }) => {
       const worktreePath = threadWorktrees.get(ref.threadId);
       return worktreePath === undefined ? actual.readThreadShell(ref as never) : { worktreePath };
@@ -200,6 +203,7 @@ function setup() {
   appearance.value = "light";
   parsedSources.length = 0;
   settingsOverrides.mathRenderingEnabled = false;
+  hostedBlenderSetting.enabled = false;
   nativeFileDrag.enabled = false;
   renderDiagram.mockReset();
   threadWorktrees.clear();
@@ -703,6 +707,7 @@ describe("ChatMarkdown 3D view links", () => {
 
   it("moves the hosted Blender's viewport window to a view link on its open file", async () => {
     setup();
+    hostedBlenderSetting.enabled = true;
     threadWorktrees.set(threadRef.threadId, "/repo");
     hostedBlender.state = { status: "running", relativePath: "bracket-5.blend", dirty: false };
     hostedBlender.setView.mockClear();
