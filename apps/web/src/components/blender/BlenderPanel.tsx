@@ -102,7 +102,13 @@ import { HiddenThreadContext } from "../chat/backgroundThread";
 import { useBlenderAnnotation } from "./BlenderAnnotationEditor";
 import { BlenderRoleSwitch, DesktopUncheckedNotice, MasterCard } from "./BlenderMaster";
 import { useBlenderRoleStore } from "./blenderRole";
-import { attachBlenderInput, type BlenderInput, type TakePress } from "./blenderInput";
+import {
+  attachBlenderInput,
+  type BlenderInput,
+  type TakePress,
+  type TakeScroll,
+  wheelScroll,
+} from "./blenderInput";
 import { useKeptCopySelection } from "./keptCopies";
 import { fileName, useQuitHostedBlender } from "./useQuitHostedBlender";
 
@@ -910,6 +916,8 @@ function BlenderStream(props: {
   const takingRef = useRef(false);
   // The middle or right press that took control: Blender gets it once control arrives.
   const takePressRef = useRef<TakePress | null>(null);
+  // The scrolls made while control was being taken, all delivered once it arrives.
+  const takeScrollsRef = useRef<TakeScroll[]>([]);
   // Settings and Usage keep the thread mounted under them while the window stays visible.
   const hiddenThread = use(HiddenThreadContext);
   const onScreen = useEffectEvent(() => document.visibilityState === "visible" && !hiddenThread);
@@ -926,7 +934,10 @@ function BlenderStream(props: {
     controllerRef.current = next.controller;
     takingRef.current = false;
     // A take that didn't land leaves no press for a later grant.
-    if (next.controller !== "you") takePressRef.current = null;
+    if (next.controller !== "you") {
+      takePressRef.current = null;
+      takeScrollsRef.current = [];
+    }
     // A grant that lands after the user moved on in T3 would leave an unfocused pane holding
     // the keyboard; give it straight back. Leaving the window altogether keeps it.
     const boundary = boundaryRef.current;
@@ -964,6 +975,7 @@ function BlenderStream(props: {
     handleRef.current = {
       takeControl: (takeOver) => {
         takePressRef.current = null;
+        takeScrollsRef.current = [];
         takingRef.current = true;
         client.send({ type: "takeControl", takeOver });
         container.focus();
@@ -1005,6 +1017,36 @@ function BlenderStream(props: {
     clientRef.current?.setVisible(document.visibilityState === "visible" && !hiddenThread);
   }, [hiddenThread]);
 
+  const onViewportWheel = useEffectEvent((event: WheelEvent) => {
+    // Over the stream, a scroll is Blender's or nobody's, never T3's scroll containers'.
+    event.preventDefault();
+    // In control, the input has its own listener.
+    if (inputRef.current !== null || paused) return;
+    const client = clientRef.current;
+    if (!canOperate || client === null) return;
+    if (!inControl && !takingRef.current) {
+      if (control.controller !== "unclaimed") return;
+      // Like a middle press, a scroll takes control and reaches Blender once it arrives.
+      takingRef.current = true;
+      client.send({ type: "takeControl", takeOver: false });
+      containerRef.current?.focus();
+    }
+    takeScrollsRef.current.push({
+      scroll: wheelScroll(event),
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+  });
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- React's wheel listener is passive, so it can't keep the page from scrolling
+  useEffect(() => {
+    const container = containerRef.current;
+    if (container === null) return;
+    const onWheel = (event: WheelEvent) => onViewportWheel(event);
+    container.addEventListener("wheel", onWheel, { passive: false });
+    return () => container.removeEventListener("wheel", onWheel);
+  }, []);
+
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- while in control, the pane owns the DOM's pointer lock, the keyboard and the desktop app's menu shortcuts
   useEffect(() => {
     const container = containerRef.current;
@@ -1019,8 +1061,10 @@ function BlenderStream(props: {
       scrollPreference: () => readSetting(SCROLLING_KEY, ScrollingSetting, "auto"),
       passThrough: leavesBlender,
       ...(takePressRef.current === null ? {} : { takePress: takePressRef.current }),
+      takeScrolls: takeScrollsRef.current,
     });
     takePressRef.current = null;
+    takeScrollsRef.current = [];
     input.setCaptured(capturedRef.current);
     inputRef.current = input;
     void window.desktopBridge?.setMenuShortcutsIgnored?.(true).catch(() => undefined);
@@ -1055,6 +1099,7 @@ function BlenderStream(props: {
         )
           return;
         takingRef.current = false;
+        takeScrollsRef.current = [];
         clientRef.current?.send({ type: "releaseControl" });
       }}
     >
