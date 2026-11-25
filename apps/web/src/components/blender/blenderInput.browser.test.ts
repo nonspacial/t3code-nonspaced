@@ -3,10 +3,13 @@ import { expect, it, vi } from "vite-plus/test";
 
 import { installKeyboardCapture } from "~/lib/keyboardCapture";
 
-import { attachBlenderInput } from "./blenderInput";
+import { attachBlenderInput, type TakeScroll } from "./blenderInput";
 
 /** A 200×100 CSS-pixel stream of 400×200 stream pixels, in control. */
-const setup = (keymap = { layout: "us", variant: "" }) => {
+const setup = (
+  keymap = { layout: "us", variant: "" },
+  takeScrolls: ReadonlyArray<TakeScroll> = [],
+) => {
   const cleanups = [installKeyboardCapture()];
   const surface = document.body.appendChild(document.createElement("div"));
   surface.tabIndex = 0;
@@ -29,6 +32,7 @@ const setup = (keymap = { layout: "us", variant: "" }) => {
     keymap: () => keymap,
     scrollPreference: () => "auto",
     passThrough: (event) => event.code === "F6" && !event.shiftKey,
+    takeScrolls,
   });
   cleanups.push(
     () => input.dispose(),
@@ -157,6 +161,22 @@ it("sends a mouse wheel as notches", () => {
   expect(wheel.defaultPrevented).toBe(true);
   expect(sent).toEqual([
     { type: "scroll", axis: "vertical", source: "wheel", value: 15, steps: 1 },
+  ]);
+});
+
+it("B15: sends the scrolls that took control in order, each where it was made", () => {
+  const notch = { deltaMode: 0, deltaX: 0, deltaY: 100, wheelDeltaY: -120 };
+  using stream = setup(undefined, [
+    { scroll: notch, clientX: 60, clientY: 45 },
+    { scroll: notch, clientX: 60, clientY: 45 },
+    { scroll: { ...notch, deltaY: -100, wheelDeltaY: 120 }, clientX: 110, clientY: 70 },
+  ]);
+  expect(stream.sent).toEqual([
+    { type: "pointer", x: 100, y: 50 },
+    { type: "scroll", axis: "vertical", source: "wheel", value: 15, steps: 1 },
+    { type: "scroll", axis: "vertical", source: "wheel", value: 15, steps: 1 },
+    { type: "pointer", x: 200, y: 100 },
+    { type: "scroll", axis: "vertical", source: "wheel", value: -15, steps: -1 },
   ]);
 });
 
