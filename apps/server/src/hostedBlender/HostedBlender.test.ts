@@ -439,6 +439,8 @@ def control():
                     os.remove(named)
                     send(connection, {"type": "saved", "filepath": target, "dirty": False, "quit": False})
                     send(connection, {"type": "state", "filepath": target, "dirty": False})
+                if triggered("edit"):
+                    send(connection, {"type": "state", "filepath": opened, "dirty": True})
                 if triggered("stage-quietly"):
                     # Staged before a reload T3 never kept, beside an autosave from before it;
                     # Blender then quits without a quit copy.
@@ -3427,6 +3429,47 @@ describe("B13: a file changed on disk", () => {
       yield* host.awaitStatus("closed");
       expect(recoveryOf(host.hostedDir)?.contents).toBe("staged work");
     }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "S16: an older staged copy left by a failed record write never replaces a later reload's",
+    () =>
+      Effect.gen(function* () {
+        const { dir, service, openReady, hostedDir, awaitStatus } = yield* standIn(
+          "disk-older-staged",
+          "reloads",
+        );
+        const disk = diskOf(dir);
+        yield* openReady;
+        yield* disk.awaitAsked(1);
+        // The first reload's record can't be written, so its work stays staged for later.
+        const copyDir = NodePath.join(
+          hostedDir,
+          "recovery",
+          Buffer.from(threadId).toString("base64url"),
+          NodeCrypto.createHash("sha256").update(CUBE).digest("hex"),
+        );
+        NodeFS.mkdirSync(NodePath.join(copyDir, "record.json", "in-the-way"), { recursive: true });
+        yield* attach(service, false);
+        disk.change("changed once");
+        yield* disk.awaitReloads(1);
+        yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status === "running" && !state.dirty),
+          Stream.runHead,
+        );
+        NodeFS.rmSync(NodePath.join(copyDir, "record.json"), { recursive: true });
+        // Edited again, and a second reload keeps that newer work.
+        NodeFS.writeFileSync(NodePath.join(dir, "edit"), "");
+        yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status === "running" && state.dirty),
+          Stream.runHead,
+        );
+        disk.change("changed twice");
+        yield* reloadKept(service.threadState(threadId));
+        yield* service.closeOnSettle({ threadId });
+        yield* awaitStatus("closed");
+        expect(recoveryOf(hostedDir)?.contents).toBe("unsaved 2");
+      }).pipe(Effect.scoped),
   );
 
   it.live("S11: refuses a second restore while one is under way on the same Blender", () =>

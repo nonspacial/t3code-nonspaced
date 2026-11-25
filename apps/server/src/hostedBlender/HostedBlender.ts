@@ -1909,6 +1909,13 @@ const make = Effect.gen(function* () {
     record: RecoveryRecord,
     from: string,
   ) {
+    // Work captured after this, such as a later reload's, supersedes it.
+    const existing = records.get(owner)?.get(key);
+    if (existing?.recovery === true && existing.keptAt > record.keptAt) {
+      yield* fileSystem.remove(from, { force: true });
+      yield* fileSystem.remove(from.replace(/\.blend$/, ".json"), { force: true });
+      return null;
+    }
     // Record, move, then note, so a crash at any step leaves salvage what it needs to finish;
     // the copy is offered only once both are in place.
     yield* fileSystem.makeDirectory(copyDir(owner, key), { recursive: true });
@@ -3199,13 +3206,17 @@ const make = Effect.gen(function* () {
         yield* Deferred.await(instance.ended);
       }
       yield* afterSalvage;
-      records.delete(threadId);
       failedStarts.delete(threadId);
-      yield* fileSystem.remove(recoveryDir(threadId), { recursive: true, force: true }).pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("couldn't remove a deleted thread's hosted Blender copies", {
-            cause,
-          }),
+      yield* recordLock.withPermits(1)(
+        Effect.suspend(() => {
+          records.delete(threadId);
+          return fileSystem.remove(recoveryDir(threadId), { recursive: true, force: true });
+        }).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("couldn't remove a deleted thread's hosted Blender copies", {
+              cause,
+            }),
+          ),
         ),
       );
       yield* publishNow();
