@@ -24,6 +24,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactElement,
   type ReactNode,
+  type Ref,
 } from "react";
 
 import { Button } from "~/components/ui/button";
@@ -138,6 +139,8 @@ export function ModelAnnotationEditor(props: {
   const gt = useGT();
   const m = useMessages();
   const rootRef = useRef<HTMLDivElement>(null);
+  const undoRef = useRef<HTMLButtonElement>(null);
+  const redoRef = useRef<HTMLButtonElement>(null);
   const surfaceRef = useRef<SVGSVGElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [imageUrl] = useState(() => props.image.toDataURL("image/png"));
@@ -161,24 +164,32 @@ export function ModelAnnotationEditor(props: {
   const canRedo = history.at < history.lists.length - 1;
   const mac = isMacPlatform(navigator.platform);
 
+  // A focused Undo or Redo that disables itself drops focus out of the editor, and the
+  // history keys with it, so focus moves to the editor first.
+  const updateHistory = (step: (current: MarkHistory) => MarkHistory) => {
+    const next = step(history);
+    const focused = document.activeElement;
+    if (
+      (focused === undoRef.current && next.at === 0) ||
+      (focused === redoRef.current && next.at === next.lists.length - 1)
+    )
+      rootRef.current?.focus();
+    setHistory(step);
+  };
   const change = (next: (current: ReadonlyArray<Mark>) => ReadonlyArray<Mark>) =>
-    setHistory(({ lists, at }) => {
+    updateHistory(({ lists, at }) => {
       const current = lists[at] ?? [];
       const changed = next(current);
       return changed === current
         ? { lists, at }
         : { lists: [...lists.slice(0, at + 1), changed], at: at + 1 };
     });
-  const undo = () => setHistory((current) => ({ ...current, at: Math.max(0, current.at - 1) }));
+  const undo = () => updateHistory((current) => ({ ...current, at: Math.max(0, current.at - 1) }));
   const redo = () =>
-    setHistory((current) => ({
+    updateHistory((current) => ({
       ...current,
       at: Math.min(current.lists.length - 1, current.at + 1),
     }));
-  // A button that disables itself drops focus out of the editor, and its keys with it.
-  const keepFocus = (runsOut: boolean) => {
-    if (runsOut) rootRef.current?.focus();
-  };
 
   const markColor = () => {
     const chosen = MARK_COLORS.find((color) => color.id === colorId)?.value;
@@ -187,10 +198,13 @@ export function ModelAnnotationEditor(props: {
     );
   };
 
-  const pointAt = (event: ReactPointerEvent): PreviewAnnotationPoint | null => {
+  /** Where the pointer is on the snapshot; off it, null unless `clamp` brings it to the edge. */
+  const pointAt = (event: ReactPointerEvent, clamp = true): PreviewAnnotationPoint | null => {
     const matrix = surfaceRef.current?.getScreenCTM()?.inverse();
     if (!matrix) return null;
     const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix);
+    const inside = point.x >= 0 && point.x <= width && point.y >= 0 && point.y <= height;
+    if (!inside && !clamp) return null;
     return {
       x: Math.min(width, Math.max(0, point.x)),
       y: Math.min(height, Math.max(0, point.y)),
@@ -199,7 +213,7 @@ export function ModelAnnotationEditor(props: {
 
   const onPointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
     if (event.button !== 0) return;
-    const point = pointAt(event);
+    const point = pointAt(event, false);
     if (!point) return;
     event.preventDefault();
     if (tool === "erase") {
@@ -473,22 +487,18 @@ export function ModelAnnotationEditor(props: {
             <EditorAction
               label={gt("Undo")}
               tooltip={gt("Undo ({keys})", { keys: undoKeys })}
+              ref={undoRef}
               disabled={!canUndo}
-              onPress={() => {
-                keepFocus(history.at <= 1);
-                undo();
-              }}
+              onPress={undo}
             >
               <Undo2Icon className="size-3.5" />
             </EditorAction>
             <EditorAction
               label={gt("Redo")}
               tooltip={gt("Redo ({keys})", { keys: redoKeys })}
+              ref={redoRef}
               disabled={!canRedo}
-              onPress={() => {
-                keepFocus(history.at >= history.lists.length - 2);
-                redo();
-              }}
+              onPress={redo}
             >
               <Redo2Icon className="size-3.5" />
             </EditorAction>
@@ -529,7 +539,11 @@ function WithTooltip(props: {
   );
 }
 
-function EditorAction(props: {
+function EditorAction({
+  ref,
+  ...props
+}: {
+  readonly ref?: Ref<HTMLButtonElement>;
   readonly label: string;
   readonly tooltip?: string;
   readonly disabled?: boolean;
@@ -541,6 +555,7 @@ function EditorAction(props: {
       <TooltipTrigger
         render={
           <Button
+            ref={ref}
             aria-label={props.label}
             size="icon-xs"
             variant="ghost"

@@ -272,6 +272,47 @@ it("keeps marks inside the snapshot when the pane letterboxes it", async () => {
   // The line's round end reaches past the snapshot's edge, where the screenshot cuts it off.
   expect(document.elementFromPoint(box.left + 100 + 399, box.top + 150)).toBe(paths(screen)[0]);
   expect(document.elementFromPoint(box.left + 100 + 401, box.top + 150)).not.toBe(paths(screen)[0]);
+
+  // A press in the margin is not on the snapshot: it neither erases the edge mark nor draws.
+  surface.dispatchEvent(new PointerEvent("pointerdown", at(480, 150)));
+  surface.dispatchEvent(new PointerEvent("pointermove", at(480, 250)));
+  surface.dispatchEvent(new PointerEvent("pointerup", at(480, 250)));
+  await pickTool(screen, "Erase a mark");
+  surface.dispatchEvent(new PointerEvent("pointerdown", at(480, 150)));
+  surface.dispatchEvent(new PointerEvent("pointerup", at(480, 150)));
+  expect(paths(screen)).toHaveLength(1);
+  surface.dispatchEvent(new PointerEvent("pointerdown", at(398, 150)));
+  surface.dispatchEvent(new PointerEvent("pointerup", at(398, 150)));
+  await vi.waitFor(() => expect(paths(screen)).toHaveLength(0));
+});
+
+it("keeps the history keys in the editor when the focused Undo or Redo button runs out", async () => {
+  const { element, container } = setup();
+  await using screen = await render(element, { container });
+  const surface = surfaceOf(screen);
+  const marks = () => paths(screen).length;
+  await pickTool(screen, "Line");
+  drag(surface, [
+    [40, 40],
+    [160, 70],
+  ]);
+  await vi.waitFor(() => expect(marks()).toBe(1));
+  const undo = screen.getByRole("button", { name: "Undo", exact: true }).element() as HTMLElement;
+  const redo = screen.getByRole("button", { name: "Redo", exact: true }).element() as HTMLElement;
+
+  undo.focus();
+  await userEvent.keyboard(`{${MOD}>}z{/${MOD}}`);
+  expect(marks()).toBe(0);
+  await userEvent.keyboard(`{${MOD}>}{Shift>}z{/Shift}{/${MOD}}`);
+  expect(marks()).toBe(1);
+
+  await userEvent.keyboard(`{${MOD}>}z{/${MOD}}`);
+  expect(marks()).toBe(0);
+  redo.focus();
+  await userEvent.keyboard(`{${MOD}>}{Shift>}z{/Shift}{/${MOD}}`);
+  expect(marks()).toBe(1);
+  await userEvent.keyboard(`{${MOD}>}z{/${MOD}}`);
+  expect(marks()).toBe(0);
 });
 
 it("draws new marks in the picked color and fill; earlier marks keep theirs", async () => {
