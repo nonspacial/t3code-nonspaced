@@ -1,6 +1,7 @@
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type {
   HostedBlenderKeptCopy,
+  HostedBlenderMasterState,
   HostedBlenderThreadState,
   ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -18,7 +19,7 @@ export const useKeptCopySelection = create<{
 
 /** The kept copy of a workspace file, if the thread's Blender left one for it. */
 export const keptCopyOf = (
-  state: HostedBlenderThreadState | null,
+  state: HostedBlenderThreadState | HostedBlenderMasterState | null,
   relativePath: string,
 ): HostedBlenderKeptCopy | undefined =>
   state !== null && "copies" in state
@@ -30,7 +31,7 @@ export const keptCopyOf = (
 /** Shows that file's card first, when the thread keeps a copy of it. */
 export const showKeptCopy = (
   threadRef: ScopedThreadRef,
-  state: HostedBlenderThreadState | null,
+  state: HostedBlenderThreadState | HostedBlenderMasterState | null,
   relativePath: string,
 ): boolean => {
   const copy = keptCopyOf(state, relativePath);

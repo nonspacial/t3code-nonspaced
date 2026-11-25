@@ -61,6 +61,10 @@ class _State:
     # The file just loaded (at launch, opened, reverted or recovered) may bring viewport windows
     # back, to be replaced.
     replace_loaded = True
+    # Quit requests T3 gave up on; one still waiting here is never carried out.
+    cancelled_quits = set()
+    # Seen with unsaved asset catalogs, until a save or an askable asset browser says otherwise.
+    catalogs_unsaved = False
 
 
 def _listen():
@@ -322,6 +326,10 @@ def _hits(command):
 
 
 def _set_view(command):
+    # The link names the file it was made for; Blender may have another open by now.
+    current = os.path.realpath(bpy.data.filepath) if bpy.data.filepath else ""
+    if current != command.get("filepath"):
+        return "otherFile"
     found = _viewport()
     if found is None:
         return None
@@ -359,6 +367,26 @@ def _handle(command):
     if kind == "grantAgentListener":
         _grant_agent_listener()
         return
+    if kind == "cancelQuit":
+        _State.cancelled_quits.add(command.get("id"))
+        _send({"type": "quitCancelled", "id": command.get("id")})
+        return
+    if kind == "quitIfClean":
+        if command.get("id") in _State.cancelled_quits:
+            return
+        # Decided here, at the moment of quitting, with no dialog nobody could answer: T3's last
+        # word on unsaved changes may be stale. Pending agent work that can write keeps it open,
+        # whether or not its undo step manages to mark the file unsaved.
+        pending_writes = any(record["writes"] for record in _Guard.deferred)
+        _record_pending_deferred()
+        if pending_writes or not _session_is_clean():
+            _send({"type": "quitRefused", "id": command.get("id")})
+            return
+        # The same last word as any quit: what its end keeps is judged by the same facts.
+        _send({"type": "quitting", "filepath": bpy.data.filepath, "dirty": bool(bpy.data.is_dirty)})
+        with bpy.context.temp_override(window=_main_window()):
+            bpy.ops.wm.quit_blender()
+        return
     if kind == "quit":
         if not command.get("save"):
             # T3 waits on this rather than stopping a Blender still writing its quit copy. It
@@ -392,9 +420,64 @@ def _handle(command):
             bpy.ops.wm.quit_blender()
 
 
+# Libraries whose catalogs can't be edited, so an asset browser on one can't tell.
+READ_ONLY_LIBRARIES = {"ALL", "ESSENTIALS"}
+
+
+def _catalog_state():
+    # Blender's own quit check also covers asset catalogs, which Python can read only through
+    # catalogs_save's poll, in an asset browser on an editable library. True or False from one
+    # that can be asked; "unknown" when browsers exist but none can be; "none" without any.
+    unknown = False
+    for screen in bpy.data.screens:
+        for area in screen.areas:
+            for space in area.spaces:
+                if space.type != "FILE_BROWSER" or getattr(space, "browse_mode", "") != "ASSETS":
+                    continue
+                window = next(
+                    (window for window in bpy.context.window_manager.windows if window.screen == screen),
+                    None,
+                )
+                params = getattr(space, "params", None)
+                library = getattr(params, "asset_library_reference", None)
+                if window is None or space != area.spaces.active or library in READ_ONLY_LIBRARIES or library is None:
+                    unknown = True
+                    continue
+                with bpy.context.temp_override(window=window, area=area, space_data=space):
+                    return bool(bpy.ops.asset.catalogs_save.poll())
+    return "unknown" if unknown else "none"
+
+
+def _watch_catalogs():
+    # Asked every tick, so an edit is remembered after its asset browser is gone or switched.
+    # One-way: only a save clears it, since an unavailable or read-only library also polls False.
+    try:
+        state = _catalog_state()
+    except Exception:  # noqa: BLE001 - a failed look leaves the last answer standing
+        return
+    if state is True:
+        _State.catalogs_unsaved = True
+
+
+def _session_is_clean():
+    # The .blend, edited images and asset catalogs, as Blender's quit checks; unknown is unclean.
+    try:
+        if bpy.data.is_dirty or any(image.is_dirty for image in bpy.data.images):
+            return False
+        _watch_catalogs()
+        if _State.catalogs_unsaved:
+            return False
+        # Seen clean, or never edited: no browser to ask. One that can't be asked can't tell.
+        return _catalog_state() != "unknown"
+    except Exception as error:  # noqa: BLE001 - can't tell is not clean
+        print("T3 control add-on: could not check for unsaved catalogs:", error, file=sys.stderr)
+        return False
+
+
 def _tick():
     if _State.server is None:
         return None
+    _watch_catalogs()
     try:
         connection, _address = _State.server.accept()
         if _same_user(connection):
@@ -452,14 +535,18 @@ def _pump_control():
     except OSError:
         _drop_client()
         return
-    # A stop already waiting wins over a grant queued before it.
+    # A stop already waiting wins over a grant queued before it, and a cancel over its quit.
+    stopped = False
     for queued in _State.buffer.split(b"\n")[:-1]:
         try:
-            if json.loads(queued).get("type") == "stopAgentListener":
-                _end_grant()
-                break
+            waiting = json.loads(queued)
         except ValueError:
-            pass
+            continue
+        if waiting.get("type") == "cancelQuit":
+            _State.cancelled_quits.add(waiting.get("id"))
+        if waiting.get("type") == "stopAgentListener" and not stopped:
+            stopped = True
+            _end_grant()
 
 
 def _publish_state():
@@ -759,6 +846,8 @@ def _open_viewport_window():
 def _on_save_post(*_args):
     _State.restored = False
     _check_authorized_file()
+    # Saving the .blend saves its asset catalogs too.
+    _State.catalogs_unsaved = False
 
 
 @persistent

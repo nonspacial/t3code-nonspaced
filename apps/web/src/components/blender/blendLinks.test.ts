@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import { selectThreadRightPanelState, useRightPanelStore } from "~/rightPanelStore";
 import { hostedBlenderOpensLink, openBlendLink } from "./blendLinks";
+import { blenderRoleFor } from "./blenderRole";
 
 const running = { status: "running", relativePath: "models/hero.blend", dirty: false } as const;
 
@@ -58,6 +59,7 @@ describe("openBlendLink", () => {
       workspaceRoot: "/work",
       openFile,
       readState: async () => running,
+      readMasterState: async () => null,
     });
     expect(surfaces(threadRef)).toContain("blender");
     expect(openFile).not.toHaveBeenCalled();
@@ -73,6 +75,7 @@ describe("openBlendLink", () => {
       workspaceRoot: "/work",
       openFile,
       readState: () => lookup.promise,
+      readMasterState: async () => null,
     });
     useRightPanelStore.getState().openFile(threadRef, "notes.md");
     lookup.resolve(running);
@@ -92,10 +95,11 @@ describe("openBlendLink", () => {
       view,
       openFile: vi.fn(),
       readState: async () => running,
+      readMasterState: async () => null,
       setView,
     });
     expect(surfaces(threadRef)).toContain("blender");
-    expect(setView).toHaveBeenCalledWith(threadRef, "models/hero.blend", view);
+    expect(setView).toHaveBeenCalledWith(threadRef, "models/hero.blend", view, "working");
   });
 
   it("leaves a view link on another file to the 3D preview", async () => {
@@ -109,6 +113,7 @@ describe("openBlendLink", () => {
       view: { position: [6, -6, 5], target: [0, 0, 1] },
       openFile,
       readState: async () => running,
+      readMasterState: async () => null,
       setView,
     });
     expect(openFile).toHaveBeenCalled();
@@ -126,6 +131,7 @@ describe("openBlendLink", () => {
       openFile,
       // The cached state still names the file; the server knows it's no longer open.
       readState: async () => running,
+      readMasterState: async () => null,
       setView: async () => "otherFile",
     });
     expect(openFile).toHaveBeenCalled();
@@ -144,6 +150,7 @@ describe("openBlendLink", () => {
       view: { position: [6, -6, 5], target: [0, 0, 1] },
       openFile,
       readState: async () => running,
+      readMasterState: async () => null,
       setView: () => {
         asked.resolve();
         return moving.promise;
@@ -155,5 +162,50 @@ describe("openBlendLink", () => {
     await opening;
     expect(surfaces(threadRef)).not.toContain("blender");
     expect(openFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("openBlendLink to a master", () => {
+  it("opens the Blender pane on its Master side for the file the thread's master Blender has", async () => {
+    const threadRef = scopeThreadRef(
+      "env-1" as EnvironmentId,
+      ThreadId.make("thread-blend-master"),
+    );
+    const openFile = vi.fn();
+    const setView = vi.fn(async () => "moved" as const);
+    const view = { position: [6, -6, 5], target: [0, 0, 1] } as const;
+    await openBlendLink({
+      threadRef,
+      path: "/work/models/hero.blend",
+      workspaceRoot: "/work",
+      view,
+      openFile,
+      readState: async () => ({ ...running, relativePath: "models/hero.wip-1a2b3c4d.blend" }),
+      readMasterState: async () => running,
+      setView,
+    });
+    expect(openFile).not.toHaveBeenCalled();
+    expect(
+      selectThreadRightPanelState(
+        useRightPanelStore.getState().byThreadKey,
+        threadRef,
+      ).surfaces.map((surface) => surface.kind),
+    ).toContain("blender");
+    expect(blenderRoleFor(threadRef)).toBe("master");
+    // The person's viewport window in the master Blender moves, not the working one's.
+    expect(setView).toHaveBeenCalledWith(threadRef, "models/hero.blend", view, "master");
+  });
+
+  it("still opens the working copy's side for a link to the working copy", async () => {
+    const threadRef = scopeThreadRef("env-1" as EnvironmentId, ThreadId.make("thread-blend-wip"));
+    await openBlendLink({
+      threadRef,
+      path: "models/hero.blend",
+      workspaceRoot: "/work",
+      openFile: vi.fn(),
+      readState: async () => running,
+      readMasterState: async () => ({ ...running, relativePath: "models/other.blend" }),
+    });
+    expect(blenderRoleFor(threadRef)).toBe("working");
   });
 });

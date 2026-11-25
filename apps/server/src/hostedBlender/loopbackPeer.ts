@@ -3,6 +3,7 @@ import * as NodeFS from "node:fs";
 import type * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 
@@ -10,7 +11,11 @@ import * as FileSystem from "effect/FileSystem";
 // credentials, so the client's end is looked up in /proc/net/tcp{,6}. The rules are the same as
 // the control add-on's in agentGuard.ts; change both together.
 
-const LOOPBACK_TCP_TABLES: ReadonlyArray<string> = ["/proc/net/tcp", "/proc/net/tcp6"];
+/** The kernel's loopback TCP tables, which a test can point elsewhere. */
+export const LoopbackTcpTables = Context.Reference<ReadonlyArray<string>>(
+  "@t3tools/server/hostedBlender/LoopbackTcpTables",
+  { defaultValue: () => ["/proc/net/tcp", "/proc/net/tcp6"] },
+);
 
 const TCP_ESTABLISHED = "01";
 const IPV4_MAPPED_PREFIX = "00000000000000000000ffff";
@@ -144,7 +149,7 @@ export const isSameAccountPeer = Effect.fn("HostedBlender.isSameAccountPeer")(fu
   const readings: Array<TcpRow> = [];
   // Read twice: with our end still established, the row read was this connection's client.
   for (let reading = 0; reading < 2; reading++) {
-    const texts = yield* Effect.forEach(options?.tables ?? LOOPBACK_TCP_TABLES, (table) =>
+    const texts = yield* Effect.forEach(options?.tables ?? (yield* LoopbackTcpTables), (table) =>
       fileSystem.readFileString(table).pipe(Effect.orElseSucceed(() => "")),
     );
     const tables = texts.map(parseTcpTable);

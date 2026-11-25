@@ -20,8 +20,15 @@ import { useAtomCommand } from "~/state/use-atom-command";
 export const fileName = (relativePath: string) =>
   relativePath.slice(relativePath.lastIndexOf("/") + 1);
 
-/** Quitting a thread's hosted Blender, asking first whether to save a file with changes. */
-export function useQuitHostedBlender(threadRef: ScopedThreadRef, name: string) {
+/**
+ * Quitting a thread's hosted Blender, asking first whether to save a file with changes. `target`
+ * picks its master Blender, or a master by its key when no thread uses it.
+ */
+export function useQuitHostedBlender(
+  threadRef: ScopedThreadRef,
+  name: string,
+  target: { readonly role?: "master"; readonly master?: string } = {},
+) {
   const gt = useGT();
   const m = useMessages();
   const quit = useAtomCommand(hostedBlenderEnvironment.quit, { reportFailure: false });
@@ -31,7 +38,7 @@ export function useQuitHostedBlender(threadRef: ScopedThreadRef, name: string) {
     setQuitting(true);
     const result = await quit({
       environmentId: threadRef.environmentId,
-      input: { threadId: threadRef.threadId, save },
+      input: { threadId: threadRef.threadId, save, ...target },
     });
     setQuitting(false);
     setConfirming(false);

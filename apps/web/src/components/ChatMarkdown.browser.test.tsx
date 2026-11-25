@@ -107,6 +107,7 @@ const hostedBlender = vi.hoisted(() => ({
 vi.mock(import("../state/hostedBlender"), async (original) => ({
   ...(await original()),
   readHostedBlenderState: (async () => hostedBlender.state) as never,
+  readHostedBlenderMasterState: (async () => null) as never,
   setHostedBlenderView: hostedBlender.setView as never,
 }));
 const threadWorktrees = vi.hoisted(() => new Map<string, string>());
@@ -711,10 +712,12 @@ describe("ChatMarkdown 3D view links", () => {
     });
     await act(async () => screen.container.querySelector("a")!.click());
     await vi.waitFor(() =>
-      expect(hostedBlender.setView).toHaveBeenCalledWith(threadRef, "bracket-5.blend", {
-        position: [6, -6, 5],
-        target: [0, 0, 0],
-      }),
+      expect(hostedBlender.setView).toHaveBeenCalledWith(
+        threadRef,
+        "bracket-5.blend",
+        { position: [6, -6, 5], target: [0, 0, 0] },
+        "working",
+      ),
     );
     expect(
       selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, threadRef),

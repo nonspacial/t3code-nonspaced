@@ -165,10 +165,12 @@ describe("HostedBlenderAgents.listenerPort", () => {
     Effect.gen(function* () {
       const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
       assert.isNull(yield* agents.listenerPort(threadId));
+      assert.isNull(yield* agents.masterListenerPort(threadId));
 
       const launch = yield* agents.sessionLaunch({ threadId, driver: claude });
       yield* startSession(launch);
       assert.equal(yield* agents.listenerPort(threadId), launch?.hostedPort);
+      assert.equal(yield* agents.masterListenerPort(threadId), launch?.masterPort);
     }).pipe(Effect.provide(layerFor({}))),
   );
 
@@ -180,6 +182,7 @@ describe("HostedBlenderAgents.listenerPort", () => {
         hostedBlenderAllowAgents: false,
       });
       assert.isNull(yield* agents.listenerPort(threadId));
+      assert.isNull(yield* agents.masterListenerPort(threadId));
     }).pipe(Effect.provide(layerFor({}))),
   );
 
@@ -219,8 +222,12 @@ describe("HostedBlenderAgents.revocations", () => {
       const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
       const next = yield* agents.revocations.pipe(Stream.runHead, Effect.forkScoped);
       yield* Effect.yieldNow;
-      yield* agents.sessionEnded(threadId);
-      assert.deepEqual(yield* Fiber.join(next), Option.some(threadId));
+      yield* agents.sessionEnded(threadId, "provider-session-1");
+      // Scoped to the credential that ended, so a newer session keeps what it was granted.
+      assert.deepEqual(
+        yield* Fiber.join(next),
+        Option.some({ threadId, session: "provider-session-1" }),
+      );
     }).pipe(Effect.scoped, Effect.provide(layerFor({}))),
   );
 });
@@ -239,5 +246,35 @@ describe("HostedBlenderAgents.layerFollowSetup", () => {
         assert.deepEqual(checks, expected);
       }).pipe(Effect.provide(layerFor({ allowAgents, checks })));
     },
+  );
+});
+
+describe("HostedBlenderAgents private ports", () => {
+  it.effect("never hands a master's private port out as a thread's, or a thread's as one", () =>
+    Effect.gen(function* () {
+      const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
+      const launch = yield* agents.sessionLaunch({ threadId, driver: claude });
+      // The probe keeps offering the thread's ports, idle since the session took them.
+      const own = yield* agents.reservePrivatePort;
+      assert.notInclude([launch?.hostedPort, launch?.masterPort], own);
+      assert.equal(own, 41002);
+    }).pipe(Effect.provide(layerFor({ probes: [41000, 41001, 41000, 41001, 41002] }))),
+  );
+});
+
+describe("HostedBlenderAgents.currentSession", () => {
+  it.effect(
+    "names the agent session holding the thread's Blender MCP, while agents are allowed",
+    () =>
+      Effect.gen(function* () {
+        const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
+        assert.isNull(yield* agents.currentSession(threadId));
+        yield* startSession(yield* agents.sessionLaunch({ threadId, driver: claude }));
+        assert.equal(yield* agents.currentSession(threadId), "provider-session-hosted-blender");
+        yield* (yield* ServerSettings.ServerSettingsService).updateSettings({
+          hostedBlenderAllowAgents: false,
+        });
+        assert.isNull(yield* agents.currentSession(threadId));
+      }).pipe(Effect.provide(layerFor({}))),
   );
 });

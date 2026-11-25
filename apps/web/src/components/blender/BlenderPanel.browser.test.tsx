@@ -23,16 +23,20 @@ const stream = vi.hoisted(() => ({
   clients: 0,
   access: { httpBase: "https://t3", wsBase: "wss://t3/blender", credentials: false, query: {} },
   state: { status: "running", relativePath: "models/hero.blend", dirty: false } as unknown,
+  master: { status: "none" } as unknown,
+  commands: [] as Array<{ readonly label: string; readonly value: unknown }>,
+  targets: [] as unknown[],
   setup: null as unknown,
 }));
 
 vi.mock(import("@t3tools/client-runtime/hosted-blender/stream"), async (original) => ({
   ...(await original()),
   createHostedBlenderStreamClient: ((
-    _target: unknown,
+    target: unknown,
     _sink: unknown,
     events: HostedBlenderStreamEvents,
   ) => {
+    stream.targets.push(target);
     stream.events = events;
     stream.clients += 1;
     events.onStatus("live");
@@ -55,14 +59,22 @@ vi.mock(import("@t3tools/client-runtime/device/frame"), async (original) => ({
     return { present: () => true };
   }) as never,
 }));
+vi.mock(import("~/state/use-atom-command"), () => ({
+  useAtomCommand: ((command: { readonly label: string }) => async (value: unknown) => {
+    stream.commands.push({ label: command.label, value });
+    return { _tag: "Success", value: undefined };
+  }) as never,
+}));
 vi.mock(import("~/state/hostedBlender"), async (original) => ({
   ...(await original()),
   useHostedBlenderState: (() => stream.state) as never,
+  useHostedBlenderMasterState: (() => stream.master) as never,
   useHostedBlenderSetupState: (() => stream.setup) as never,
   useHostedBlenderStreamAccess: (() => stream.access) as never,
 }));
 
 import { BlenderPanel, FloatingBlender } from "./BlenderPanel";
+import { useBlenderRoleStore } from "./blenderRole";
 
 const threadRef = {
   environmentId: EnvironmentId.make("environment-1"),
@@ -83,6 +95,11 @@ const startup = (): Disposable => {
   stream.visible = [];
   stream.clients = 0;
   stream.events = null;
+  stream.targets = [];
+  stream.commands = [];
+  useBlenderRoleStore.setState({ roles: {} });
+  stream.master = { status: "none" };
+  stream.state = { status: "running", relativePath: "models/hero.blend", dirty: false };
   return { [Symbol.dispose]: installKeyboardCapture() };
 };
 
@@ -450,4 +467,170 @@ it("is off screen while Settings or Usage cover its thread, though the window is
   expect(stream.visible.at(-1)).toBe(true);
   // The stream stays connected throughout, so control and the decoder survive.
   expect(stream.clients).toBe(1);
+});
+
+it("switches between the working copy and the master, each with its own stream", async () => {
+  using _app = startup();
+  stream.master = { status: "running", relativePath: "models/hero.blend", dirty: true };
+  stream.state = {
+    status: "running",
+    relativePath: "models/hero.wip-1a2b3c4d.blend",
+    dirty: false,
+  };
+  await using screen = await render(
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>,
+  );
+  await expect.element(screen.getByText("hero.wip-1a2b3c4d.blend")).toBeInTheDocument();
+  await screen.getByRole("button", { name: "Master" }).click();
+  await expect.element(screen.getByText("hero.blend", { exact: true })).toBeInTheDocument();
+  expect(stream.targets.at(-1)).toMatchObject({ threadId: "thread-1", master: true });
+  await screen.getByRole("button", { name: "Working copy" }).click();
+  await expect.element(screen.getByText("hero.wip-1a2b3c4d.blend")).toBeInTheDocument();
+  expect(stream.targets.at(-1)).toMatchObject({ master: false });
+});
+
+it("shows Agent editing for whichever Blender the agent acts in, master or working copy", async () => {
+  using _app = startup();
+  stream.master = {
+    status: "running",
+    relativePath: "models/hero.blend",
+    dirty: true,
+    agentActing: true,
+  };
+  stream.state = {
+    status: "running",
+    relativePath: "models/hero.wip-1a2b3c4d.blend",
+    dirty: false,
+  };
+  await using screen = await render(
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>,
+  );
+  await expect.element(screen.getByText("hero.wip-1a2b3c4d.blend")).toBeInTheDocument();
+  expect(screen.container.textContent).not.toContain("Agent editing");
+  await screen.getByRole("button", { name: "Master" }).click();
+  await expect.element(screen.getByText("Agent editing")).toBeInTheDocument();
+});
+
+it("shows no switch until the thread has a master", async () => {
+  using _app = startup();
+  stream.state = { status: "running", relativePath: "models/hero.blend", dirty: false };
+  await using screen = await render(
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>,
+  );
+  await expect.element(screen.getByText("hero.blend")).toBeInTheDocument();
+  await expect.element(screen.getByRole("button", { name: "Master" })).not.toBeInTheDocument();
+});
+
+it("shows the master's one copy on the Master side, and the working side's own copies there", async () => {
+  using _app = startup();
+  stream.state = { status: "closed", copies: [kept("closed", "models/part.blend", true)] };
+  stream.master = {
+    status: "crashed",
+    relativePath: "models/hero.blend",
+    copies: [
+      {
+        key: "outside:/real/models/hero.blend",
+        kind: "crashed",
+        file: { kind: "workspace", relativePath: "models/hero.blend" },
+        recovery: true,
+      },
+    ],
+  };
+  await using screen = await render(
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>,
+  );
+  await expect
+    .element(screen.getByText("T3 Code closed part.blend", { exact: false }))
+    .toBeInTheDocument();
+  // The working side never lists the master's copy under Also kept.
+  await expect.element(screen.getByText("Also kept:")).not.toBeInTheDocument();
+  await screen.getByRole("button", { name: "Master" }).click();
+  await expect.element(screen.getByText("Blender crashed")).toBeInTheDocument();
+  await expect
+    .element(screen.getByText("hero.blend stopped unexpectedly", { exact: false }))
+    .toBeInTheDocument();
+});
+
+it("offers Move into T3 Code for a master open in the desktop Blender, and warns without its add-on", async () => {
+  using _app = startup();
+  stream.state = { status: "stopped" };
+  stream.master = {
+    status: "notOpen",
+    relativePath: "models/hero.blend",
+    desktop: "open",
+    desktopDirty: true,
+  };
+  await using screen = await render(
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>,
+  );
+  // The switch stays above a card, so the way back is always there.
+  await screen.getByRole("button", { name: "Master" }).click();
+  await expect.element(screen.getByText("Open in your desktop Blender")).toBeInTheDocument();
+  await expect.element(screen.getByText(/with its unsaved changes/)).toBeInTheDocument();
+  await screen.getByRole("button", { name: "Working copy" }).click();
+  await expect.element(screen.getByText("No hosted Blender running")).toBeInTheDocument();
+
+  stream.master = {
+    status: "notOpen",
+    relativePath: "models/hero.blend",
+    desktop: "noAddon",
+    desktopDirty: false,
+  };
+  await screen.rerender(
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>,
+  );
+  await screen.getByRole("button", { name: "Master" }).click();
+  await expect.element(screen.getByText(/can't reach its MCP add-on/)).toBeInTheDocument();
+  expect(stream.clients).toBe(0);
+});
+
+it("moves the master it shows, and warns over a master a desktop Blender may share", async () => {
+  using _app = startup();
+  const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
+  const { Atom } = await import("effect/reactivity");
+  vi.spyOn(hostedBlenderEnvironment.moveIntoT3, "permissionAtom").mockReturnValue(
+    Atom.make(true) as never,
+  );
+  stream.state = { status: "stopped" };
+  stream.master = {
+    status: "notOpen",
+    relativePath: "models/hero.blend",
+    desktop: "open",
+    desktopDirty: false,
+  };
+  const ui = () => (
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>
+  );
+  await using screen = await render(ui());
+  await screen.getByRole("button", { name: "Master" }).click();
+  await screen.getByRole("button", { name: "Move into T3 Code" }).click();
+  expect(stream.commands.at(-1)?.value).toEqual({
+    environmentId: threadRef.environmentId,
+    input: { threadId: threadRef.threadId, relativePath: "models/hero.blend" },
+  });
+
+  stream.master = {
+    status: "running",
+    relativePath: "models/hero.blend",
+    dirty: false,
+    desktopUnchecked: true,
+  };
+  await screen.rerender(ui());
+  await expect
+    .element(screen.getByText(/couldn't check may also have this file open/))
+    .toBeInTheDocument();
 });

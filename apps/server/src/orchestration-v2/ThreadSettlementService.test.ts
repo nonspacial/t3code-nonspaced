@@ -592,6 +592,8 @@ interface HarnessOptions {
     input: ProjectSetupScriptRunner.ProjectSetupScriptRunnerInput,
   ) => Effect.Effect<void>;
   readonly onCloseIdle?: () => Effect.Effect<void>;
+  /** This thread's master Blender never finishes settling. */
+  readonly busyMaster?: string;
   readonly hasActiveSubprocess?: (input: { readonly threadId: string }) => Effect.Effect<boolean>;
   readonly currentThreads?: ReadonlyArray<OrchestrationV2AppThread>;
   readonly projections?: ProjectionStore.ProjectionStoreV2Shape;
@@ -625,6 +627,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
   const observedEvents = yield* Queue.unbounded<EventId>();
   const closedIdle = yield* Queue.unbounded<{ readonly threadId: string }>();
   const closedBlenders = yield* Queue.unbounded<string>();
+  const releasedMasters = yield* Queue.unbounded<string>();
   const scriptRuns =
     yield* Queue.unbounded<ProjectSetupScriptRunner.ProjectSetupScriptRunnerInput>();
 
@@ -747,6 +750,12 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     }),
     Layer.mock(HostedBlender.HostedBlender)({
       closeOnSettle: (input) => Queue.offer(closedBlenders, input.threadId).pipe(Effect.asVoid),
+      releaseMaster: (threadId) =>
+        Queue.offer(releasedMasters, threadId).pipe(
+          // A busy master Blender that never settles.
+          Effect.andThen(threadId === options.busyMaster ? Effect.never : Effect.void),
+          Effect.asVoid,
+        ),
     }),
     Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
       runForThread: (input) =>
@@ -800,6 +809,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     invalidatedCwds,
     closedIdle,
     closedBlenders,
+    releasedMasters,
     scriptRuns,
     observedEvents,
     publishEvent: (event: OrchestrationV2DomainEvent) => PubSub.publish(domainEvents, event),
@@ -2473,6 +2483,75 @@ describe("ThreadSettlementServiceV2 terminals", () => {
             yield* Queue.take(fixture.closedBlenders),
           ],
           [settled.id, archived.id, deleted.id],
+        );
+      }).pipe(Effect.provide(fixture.layer));
+    }),
+  );
+
+  it.effect("releases the master Blender of a thread that settles, is archived or is deleted", () =>
+    Effect.gen(function* () {
+      const settled = appThread("master-settled", "settled");
+      const archived = appThread("master-archived", "settled");
+      const deleted = appThread("master-deleted", "settled");
+      const fixture = yield* makeHarness({
+        snapshot: makeSnapshot([]),
+        currentThreads: [settled, archived, deleted],
+      });
+
+      yield* Effect.gen(function* () {
+        const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+        yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+        yield* fixture.publishEvent(settledEvent(settled));
+        yield* fixture.publishEvent({
+          type: "thread.archived",
+          id: EventId.make("event:master-archived"),
+          threadId: archived.id,
+          occurredAt: DateTime.makeUnsafe(NOW),
+          payload: archived,
+        });
+        yield* fixture.publishEvent({
+          type: "thread.deleted",
+          id: EventId.make("event:master-deleted"),
+          threadId: deleted.id,
+          occurredAt: DateTime.makeUnsafe(NOW),
+          payload: deleted,
+        });
+        assert.deepStrictEqual(
+          [
+            yield* Queue.take(fixture.releasedMasters),
+            yield* Queue.take(fixture.releasedMasters),
+            yield* Queue.take(fixture.releasedMasters),
+          ],
+          [settled.id, archived.id, deleted.id],
+        );
+      }).pipe(Effect.provide(fixture.layer));
+    }),
+  );
+
+  it.effect("settles other threads while one master Blender is still busy settling", () =>
+    Effect.gen(function* () {
+      const busy = appThread("master-busy", "settled");
+      const archived = appThread("master-unrelated", "settled");
+      const fixture = yield* makeHarness({
+        snapshot: makeSnapshot([]),
+        currentThreads: [busy, archived],
+        busyMaster: busy.id,
+      });
+
+      yield* Effect.gen(function* () {
+        const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+        yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+        yield* fixture.publishEvent(settledEvent(busy));
+        yield* fixture.publishEvent({
+          type: "thread.archived",
+          id: EventId.make("event:master-unrelated-archived"),
+          threadId: archived.id,
+          occurredAt: DateTime.makeUnsafe(NOW),
+          payload: archived,
+        });
+        assert.deepStrictEqual(
+          [yield* Queue.take(fixture.releasedMasters), yield* Queue.take(fixture.releasedMasters)],
+          [busy.id, archived.id],
         );
       }).pipe(Effect.provide(fixture.layer));
     }),

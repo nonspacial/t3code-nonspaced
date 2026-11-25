@@ -7,7 +7,7 @@ import type * as Schema from "effect/Schema";
  * its master Blender. The user's own `blender` entry, for their desktop Blender, is never touched.
  */
 export const BLENDER_HOSTED_MCP_SERVER = "blender-hosted";
-const BLENDER_MASTER_MCP_SERVER = "blender-master";
+export const BLENDER_MASTER_MCP_SERVER = "blender-master";
 
 /** Scene summaries, screenshots and doc search: the tools pre-approved outside full access. */
 export const BLENDER_MCP_READ_ONLY_TOOLS = [

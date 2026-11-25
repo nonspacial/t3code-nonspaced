@@ -63,7 +63,10 @@ clients read declared capabilities, never provider names.
   reads MCP config only when it loads a thread, and `thread/resume` of a loaded thread keeps the old
   config, so the Codex adapter unsubscribes and resumes a thread whose approvals changed. Claude
   starts a new query when its allowed tools change. Their ports are assigned when the session
-  starts, so the Blender started later binds the port the session already has.
+  starts, so the Blender started later binds the port the session already has. A master Blender is
+  shared by threads, so its listener binds a private port instead, and each agent thread's
+  `blender-master` port is a relay in T3 ([`portForward.ts`](../../apps/server/src/hostedBlender/portForward.ts))
+  that closes on its own when that thread's access ends.
 
 ## Model manifest
 

@@ -385,3 +385,22 @@ it("tells the decoder the frame size, which Android's WebView needs to show it u
   });
   client.stop();
 });
+
+it("watches the thread's master Blender when asked", () => {
+  FakeSocket.instances = [];
+  vi.stubGlobal("WebSocket", FakeSocket);
+  vi.stubGlobal("EncodedVideoChunk", vi.fn());
+  vi.stubGlobal("VideoDecoder", vi.fn());
+  createHostedBlenderStreamClient(
+    {
+      access: { httpBase: "https://t3", wsBase: "wss://t3/blender", credentials: false, query: {} },
+      threadId: "thread-1",
+      master: true,
+    },
+    { present: vi.fn(() => true) },
+    { onStatus: vi.fn(), onStats: vi.fn(), onFrameRate: vi.fn(), onUnauthorized: vi.fn() },
+  ).stop();
+  expect(FakeSocket.instances.at(-1)!.url).toBe(
+    "wss://t3/blender/ws?threadId=thread-1&role=master",
+  );
+});

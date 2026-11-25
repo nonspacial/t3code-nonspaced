@@ -18,7 +18,11 @@ const isNewer = (a: string, b: string) => {
 };
 
 /** Why an untested Blender Lab extension gets no agent access, and what the user updates. */
-export const untestedBlenderLabReason = (name: string, version: string | null): string => {
+export const untestedBlenderLabReason = (
+  name: string,
+  version: string | null,
+  retry = "Then call blender_quit and blender_start again.",
+): string => {
   const tested = TESTED_BLENDER_LAB_MCP_VERSIONS.join(", ");
   const installed =
     version === null ? "an MCP extension whose version T3 can't read" : `MCP ${version}`;
@@ -26,7 +30,7 @@ export const untestedBlenderLabReason = (name: string, version: string | null): 
     version !== null && TESTED_BLENDER_LAB_MCP_VERSIONS.every((known) => isNewer(version, known))
       ? "T3 Code, which hasn't tested this newer version yet"
       : "Blender Lab's MCP extension in their own Blender (Edit > Preferences > Get Extensions); T3 Code copies the new version into the hosted Blender when it next starts";
-  return `${name} is open, but T3 Code refused you access: the hosted Blender has Blender Lab's ${installed}, and T3 Code has tested only ${tested}. Tell the user to update ${update}. Then call blender_quit and blender_start again.`;
+  return `${name} is open, but T3 Code refused you access: the hosted Blender has Blender Lab's ${installed}, and T3 Code has tested only ${tested}. Tell the user to update ${update}. ${retry}`;
 };
 
 /** The extension repository the control add-on loads a launch's Blender Lab snapshot from. */

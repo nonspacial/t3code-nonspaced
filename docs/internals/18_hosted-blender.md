@@ -4,22 +4,30 @@ A hosted Blender is a Blender the server runs on a hidden display for one thread
 Blender pane and reachable by that thread's agent. Three decisions span the server, the provider
 adapters and the Blender process, and are easy to undo by accident.
 
-## The thread owns it
+## Threads own them
 
-A hosted Blender belongs to one thread: it quits when that thread settles or is archived, when T3
-shuts down, or when the user or agent quits it. Nothing keeps one alive for another thread or
-reuses one across threads. Agent access is narrower still: it lasts only while T3 holds the control
-connection, Allow agents is on, the thread's session is alive and the working copy `blender_start`
-opened is still the open file. Once any of those ends, access stays ended until that Blender
-restarts ([`controlAddon.ts`](../../apps/server/src/hostedBlender/controlAddon.ts)). Do not add a
-path that grants access again in place; every such path was a way to hand the agent a file the user
-opened.
+A working Blender belongs to one thread: it quits when that thread settles or is archived, when T3
+shuts down, or when the user or agent quits it. A master Blender is the one exception, shared by
+the threads that chose its master file and kept until the last of them leaves (and then only if
+it has nothing unsaved). Every other ending (T3 stopping, Hosted Blender switched off, a crash)
+ends it like a working one, and its recovery copy belongs to the master, not a thread: one copy,
+under the master file's real path, that any thread whose master is that file reopens or discards. Agent access is narrower still: it lasts only while T3 holds the control
+connection, Allow agents is on, and the launch file (the working copy, or the master) is still the
+open file; a working Blender also needs its thread's session alive. Once any of those ends, access
+stays ended until that Blender restarts
+([`controlAddon.ts`](../../apps/server/src/hostedBlender/controlAddon.ts)). Do not add a path that
+grants access again in place; every such path was a way to hand the agent a file the user opened.
+A master's grant lasts for its launch, since later sessions and threads copy back into it too;
+its agents reach Blender Lab only through relays, one per agent thread and session, opened for a
+current session and closed when that session's access ends. With no agent thread, nothing listens
+for them.
 
 ## Agents use only the official Blender Lab MCP
 
 Agents reach a hosted Blender only through Blender Lab's own `blender-mcp`, added per session as
 `blender-hosted` and `blender-master` ([`hostedBlenderMcp.ts`](../../apps/server/src/provider/hostedBlenderMcp.ts)).
-T3's own tools cover lifecycle (`blender_start`, `blender_status`, `blender_quit`) and never run
+T3's own tools cover lifecycle (`blender_start`, `blender_master_open`, `blender_status`,
+`blender_quit`) and never run
 Blender code. T3 does not ship its own code-running bridge: Blender Lab's tools, docs and sandbox
 are what agents are tuned against, and a second bridge would be a second port to secure. The user's
 own `blender` entry and their desktop Blender are never touched.

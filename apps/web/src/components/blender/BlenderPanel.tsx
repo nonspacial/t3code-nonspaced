@@ -19,7 +19,9 @@ import {
 import type {
   EnvironmentId,
   HostedBlenderKeptCopy,
+  HostedBlenderMasterState,
   HostedBlenderRequirement,
+  HostedBlenderRole,
   HostedBlenderRunningState,
   ProjectId,
   HostedBlenderThreadState,
@@ -84,6 +86,7 @@ import { cn } from "~/lib/utils";
 import {
   hostedBlenderEnvironment,
   refreshHostedBlenderStreamAccess,
+  useHostedBlenderMasterState,
   useHostedBlenderSetupState,
   useHostedBlenderState,
   useHostedBlenderStreamAccess,
@@ -96,6 +99,8 @@ import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { HiddenThreadContext } from "../chat/backgroundThread";
 
 import { useBlenderAnnotation } from "./BlenderAnnotationEditor";
+import { BlenderRoleSwitch, DesktopUncheckedNotice, MasterCard } from "./BlenderMaster";
+import { useBlenderRoleStore } from "./blenderRole";
 import { attachBlenderInput, type BlenderInput } from "./blenderInput";
 import { useKeptCopySelection } from "./keptCopies";
 import { fileName, useQuitHostedBlender } from "./useQuitHostedBlender";
@@ -156,8 +161,61 @@ interface BlenderPanelProps {
   readonly projectId?: ProjectId | undefined;
 }
 
+/**
+ * The pane: the thread's working Blender, or, once the thread has a master, either one through
+ * the Working copy / Master switch.
+ */
 export function BlenderPanel(props: BlenderPanelProps) {
-  const state = useHostedBlenderState(props.threadRef);
+  const working = useHostedBlenderState(props.threadRef);
+  const master = useHostedBlenderMasterState(props.threadRef);
+  // A link to the master's file picks the Master side, so the choice lives outside the pane.
+  const role = useBlenderRoleStore(
+    (store) => store.roles[scopedThreadKey(props.threadRef)] ?? "working",
+  );
+  const setRole = (next: HostedBlenderRole) =>
+    useBlenderRoleStore.getState().setRole(props.threadRef, next);
+  const hasMaster = master !== null && master.status !== "none";
+  const switcher = hasMaster ? (
+    <BlenderRoleSwitch role={role} onRole={setRole} working={working} master={master} />
+  ) : null;
+  const shown = hasMaster ? role : "working";
+  const live = shown === "master" ? master : working;
+  const running = live?.status === "running" || live?.status === "starting";
+  const body =
+    shown === "working" ? (
+      <WorkingBlender {...props} state={working} switcher={switcher} />
+    ) : master?.status === "running" || master?.status === "starting" ? (
+      <RunningBlender
+        {...props}
+        state={master}
+        switcher={switcher}
+        master
+        notice={master.desktopUnchecked === true ? <DesktopUncheckedNotice /> : null}
+      />
+    ) : master?.status === "closed" || master?.status === "crashed" ? (
+      <ReopenCard threadRef={props.threadRef} state={master} master />
+    ) : master?.status === "notOpen" || master?.status === "failed" ? (
+      <MasterCard threadRef={props.threadRef} state={master} />
+    ) : (
+      <StateCard title={<Spinner />} />
+    );
+  if (switcher === null || running) return body;
+  // A card has no toolbar, so the switch sits above it.
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex h-9 shrink-0 items-center border-b border-border px-3">{switcher}</div>
+      <div className="min-h-0 flex-1">{body}</div>
+    </div>
+  );
+}
+
+function WorkingBlender(
+  props: BlenderPanelProps & {
+    readonly state: HostedBlenderThreadState | null;
+    readonly switcher: ReactNode;
+  },
+) {
+  const state = props.state;
   if (state === null) return <StateCard title={<Spinner />} />;
   switch (state.status) {
     case "unavailable":
@@ -202,7 +260,7 @@ export function BlenderPanel(props: BlenderPanelProps) {
       return <ReopenCard threadRef={props.threadRef} state={state} />;
     case "starting":
     case "running":
-      return <RunningBlender {...props} state={state} />;
+      return <RunningBlender {...props} state={state} switcher={props.switcher} />;
   }
 }
 
@@ -275,7 +333,11 @@ const keptName = (copy: HostedBlenderKeptCopy, untitled: string) =>
  */
 function ReopenCard(props: {
   readonly threadRef: ScopedThreadRef;
-  readonly state: Extract<HostedBlenderThreadState, { status: "closed" | "crashed" }>;
+  readonly state:
+    | Extract<HostedBlenderThreadState, { status: "closed" | "crashed" }>
+    | Extract<HostedBlenderMasterState, { status: "closed" | "crashed" }>;
+  /** The master's one copy, which Reopen restores in the master Blender. */
+  readonly master?: boolean;
 }) {
   const gt = useGT();
   const m = useMessages();
@@ -298,7 +360,11 @@ function ReopenCard(props: {
   const reopenable = copy.file.kind === "workspace";
   const run = async (action: "restore" | "fresh" | "dismiss") => {
     setPending(true);
-    const input = { threadId: props.threadRef.threadId, key: copy.key };
+    const input = {
+      threadId: props.threadRef.threadId,
+      key: copy.key,
+      ...(props.master ? { role: "master" as const } : {}),
+    };
     const result =
       action === "dismiss"
         ? await dismiss({ environmentId, input })
@@ -542,7 +608,17 @@ function MissingRequirements(props: { readonly missing: ReadonlyArray<HostedBlen
   );
 }
 
-function RunningBlender(props: BlenderPanelProps & { readonly state: HostedBlenderRunningState }) {
+function RunningBlender(
+  props: BlenderPanelProps & {
+    readonly state: HostedBlenderRunningState;
+    readonly switcher: ReactNode;
+    /** The thread's master Blender rather than its working Blender. */
+    readonly master?: boolean;
+    /** Shown under the toolbar. */
+    readonly notice?: ReactNode;
+  },
+) {
+  const master = props.master === true;
   const [stats, setStats] = useState<StreamStats>({ frameSize: null, rate: null, server: null });
   const [control, setControl] = useState<HostedBlenderControl>(VIEW_ONLY);
   const streamRef = useRef<BlenderStreamHandle | null>(null);
@@ -551,6 +627,7 @@ function RunningBlender(props: BlenderPanelProps & { readonly state: HostedBlend
     relativePath: props.state.relativePath,
     composerTarget: props.composerTarget,
     projectId: props.projectId,
+    master,
     onClose: () => streamRef.current?.focus(),
   });
   const live = props.state.status === "running" && props.visible && stats.frameSize !== null;
@@ -562,7 +639,10 @@ function RunningBlender(props: BlenderPanelProps & { readonly state: HostedBlend
         control={control}
         streamRef={streamRef}
         onAnnotate={live ? annotation.start : null}
+        switcher={props.switcher}
+        master={master}
       />
+      {props.notice}
       {props.state.status === "starting" ? (
         <StateCard
           title={<T>Starting Blender…</T>}
@@ -575,8 +655,11 @@ function RunningBlender(props: BlenderPanelProps & { readonly state: HostedBlend
       ) : props.visible ? (
         // With nobody watching, the server stops capturing, so a hidden pane disconnects.
         <BlenderStream
+          // A new stream for the other Blender, not a reconnect of this one.
+          key={master ? "master" : "working"}
           environmentId={props.threadRef.environmentId}
           threadId={props.threadRef.threadId}
+          master={master}
           onStats={setStats}
           onControl={setControl}
           handleRef={streamRef}
@@ -604,6 +687,8 @@ function BlenderToolbar(props: {
   readonly streamRef: RefObject<BlenderStreamHandle | null>;
   /** Null while there's no live frame to freeze. */
   readonly onAnnotate: (() => void) | null;
+  readonly switcher: ReactNode;
+  readonly master: boolean;
 }) {
   const gt = useGT();
   const canQuit = useAtomValue(
@@ -622,9 +707,10 @@ function BlenderToolbar(props: {
   );
   const name = fileName(props.state.relativePath);
   const { canOperate, controller } = props.control;
-  const quit = useQuitHostedBlender(props.threadRef, name);
+  const quit = useQuitHostedBlender(props.threadRef, name, props.master ? { role: "master" } : {});
   return (
     <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
+      {props.switcher}
       <span className="min-w-0 flex-1 truncate font-mono text-xs font-semibold">{name}</span>
       <Tooltip>
         <TooltipTrigger
@@ -784,6 +870,7 @@ const watchDevicePixelRatio = (onChange: () => void) => {
 function BlenderStream(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: string;
+  readonly master?: boolean;
   readonly onStats: (update: (current: StreamStats) => StreamStats) => void;
   readonly onControl: (control: HostedBlenderControl) => void;
   readonly handleRef: RefObject<BlenderStreamHandle | null>;
@@ -809,6 +896,7 @@ function BlenderStream(props: {
   const [status, setStatus] = useState<HostedBlenderStreamStatus>("connecting");
   const [control, setControl] = useState<HostedBlenderControl>(VIEW_ONLY);
   const { environmentId, threadId, onStats, onControl, handleRef } = props;
+  const master = props.master === true;
   const floating = props.floating === true;
   const canOperate = control.canOperate && !floating;
   const inControl = control.controller === "you";
@@ -852,7 +940,7 @@ function BlenderStream(props: {
       onStats((current) => ({ ...current, frameSize }));
       reportFrameSize(frameSize);
     });
-    const client = createHostedBlenderStreamClient({ access, threadId }, sink, {
+    const client = createHostedBlenderStreamClient({ access, threadId, master }, sink, {
       onStatus: setStatus,
       onStats: (server) => onStats((current) => ({ ...current, server })),
       onFrameRate: (rate) => onStats((current) => ({ ...current, rate })),
@@ -900,7 +988,7 @@ function BlenderStream(props: {
       handleRef.current = null;
       changeControl(VIEW_ONLY);
     };
-  }, [access, environmentId, threadId, onStats, handleRef, floating, canvasRef]);
+  }, [access, environmentId, threadId, master, onStats, handleRef, floating, canvasRef]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the server when Settings or Usage cover or uncover the thread, without reconnecting
   useEffect(() => {

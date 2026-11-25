@@ -52,7 +52,7 @@ function RunningBlenders(props: { readonly environmentId: EnvironmentId | null }
       ) : (
         blenders.map((blender) => (
           <RunningBlenderRow
-            key={blender.threadId}
+            key={blender.master ?? blender.threadId}
             environmentId={environmentId}
             blender={blender}
           />
@@ -69,14 +69,25 @@ function RunningBlenderRow(props: {
   const threadRef = scopeThreadRef(props.environmentId, props.blender.threadId);
   const thread = useThreadShell(threadRef);
   const canQuit = useAtomValue(hostedBlenderEnvironment.quit.permissionAtom(props.environmentId));
-  const quit = useQuitHostedBlender(threadRef, fileName(props.blender.relativePath));
+  // A master is quit by its own key: it may be kept open with no thread left.
+  const quit = useQuitHostedBlender(
+    threadRef,
+    fileName(props.blender.relativePath),
+    props.blender.master === undefined ? {} : { role: "master", master: props.blender.master },
+  );
   const details = [
     props.blender.relativePath,
     props.blender.memoryBytes === null ? null : formatBytes(props.blender.memoryBytes),
   ].filter((part) => part !== null);
   return (
     <SettingsRow
-      title={thread?.title ?? <T>Unknown thread</T>}
+      title={
+        props.blender.master !== undefined ? (
+          <T context="the master .blend file">Master</T>
+        ) : (
+          (thread?.title ?? <T>Unknown thread</T>)
+        )
+      }
       description={<span className="font-mono">{details.join(" · ")}</span>}
       control={
         canQuit ? (

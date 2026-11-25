@@ -3291,6 +3291,61 @@
   "984c25ffcae69300": "Añadir backend",
   "08570ee0982df89d": "Emparejando...",
   "3bbae7c96b6cbfc3": "Abrir app",
+  "473079352585294d": "Qué Blender mostrar",
+  "72ec28b225ed9811": "No se pudo abrir el archivo maestro",
+  "70da4581cf87971c": "No se pudo mover a T3 Code",
+  "d5da364f3ffb7fa7": "Copia de trabajo",
+  "d3b2dad809961953": "Maestro",
+  "8fc9ef73a784da09": "Un Blender de escritorio que T3 Code no pudo comprobar también podría tener este archivo abierto. Guárdalo y ciérralo allí para que no se sobrescriban entre sí.",
+  "ab03a468cc62daf1": "Mover a T3 Code",
+  "77b72b3b7ee97069": "Abrir en T3 Code",
+  "cb4451ab067ff47d": "Blender no se inició",
+  "731b80ac194beb4a": "Abierto en tu Blender de escritorio",
+  "ca40a1f4300b4838": "El archivo maestro no está abierto en T3 Code",
+  "10a2ab0021554b0a": [
+    "Blender no pudo abrir ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " en la pantalla oculta. Comprueba que Blender lo abre y vuelve a abrirlo."
+  ],
+  "f5db5877ab70bfc8": [
+    "Mover a T3 Code guarda ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " en tu Blender de escritorio, con sus cambios sin guardar, cierra ese Blender y abre el archivo aquí. Su historial de deshacer se pierde."
+  ],
+  "6484265e8c18d3dd": [
+    "Mover a T3 Code guarda ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " en tu Blender de escritorio, cierra ese Blender y abre el archivo aquí. Su historial de deshacer se pierde."
+  ],
+  "d77c7db5a642f111": [
+    "Hay un Blender de escritorio en ejecución, pero T3 Code no puede acceder a su complemento MCP para ver si tiene ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " abierto. Guarda y cierra el archivo allí antes de abrirlo aquí."
+  ],
+  "a0056043b004c957": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " no está abierto en un Blender maestro. Allí es donde los agentes copian sus cambios comprobados."
+  ],
   "e69c6af74880ba75": "Inglés (EE. UU.)",
   "675e421e80618158": "Inglés (Reino Unido)",
   "27cface4ce8ec314": "Alemán",
@@ -3323,7 +3378,6 @@
   "b94f5fc6d71bc852": "Falta configurar",
   "7050870331ac8b9a": "No hay ningún Hosted Blender en ejecución",
   "fb2c65328a8a2e17": "Abre un archivo .blend en la vista previa de archivos y elige Abrir en Hosted Blender.",
-  "cb4451ab067ff47d": "Blender no se inició",
   "3f25b97ec987231e": "Blender no pudo abrir el archivo en la pantalla oculta. Comprueba que Blender lo abre y que GStreamer tiene un codificador H.264, y vuelve a abrirlo en Hosted Blender.",
   "c9d23ccb15073177": "Blender se cerró inesperadamente",
   "9f406050b6efb934": "Blender se cerró",

@@ -3291,6 +3291,61 @@
   "984c25ffcae69300": "Ajouter le backend",
   "08570ee0982df89d": "Appairage...",
   "3bbae7c96b6cbfc3": "Ouvrir l’app",
+  "473079352585294d": "Blender à afficher",
+  "72ec28b225ed9811": "Impossible d’ouvrir le fichier maître",
+  "70da4581cf87971c": "Impossible de déplacer vers T3 Code",
+  "d5da364f3ffb7fa7": "Copie de travail",
+  "d3b2dad809961953": "Maître",
+  "8fc9ef73a784da09": "Un Blender de bureau que T3 Code n’a pas pu vérifier a peut-être aussi ce fichier ouvert. Enregistrez-le et fermez-le là-bas pour que les deux ne s’écrasent pas mutuellement.",
+  "ab03a468cc62daf1": "Déplacer vers T3 Code",
+  "77b72b3b7ee97069": "Ouvrir dans T3 Code",
+  "cb4451ab067ff47d": "Blender n’a pas démarré",
+  "731b80ac194beb4a": "Ouvert dans votre Blender de bureau",
+  "ca40a1f4300b4838": "Fichier maître non ouvert dans T3 Code",
+  "10a2ab0021554b0a": [
+    "Blender n’a pas pu ouvrir ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " sur l’écran masqué. Vérifiez que Blender l’ouvre, puis rouvrez-le."
+  ],
+  "f5db5877ab70bfc8": [
+    "Déplacer vers T3 Code enregistre ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " dans votre Blender de bureau, avec ses modifications non enregistrées, quitte ce Blender et ouvre le fichier ici. Son historique d’annulation est perdu."
+  ],
+  "6484265e8c18d3dd": [
+    "Déplacer vers T3 Code enregistre ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " dans votre Blender de bureau, quitte ce Blender et ouvre le fichier ici. Son historique d’annulation est perdu."
+  ],
+  "d77c7db5a642f111": [
+    "Un Blender de bureau est en cours d’exécution, mais T3 Code ne peut pas joindre son module MCP pour savoir si ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " y est ouvert. Enregistrez et fermez le fichier là-bas avant de l’ouvrir ici."
+  ],
+  "a0056043b004c957": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " n’est ouvert dans aucun Blender maître. C’est là que les agents y recopient leurs modifications validées."
+  ],
   "e69c6af74880ba75": "Anglais (États-Unis)",
   "675e421e80618158": "Anglais (Royaume-Uni)",
   "27cface4ce8ec314": "Allemand",
@@ -3323,7 +3378,6 @@
   "b94f5fc6d71bc852": "Configuration requise",
   "7050870331ac8b9a": "Aucun Hosted Blender en cours d’exécution",
   "fb2c65328a8a2e17": "Ouvrez un fichier .blend dans l’aperçu de fichier et choisissez Ouvrir dans Hosted Blender.",
-  "cb4451ab067ff47d": "Blender n’a pas démarré",
   "3f25b97ec987231e": "Blender n’a pas pu ouvrir le fichier sur l’écran masqué. Vérifiez que Blender l’ouvre et que GStreamer dispose d’un encodeur H.264, puis rouvrez-le dans Hosted Blender.",
   "c9d23ccb15073177": "Blender a planté",
   "9f406050b6efb934": "Blender a été fermé",

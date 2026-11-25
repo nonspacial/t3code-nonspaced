@@ -3545,9 +3545,14 @@ export const layerWsRpc = (
         [WS_METHODS.hostedBlenderReopen]: (input) => hostedBlender.reopen(input),
         [WS_METHODS.hostedBlenderDismiss]: (input) => hostedBlender.dismiss(input),
         [WS_METHODS.hostedBlenderSubscribeRunning]: () => hostedBlender.runningBlenders,
-        [WS_METHODS.hostedBlenderCaptureView]: (input) => hostedBlender.captureView(input.threadId),
+        [WS_METHODS.hostedBlenderCaptureView]: (input) =>
+          hostedBlender.captureView(input.threadId, input.role),
         [WS_METHODS.hostedBlenderFindHits]: (input) => hostedBlender.findHits(input),
         [WS_METHODS.hostedBlenderSetView]: (input) => hostedBlender.setView(input),
+        [WS_METHODS.hostedBlenderSubscribeMaster]: (input) =>
+          hostedBlender.masterState(input.threadId),
+        [WS_METHODS.hostedBlenderOpenMaster]: (input) => hostedBlender.reopenMaster(input.threadId),
+        [WS_METHODS.hostedBlenderMoveIntoT3]: (input) => hostedBlender.moveIntoT3(input),
         [WS_METHODS.hostedBlenderSubscribeSetup]: (_input) => hostedBlenderSetup.state,
         [WS_METHODS.hostedBlenderCheckSetup]: (_input) => hostedBlenderSetup.check,
         [WS_METHODS.hostedBlenderInstallWithAgent]: (_input) => hostedBlenderSetup.installWithAgent,

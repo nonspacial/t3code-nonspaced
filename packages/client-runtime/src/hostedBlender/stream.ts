@@ -176,14 +176,20 @@ const webCodecsAvailable = () => "VideoDecoder" in globalThis && "EncodedVideoCh
  * decoded with WebCodecs onto `sink`, one acknowledged frame at a time.
  */
 export function createHostedBlenderStreamClient(
-  target: { readonly access: DeviceHubAccess; readonly threadId: string },
+  target: {
+    readonly access: DeviceHubAccess;
+    readonly threadId: string;
+    /** The thread's master Blender instead of its working Blender. */
+    readonly master?: boolean;
+  },
   sink: DeviceFrameSink,
   events: HostedBlenderStreamEvents,
 ): HostedBlenderStreamClient {
-  const url = withDeviceHubQuery(
-    `${target.access.wsBase}/ws?${new URLSearchParams({ threadId: target.threadId }).toString()}`,
-    target.access,
-  );
+  const query = new URLSearchParams({
+    threadId: target.threadId,
+    ...(target.master === true ? { role: "master" } : {}),
+  });
+  const url = withDeviceHubQuery(`${target.access.wsBase}/ws?${query.toString()}`, target.access);
   let stopped = false;
   let socket: WebSocket | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;

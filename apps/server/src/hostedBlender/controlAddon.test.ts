@@ -37,6 +37,19 @@ class Repos(list):
         repo = types.SimpleNamespace(name=name, module=module, directory=custom_directory)
         self.append(repo)
         return repo
+import contextlib
+# The main window's screen; assetBrowser adds an asset browser, shown or out of view.
+class _Spaces(list):
+    active = None
+_view3d = types.SimpleNamespace(type="VIEW_3D")
+_assets = types.SimpleNamespace(type="FILE_BROWSER", browse_mode="ASSETS", params=types.SimpleNamespace(asset_library_reference="lib"))
+# Blender's unsaved-catalog state, which only catalogs_save's poll reads.
+world = {"unsaved": state.get("unsavedCatalogs", False)}
+_spaces = _Spaces([_view3d] + ([_assets] if state.get("assetBrowser") else []))
+_spaces.active = _assets if state.get("assetBrowser") == "shown" else _view3d
+_area = types.SimpleNamespace(width=800, height=600, spaces=_spaces)
+_screen = types.SimpleNamespace(areas=[_area])
+_windows = [] if state.get("noWindow") else [types.SimpleNamespace(screen=_screen)]
 context = types.SimpleNamespace(
     preferences=types.SimpleNamespace(
         addons=addons,
@@ -47,10 +60,12 @@ context = types.SimpleNamespace(
         ),
         extensions=types.SimpleNamespace(repos=Repos()),
     ),
-    window_manager=types.SimpleNamespace(windows=[]),
+    window_manager=types.SimpleNamespace(windows=_windows),
+    temp_override=lambda **_kwargs: contextlib.nullcontext(),
     mode="OBJECT",
 )
-data = types.SimpleNamespace(filepath=state.get("filepath", "/work/hero.wip-1a2b3c4d.blend"), is_dirty=False)
+images = [types.SimpleNamespace(name=name, is_dirty=True) for name in state.get("dirtyImages", [])]
+data = types.SimpleNamespace(filepath=state.get("filepath", "/work/hero.wip-1a2b3c4d.blend"), is_dirty=False, images=images, screens=[_screen])
 from . import app, ops
 # Blender runs startup scripts (T3's gate), then registers the enabled add-ons, then --python.
 if not state.get("gateSkipped"):
@@ -95,6 +110,20 @@ def _stop():
     sys.modules[NAME + ".mcp_to_blender_server"].stop()
     return {"FINISHED"}
 blmcp = types.SimpleNamespace(server_start=_operator(_start), server_stop=_operator(_stop))
+def _quit(*args):
+    import addon_utils
+    addon_utils.log("quit_blender", *args)
+    return {"FINISHED"}
+wm = types.SimpleNamespace(quit_blender=_quit)
+def _catalogs_poll():
+    import bpy
+    # Blender's own unsaved-catalog state, read through an asset browser; on a library whose
+    # catalogs can't be edited, as All, it answers False whatever is unsaved.
+    # An unavailable or read-only library (here "missing") answers False too.
+    return bpy.world["unsaved"] and bpy._assets.params.asset_library_reference not in ("ALL", "ESSENTIALS", "missing")
+import json as _json, os as _os
+state = _json.loads(_os.environ["STUB_STATE"])
+asset = types.SimpleNamespace(catalogs_save=types.SimpleNamespace(poll=_catalogs_poll))
 def _undo_push(message):
     import bpy, addon_utils
     addon_utils.log("undo_push", message)
@@ -296,6 +325,20 @@ if _scenario.get("connect", True):
         _steps.append(_report())
     if _scenario.get("fileBeforeGrant"):
         bpy.data.filepath = "/work/other.blend"
+    bpy.data.is_dirty = bool(_scenario.get("dirty"))
+    # What a person does in Blender before T3 asks, a tick after each step.
+    for _step in _scenario.get("catalogSteps", []):
+        _browser = _step.get("browser")
+        bpy._spaces[:] = [bpy._view3d] + ([bpy._assets] if _browser else [])
+        bpy._assets.browse_mode = "FILES" if _browser == "files" else "ASSETS"
+        bpy._assets.params.asset_library_reference = _step.get("library", "lib")
+        bpy._spaces.active = bpy._assets if _browser in ("shown", "files") else bpy._view3d
+        if "unsaved" in _step:
+            bpy.world["unsaved"] = _step["unsaved"]
+        if _step.get("save"):
+            bpy.world["unsaved"] = False
+            _on_save_post()
+        _tick()
     if _scenario.get("listeningBeforeGrant"):
         # Blender Lab already listening, however it got there, when T3's grant arrives.
         _addons.enable("${MCP}", default_set=True)
@@ -651,7 +694,19 @@ if _call is not None:
         "acting": _acting,
         "actingAfter": _snapshot()["agentActing"],
     }
+for _kind in _scenario.get("sendAfterCall", []):
+    # T3's next request, once the agent's call has run and before any other tick.
+    _t3.sendall((json.dumps({"type": _kind}) + "\n").encode())
+    _tick()
+_received = []
+if _t3 is not None:
+    try:
+        _t3.settimeout(0.2)
+        _received = [_j.loads(line) for line in _t3.recv(65536).decode().splitlines()]
+    except OSError:
+        pass
 print(_j.dumps({
+    "received": [message["type"] for message in _received],
     "call": _called,
     "mcpVersion": _snapshot()["mcpVersion"],
     "steps": _steps,
@@ -685,7 +740,26 @@ const runAddon = (input: {
   readonly portTaken?: boolean;
   readonly connect?: boolean;
   /** What T3 sends once connected; a grant by default. */
-  readonly send?: ReadonlyArray<"grantAgentListener" | "stopAgentListener">;
+  readonly send?: ReadonlyArray<
+    "grantAgentListener" | "stopAgentListener" | "quitIfClean" | "cancelQuit"
+  >;
+  /** Asset catalogs edited and not saved, which only Blender's catalog poll can tell. */
+  readonly unsavedCatalogs?: boolean;
+  /** No window to check catalogs through. */
+  readonly noWindow?: boolean;
+  /** An asset browser in the main window, as its area's editor or out of view behind another. */
+  readonly assetBrowser?: "shown" | "hidden";
+  /** Steps a person takes before T3 asks, each followed by the add-on's tick. */
+  readonly catalogSteps?: ReadonlyArray<{
+    readonly browser?: "shown" | "files" | "hidden";
+    readonly library?: string;
+    readonly unsaved?: boolean;
+    readonly save?: boolean;
+  }>;
+  /** Blender has unsaved changes when T3's commands arrive. */
+  readonly dirty?: boolean;
+  /** Images edited and not saved, which saving the .blend leaves behind. */
+  readonly dirtyImages?: ReadonlyArray<string>;
   readonly pressStartBeforeGrant?: boolean;
   /** Another file is open by the time T3's grant arrives. */
   readonly fileBeforeGrant?: boolean;
@@ -761,6 +835,8 @@ const runAddon = (input: {
     /** T3's connection closes after this call, and a second call follows. */
     readonly closeT3ThenSecondCall?: boolean;
   };
+  /** What T3 sends once `call` has run, each followed by a tick. */
+  readonly sendAfterCall?: ReadonlyArray<"quitIfClean">;
   /** Blender skipped T3's startup gate, so enabled add-ons registered from the settings. */
   readonly gateSkipped?: boolean;
   /** Blender Lab is listening already when the grant arrives. */
@@ -1118,6 +1194,141 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     expect(bound(result)).toBe(false);
   });
 
+  it("quits on quitIfClean only without unsaved changes, and says so when it won't", () => {
+    const dirty = runAddon({
+      installed: [],
+      enabled: [],
+      listen: false,
+      send: ["quitIfClean"],
+      dirty: true,
+    });
+    expect(dirty.calls.some((call: Array<unknown>) => call[0] === "quit_blender")).toBe(false);
+    expect(dirty.received).toContain("quitRefused");
+    // A saved .blend with an edited image is still unsaved work.
+    const image = runAddon({
+      installed: [],
+      enabled: [],
+      listen: false,
+      send: ["quitIfClean"],
+      dirtyImages: ["paint"],
+    });
+    expect(image.calls.some((call: Array<unknown>) => call[0] === "quit_blender")).toBe(false);
+    expect(image.received).toContain("quitRefused");
+    const quits = (result: { readonly calls: ReadonlyArray<Array<unknown>> }) =>
+      result.calls.some((call) => call[0] === "quit_blender");
+    // Unsaved catalogs, which Blender's own quit would ask about, are unsaved work too.
+    const catalogs = runAddon({
+      installed: [],
+      enabled: [],
+      listen: false,
+      send: ["quitIfClean"],
+      unsavedCatalogs: true,
+      assetBrowser: "shown",
+    });
+    expect(quits(catalogs)).toBe(false);
+    expect(catalogs.received).toContain("quitRefused");
+    // An asset browser out of view can't be asked, so its catalogs aren't known to be saved.
+    const unknown = runAddon({
+      installed: [],
+      enabled: [],
+      listen: false,
+      send: ["quitIfClean"],
+      assetBrowser: "hidden",
+    });
+    expect(quits(unknown)).toBe(false);
+    expect(unknown.received).toContain("quitRefused");
+    // A quit T3 cancelled while it waited here is never carried out.
+    const cancelled = runAddon({
+      installed: [],
+      enabled: [],
+      listen: false,
+      send: ["quitIfClean", "cancelQuit"],
+    });
+    expect(quits(cancelled)).toBe(false);
+    expect(cancelled.received).toContain("quitCancelled");
+    const clean = runAddon({ installed: [], enabled: [], listen: false, send: ["quitIfClean"] });
+    // Quit directly once clean: no dialog appears where nobody can answer it.
+    expect(clean.calls).toContainEqual(["quit_blender"]);
+    // With an asset browser shown and nothing unsaved, it quits too.
+    const shown = runAddon({
+      installed: [],
+      enabled: [],
+      listen: false,
+      send: ["quitIfClean"],
+      assetBrowser: "shown",
+    });
+    expect(shown.calls).toContainEqual(["quit_blender"]);
+    expect(clean.received).not.toContain("quitRefused");
+  });
+
+  describe("unsaved asset catalogs, remembered past their asset browser", () => {
+    const quitAfter = (steps: NonNullable<Parameters<typeof runAddon>[0]["catalogSteps"]>) => {
+      const result = runAddon({
+        installed: [],
+        enabled: [],
+        listen: false,
+        send: ["quitIfClean"],
+        catalogSteps: steps,
+      });
+      return {
+        quit: result.calls.some((call: Array<unknown>) => call[0] === "quit_blender"),
+        refused: result.received.includes("quitRefused"),
+      };
+    };
+
+    it("refuses after a catalog edit whose asset browser became a File Browser", () => {
+      expect(quitAfter([{ browser: "shown", unsaved: true }, { browser: "files" }])).toEqual({
+        quit: false,
+        refused: true,
+      });
+    });
+
+    it("refuses after a catalog edit whose asset browser moved to the All library", () => {
+      expect(
+        quitAfter([
+          { browser: "shown", unsaved: true },
+          { browser: "shown", library: "ALL" },
+        ]),
+      ).toEqual({ quit: false, refused: true });
+    });
+
+    it("refuses after an agent call that edits catalogs and switches the browser away at once", () => {
+      // No tick runs between the edit and the switch, so the latch never sees the catalogs;
+      // the call's own undo step marks the file unsaved instead.
+      const result = runAddon({
+        installed: [MCP],
+        enabled: [MCP],
+        listen: true,
+        assetBrowser: "shown",
+        call: {
+          code: "import bpy\nbpy.world['unsaved'] = True\nbpy._spaces.active = bpy._view3d\nresult = {}",
+        },
+        sendAfterCall: ["quitIfClean"],
+      });
+      expect(result.call).toMatchObject({ reply: { status: "ok" }, undoPushes: 1 });
+      expect(result.calls.some((call: Array<unknown>) => call[0] === "quit_blender")).toBe(false);
+      expect(result.received).toContain("quitRefused");
+    });
+
+    it("refuses after a catalog edit whose asset browser moved to an unavailable library", () => {
+      expect(
+        quitAfter([
+          { browser: "shown", unsaved: true },
+          { browser: "shown", library: "missing" },
+        ]),
+      ).toEqual({ quit: false, refused: true });
+    });
+
+    it("quits once the edit is saved", () => {
+      expect(
+        quitAfter([
+          { browser: "shown", unsaved: true },
+          { browser: "files", save: true },
+        ]),
+      ).toEqual({ quit: true, refused: false });
+    });
+  });
+
   describe("its guard on Blender Lab's listener", () => {
     const ok = { status: "ok", result: { cube: 1 } };
     const granted = { installed: [MCP], enabled: [MCP], listen: true } as const;
@@ -1296,6 +1507,24 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
           checksAfterEnd: 0,
           listenerAfter: "off",
         });
+      },
+    );
+
+    it.each([
+      ["its undo step marks the file unsaved", false],
+      ["its undo step fails to mark the file unsaved", true],
+    ] as const)(
+      "records pending deferred writes before deciding a quit, so the master is kept, when %s",
+      (_name, undoPushLeavesClean) => {
+        // A departed agent's deferred part has written since the user saved, and still waits.
+        const result = runAddon({
+          ...granted,
+          undoPushLeavesClean,
+          call: { code: writesThenWaits, savedBetween: true },
+          sendAfterCall: ["quitIfClean"],
+        });
+        expect(result.calls.some((call: Array<unknown>) => call[0] === "quit_blender")).toBe(false);
+        expect(result.received).toContain("quitRefused");
       },
     );
 

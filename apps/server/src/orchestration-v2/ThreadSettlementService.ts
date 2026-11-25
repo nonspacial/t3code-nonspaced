@@ -765,6 +765,10 @@ export const make = Effect.gen(function* () {
       return fullSweeps.enqueue(undefined);
     });
   const threadSweeps = yield* FiberSet.make<void>();
+  // A busy master Blender can take a while to settle; other threads' events don't wait on it.
+  const masterReleases = yield* FiberSet.make<void>();
+  const releaseMaster = (threadId: ThreadId) =>
+    hostedBlender.releaseMaster(threadId).pipe(FiberSet.run(masterReleases), Effect.asVoid);
   const threadSweepSlots = yield* Semaphore.make(8);
   // One sweep per thread at a time; events during a running sweep coalesce into one more pass.
   const threadSweepStates = new Map<ThreadId, "queued" | "running" | "rerun">();
@@ -798,6 +802,8 @@ export const make = Effect.gen(function* () {
       if (settled.deletedAt !== null || settled.settledOverride !== "settled") return;
       yield* terminals.closeOnSettle({ threadId });
       yield* hostedBlender.closeOnSettle({ threadId });
+      // A master Blender quits once the last thread using it settles.
+      yield* releaseMaster(threadId);
       const worktreePath = settled.worktreePath;
       if (worktreePath === null) return;
       if (!(yield* fileSystem.exists(worktreePath))) {
@@ -865,7 +871,7 @@ export const make = Effect.gen(function* () {
       case "thread.deleted":
         return hostedBlender
           .closeOnSettle({ threadId: event.threadId })
-          .pipe(Effect.andThen(enqueueFullSweep()));
+          .pipe(Effect.andThen(releaseMaster(event.threadId)), Effect.andThen(enqueueFullSweep()));
       case "thread.pull-request-link-updated":
       case "thread.pull-request-synced":
       case "thread.issue-synced":
