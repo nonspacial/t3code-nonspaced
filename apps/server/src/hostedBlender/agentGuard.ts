@@ -266,8 +266,14 @@ def _guard_mcp_server(server):
         _mark_acting()
         if not _confirm_grant(server):
             return server._ExecResult({"status": "error", "message": ACCESS_ENDED_MESSAGE})
-        # A file changed on disk while no pane showed it: the agent works on what is there now.
-        _reload_if_stale()
+        # A file changed on disk while no pane showed it: the agent works on what is there now,
+        # or nothing runs and it is told why.
+        stale = _catch_up_for_agent()
+        if stale is not None:
+            return server._ExecResult({"status": "error", "message": stale})
+        # What loaded must still be the file T3 authorized.
+        if not _confirm_grant(server):
+            return server._ExecResult({"status": "error", "message": ACCESS_ENDED_MESSAGE})
         try:
             result = original_execute(code, strict_json)
         except BaseException:

@@ -132,6 +132,20 @@ export const HostedBlenderKeptFile = Schema.Union([
 ]);
 export type HostedBlenderKeptFile = typeof HostedBlenderKeptFile.Type;
 
+/**
+ * What holds a hosted Blender back from reloading its file after it changed on disk: the agent's
+ * work still running, unsaved image or asset catalog edits no copy can keep, a copy that couldn't
+ * be written, or a file Blender couldn't load.
+ */
+export const HostedBlenderReloadBlocker = Schema.Literals([
+  "agentWork",
+  "images",
+  "catalogs",
+  "copyFailed",
+  "loadFailed",
+]);
+export type HostedBlenderReloadBlocker = typeof HostedBlenderReloadBlocker.Type;
+
 export const HostedBlenderRunningState = Schema.Struct({
   status: Schema.Literals(["starting", "running"]),
   /** Relative to the thread's workspace. */
@@ -150,6 +164,8 @@ export const HostedBlenderRunningState = Schema.Struct({
    * with this key, which Reopen with `restore` puts back. `at` tells one reload from the next.
    */
   reloadKept: Schema.optionalKey(Schema.Struct({ key: Schema.String, at: Schema.Number })),
+  /** The file changed on disk and Blender hasn't reloaded it, because of this. */
+  reloadBlocked: Schema.optionalKey(HostedBlenderReloadBlocker),
 });
 export type HostedBlenderRunningState = typeof HostedBlenderRunningState.Type;
 
@@ -168,6 +184,8 @@ export const HostedBlenderKeptCopy = Schema.Struct({
   restoreFailed: Schema.optional(Schema.Boolean),
   /** Where the copy is on the server, for one T3 can't reopen: untitled or outside the workspace. */
   copyPath: Schema.optional(Schema.String),
+  /** Kept as Blender reloaded the file after it changed on disk: older than the file there. */
+  reloaded: Schema.optional(Schema.Boolean),
 });
 export type HostedBlenderKeptCopy = typeof HostedBlenderKeptCopy.Type;
 
@@ -281,6 +299,11 @@ export const HostedBlenderReopenInput = Schema.Struct({
   key: Schema.String,
   /** Restore that recovery copy or autosave instead of the file as saved. */
   restore: Schema.Boolean,
+  /**
+   * In a running Blender, restore over its unsaved changes, which become the file's copy in turn.
+   * Without it, such a restore fails with `restoreReplacesUnsaved`.
+   */
+  replaceUnsaved: Schema.optionalKey(Schema.Boolean),
 });
 export type HostedBlenderReopenInput = typeof HostedBlenderReopenInput.Type;
 
@@ -393,6 +416,8 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "openFileChanged",
       "changedOnDisk",
       "restoreFailed",
+      "restoreReplacesUnsaved",
+      "unkeepableEdits",
     ]),
   },
 ) {
@@ -450,6 +475,10 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "The file changed on disk after this Blender loaded it, so Blender didn't save over it. Show the Blender pane to load the file as it is now; its unsaved changes are kept as a recovery copy.";
       case "restoreFailed":
         return "Blender couldn't restore the kept changes. The copy is still kept.";
+      case "restoreReplacesUnsaved":
+        return "This Blender has unsaved changes the restore would replace.";
+      case "unkeepableEdits":
+        return "This Blender has unsaved image edits a recovery copy can't keep. Save or discard them first.";
     }
   }
 }

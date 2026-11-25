@@ -185,11 +185,15 @@ export function createHostedBlenderStreamClient(
   sink: DeviceFrameSink,
   events: HostedBlenderStreamEvents,
 ): HostedBlenderStreamClient {
-  const query = new URLSearchParams({
-    threadId: target.threadId,
-    ...(target.master === true ? { role: "master" } : {}),
-  });
-  const url = withDeviceHubQuery(`${target.access.wsBase}/ws?${query.toString()}`, target.access);
+  // Each connection says whether its pane is on screen, so a hidden one never starts capture.
+  const urlFor = (visible: boolean) => {
+    const query = new URLSearchParams({
+      threadId: target.threadId,
+      ...(target.master === true ? { role: "master" } : {}),
+      ...(visible ? {} : { hidden: "1" }),
+    });
+    return withDeviceHubQuery(`${target.access.wsBase}/ws?${query.toString()}`, target.access);
+  };
   let stopped = false;
   let socket: WebSocket | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -199,7 +203,6 @@ export function createHostedBlenderStreamClient(
   let decoderSps: Uint8Array | null = null;
   let configuring = false;
   let size: { readonly width: number; readonly height: number } | null = null;
-  // Every connection starts visible on the server.
   let visible = true;
   let live = false;
   // Whether the server last said this viewer controls Blender, on the current socket.
@@ -361,14 +364,15 @@ export function createHostedBlenderStreamClient(
     }
     live = false;
     events.onStatus("connecting");
-    const ws = new WebSocket(url);
+    const askedVisible = visible;
+    const ws = new WebSocket(urlFor(askedVisible));
     ws.binaryType = "arraybuffer";
     socket = ws;
     let opened = false;
     ws.addEventListener("open", () => {
       if (socket !== ws) return;
       opened = true;
-      if (!visible) sendVisibility();
+      if (visible !== askedVisible) sendVisibility();
       sendSize();
     });
     ws.addEventListener("message", (event) => {

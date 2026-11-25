@@ -13416,5 +13416,47 @@
     },
     " wurde auf dem Datenträger geändert, deshalb hat Blender die Datei neu geladen. Die nicht gespeicherten Änderungen sind als Wiederherstellungskopie aufbewahrt."
   ],
-  "a1d7b8f8a44e27aa": "Änderungen wiederherstellen"
+  "a1d7b8f8a44e27aa": "Änderungen wiederherstellen",
+  "acd0c171046c17bf": "Die nicht gespeicherten Änderungen an {name} ersetzen?",
+  "cb7a692d62db22e7": "Blender hat Änderungen seit dem Neuladen der Datei. Beim Wiederherstellen kommen die aufbewahrten Änderungen zurück, und diese werden stattdessen als Wiederherstellungskopie aufbewahrt, sodass du sie wieder herstellen kannst.",
+  "449feb1ad3d6c425": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " wurde auf dem Datenträger geändert. Blender lädt die Datei, sobald die laufende Arbeit des Agenten darin beendet ist."
+  ],
+  "06be14c04a81e489": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " wurde auf dem Datenträger geändert. Blender lädt die Datei, sobald die nicht gespeicherten Bildänderungen gespeichert oder verworfen sind, da eine Wiederherstellungskopie sie nicht aufbewahren kann."
+  ],
+  "3a3de5a1dfe252e8": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " wurde auf dem Datenträger geändert. Blender lädt die Datei, sobald die nicht gespeicherten Änderungen an Asset-Katalogen gespeichert oder verworfen sind, da eine Wiederherstellungskopie sie nicht aufbewahren kann."
+  ],
+  "f813d3c90e608095": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " wurde auf dem Datenträger geändert, aber Blender konnte die nicht gespeicherten Änderungen nicht zuerst aufbewahren und hat die neue Version daher nicht geladen."
+  ],
+  "07634e6515f13cbe": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " wurde auf dem Datenträger geändert, aber Blender konnte die neue Version nicht laden. Es versucht es erneut, wenn sich die Datei ändert."
+  ]
 }

@@ -28,6 +28,7 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { blendFileName, quitFileOf } from "@t3tools/client-runtime/state/hosted-blender";
 import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { CameraIcon, MoreVertical } from "lucide-react";
@@ -104,6 +105,7 @@ import {
   BlenderRoleSwitch,
   DesktopUncheckedNotice,
   MasterCard,
+  ReloadBlockedNotice,
   ReloadedNotice,
 } from "./BlenderMaster";
 import { useBlenderRoleStore } from "./blenderRole";
@@ -624,6 +626,7 @@ function RunningBlender(
     readonly notice?: ReactNode;
   },
 ) {
+  const gt = useGT();
   const master = props.master === true;
   const [stats, setStats] = useState<StreamStats>({ frameSize: null, rate: null, server: null });
   const [control, setControl] = useState<HostedBlenderControl>(VIEW_ONLY);
@@ -652,6 +655,12 @@ function RunningBlender(
         master={master}
       />
       {props.notice}
+      {props.state.reloadBlocked === undefined ? null : (
+        <ReloadBlockedNotice
+          name={blendFileName(quitFileOf(props.state), gt("Untitled scene"))}
+          blocker={props.state.reloadBlocked}
+        />
+      )}
       {reloadKept !== undefined && reloadKept.at !== dismissedReload ? (
         <ReloadedNotice
           threadRef={props.threadRef}
@@ -722,7 +731,8 @@ function BlenderToolbar(props: {
     "auto",
     ScrollingSetting,
   );
-  const name = fileName(props.state.relativePath);
+  // The file Blender has open, which File > Open can have changed since it started.
+  const name = blendFileName(quitFileOf(props.state), gt("Untitled scene"));
   const { canOperate, controller } = props.control;
   const quit = useQuitHostedBlender(
     props.threadRef,

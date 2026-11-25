@@ -146,7 +146,7 @@ function BlenderScreen(props: {
           <SheetCloseButton accessibilityLabel={gt("Close Blender")} onClose={props.onClose} />
           <AppText numberOfLines={1} className="flex-1 px-1 font-t3-medium text-base">
             {blender?.status === "running" || blender?.status === "starting"
-              ? fileName(blender.relativePath)
+              ? blendFileName(quitFileOf(blender), gt("Untitled scene"))
               : // oxlint-disable-next-line t3code/no-untranslated-copy -- a product name
                 "Blender"}
           </AppText>

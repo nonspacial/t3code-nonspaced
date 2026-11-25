@@ -96,7 +96,9 @@ Closing the pane leaves Blender running; open it again from the file preview, a 
 
 A hosted Blender shows the file as it is on disk. When something else changes the `.blend` it has open, such as an agent's script, a copy back through another Blender or a checkout, Blender reloads it: straight away while its pane is on screen, otherwise the next time a pane shows it or the agent next works in it, once however many times the file changed. Your viewport window keeps its view, and undo history starts again, as after any reload. Saving in that Blender, by you or the agent, isn't a change on disk and reloads nothing.
 
-If Blender had unsaved changes, they're kept first as that file's copy, and the pane says so: **Restore changes** puts them back over the reloaded file, unsaved, so you can choose what to keep. Like any copy of the file, saving the file removes it. Blender doesn't reload over unsaved edits to images or asset catalogs, which a copy of the `.blend` can't hold; save or discard them first. **Save and quit** never writes over a file that changed on disk: it says so and leaves Blender running.
+If Blender had unsaved changes, they're kept first as that file's copy, and the pane says so: **Restore changes** puts them back over the reloaded file, unsaved, so you can choose what to keep. If you've changed anything since the reload, it asks first, and what it replaces becomes the copy instead, so restoring again swaps back. Like any copy of the file, saving the file removes it. The agent's next start of its working copy opens the file as it is on disk and leaves such a copy for you.
+
+Blender doesn't reload over unsaved edits to images or asset catalogs, which a copy of the `.blend` can't hold; the pane says the file changed and what is holding the reload, and it reloads once you save or discard them. While a reload waits, the agent's calls into that Blender are refused with the reason, so it never works on the old file. **Save and quit** never writes over a file that changed on disk, or one deleted since Blender opened it: it says so and leaves Blender running.
 
 ## When Blender closes
 

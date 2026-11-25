@@ -220,8 +220,10 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
               { threadId: input.threadId, relativePath },
               { agentWorkingCopy: true },
             )
-          : hostedBlender.reopen(
-              { threadId: input.threadId, key: waiting.key, restore: true },
+          : // Work a reload kept is older than the file on disk, which the agent gets; the copy
+            // waits for the person to restore or discard.
+            hostedBlender.reopen(
+              { threadId: input.threadId, key: waiting.key, restore: waiting.reloaded !== true },
               { agentWorkingCopy: true },
             )
       ).pipe(Effect.mapError((error) => new HostedBlenderToolError({ reason: error.message })));
@@ -252,7 +254,9 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
     )?.status;
     return {
       ...result,
-      ...(waiting === undefined ? {} : { restoredUnsavedChanges: true }),
+      ...(waiting === undefined || waiting.reloaded === true
+        ? {}
+        : { restoredUnsavedChanges: true }),
       status: status === "running" ? "running" : "starting",
     } satisfies HostedBlenderToolStartResult;
   },

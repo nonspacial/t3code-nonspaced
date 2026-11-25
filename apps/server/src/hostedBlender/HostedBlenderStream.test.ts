@@ -133,7 +133,9 @@ it.effect(
       yield* Effect.promise(() => acked.promise);
       expect(messages).toEqual([{ type: "viewport", width: 1280, height: 720 }]);
       expect(frames).toEqual([frame]);
-      expect(attached).toEqual([["thread-1", { canOperate: false, role: "working" }]]);
+      expect(attached).toEqual([
+        ["thread-1", { canOperate: false, role: "working", visible: true }],
+      ]);
     }),
 );
 

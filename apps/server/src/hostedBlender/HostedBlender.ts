@@ -9,13 +9,14 @@ import {
   HostedBlenderKeptFile,
   HostedBlenderHits,
   type HostedBlenderMasterState,
-  type HostedBlenderRole,
   type HostedBlenderOpenInput,
   type HostedBlenderQuitInput,
   type HostedBlenderReopenInput,
   type HostedBlenderRunningList,
   type HostedBlenderRunningState,
   HostedBlenderSetViewInput,
+  HostedBlenderReloadBlocker,
+  HostedBlenderRole,
   type HostedBlenderStreamServerMessage,
   type HostedBlenderViewerMessage,
   type HostedBlenderThreadState,
@@ -162,9 +163,18 @@ const ControlMessage = Schema.Union([
     loadedAt: Schema.optional(Schema.Number),
     /** The file on disk changed since Blender read or saved it. */
     stale: Schema.optional(Schema.Boolean),
+    /** What holds the reload of a stale file. */
+    staleBlocked: Schema.optional(HostedBlenderReloadBlocker),
   }),
-  /** Unsaved changes kept before a reload, as an autosave named this in Blender's TMPDIR. */
-  Schema.Struct({ type: Schema.Literal("reloading"), copy: Schema.String }),
+  /**
+   * Unsaved changes of `filepath` kept before a reload, in Blender's TMPDIR as `copy`, beside a
+   * note naming the file, which salvage reads if T3 never gets to it.
+   */
+  Schema.Struct({
+    type: Schema.Literal("reloading"),
+    copy: Schema.String,
+    filepath: Schema.String,
+  }),
   /** Blender reloaded the file from disk; `kept` when its unsaved changes went to a copy first. */
   Schema.Struct({ type: Schema.Literal("reloaded"), kept: Schema.Boolean }),
   /** The file and its unsaved bit as Blender began to quit without saving: the run's last word. */
@@ -204,12 +214,19 @@ const encodeListenerCommand = Schema.encodeSync(
   ),
 );
 const STOP_AGENT_LISTENER = `${encodeListenerCommand({ type: "stopAgentListener" })}\n`;
-// The open file may have changed on disk; `reload` takes it now, since a pane shows this Blender.
+// The open file, by its real path, settled on disk at `revision` (null: nothing there);
+// `reload` takes it now, since a pane shows this Blender. `panesHidden` takes that back.
 const encodeDiskChanged = Schema.encodeSync(
   Schema.fromJsonString(
-    Schema.Struct({ type: Schema.Literal("diskChanged"), reload: Schema.Boolean }),
+    Schema.Struct({
+      type: Schema.Literal("diskChanged"),
+      path: Schema.String,
+      revision: Schema.NullOr(Schema.String),
+      reload: Schema.Boolean,
+    }),
   ),
 );
+const PANES_HIDDEN = '{"type":"panesHidden"}\n';
 // The add-on enables and starts Blender Lab only on this; a stop it heard first wins.
 const GRANT_AGENT_LISTENER = `${encodeListenerCommand({ type: "grantAgentListener" })}\n`;
 // Quits only if Blender, asked at that moment, has no unsaved changes. A quit T3 gave up on is
@@ -271,6 +288,8 @@ const RecoveryRecord = Schema.Struct({
   recovery: Schema.Boolean,
   /** When the copy was kept, epoch ms; the pane lists the newest first. */
   keptAt: Schema.Number,
+  /** Kept as Blender reloaded the file from disk, so the file there is newer than this. */
+  reloaded: Schema.optional(Schema.Boolean),
 });
 type RecoveryRecord = typeof RecoveryRecord.Type;
 const RecoveryRecordJson = Schema.fromJsonString(RecoveryRecord);
@@ -286,9 +305,16 @@ const LaunchRecord = Schema.fromJsonString(
     threadId: ThreadId,
     relativePath: TrimmedNonEmptyString,
     helperPid: Schema.optional(Schema.Int),
+    /** Which file a copy staged before a reload is of, by the path Blender gave it. */
+    role: Schema.optional(HostedBlenderRole),
+    workspaceRoot: Schema.optional(Schema.String),
   }),
 );
 const decodeLaunchRecord = Schema.decodeUnknownOption(LaunchRecord);
+/** The note the add-on writes beside work it staged: the file it is of. */
+const decodeStagedNote = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ filepath: Schema.String })),
+);
 const encodeLaunchRecord = Schema.encodeSync(LaunchRecord);
 
 const EndFile = Schema.Struct({
@@ -331,8 +357,17 @@ const ControlRequest = Schema.Union([
     /** The file the link was made for; the add-on refuses if Blender has another open. */
     filepath: Schema.String,
   }),
-  /** Restores a kept copy of the open file over it, unsaved; answers whether it did. */
-  Schema.Struct({ type: Schema.Literal("restore"), id: Schema.Int, path: Schema.String }),
+  /**
+   * Restores a kept copy over the open file, unsaved, if `filepath` is still the one open. Unsaved
+   * work there is replaced only with `replace`, and kept first as the file's copy.
+   */
+  Schema.Struct({
+    type: Schema.Literal("restore"),
+    id: Schema.Int,
+    path: Schema.String,
+    filepath: Schema.String,
+    replace: Schema.Boolean,
+  }),
 ]);
 type ControlRequest = typeof ControlRequest.Type;
 type ControlRequestBody = ControlRequest extends infer Request
@@ -341,6 +376,12 @@ type ControlRequestBody = ControlRequest extends infer Request
     : never
   : never;
 const encodeControlRequest = Schema.encodeSync(Schema.fromJsonString(ControlRequest));
+/** How a restore in place went; `copy` is the unsaved work it replaced, staged to keep. */
+const RestoreAnswer = Schema.Struct({
+  outcome: Schema.Literals(["restored", "otherFile", "unsaved", "unkeepable", "failed"]),
+  copy: Schema.optional(Schema.NullOr(Schema.String)),
+  filepath: Schema.optional(Schema.String),
+});
 /** What the add-on renders; the server reads the PNG it wrote. */
 const AddonViewCapture = Schema.Struct({
   ...HostedBlenderViewCapture.fields,
@@ -435,7 +476,12 @@ export class HostedBlender extends Context.Service<
     /** `canOperate`: the viewer may take control (`terminal:operate`). */
     readonly attachViewer: (
       threadId: string,
-      options: { readonly canOperate: boolean; readonly role?: HostedBlenderRole | undefined },
+      options: {
+        readonly canOperate: boolean;
+        readonly role?: HostedBlenderRole | undefined;
+        /** Whether its pane is on screen as it attaches; a tab in the background isn't. */
+        readonly visible?: boolean | undefined;
+      },
     ) => Effect.Effect<HostedBlenderAttachResult, never, Scope.Scope>;
     /** The person's viewport window's camera, for an annotation of the frame shown now. */
     readonly captureView: (
@@ -617,6 +663,12 @@ interface Instance {
   reloadKept: { readonly key: string; readonly at: number } | null;
   /** Why the add-on refused the last Save and quit. */
   saveRefusal: "saveFailed" | "changedOnDisk" | null;
+  /** What holds the reload of a stale file, as the add-on last said. */
+  staleBlocked: HostedBlenderReloadBlocker | null;
+  /** A disk change seen while a save or restore was under way, checked once it is over. */
+  diskCheckWaiting: boolean;
+  /** The key of the copy the last `reloading` kept, which its `reloaded` offers. */
+  keptReload: string | null;
   /** The workspace's real path, which the open file is named under. */
   readonly workspaceRoot: string;
   mcpVersion: string | null;
@@ -751,6 +803,7 @@ const make = Effect.gen(function* () {
           kind: record.kind,
           file: record.file,
           recovery: record.recovery,
+          ...(record.reloaded === true ? { reloaded: true } : {}),
           ...(failedRestores.has(copyId(threadId, key)) ? { restoreFailed: true } : {}),
           // T3 reopens only workspace files; the person can find any other copy here.
           ...(record.recovery && record.file.kind !== "workspace"
@@ -765,14 +818,19 @@ const make = Effect.gen(function* () {
       ? {}
       : { openFile: keptFileOf(instance.openFile ?? "", instance.workspaceRoot, path.relative) };
 
-  /** The copy a reload kept, while it is still the open file's. */
+  /** The copy a reload kept, while it is still the open file's, and a reload being held. */
   const reloadKeptOf = (instance: Instance) => {
     const kept = instance.reloadKept;
-    return kept !== null &&
+    return {
+      ...(kept !== null &&
       kept.key === fileKeyOf(instance.endFile.file) &&
       records.get(ownerOf(instance))?.get(kept.key)?.recovery === true
-      ? { reloadKept: kept }
-      : {};
+        ? { reloadKept: kept }
+        : {}),
+      ...(instance.stale && instance.staleBlocked !== null
+        ? { reloadBlocked: instance.staleBlocked }
+        : {}),
+    };
   };
 
   const publishRunning = () =>
@@ -1112,6 +1170,16 @@ const make = Effect.gen(function* () {
         // T3 was closing it, or it stopped with the server: a crash, for all T3 knows.
         const outcome = yield* read("outcome");
         const ending = outcome === "closing" || outcome === "released" ? "closed" : "crashed";
+        // A launch from before reloads staged nothing.
+        const { role, workspaceRoot } = launch.value;
+        if (role !== undefined && workspaceRoot !== undefined) {
+          yield* keepStagedLeft({
+            owner: threadId,
+            role,
+            workspaceRoot,
+            tmpDir: path.join(launchDir, "tmp"),
+          });
+        }
         yield* applyCleanup(
           {
             threadId,
@@ -1457,7 +1525,7 @@ const make = Effect.gen(function* () {
     yield* writeRunFacts(instance);
     if (result === "ok") {
       if (instance.shown) yield* markRunning(instance);
-      return;
+      return yield* checkWaitingDisk(instance);
     }
     // The file as saved is open instead; quitting it keeps the copy for another try.
     failedRestores.add(copyId(ownerOf(instance), fileKeyOf(instance.endFile.file)));
@@ -1636,53 +1704,141 @@ const make = Effect.gen(function* () {
    * saved itself, and reloads at once only while a pane shows it. Otherwise it reloads when a pane
    * next shows it, or before the agent's next call.
    */
-  const checkDisk = (instance: Instance) =>
-    Effect.suspend(() =>
-      instance.control === null || closingByT3(instance) || instance.restore === "pending"
-        ? Effect.void
-        : instance.control.write(
-            `${encodeDiskChanged({ type: "diskChanged", reload: paneShown(instance) })}\n`,
-          ),
+  const checkDisk: (instance: Instance) => Effect.Effect<void> = Effect.fnUntraced(function* (
+    instance: Instance,
+  ) {
+    const control = instance.control;
+    if (control === null || instance.quitting || instance.closeRequested || instance.ending) {
+      return;
+    }
+    // Checked once the save or restore is over: the add-on would only hold it till then, and a
+    // refused save leaves the change to catch up with.
+    if (instance.pendingSave !== null || instance.restore === "pending") {
+      instance.diskCheckWaiting = true;
+      return;
+    }
+    instance.diskCheckWaiting = false;
+    const file = instance.openRealPath;
+    if (file === null) return;
+    yield* control.write(
+      `${encodeDiskChanged({
+        type: "diskChanged",
+        path: file,
+        revision: yield* readFileRevision(file),
+        reload: paneShown(instance),
+      })}\n`,
     );
+  });
+
+  const checkWaitingDisk = (instance: Instance) =>
+    instance.diskCheckWaiting ? checkDisk(instance) : Effect.void;
 
   /** A Blender out of date with its file catches up once a pane shows it. */
   const askReload = (instance: Instance) =>
     instance.stale && paneShown(instance) ? checkDisk(instance) : Effect.void;
 
-  /** A reload's copy of the unsaved changes becomes the file's copy, replacing an older one. */
-  const keepReloadCopy = Effect.fnUntraced(
-    function* (instance: Instance, name: string) {
-      if (instance.stateDir === null || path.basename(name) !== name || !name.endsWith(".blend")) {
-        return;
-      }
-      const from = path.join(instance.stateDir, "tmp", name);
-      const info = yield* fileSystem.lstat(from).pipe(Effect.option);
-      if (Option.isNone(info) || info.value.type !== "File") return;
-      const owner = ownerOf(instance);
-      const { file } = instance.endFile;
-      const key = fileKeyOf(file);
-      yield* fileSystem.makeDirectory(copyDir(owner, key), { recursive: true });
-      // On the same disk a rename, which costs nothing however large the file is.
-      yield* fileSystem
-        .rename(from, sessionPath(owner, key))
-        .pipe(
-          Effect.catch(() =>
-            writeAtomically(sessionPath(owner, key), (to) => fileSystem.copyFile(from, to)),
+  /** Nothing is reloaded for a pane nobody can see; the agent's next call still catches up. */
+  const panesGone = (instance: Instance) =>
+    instance.stale && !paneShown(instance) && instance.control !== null
+      ? instance.control.write(PANES_HIDDEN)
+      : Effect.void;
+
+  /** The file a path Blender reports is, as its run's copies name it. */
+  const keptFileFor = (role: HostedBlenderRole, workspaceRoot: string, filepath: string) =>
+    role === "master"
+      ? fileSystem.realPath(filepath).pipe(
+          Effect.orElseSucceed(() => filepath),
+          Effect.map(masterFileOf),
+        )
+      : Effect.succeed(keptFileOf(filepath, workspaceRoot, path.relative));
+
+  /**
+   * Work Blender staged before a reload or restore becomes the copy of the file it names,
+   * replacing an older copy of that file only. Its note goes last, so a failure leaves both for
+   * salvage.
+   */
+  const keepStaged = Effect.fnUntraced(function* (input: {
+    readonly owner: ThreadId;
+    readonly role: HostedBlenderRole;
+    readonly workspaceRoot: string;
+    readonly tmpDir: string;
+    readonly name: string;
+    readonly filepath: string;
+  }) {
+    if (path.basename(input.name) !== input.name || !/^t3-reload-\d+\.blend$/.test(input.name)) {
+      return null;
+    }
+    const from = path.join(input.tmpDir, input.name);
+    const info = yield* fileSystem.lstat(from).pipe(Effect.option);
+    if (Option.isNone(info) || info.value.type !== "File") return null;
+    const file = yield* keptFileFor(input.role, input.workspaceRoot, input.filepath);
+    const key = fileKeyOf(file);
+    yield* fileSystem.makeDirectory(copyDir(input.owner, key), { recursive: true });
+    // On the same disk a rename, which costs nothing however large the file is.
+    yield* fileSystem
+      .rename(from, sessionPath(input.owner, key))
+      .pipe(
+        Effect.catch(() =>
+          writeAtomically(sessionPath(input.owner, key), (to) => fileSystem.copyFile(from, to)),
+        ),
+      );
+    failedRestores.delete(copyId(input.owner, key));
+    yield* writeRecord({
+      threadId: input.owner,
+      file,
+      kind: "closed",
+      recovery: true,
+      keptAt: yield* Clock.currentTimeMillis,
+      reloaded: true,
+    });
+    yield* fileSystem.remove(from.replace(/\.blend$/, ".json"), { force: true });
+    return key;
+  });
+
+  const keepReloadCopy = (instance: Instance, name: string, filepath: string) =>
+    instance.stateDir === null
+      ? Effect.succeed(null)
+      : keepStaged({
+          owner: ownerOf(instance),
+          role: instance.role,
+          workspaceRoot: instance.workspaceRoot,
+          tmpDir: path.join(instance.stateDir, "tmp"),
+          name,
+          filepath,
+        }).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("couldn't keep a hosted Blender's changes before its reload", {
+              cause,
+            }).pipe(Effect.as(null)),
           ),
         );
-      failedRestores.delete(copyId(owner, key));
-      yield* writeRecord({
-        threadId: owner,
-        file,
-        kind: "closed",
-        recovery: true,
-        keptAt: yield* Clock.currentTimeMillis,
+
+  /** Whatever a launch staged and T3 never kept, oldest first, before its end keeps its own. */
+  const keepStagedLeft = Effect.fnUntraced(function* (input: {
+    readonly owner: ThreadId;
+    readonly role: HostedBlenderRole;
+    readonly workspaceRoot: string;
+    readonly tmpDir: string;
+  }) {
+    const notes = (yield* fileSystem
+      .readDirectory(input.tmpDir)
+      .pipe(Effect.orElseSucceed(() => [])))
+      .filter((name) => /^t3-reload-\d+\.json$/.test(name))
+      .toSorted((a, b) => Number(a.match(/\d+/)?.[0]) - Number(b.match(/\d+/)?.[0]));
+    for (const note of notes) {
+      const filepath = decodeStagedNote(
+        yield* fileSystem
+          .readFileString(path.join(input.tmpDir, note))
+          .pipe(Effect.orElseSucceed(() => "")),
+      );
+      if (Option.isNone(filepath)) continue;
+      yield* keepStaged({
+        ...input,
+        name: note.replace(/\.json$/, ".blend"),
+        filepath: filepath.value.filepath,
       });
-    },
-    Effect.catch((cause) =>
-      Effect.logWarning("couldn't keep a hosted Blender's changes before its reload", { cause }),
-    ),
-  );
+    }
+  });
 
   const handleControlLine = Effect.fnUntraced(function* (instance: Instance, line: string) {
     const message = decodeControlMessage(line);
@@ -1713,9 +1869,13 @@ const make = Effect.gen(function* () {
         }
         if (message.value.mcpVersion !== undefined) instance.mcpVersion = message.value.mcpVersion;
         const stale = message.value.stale === true;
-        if (stale !== instance.stale) {
+        const blocked = message.value.staleBlocked ?? null;
+        if (stale !== instance.stale || blocked !== instance.staleBlocked) {
+          const caughtUp = stale !== instance.stale;
           instance.stale = stale;
-          yield* askReload(instance);
+          instance.staleBlocked = blocked;
+          if (caughtUp) yield* askReload(instance);
+          yield* publishNow();
         }
         // Only the working copy T3 opened may reach the agent, so the file is checked before
         // any listener state is taken; the add-on closes it too.
@@ -1784,21 +1944,31 @@ const make = Effect.gen(function* () {
         if (instance.saveReplies) yield* Queue.offer(instance.saveReplies, "saved");
         return;
       case "reloading":
-        return yield* keepReloadCopy(instance, message.value.copy);
-      case "reloaded":
-        if (message.value.kept) {
-          instance.reloadKept = {
-            key: fileKeyOf(instance.endFile.file),
-            at: yield* Clock.currentTimeMillis,
-          };
+        instance.keptReload = yield* keepReloadCopy(
+          instance,
+          message.value.copy,
+          message.value.filepath,
+        );
+        return;
+      case "reloaded": {
+        // Offered only once its record is written.
+        const key = instance.keptReload;
+        instance.keptReload = null;
+        if (message.value.kept && key !== null) {
+          instance.reloadKept = { key, at: yield* Clock.currentTimeMillis };
         }
         return yield* publishNow();
+      }
       case "discardRefused":
         if (instance.discardRefused) yield* Deferred.succeed(instance.discardRefused, undefined);
         return;
       case "saving":
       case "quitFailed":
-        if (message.value.type === "quitFailed") instance.saveRefusal = message.value.reason;
+        if (message.value.type === "quitFailed") {
+          instance.saveRefusal = message.value.reason;
+          // Refused because the file changed: that change is still to be caught up with.
+          if (message.value.reason === "changedOnDisk") instance.diskCheckWaiting = true;
+        }
         instance.acknowledged = message.value.type === "saving";
         if (instance.saveReplies) yield* Queue.offer(instance.saveReplies, message.value.type);
         return;
@@ -2039,7 +2209,12 @@ const make = Effect.gen(function* () {
       yield* fileSystem.makeDirectory(launchesDir, { recursive: true });
       const stateDir = yield* fileSystem.makeTempDirectory({ directory: launchesDir });
       instance.stateDir = stateDir;
-      const launchRecord = { threadId: ownerOf(instance), relativePath: instance.relativePath };
+      const launchRecord = {
+        threadId: ownerOf(instance),
+        relativePath: instance.relativePath,
+        role: instance.role,
+        workspaceRoot: instance.workspaceRoot,
+      };
       // Runs once the helper and Blender have stopped: a closed or crashed Blender's quit copy
       // or newest autosave of the file it ended on is kept as that file's copy. A restore that
       // never succeeded leaves the copy it came from alone.
@@ -2048,6 +2223,12 @@ const make = Effect.gen(function* () {
           // Still writing its copy, which the next start's salvage keeps.
           if (instance.released) return;
           const intent = instance.exitIntent ?? instance;
+          yield* keepStagedLeft({
+            owner: ownerOf(instance),
+            role: instance.role,
+            workspaceRoot: instance.workspaceRoot,
+            tmpDir: path.join(stateDir, "tmp"),
+          });
           yield* applyCleanup(
             {
               threadId: ownerOf(instance),
@@ -2453,6 +2634,9 @@ const make = Effect.gen(function* () {
       stale: false,
       reloadKept: null,
       saveRefusal: null,
+      staleBlocked: null,
+      diskCheckWaiting: false,
+      keptReload: null,
       workspaceRoot: input.workspaceRoot,
       mcpVersion: null,
       agentActing: false,
@@ -2547,14 +2731,16 @@ const make = Effect.gen(function* () {
   };
 
   const reopen: HostedBlender["Service"]["reopen"] = Effect.fn("HostedBlender.reopen")(function* (
-    { threadId, key, restore, role },
+    { threadId, key, restore, role, replaceUnsaved },
     options,
   ) {
     yield* Effect.annotateCurrentSpan({ threadId, restore, role });
     yield* afterSalvage;
     // A running Blender restores the copy a reload kept in place; nothing else reopens it.
     const running = instanceFor(threadId, role);
-    if (running !== undefined) return yield* restoreInPlace(running, key, restore);
+    if (running !== undefined) {
+      return yield* restoreInPlace(running, key, restore, replaceUnsaved === true);
+    }
     if (role === "master") {
       const copy = masterCopyOf(threadId);
       if (copy === undefined || copy.key !== key) {
@@ -2596,24 +2782,42 @@ const make = Effect.gen(function* () {
     instance: Instance,
     key: string,
     restore: boolean,
+    replaceUnsaved: boolean,
   ) {
     const owner = ownerOf(instance);
+    const filepath = instance.openFile;
     if (
       !restore ||
+      typeof filepath !== "string" ||
       key !== fileKeyOf(instance.endFile.file) ||
       records.get(owner)?.get(key)?.recovery !== true
     ) {
       return;
     }
-    const restored = yield* ask(
+    const answer = yield* ask(
       instance,
-      { type: "restore", path: sessionPath(owner, key) },
-      Schema.Boolean,
+      { type: "restore", path: sessionPath(owner, key), filepath, replace: replaceUnsaved },
+      RestoreAnswer,
       // A large file takes as long as it takes; the caller bounds the wait.
       { untimed: true },
     );
-    if (!restored) return yield* new HostedBlenderError({ reason: "restoreFailed" });
-    instance.reloadKept = null;
+    switch (answer.outcome) {
+      case "otherFile":
+        return yield* new HostedBlenderError({ reason: "openFileChanged" });
+      case "unsaved":
+        return yield* new HostedBlenderError({ reason: "restoreReplacesUnsaved" });
+      case "unkeepable":
+        return yield* new HostedBlenderError({ reason: "unkeepableEdits" });
+      case "failed":
+        return yield* new HostedBlenderError({ reason: "restoreFailed" });
+    }
+    // What the restore replaced is the file's copy now, offered as the restored one was: the
+    // same step undoes it.
+    const kept =
+      answer.copy == null
+        ? null
+        : yield* keepReloadCopy(instance, answer.copy, answer.filepath ?? filepath);
+    instance.reloadKept = kept === null ? null : { key: kept, at: yield* Clock.currentTimeMillis };
     yield* publishNow();
   });
 
@@ -2920,8 +3124,9 @@ const make = Effect.gen(function* () {
       const clear = Effect.suspend(() => {
         if (instance.pendingSave !== started) return Effect.void;
         instance.pendingSave = null;
-        // Blender stays open after a failed save: capture follows the panes again.
-        return applyCapture(instance);
+        // Blender stays open after a failed save: capture follows the panes again, and a change
+        // on disk seen meanwhile, or that refused it, is caught up with.
+        return applyCapture(instance).pipe(Effect.andThen(checkWaitingDisk(instance)));
       });
       yield* saveThenQuit(instance, control).pipe(
         // Only a failure clears it, before answering, so a retry starts a new save.
@@ -2988,6 +3193,7 @@ const make = Effect.gen(function* () {
     yield* releaseControl(instance, entry);
     yield* applySize(instance);
     yield* applyCapture(instance);
+    yield* panesGone(instance);
   });
 
   // Showing a pane joins on a keyframe, as attaching does; a hidden pane gets no frames.
@@ -3002,8 +3208,12 @@ const make = Effect.gen(function* () {
     if (visible) entry.shownAt = nextShownAt++;
     yield* applyCapture(instance);
     yield* applySize(instance);
-    if (visible) yield* joinOnKeyframe(instance);
-    if (visible) yield* askReload(instance);
+    if (visible) {
+      yield* joinOnKeyframe(instance);
+      yield* askReload(instance);
+    } else {
+      yield* panesGone(instance);
+    }
   });
 
   // Acks arrive for every frame; they share the viewer's stream span.
@@ -3022,8 +3232,8 @@ const make = Effect.gen(function* () {
 
   const attachViewer: HostedBlender["Service"]["attachViewer"] = Effect.fn(
     "HostedBlender.attachViewer",
-  )(function* (threadId, { canOperate, role }) {
-    yield* Effect.annotateCurrentSpan({ threadId, canOperate, role });
+  )(function* (threadId, { canOperate, role, visible = true }) {
+    yield* Effect.annotateCurrentSpan({ threadId, canOperate, role, visible });
     const instance = instanceFor(threadId, role);
     // Nor a viewer: the master may still quit under it.
     if (instance === undefined || instance.quitCancelled != null)
@@ -3036,7 +3246,7 @@ const make = Effect.gen(function* () {
       queue: yield* Queue.unbounded<HostedBlenderViewerOutput>(),
       flow: new ViewerFlow(),
       size: null,
-      visible: true,
+      visible,
       shownAt: nextShownAt++,
     };
     instance.viewers.push(entry);
@@ -3053,8 +3263,10 @@ const make = Effect.gen(function* () {
       initial.map((message) => ({ _tag: "message" as const, message })),
     );
     yield* applyCapture(instance);
-    yield* joinOnKeyframe(instance);
-    yield* askReload(instance);
+    if (visible) {
+      yield* joinOnKeyframe(instance);
+      yield* askReload(instance);
+    }
     return {
       _tag: "attached" as const,
       viewer: {
