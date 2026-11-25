@@ -35,6 +35,14 @@ describe("helperArguments", () => {
     expect(helperArguments(launch)).not.toContain("--t3-mcp-listen");
   });
 
+  it("hands the control add-on the launch's Blender Lab snapshot only when there is one", () => {
+    expect(helperArguments({ ...launch, mcpSnapshot: "/state/blender-lab" }).slice(-2)).toEqual([
+      "--t3-mcp-snapshot",
+      "/state/blender-lab",
+    ]);
+    expect(helperArguments(launch)).not.toContain("--t3-mcp-snapshot");
+  });
+
   it("runs Blender online, without embedded scripts, with the control add-on and its own ports", () => {
     expect(
       helperArguments({

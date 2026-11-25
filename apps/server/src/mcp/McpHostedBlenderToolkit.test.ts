@@ -94,6 +94,7 @@ const layerFor = (input: {
               state: input.listener ?? "ready",
               ended: input.ended ?? null,
               openFile: input.openFile,
+              mcpVersion: "1.0.3",
             }),
           quit: (quit) =>
             Effect.sync(() => {

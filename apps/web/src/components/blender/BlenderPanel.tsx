@@ -49,6 +49,7 @@ import {
   AlertDialogPopup,
   AlertDialogTitle,
 } from "~/components/ui/alert-dialog";
+import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import {
   Empty,
@@ -588,6 +589,7 @@ function RunningBlender(props: BlenderPanelProps & { readonly state: HostedBlend
       )}
       <BlenderStatusStrip
         {...stats}
+        agentActing={props.state.agentActing === true}
         control={control}
         environmentId={props.threadRef.environmentId}
       />
@@ -1010,6 +1012,7 @@ function StreamStatus(props: { readonly status: Exclude<HostedBlenderStreamStatu
 
 function BlenderStatusStrip(
   props: StreamStats & {
+    readonly agentActing: boolean;
     readonly control: HostedBlenderControl;
     readonly environmentId: EnvironmentId;
   },
@@ -1036,6 +1039,11 @@ function BlenderStatusStrip(
           <T context="hosted Blender pane status, viewing without control">Watching</T>
         )}
       </span>
+      {props.agentActing ? (
+        <Badge variant="info" size="sm">
+          <T context="hosted Blender pane status badge">Agent editing</T>
+        </Badge>
+      ) : null}
       {props.server?.target === "output" ? (
         <span className="min-w-0 truncate text-warning-foreground">
           <T>Showing the whole display</T>

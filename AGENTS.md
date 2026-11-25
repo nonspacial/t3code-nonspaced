@@ -142,6 +142,7 @@ Read the matching doc before changing code in that area; code review enforces th
 | Writing & reviewing tests                  | [15_testing.md](docs/internals/15_testing.md)                                                                                                                                                     |
 | Wire budgets, server metrics & perf        | [16_performance-regressions.md](docs/internals/16_performance-regressions.md)                                                                                                                     |
 | Repo & package scripts                     | [17_scripts.md](docs/internals/17_scripts.md)                                                                                                                                                     |
+| Hosted Blender & agent access              | [18_hosted-blender.md](docs/internals/18_hosted-blender.md)                                                                                                                                       |
 
 ## Taste
 

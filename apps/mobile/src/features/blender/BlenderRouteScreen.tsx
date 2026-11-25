@@ -209,6 +209,7 @@ function BlenderScreen(props: {
           bottomInset={insets.bottom}
           streamRef={streamRef}
           onControl={setControl}
+          agentActing={running?.agentActing === true}
         />
       ) : running ? (
         <View className="flex-1" />
@@ -305,6 +306,7 @@ function BlenderStream({
   readonly bottomInset: number;
   readonly streamRef: RefObject<BlenderStreamRef | null>;
   readonly onControl: (control: HostedBlenderControl) => void;
+  readonly agentActing: boolean;
 }) {
   const gt = useGT();
   const messages = useMessages();
@@ -436,6 +438,11 @@ function BlenderStream({
         <AppText numberOfLines={1} className="flex-1 text-xs text-foreground-muted">
           {statusText}
         </AppText>
+        {props.agentActing ? (
+          <AppText className="font-t3-medium text-xs text-primary">
+            {gt("Agent editing", { $context: "hosted Blender pane status badge" })}
+          </AppText>
+        ) : null}
         {stats ? (
           <AppText className="font-mono text-xs text-foreground-muted">{stats}</AppText>
         ) : null}

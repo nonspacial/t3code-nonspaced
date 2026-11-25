@@ -13,6 +13,7 @@ import { threadWorkspaceRoot } from "../project/threadWorkspaceRoot.ts";
 import { BLENDER_HOSTED_MCP_SERVER } from "../provider/hostedBlenderMcp.ts";
 import { isWithinRoot } from "../workspace/KnownWorkspaces.ts";
 import * as HostedBlender from "./HostedBlender.ts";
+import { untestedBlenderLabReason } from "./agentGuard.ts";
 
 // The end of the thread id: fixed prefixes such as `thread-` would make every tag alike.
 const threadTag = (threadId: string) =>
@@ -212,6 +213,11 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
     const listener = yield* hostedBlender.agentListener(input.threadId);
     if (listener?.state === "off") {
       return yield* new HostedBlenderToolError({ reason: noAccessReason(name, listener.ended) });
+    }
+    if (listener?.state === "untested") {
+      return yield* new HostedBlenderToolError({
+        reason: untestedBlenderLabReason(name, listener.mcpVersion),
+      });
     }
     if (listener?.state !== "ready") {
       return yield* new HostedBlenderToolError({

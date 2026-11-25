@@ -1,6 +1,8 @@
 // T3's control add-on, written beside each hosted Blender and loaded with `--python`. It is
 // never installed, so desktop Blenders never see it. Kept as a string so it ships inside the
 // server bundle.
+import { AGENT_GUARD_SOURCE } from "./agentGuard.ts";
+
 export const CONTROL_ADDON_SOURCE = String.raw`
 import json
 import os
@@ -23,6 +25,8 @@ def _option(name):
 SOCKET_PATH = _option("--t3-control")
 MCP_PORT = _option("--t3-mcp-port")
 RECOVER_PATH = _option("--t3-recover")
+# The launch's own copy of Blender Lab: a folder holding its "mcp" package.
+MCP_SNAPSHOT = _option("--t3-mcp-snapshot")
 MCP_LISTEN = "--t3-mcp-listen" in (sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
 TICK = 0.1
 # Casting a mark's samples stops after this long, as the 3D preview's does.
@@ -37,6 +41,10 @@ class _State:
     grant = "pending" if MCP_LISTEN else "ended"
     authorized_file = None
     mcp_name = None
+    mcp_version = None
+    mcp_file = None
+    # Blender Lab modules already imported when this add-on loaded: T3's gate didn't hold.
+    startup_mcp = []
     server = None
     client = None
     buffer = b""
@@ -102,6 +110,8 @@ def _snapshot():
         "filepath": bpy.data.filepath,
         "dirty": bool(bpy.data.is_dirty),
         "agentListener": _State.agent_listener,
+        "agentActing": _agent_acting(_mcp_server()),
+        "mcpVersion": _State.mcp_version,
     }
     if _State.restore is not None:
         snapshot["restore"] = _State.restore
@@ -353,8 +363,18 @@ def _handle(command):
                 return
             # Saved, so Blender quits next: the agent's grant ends now, as T3's stop would
             # come too late once quitting begins.
+            # Ending the grant records the agent's pending work that can write as a step after
+            # the save, leaving the file unsaved: T3 hears so after "saved", and keeps the copy.
+            pending = (
+                _State.grant == "granted"
+                and _on_authorized_file()
+                and any(record["writes"] for record in _Guard.deferred)
+            )
             _end_grant()
             _send({"type": "saved"})
+            if pending:
+                _State.sent = dict(_snapshot(), dirty=True)
+                _send(_State.sent)
         window = _main_window()
         with bpy.context.temp_override(window=window):
             bpy.ops.wm.quit_blender()
@@ -383,26 +403,8 @@ def _tick():
     # opens, as on a first open.
     if _viewport_lost() and not bpy.app.timers.is_registered(_open_viewport_window):
         bpy.app.timers.register(_open_viewport_window, first_interval=0.2)
+    _pump_control()
     if _State.client is not None:
-        try:
-            while True:
-                chunk = _State.client.recv(65536)
-                if not chunk:
-                    _drop_client()
-                    break
-                _State.buffer += chunk
-        except BlockingIOError:
-            pass
-        except OSError:
-            _drop_client()
-        # A stop already waiting wins over a grant queued before it.
-        for queued in _State.buffer.split(b"\n")[:-1]:
-            try:
-                if json.loads(queued).get("type") == "stopAgentListener":
-                    _end_grant()
-                    break
-            except ValueError:
-                pass
         while b"\n" in _State.buffer:
             line, _State.buffer = _State.buffer.split(b"\n", 1)
             try:
@@ -415,12 +417,47 @@ def _tick():
             if command.get("type") == "hits":
                 break
         _check_authorized_file()
-        snapshot = _snapshot()
-        if snapshot != _State.sent:
-            _State.sent = snapshot
-            _send(snapshot)
+    _check_guard()
+    _sweep_deferred()
+    _publish_state()
     return TICK
 
+
+def _pump_control():
+    # Reads what T3 sent, so a lost connection or a waiting stop ends the grant now. Also run
+    # right before agent code, which can't wait for the next tick.
+    if _State.client is None:
+        return
+    try:
+        while True:
+            chunk = _State.client.recv(65536)
+            if not chunk:
+                _drop_client()
+                return
+            _State.buffer += chunk
+    except BlockingIOError:
+        pass
+    except OSError:
+        _drop_client()
+        return
+    # A stop already waiting wins over a grant queued before it.
+    for queued in _State.buffer.split(b"\n")[:-1]:
+        try:
+            if json.loads(queued).get("type") == "stopAgentListener":
+                _end_grant()
+                break
+        except ValueError:
+            pass
+
+
+def _publish_state():
+    snapshot = _snapshot()
+    if snapshot != _State.sent:
+        _State.sent = snapshot
+        _send(snapshot)
+
+
+${AGENT_GUARD_SOURCE}
 
 def _is_mcp_addon(name):
     return name.startswith("bl_ext.") and name.endswith(".mcp")
@@ -433,12 +470,14 @@ def _setup_mcp_addon():
     # drops it from these settings (T3's own copy), so Reload Scripts can't bring it back.
     import addon_utils
 
+    _State.startup_mcp = sorted(name for name in sys.modules if _is_mcp_module(name))
     preferences = bpy.context.preferences
     for name in [name for name in preferences.addons.keys() if _is_mcp_addon(name)]:
         addon_utils.disable(name, default_set=True)
+    if MCP_SNAPSHOT is not None:
+        _State.mcp_name = "bl_ext." + SNAPSHOT_REPO_MODULE + ".mcp"
+        _State.mcp_file = os.path.join(MCP_SNAPSHOT, "mcp", "__init__.py")
     if MCP_LISTEN:
-        installed = [module.__name__ for module in addon_utils.modules() if _is_mcp_addon(module.__name__)]
-        _State.mcp_name = installed[0] if installed else None
         _State.authorized_file = os.path.realpath(bpy.data.filepath) if bpy.data.filepath else None
     try:
         preferences.is_dirty = False
@@ -480,11 +519,23 @@ def _grant_agent_listener():
     _check_authorized_file()
     if _State.grant != "granted":
         return
+    # Blender Lab must have stayed out of startup, behind T3's gate, with nothing listening yet.
+    if not _gate_completed() or _State.startup_mcp or _any_mcp_listening():
+        _State.agent_listener = "failed"
+        _disable_mcp()
+        return
+    # Read now, from the manifest beside the module that will be enabled.
+    _State.mcp_version = _mcp_version(_State.mcp_file) if _State.mcp_name else None
+    if _State.mcp_name is not None and _State.mcp_version not in TESTED_MCP_VERSIONS:
+        # Never enabled: the guard may not hold on a version T3 hasn't tested.
+        _State.agent_listener = "untested"
+        return
     if _State.mcp_name is not None:
         import addon_utils
 
         preferences = bpy.context.preferences
         try:
+            _use_snapshot_repo()
             # Its register() reads its preferences, which Blender creates only with default_set.
             addon_utils.enable(_State.mcp_name, default_set=True)
             addon = preferences.addons.get(_State.mcp_name)
@@ -502,6 +553,22 @@ def _grant_agent_listener():
     _start_agent_listener()
 
 
+def _use_snapshot_repo():
+    # Only this launch's snapshot loads: a repository of its own, pointing at nothing else.
+    repos = bpy.context.preferences.extensions.repos
+    for repo in [repo for repo in repos if repo.module == SNAPSHOT_REPO_MODULE]:
+        repos.remove(repo)
+    repos.new(name="T3 Blender Lab", module=SNAPSHOT_REPO_MODULE, custom_directory=MCP_SNAPSHOT, source="USER")
+
+
+def _any_mcp_listening():
+    return any(
+        name.endswith(".mcp_to_blender_server") and _is_mcp_module(name) and module.is_running()
+        for name, module in list(sys.modules.items())
+        if module is not None and callable(getattr(module, "is_running", None))
+    )
+
+
 def _mcp_server():
     return sys.modules.get(_State.mcp_name + ".mcp_to_blender_server") if _State.mcp_name else None
 
@@ -517,11 +584,12 @@ def _start_agent_listener():
     # Fails closed: a port another process holds, or a listener on any other port, is "failed".
     server = _mcp_server()
     try:
-        if server is not None and not server.is_running():
+        guarded = server is not None and _guard_mcp_server(server)
+        if guarded and not server.is_running():
             bpy.ops.blmcp.server_start()
         sock = getattr(getattr(server, "_state", None), "sock", None)
         ready = (
-            server is not None
+            guarded
             and server.is_running()
             and sock is not None
             and sock.getsockname()[1] == int(MCP_PORT)
@@ -529,26 +597,48 @@ def _start_agent_listener():
     except Exception as error:  # noqa: BLE001 - a listener that can't start is reported, never a crash
         print("T3 control add-on: Blender Lab MCP did not start:", error, file=sys.stderr)
         ready = False
-    if not ready and server is not None and server.is_running():
+    if not ready:
         _stop_agent_listener()
+        _disable_mcp()
     _State.agent_listener = "ready" if ready else "failed"
     return None
 
 
+def _on_authorized_file():
+    current = os.path.realpath(bpy.data.filepath) if bpy.data.filepath else None
+    return current is not None and current == _State.authorized_file
+
+
 def _check_authorized_file():
     # Another file opened, or the copy saved under another name, is not what T3 authorized.
-    if _State.grant != "granted":
-        return
-    current = os.path.realpath(bpy.data.filepath) if bpy.data.filepath else None
-    if current is None or current != _State.authorized_file:
+    if _State.grant == "granted" and not _on_authorized_file():
         _end_grant()
+
+
+def _check_guard():
+    # Blender Lab listens only for a live grant, guarded. Reload Scripts (which runs its module
+    # again, unguarded) ends access; a listener started any other way is stopped.
+    server = _mcp_server()
+    running = server is not None and server.is_running()
+    if _State.agent_listener == "ready" and not (running and _is_guarded(server)):
+        _end_grant()
+    elif running and not (_State.grant == "granted" and _State.agent_listener == "ready"):
+        _stop_agent_listener()
+        _disable_mcp()
 
 
 def _end_grant():
     if _State.grant == "ended":
         return
+    # Every ending passes here: deferred work that may already have written gets its step while
+    # the grant still covers the file, so it isn't left looking saved.
+    _record_pending_deferred()
     _State.grant = "ended"
     _stop_agent_listener()
+    _disable_mcp()
+
+
+def _disable_mcp():
     # Disabled and dropped from these settings, so neither its own Start button nor Reload
     # Scripts can reopen the port.
     if _State.mcp_name is not None:

@@ -367,6 +367,27 @@ it("warns in the status strip when the server has no usable GPU", async () => {
   }
 });
 
+it("shows Agent editing in the status strip only while the add-on says the agent acts", async () => {
+  using _app = startup();
+  const idle = stream.state;
+  try {
+    stream.state = { ...(idle as object), agentActing: true };
+    await using acting = await render(
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+    );
+    await expect.element(acting.getByText("Agent editing")).toBeInTheDocument();
+  } finally {
+    stream.state = idle;
+  }
+  await using quiet = await render(
+    <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+  );
+  await expect
+    .element(quiet.getByText("You're in control").or(quiet.getByText("Watching")))
+    .toBeInTheDocument();
+  expect(quiet.container.textContent).not.toContain("Agent editing");
+});
+
 it("sizes the display in real pixels, and says when the window hides the pane", async () => {
   using _app = startup();
   await using screen = await render(
