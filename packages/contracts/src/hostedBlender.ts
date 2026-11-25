@@ -132,6 +132,11 @@ export const HostedBlenderRunningState = Schema.Struct({
   dirty: Schema.Boolean,
   /** The agent is acting in this Blender through Blender Lab's MCP, as T3's add-on reports. */
   agentActing: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The file changed on disk, so Blender reloaded it, keeping its unsaved changes as the copy
+   * with this key, which Reopen with `restore` puts back. `at` tells one reload from the next.
+   */
+  reloadKept: Schema.optionalKey(Schema.Struct({ key: Schema.String, at: Schema.Number })),
 });
 export type HostedBlenderRunningState = typeof HostedBlenderRunningState.Type;
 
@@ -373,6 +378,8 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "masterChanged",
       "desktopAlias",
       "masterBusy",
+      "changedOnDisk",
+      "restoreFailed",
     ]),
   },
 ) {
@@ -424,6 +431,10 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "The master Blender is busy finishing an earlier request to quit. Try again in a moment.";
       case "desktopAlias":
         return "The desktop Blender has this master open under another name, so its save wouldn't reach the master. Open the master itself there, or quit it and open the master here.";
+      case "changedOnDisk":
+        return "The file changed on disk after this Blender loaded it, so Blender didn't save over it. Show the Blender pane to load the file as it is now; its unsaved changes are kept as a recovery copy.";
+      case "restoreFailed":
+        return "Blender couldn't restore the kept changes. The copy is still kept.";
     }
   }
 }

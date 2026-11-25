@@ -25,6 +25,7 @@ import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as BlendFileWatcher from "../blend/BlendFileWatcher.ts";
 import * as ServerConfig from "../config.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -142,6 +143,7 @@ const layerFor = (host: Host) =>
           : Layer.succeed(DesktopBlender.DesktopBlender, host.desktop),
         WorkspacePaths.layer,
         NetService.layer,
+        BlendFileWatcher.layer,
         ServerConfig.layerTest(host.workspaceRoot, host.baseDir),
       ),
     ),
@@ -347,8 +349,51 @@ def control():
         time.sleep(0.3)
         outstanding[0] -= 1
         connection.sendall((json.dumps({"type": "reply", "id": command["id"], "result": result}) + "\n").encode())
+    # "reloads": as the add-on tells Blender's own file from a change on disk, by its revision.
+    def revision():
+        info = os.stat(opened)
+        return (info.st_ino, info.st_size, info.st_mtime_ns)
+    disk = [revision()]
+    def reload_now():
+        # Unsaved changes go to an autosave in TMPDIR first, then Blender reads the file.
+        reloads = os.environ["STANDIN_SAVES"] + ".reloads"
+        count = (len(open(reloads).read().splitlines()) if os.path.exists(reloads) else 0) + 1
+        open(reloads, "a").write("reload\n")
+        kept = state.get("dirty", True)
+        disk[0] = revision()
+        if kept:
+            open(os.path.join(tmp, "t3-reload-%d.blend" % count), "w").write("unsaved %d" % count)
+            send(connection, {"type": "reloading", "copy": "t3-reload-%d.blend" % count})
+        send(connection, {"type": "state", "filepath": opened, "dirty": False})
+        send(connection, {"type": "reloaded", "kept": kept})
+    if scenario == "reloads":
+        def agent_call():
+            # The agent's next call, made while no pane shows Blender, reloads first.
+            while not os.path.exists(os.environ["STANDIN_BIND"]):
+                time.sleep(0.05)
+            if revision() != disk[0]:
+                reload_now()
+        threading.Thread(target=agent_call, daemon=True).start()
     for line in connection.makefile():
         command = json.loads(line)
+        if command.get("type") == "diskChanged" and scenario == "reloads":
+            with open(os.environ["STANDIN_SAVES"] + ".disk", "a") as log:
+                log.write(line)
+            if revision() != disk[0] and command["reload"]:
+                reload_now()
+            elif revision() != disk[0]:
+                send(connection, {"type": "state", "filepath": opened,
+                                  "dirty": state.get("dirty", True), "stale": True})
+            continue
+        if command.get("type") == "restore":
+            # Puts the copy back, unsaved, as recover_auto_save does.
+            restored = os.path.exists(command["path"])
+            connection.sendall((json.dumps({"type": "reply", "id": command["id"], "result": restored}) + "\n").encode())
+            send(connection, {"type": "state", "filepath": opened, "dirty": True})
+            continue
+        if command.get("type") == "quit" and command.get("save") and scenario == "reloads" and revision() != disk[0]:
+            send(connection, {"type": "quitFailed", "reason": "changedOnDisk"})
+            continue
         if command.get("type") == "quit" and not command.get("save"):
             if scenario == "ignores-quit":
                 continue
@@ -2739,6 +2784,149 @@ const ofType = <Command extends { readonly type: string }>(
   ...types: ReadonlyArray<string>
 ) => commands.filter((command) => types.includes(command.type));
 
+describe("B13: a file changed on disk", () => {
+  /** What T3 told the add-on of the file on disk, and how often the stand-in reloaded. */
+  const diskOf = (dir: string) => {
+    const lines = (file: string) =>
+      NodeFS.existsSync(file)
+        ? NodeFS.readFileSync(file, "utf8")
+            .split("\n")
+            .filter((line) => line.length > 0)
+        : [];
+    const asked = () =>
+      lines(NodePath.join(dir, "saves.log.disk")).map(
+        (line) => (JSON.parse(line) as { reload: boolean }).reload,
+      );
+    return {
+      asked,
+      reloads: () => lines(NodePath.join(dir, "saves.log.reloads")).length,
+      /** Waits for T3's `count`th word on the file. */
+      awaitAsked: (count: number) => fileAppears(dir, dir, () => asked().length >= count),
+      awaitReloads: (count: number) =>
+        fileAppears(dir, dir, () => lines(NodePath.join(dir, "saves.log.reloads")).length >= count),
+      change: (body: string) => NodeFS.writeFileSync(NodePath.join(dir, "cube.blend"), body),
+    };
+  };
+  const reloadKept = (states: Stream.Stream<{ readonly status: string }>) =>
+    states.pipe(
+      Stream.filter((state) => "reloadKept" in state),
+      Stream.runHead,
+      Effect.map(Option.getOrThrow),
+    );
+
+  it.live(
+    "reloads at once while a pane shows it, and once a pane is back otherwise, never resuming capture for it",
+    () =>
+      Effect.gen(function* () {
+        const { dir, service, openReady, helperCommands, hostedDir } = yield* standIn(
+          "disk",
+          "reloads",
+        );
+        const disk = diskOf(dir);
+        yield* openReady;
+        // Its first look, with no pane yet, finds nothing changed.
+        yield* disk.awaitAsked(1);
+        const viewer = yield* attach(service, false);
+        disk.change("changed once");
+        yield* disk.awaitAsked(2);
+        expect(disk.asked()).toEqual([false, true]);
+        // Its unsaved changes are the file's copy, which the pane offers.
+        const shown = yield* reloadKept(service.threadState(threadId));
+        expect(shown).toMatchObject({ status: "running", dirty: false, reloadKept: { key: CUBE } });
+        expect(recoveryOf(hostedDir)).toMatchObject({
+          record: { recovery: true },
+          contents: "unsaved 1",
+        });
+
+        yield* viewer.setVisible(false);
+        const hidden = helperCommands().length;
+        disk.change("changed twice");
+        yield* disk.awaitAsked(3);
+        disk.change("changed three times");
+        yield* disk.awaitAsked(4);
+        expect(disk.asked().slice(2)).toEqual([false, false]);
+        expect(disk.reloads()).toBe(1);
+        expect(ofType(helperCommands().slice(hidden), "resume")).toEqual([]);
+        // Back on screen: one reload, to the file as it is now.
+        yield* viewer.setVisible(true);
+        yield* disk.awaitReloads(2);
+        expect(disk.asked()).toEqual([false, true, false, false, true]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "reloads before the agent's next call while no pane shows it, still without capture",
+    () =>
+      Effect.gen(function* () {
+        const { dir, service, openReady, helperCommands, hostedDir, bind } = yield* standIn(
+          "disk-agent",
+          "reloads",
+        );
+        const disk = diskOf(dir);
+        yield* openReady;
+        yield* disk.awaitAsked(1);
+        const viewer = yield* attach(service, false);
+        yield* viewer.setVisible(false);
+        const hidden = helperCommands().length;
+        disk.change("changed by a headless script");
+        yield* disk.awaitAsked(2);
+        bind();
+        const kept = yield* reloadKept(service.threadState(threadId));
+        expect(kept).toMatchObject({ dirty: false, reloadKept: { key: CUBE } });
+        expect(recoveryOf(hostedDir)).toMatchObject({
+          record: { recovery: true },
+          contents: "unsaved 1",
+        });
+        expect(disk.asked()).toEqual([false, false]);
+        expect(ofType(helperCommands().slice(hidden), "resume")).toEqual([]);
+        // Restore puts the kept changes back over the reloaded file, and the offer goes.
+        yield* service.reopen({ threadId, key: CUBE, restore: true });
+        const restored = yield* firstState(service);
+        expect(restored).not.toHaveProperty("reloadKept");
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("refuses Save and quit over a file changed on disk, and leaves Blender running", () =>
+    Effect.gen(function* () {
+      const { dir, service, openReady } = yield* standIn("disk-save", "reloads");
+      const disk = diskOf(dir);
+      yield* openReady;
+      yield* disk.awaitAsked(1);
+      disk.change("changed by a checkout");
+      const refused = yield* service.quit({ threadId, save: true }).pipe(Effect.flip);
+      expect(refused.reason).toBe("changedOnDisk");
+      expect((yield* firstState(service)).status).toBe("running");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("reloads a master shared by two threads once, for both threads' Master views", () =>
+    Effect.gen(function* () {
+      const { dir, service } = yield* standIn("disk-master", "reloads");
+      const disk = diskOf(dir);
+      yield* service.openMaster({ threadId, relativePath: "cube.blend" });
+      yield* service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" });
+      yield* service.masterState(otherThreadId).pipe(
+        Stream.filter((state) => state.status === "running" && "dirty" in state && state.dirty),
+        Stream.runHead,
+      );
+      yield* disk.awaitAsked(1);
+      for (const thread of [threadId, otherThreadId]) {
+        const attached = yield* service.attachViewer(thread, { canOperate: false, role: "master" });
+        expect(attached._tag).toBe("attached");
+      }
+      disk.change("copied back through another Blender");
+      yield* disk.awaitAsked(2);
+      expect(disk.asked()).toEqual([false, true]);
+      for (const thread of [threadId, otherThreadId]) {
+        expect(yield* reloadKept(service.masterState(thread))).toMatchObject({
+          reloadKept: { key: "outside:" + NodeFS.realpathSync(NodePath.join(dir, "cube.blend")) },
+        });
+      }
+      expect(disk.reloads()).toBe(1);
+    }).pipe(Effect.scoped),
+  );
+});
+
 describe("The stream", () => {
   it.live("stops capturing while no pane is on screen and resumes on a keyframe", () =>
     Effect.gen(function* () {
@@ -3556,6 +3744,241 @@ def register():
 def unregister():
     bpy.app.handlers.exit_pre.remove(_slow)
 `;
+
+// Counts each load after the launch's own in HB_TEST_DIR/loads, and on request edits the cube
+// through undo (HB_TEST_DIR/edit) or reports what Blender has (HB_TEST_DIR/probe).
+const RELOAD_PROBE_SCRIPT = `import json, os
+import bpy
+from bpy.app.handlers import persistent
+
+def _write(name, text):
+    path = os.path.join(os.environ["HB_TEST_DIR"], name)
+    with open(path + ".part", "w") as out:
+        out.write(text)
+    os.replace(path + ".part", path)
+
+@persistent
+def _loaded(*_args):
+    path = os.path.join(os.environ["HB_TEST_DIR"], "loads")
+    _write("loads", str(int(open(path).read()) + 1) if os.path.exists(path) else "0")
+
+def _poll():
+    folder = os.environ["HB_TEST_DIR"]
+    windows = bpy.context.window_manager.windows
+    if os.path.exists(os.path.join(folder, "edit")):
+        os.remove(os.path.join(folder, "edit"))
+        bpy.data.objects["Cube"].location.x = 9.0
+        with bpy.context.temp_override(window=windows[0]):
+            bpy.ops.ed.undo_push(message="T3 test edit")
+    if os.path.exists(os.path.join(folder, "probe")):
+        os.remove(os.path.join(folder, "probe"))
+        _write("probe.json", json.dumps({
+            "tempdir": bpy.app.tempdir,
+            "cubeX": round(bpy.data.objects["Cube"].location.x, 3),
+            "dirty": bpy.data.is_dirty,
+            "viewports": len([w for i, w in enumerate(windows) if i > 0 and w.screen.get("t3_viewport")]),
+        }))
+    return 0.2
+
+def register():
+    bpy.app.handlers.load_post.append(_loaded)
+    bpy.app.timers.register(_poll, first_interval=1.0, persistent=True)
+
+def unregister():
+    pass
+`;
+
+describe.skipIf(!canHostBlender)("B13: a real hosted Blender whose file changes on disk", () => {
+  /** A Blender of the test's own, in the background, isolated from the developer's settings. */
+  const backgroundBlender = (dir: string, args: ReadonlyArray<string>) => {
+    const own = NodePath.join(dir, "background");
+    NodeFS.mkdirSync(NodePath.join(own, "tmp"), { recursive: true });
+    return NodeChildProcess.execFileSync(
+      "blender",
+      ["--background", "--factory-startup", ...args],
+      {
+        encoding: "utf8",
+        env: {
+          PATH: hostEnvironment.PATH,
+          HOME: own,
+          TMPDIR: NodePath.join(own, "tmp"),
+          BLENDER_USER_RESOURCES: own,
+        },
+      },
+    );
+  };
+  /** Another Blender saves the cube moved to `x` beside the file, then over it, as Blender does. */
+  const changeOnDisk = (dir: string, blendPath: string, x: number) => {
+    const next = `${blendPath}.next.blend`;
+    backgroundBlender(dir, [
+      blendPath,
+      "--python-expr",
+      `import bpy; bpy.data.objects["Cube"].location.x = ${x}; bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(next)}, copy=True)`,
+    ]);
+    NodeFS.renameSync(next, blendPath);
+  };
+  const cubeXIn = (dir: string, file: string) =>
+    backgroundBlender(dir, [
+      file,
+      "--python-expr",
+      "import bpy; print('CUBE_X', round(bpy.data.objects['Cube'].location.x, 3))",
+    ])
+      .split("\n")
+      .find((line) => line.startsWith("CUBE_X"));
+
+  const realHost = (prefix: string) =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir(prefix);
+      const workspace = NodePath.join(dir, "work");
+      NodeFS.mkdirSync(workspace, { recursive: true });
+      const blendPath = NodePath.join(workspace, "cube.blend");
+      backgroundBlender(dir, [
+        "--python-expr",
+        `import bpy; bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(blendPath)})`,
+      ]);
+      const configHome = NodePath.join(dir, "config");
+      const startup = NodePath.join(configHome, "blender", "5.3", "scripts", "startup");
+      NodeFS.mkdirSync(startup, { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(startup, "t3_test_reload.py"), RELOAD_PROBE_SCRIPT);
+      const service = yield* serviceFor(
+        layerFor({
+          env: {
+            PATH: hostEnvironment.PATH,
+            XDG_RUNTIME_DIR: hostEnvironment.XDG_RUNTIME_DIR,
+            XDG_CONFIG_HOME: configHome,
+            HB_TEST_DIR: dir,
+          },
+          helper: helperBuild,
+          workspaceRoot: workspace,
+          baseDir: dir,
+        }),
+      );
+      const probe = Effect.gen(function* () {
+        const out = NodePath.join(dir, "probe.json");
+        NodeFS.rmSync(out, { force: true });
+        NodeFS.writeFileSync(NodePath.join(dir, "probe"), "");
+        yield* fileAppears(dir, out);
+        return JSON.parse(NodeFS.readFileSync(out, "utf8")) as {
+          tempdir: string;
+          cubeX: number;
+          dirty: boolean;
+          viewports: number;
+        };
+      });
+      const loadsPath = NodePath.join(dir, "loads");
+      const loads = () =>
+        NodeFS.existsSync(loadsPath) ? Number(NodeFS.readFileSync(loadsPath, "utf8")) : -1;
+      return {
+        dir,
+        blendPath,
+        service,
+        probe,
+        loads,
+        awaitLoads: (count: number) => fileAppears(dir, loadsPath, () => loads() >= count),
+        hostedDir: NodePath.join(dir, "userdata", "hosted-blender"),
+      };
+    });
+
+  it.live(
+    "shows the file as changed on disk at once while the pane is on screen, from the same view, keeping unsaved work to restore",
+    () =>
+      Effect.gen(function* () {
+        const host = yield* realHost("real-reload");
+        const { service, dir } = host;
+        yield* service.open({ threadId, relativePath: "cube.blend" });
+        yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status === "running"),
+          Stream.runHead,
+        );
+        const viewer = yield* attach(service, false);
+        yield* Queue.take(viewer.output).pipe(
+          Effect.repeat({ until: (output) => output._tag === "frame" }),
+        );
+        const first = yield* host.probe;
+        // This Blender's temporary files are the test's, never the developer's.
+        expect(first.tempdir.startsWith(dir)).toBe(true);
+        expect(first).toMatchObject({ cubeX: 0, viewports: 1 });
+        yield* service.setView({
+          threadId,
+          relativePath: "cube.blend",
+          view: { position: [6, -6, 5], target: [0, 0, 0] },
+        });
+        NodeFS.writeFileSync(NodePath.join(dir, "edit"), "");
+        yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status === "running" && state.dirty),
+          Stream.runHead,
+        );
+
+        const launched = host.loads();
+        changeOnDisk(dir, host.blendPath, 4);
+        // Blender clears the loaded file's unsaved mark a moment after the load.
+        const reloaded = yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => "reloadKept" in state && !state.dirty),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        expect(reloaded).toMatchObject({ dirty: false, reloadKept: { key: CUBE } });
+        expect(yield* host.probe).toMatchObject({ cubeX: 4, dirty: false, viewports: 1 });
+        expect(host.loads()).toBe(launched + 1);
+        // The person's view is where they left it, not the file's stored one.
+        const view = yield* service.captureView(threadId);
+        view.cameraView.position.forEach((value, index) =>
+          expect(value).toBeCloseTo([6, -6, 5][index]!, 3),
+        );
+        // The work it had unsaved is the file's copy, and Restore puts it back, unsaved.
+        const copy = recoveryOf(host.hostedDir);
+        expect(copy?.record.recovery).toBe(true);
+        expect(cubeXIn(dir, copy!.session)).toBe("CUBE_X 9.0");
+        yield* service.reopen({ threadId, key: CUBE, restore: true });
+        expect(yield* host.probe).toMatchObject({ cubeX: 9, viewports: 1 });
+        const restored = yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status === "running" && state.dirty),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        expect(restored).not.toHaveProperty("reloadKept");
+        yield* service.quit({ threadId, save: false, discard: true });
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "reloads a master shared by two threads once, when a pane comes back after several changes",
+    () =>
+      Effect.gen(function* () {
+        const host = yield* realHost("real-reload-master");
+        const { service, dir } = host;
+        yield* service.openMaster({ threadId, relativePath: "cube.blend" });
+        yield* service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" });
+        yield* service.masterState(otherThreadId).pipe(
+          Stream.filter((state) => state.status === "running"),
+          Stream.runHead,
+        );
+        const viewers: Array<HostedBlender.HostedBlenderViewer> = [];
+        for (const thread of [threadId, otherThreadId]) {
+          const attached = yield* service.attachViewer(thread, {
+            canOperate: false,
+            role: "master",
+          });
+          assert.strictEqual(attached._tag, "attached");
+          if (attached._tag !== "attached") return;
+          yield* attached.viewer.setVisible(false);
+          viewers.push(attached.viewer);
+        }
+        expect((yield* host.probe).tempdir.startsWith(dir)).toBe(true);
+        const launched = host.loads();
+        changeOnDisk(dir, host.blendPath, 4);
+        changeOnDisk(dir, host.blendPath, 5);
+        expect(yield* host.probe).toMatchObject({ cubeX: 0 });
+        expect(host.loads()).toBe(launched);
+        // The second thread's Master view comes back on screen.
+        yield* viewers[1]!.setVisible(true);
+        yield* host.awaitLoads(launched + 1);
+        expect(yield* host.probe).toMatchObject({ cubeX: 5, viewports: 1 });
+        expect(host.loads()).toBe(launched + 1);
+        yield* service.quit({ threadId, save: false, discard: true, role: "master" });
+      }).pipe(Effect.scoped),
+  );
+});
 
 describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
   it.live("a reopened Blender's viewport window fills the pane size asked for, and keeps it", () =>

@@ -13417,5 +13417,15 @@
   "ec2bc06507d0d9af": "hosted blender quit memory 3d thread",
   "37d76dab21a26b2a": "blender hosted setup install check labwc gstreamer encoder gpu hidden display linux agent commands",
   "f74fb1f1e951cb67": "blender hosted agents mcp start allow",
-  "3cf7f8ed35b33c5f": "blender lab mcp server path binary install uv pipx"
+  "3cf7f8ed35b33c5f": "blender lab mcp server path binary install uv pipx",
+  "b75a2837e20ac029": "Couldn't restore the changes",
+  "656229dd34610e6d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " changed on disk, so Blender reloaded it. Its unsaved changes are kept as a recovery copy."
+  ],
+  "a1d7b8f8a44e27aa": "Restore changes"
 }

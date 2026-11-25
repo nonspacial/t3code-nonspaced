@@ -27,6 +27,20 @@ its agents reach Blender Lab only through relays, one per agent thread and sessi
 current session and closed when that session's access ends. With no agent thread, nothing listens
 for them.
 
+## A change on disk Blender didn't make
+
+The add-on, not the server, decides whether the open file changed: T3's watcher only says the file
+settled, and the add-on compares its revision (as previews read one, never the bytes) with the one
+it recorded itself, before reading the file (`load_pre`) and after its own save (`save_post`). It
+answers on Blender's main thread, so a save in progress has finished and recorded its revision
+first; a timing guess either reloads over live work or misses a change. The server asks for the
+reload only while a pane is on screen, and the add-on also reloads before an agent's call, so a
+hidden Blender catches up without capture. A reload keeps the session's windows
+(`load_ui=False`), so the viewport window and its view stay and nothing is replaced. Unsaved work
+goes first to Blender's own autosave, which keeps the file's path so restoring it saves to the
+file, renamed so the next autosave can't overwrite it before the server keeps it. Saves T3 starts
+check the revision too and refuse rather than write an older state over the file.
+
 ## Agents use only the official Blender Lab MCP
 
 Agents reach a hosted Blender only through Blender Lab's own `blender-mcp`, added per session as

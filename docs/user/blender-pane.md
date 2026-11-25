@@ -92,6 +92,12 @@ One device is in control at a time. While someone else is, the pane offers **Tak
 
 Closing the pane leaves Blender running; open it again from the file preview, a link or **Open hosted Blender** in the command palette. To stop Blender, choose **Quit Blender** from the pane's menu or **Quit hosted Blender** in the command palette. If the file has unsaved changes, you can save them first or quit without saving. If the save fails, Blender keeps running so nothing is lost. Only **Quit without saving** discards unsaved changes: any other quit, such as the agent's or one made just as an edit arrived, keeps them as a close does.
 
+## When the file changes on disk
+
+A hosted Blender shows the file as it is on disk. When something else changes the `.blend` it has open, such as an agent's script, a copy back through another Blender or a checkout, Blender reloads it: straight away while its pane is on screen, otherwise the next time a pane shows it or the agent next works in it, once however many times the file changed. Your viewport window keeps its view, and undo history starts again, as after any reload. Saving in that Blender, by you or the agent, isn't a change on disk and reloads nothing.
+
+If Blender had unsaved changes, they're kept first as that file's copy, and the pane says so: **Restore changes** puts them back over the reloaded file, unsaved, so you can choose what to keep. Like any copy of the file, saving the file removes it. Blender doesn't reload over unsaved edits to images or asset catalogs, which a copy of the `.blend` can't hold; save or discard them first. **Save and quit** never writes over a file that changed on disk: it says so and leaves Blender running.
+
 ## When Blender closes
 
 When a thread settles, is archived or is deleted, its hosted Blender closes, and so does every hosted Blender when T3 Code stops or restarts. Deleting a thread also removes every copy it kept; a master's copy stays for the threads still using that master. If the file Blender has open then has unsaved changes, Blender keeps a copy of the session, those changes included, in T3 Code's own folder, as the copy of that file; a file you only looked at keeps nothing. Your file is never saved over.

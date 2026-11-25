@@ -100,7 +100,12 @@ import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { HiddenThreadContext } from "../chat/backgroundThread";
 
 import { useBlenderAnnotation } from "./BlenderAnnotationEditor";
-import { BlenderRoleSwitch, DesktopUncheckedNotice, MasterCard } from "./BlenderMaster";
+import {
+  BlenderRoleSwitch,
+  DesktopUncheckedNotice,
+  MasterCard,
+  ReloadedNotice,
+} from "./BlenderMaster";
 import { useBlenderRoleStore } from "./blenderRole";
 import { attachBlenderInput, type BlenderInput, type TakePress } from "./blenderInput";
 import { useKeptCopySelection } from "./keptCopies";
@@ -632,6 +637,9 @@ function RunningBlender(
     onClose: () => streamRef.current?.focus(),
   });
   const live = props.state.status === "running" && props.visible && stats.frameSize !== null;
+  // Hidden until the next reload keeps a copy; the copy itself stays as any kept copy does.
+  const [dismissedReload, setDismissedReload] = useState<number | null>(null);
+  const reloadKept = props.state.reloadKept;
   return (
     <div className="flex h-full min-h-0 flex-col">
       <BlenderToolbar
@@ -644,6 +652,14 @@ function RunningBlender(
         master={master}
       />
       {props.notice}
+      {reloadKept !== undefined && reloadKept.at !== dismissedReload ? (
+        <ReloadedNotice
+          threadRef={props.threadRef}
+          copyKey={reloadKept.key}
+          master={master}
+          onDismiss={() => setDismissedReload(reloadKept.at)}
+        />
+      ) : null}
       {props.state.status === "starting" ? (
         <StateCard
           title={<T>Starting Blender…</T>}

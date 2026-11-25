@@ -13402,5 +13402,15 @@
   "ec2bc06507d0d9af": "alojado blender salir memoria 3d hilo",
   "37d76dab21a26b2a": "blender hosted configuración instalar comprobar labwc gstreamer codificador gpu pantalla oculta linux agente comandos",
   "f74fb1f1e951cb67": "blender hosted agentes mcp iniciar permitir",
-  "3cf7f8ed35b33c5f": "blender lab mcp servidor ruta programa instalar uv pipx"
+  "3cf7f8ed35b33c5f": "blender lab mcp servidor ruta programa instalar uv pipx",
+  "b75a2837e20ac029": "No se pudieron restaurar los cambios",
+  "656229dd34610e6d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " cambió en el disco, así que Blender lo volvió a cargar. Sus cambios sin guardar se conservan como copia de recuperación."
+  ],
+  "a1d7b8f8a44e27aa": "Restaurar cambios"
 }

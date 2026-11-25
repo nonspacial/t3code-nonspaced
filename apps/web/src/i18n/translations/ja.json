@@ -13343,5 +13343,15 @@
   "ec2bc06507d0d9af": "ホスト blender 終了 メモリ 3d スレッド",
   "37d76dab21a26b2a": "blender hosted セットアップ インストール 確認 labwc gstreamer エンコーダー gpu 非表示ディスプレイ linux エージェント コマンド",
   "f74fb1f1e951cb67": "blender hosted エージェント mcp 起動 許可",
-  "3cf7f8ed35b33c5f": "blender lab mcp サーバー パス 実行ファイル インストール uv pipx"
+  "3cf7f8ed35b33c5f": "blender lab mcp サーバー パス 実行ファイル インストール uv pipx",
+  "b75a2837e20ac029": "変更を復元できませんでした",
+  "656229dd34610e6d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " がディスク上で変更されたため、Blender が再読み込みしました。保存されていない変更は復元用コピーとして保持されています。"
+  ],
+  "a1d7b8f8a44e27aa": "変更を復元"
 }

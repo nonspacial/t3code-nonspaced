@@ -96,6 +96,66 @@ export function DesktopUncheckedNotice() {
   );
 }
 
+/**
+ * Over a running Blender that reloaded its file after it changed on disk: its unsaved changes
+ * are that file's copy, which Restore puts back over the reloaded file.
+ */
+export function ReloadedNotice(props: {
+  readonly threadRef: ScopedThreadRef;
+  /** The kept copy's key, which names its file: `workspace:<path>` or `outside:<path>`. */
+  readonly copyKey: string;
+  readonly master: boolean;
+  readonly onDismiss: () => void;
+}) {
+  const gt = useGT();
+  const m = useMessages();
+  const { environmentId, threadId } = props.threadRef;
+  const canRestore = useAtomValue(hostedBlenderEnvironment.reopen.permissionAtom(environmentId));
+  const reopen = useAtomCommand(hostedBlenderEnvironment.reopen, { reportFailure: false });
+  const [pending, setPending] = useState(false);
+  const name = fileName(props.copyKey.slice(props.copyKey.indexOf(":") + 1));
+  const restore = async () => {
+    setPending(true);
+    const result = await reopen({
+      environmentId,
+      input: {
+        threadId,
+        key: props.copyKey,
+        restore: true,
+        ...(props.master ? { role: "master" as const } : {}),
+      },
+    });
+    setPending(false);
+    if (result._tag === "Failure") {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: gt("Couldn't restore the changes"),
+          description: formatEnvironmentQueryError(result.cause, m),
+        }),
+      );
+    }
+  };
+  return (
+    <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border bg-info/8 px-3 py-1.5 text-info-foreground text-xs">
+      <span className="min-w-0 flex-1">
+        <T>
+          <Var>{name}</Var> changed on disk, so Blender reloaded it. Its unsaved changes are kept as
+          a recovery copy.
+        </T>
+      </span>
+      {canRestore ? (
+        <Button size="xs" variant="outline" disabled={pending} onClick={() => void restore()}>
+          <T>Restore changes</T>
+        </Button>
+      ) : null}
+      <Button size="xs" variant="ghost" onClick={props.onDismiss}>
+        <T>Dismiss</T>
+      </Button>
+    </div>
+  );
+}
+
 const fileName = (relativePath: string) => relativePath.slice(relativePath.lastIndexOf("/") + 1);
 
 /** The Master side while no master Blender shows it: open it, or move it from the desktop. */

@@ -13407,5 +13407,15 @@
   "ec2bc06507d0d9af": "hospedado blender sair memória 3d conversa",
   "37d76dab21a26b2a": "blender hosted configuração instalar verificar labwc gstreamer codificador gpu tela oculta linux agente comandos",
   "f74fb1f1e951cb67": "blender hosted agentes mcp iniciar permitir",
-  "3cf7f8ed35b33c5f": "blender lab mcp servidor caminho binário instalar uv pipx"
+  "3cf7f8ed35b33c5f": "blender lab mcp servidor caminho binário instalar uv pipx",
+  "b75a2837e20ac029": "Não foi possível restaurar as alterações",
+  "656229dd34610e6d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " foi alterado no disco, então o Blender o recarregou. As alterações não salvas foram mantidas como cópia de recuperação."
+  ],
+  "a1d7b8f8a44e27aa": "Restaurar alterações"
 }

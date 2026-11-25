@@ -87,7 +87,7 @@ timers = types.SimpleNamespace(
 from . import handlers
 `,
   "bpy/app/handlers.py":
-    "load_post = []\nsave_post = []\ndepsgraph_update_post = []\ndef persistent(function):\n    return function\n",
+    "load_pre = []\nload_post = []\nsave_post = []\ndepsgraph_update_post = []\ndef persistent(function):\n    return function\n",
   "bpy/ops.py": String.raw`
 import sys, types
 NAME = "${MCP}"
@@ -592,6 +592,79 @@ if _scenario.get("startedOutsideGrant"):
     _server().start("localhost", int(MCP_PORT))
     _tick()
     _steps.append(_report())
+if _scenario.get("diskChanges") is not None:
+    # The open file on disk, changed by Blender's own save or by something else, and T3's word
+    # each time it settles. Blender's file operators stood in for.
+    import contextlib, types
+    _path = bpy.data.filepath
+    bpy.app.tempdir = os.path.join(os.path.dirname(SOCKET_PATH), "tmp", "blender_stub") + "/"
+    os.makedirs(bpy.app.tempdir)
+    def _open_mainfile(filepath, **options):
+        _addons.log("open_mainfile", filepath == _path, options.get("load_ui"))
+        _on_load_pre(filepath)
+        bpy.data.is_dirty = False
+        _on_load_post(filepath)
+        return {"FINISHED"}
+    def _save_auto_save():
+        _addons.log("save_auto_save")
+        base = os.path.dirname(os.path.normpath(bpy.app.tempdir))
+        with open(os.path.join(base, "hero_%d_autosave.blend" % os.getpid()), "w") as out:
+            out.write("unsaved work")
+        return {"FINISHED"}
+    def _save_mainfile():
+        _addons.log("save_mainfile")
+        return {"FINISHED"}
+    bpy.ops.wm = types.SimpleNamespace(
+        open_mainfile=_open_mainfile,
+        save_auto_save=_save_auto_save,
+        save_mainfile=_save_mainfile,
+        quit_blender=lambda: _addons.log("quit_blender"),
+    )
+    bpy.context.temp_override = lambda **_kwargs: contextlib.nullcontext()
+    _t3.setblocking(False)
+    _writes = [0]
+    def _write():
+        # Longer each time, so the revision moves whatever the clock's resolution.
+        _writes[0] += 1
+        with open(_path, "w") as out:
+            out.write("v" * (_writes[0] + 1))
+    def _heard():
+        heard = b""
+        try:
+            while True:
+                chunk = _t3.recv(65536)
+                if not chunk:
+                    break
+                heard += chunk
+        except BlockingIOError:
+            pass
+        return [message for message in map(_j.loads, heard.decode().splitlines())
+                if message["type"] in ("reloading", "reloaded", "quitFailed", "saving")]
+    for _step in _scenario["diskChanges"]:
+        if _step == "ownSave":
+            _write()
+            _on_save_post(_path)
+        elif _step == "outsideChange":
+            _write()
+        elif _step == "edit":
+            bpy.data.is_dirty = True
+        elif _step == "editImage":
+            bpy.data.images.append(types.SimpleNamespace(name="paint", is_dirty=True))
+        if _step == "saveAndQuit":
+            _t3.sendall(b'{"type": "quit", "save": true}\n')
+        else:
+            # T3 saw the file settle; a pane is on screen only once the step says "shown".
+            _t3.sendall((_j.dumps({"type": "diskChanged", "reload": _step == "shown"}) + "\n").encode())
+        _tick()
+        _steps.append(dict(
+            step=_step,
+            stale=_snapshot().get("stale", False),
+            dirty=bpy.data.is_dirty,
+            heard=_heard(),
+            listener=_snapshot()["agentListener"],
+        ))
+    _t3.setblocking(True)
+
 _call = _scenario.get("call")
 _called = None
 if _call is not None:
@@ -866,6 +939,13 @@ const runAddon = (input: {
   readonly listeningBeforeGrant?: boolean;
   readonly undoPushLeavesClean?: boolean;
   readonly globalUndo?: boolean;
+  /**
+   * With the open file a real one on disk: each step changes it or Blender, and T3 then says the
+   * file settled (a pane on screen only for "shown"); "saveAndQuit" is T3's Save and quit.
+   */
+  readonly diskChanges?: ReadonlyArray<
+    "ownSave" | "outsideChange" | "shown" | "edit" | "editImage" | "saveAndQuit"
+  >;
 }) => {
   const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-control-addon-"));
   dirs.push(dir);
@@ -877,6 +957,8 @@ const runAddon = (input: {
     NodePath.join(dir, "bl_ext/t3_blender_lab/mcp/blender_manifest.toml"),
     input.manifest ?? `id = "mcp"\nversion = "${input.mcpVersion ?? "1.0.3"}"\n`,
   );
+  const openFile = NodePath.join(dir, "hero.blend");
+  NodeFS.writeFileSync(openFile, "v");
   const addon = NodePath.join(dir, "t3_control.py");
   NodeFS.writeFileSync(addon, `${CONTROL_ADDON_SOURCE}\n${AFTER_REGISTER}`);
   const log = NodePath.join(dir, "calls.log");
@@ -897,7 +979,14 @@ const runAddon = (input: {
         : []),
     ],
     {
-      env: { ...process.env, PYTHONPATH: dir, STUB_STATE: JSON.stringify(input), STUB_LOG: log },
+      env: {
+        ...process.env,
+        PYTHONPATH: dir,
+        STUB_STATE: JSON.stringify(
+          input.diskChanges === undefined ? input : { filepath: openFile, ...input },
+        ),
+        STUB_LOG: log,
+      },
       encoding: "utf8",
     },
   );
@@ -908,6 +997,7 @@ const runAddon = (input: {
         .map((line) => JSON.parse(line))
     : [];
   return {
+    dir,
     port,
     calls,
     snapshot: NodePath.join(dir, "bl_ext/t3_blender_lab"),
@@ -920,6 +1010,77 @@ const off = { listener: "off", listening: null, enabled: false };
 const pending = { listener: "starting", listening: null, enabled: false };
 
 const onLinux = HostProcess.Platform.defaultValue() === "linux";
+
+describe("B13: a file changed on disk", () => {
+  const granted = { installed: [MCP], enabled: [MCP], listen: true } as const;
+  type Step = { step: string; stale: boolean; heard: Array<unknown>; listener: string };
+  const changes = (result: { readonly steps: ReadonlyArray<unknown> }, count: number) =>
+    result.steps.slice(-count) as Array<Step>;
+  const opens = (result: { readonly calls: ReadonlyArray<ReadonlyArray<unknown>> }) =>
+    result.calls.filter((call) => call[0] === "open_mainfile");
+
+  it("takes Blender's own save as no change, and reloads an outside one once, when a pane shows it", () => {
+    const result = runAddon({
+      ...granted,
+      diskChanges: ["ownSave", "outsideChange", "outsideChange", "shown"],
+    });
+    const steps = changes(result, 4);
+    expect(steps.map((step) => [step.step, step.stale])).toEqual([
+      ["ownSave", false],
+      ["outsideChange", true],
+      ["outsideChange", true],
+      ["shown", false],
+    ]);
+    // The same file, keeping Blender's windows; nothing unsaved, so nothing to keep.
+    expect(opens(result)).toEqual([["open_mainfile", true, false]]);
+    expect(result.calls.some((call: ReadonlyArray<unknown>) => call[0] === "save_auto_save")).toBe(
+      false,
+    );
+    expect(steps[3]!.heard).toEqual([{ type: "reloaded", kept: false }]);
+    // Reloading the same file isn't another file opened: the agent's access goes on.
+    expect(steps[3]!.listener).toBe("ready");
+  });
+
+  it("keeps unsaved changes as an autosave before it reloads, and reloads before the agent's next call", () => {
+    const result = runAddon({
+      ...granted,
+      diskChanges: ["edit", "outsideChange"],
+      call: { code: "import addon_utils\naddon_utils.log('agent code')\nresult = {}" },
+    });
+    const order = result.calls
+      .map((call: ReadonlyArray<unknown>) => call[0])
+      .filter((name: unknown) =>
+        ["save_auto_save", "open_mainfile", "agent code"].includes(name as string),
+      );
+    expect(order).toEqual(["save_auto_save", "open_mainfile", "agent code"]);
+    // Renamed out of the way of Blender's next autosave, for T3 to keep.
+    expect(NodeFS.readFileSync(NodePath.join(result.dir, "tmp", "t3-reload-1.blend"), "utf8")).toBe(
+      "unsaved work",
+    );
+    expect(result.received).toEqual(expect.arrayContaining(["reloading", "reloaded"]));
+    expect(result.call.reply.status).toBe("ok");
+    expect(result.call.listenerAfter).toBe("ready");
+  });
+
+  it("won't reload over image edits, which no copy of the .blend could keep", () => {
+    const result = runAddon({ ...granted, diskChanges: ["editImage", "outsideChange", "shown"] });
+    expect(opens(result)).toEqual([]);
+    expect(changes(result, 1)[0]!.stale).toBe(true);
+  });
+
+  it("refuses Save and quit over a file changed on disk, and saves after Blender's own save", () => {
+    const refused = runAddon({ ...granted, diskChanges: ["outsideChange", "saveAndQuit"] });
+    expect(changes(refused, 1)[0]!.heard).toEqual([
+      { type: "quitFailed", reason: "changedOnDisk" },
+    ]);
+    const names = (result: { readonly calls: ReadonlyArray<ReadonlyArray<unknown>> }) =>
+      result.calls.map((call) => call[0]);
+    expect(names(refused)).not.toContain("save_mainfile");
+    expect(names(refused)).not.toContain("quit_blender");
+    const saved = runAddon({ ...granted, diskChanges: ["ownSave", "saveAndQuit"] });
+    expect(names(saved)).toEqual(expect.arrayContaining(["save_mainfile", "quit_blender"]));
+  });
+});
 
 describe("T3's control add-on and Blender Lab's MCP add-on", () => {
   it("keeps it off without --t3-mcp-listen, and out of these settings so a reload can't start it", () => {

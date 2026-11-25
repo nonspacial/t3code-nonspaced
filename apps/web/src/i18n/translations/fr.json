@@ -13407,5 +13407,15 @@
   "ec2bc06507d0d9af": "hébergé blender quitter mémoire 3d fil",
   "37d76dab21a26b2a": "blender hosted configuration installer vérifier labwc gstreamer encodeur gpu écran masqué linux agent commandes",
   "f74fb1f1e951cb67": "blender hosted agents mcp démarrer autoriser",
-  "3cf7f8ed35b33c5f": "blender lab mcp serveur chemin programme installer uv pipx"
+  "3cf7f8ed35b33c5f": "blender lab mcp serveur chemin programme installer uv pipx",
+  "b75a2837e20ac029": "Impossible de restaurer les modifications",
+  "656229dd34610e6d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " a été modifié sur le disque, Blender l’a donc rechargé. Ses modifications non enregistrées sont conservées dans une copie de récupération."
+  ],
+  "a1d7b8f8a44e27aa": "Restaurer les modifications"
 }

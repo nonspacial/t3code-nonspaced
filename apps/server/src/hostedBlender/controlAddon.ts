@@ -28,6 +28,10 @@ RECOVER_PATH = _option("--t3-recover")
 # The launch's own copy of Blender Lab: a folder holding its "mcp" package.
 MCP_SNAPSHOT = _option("--t3-mcp-snapshot")
 MCP_LISTEN = "--t3-mcp-listen" in (sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
+# The file's revision as T3 saw it before Blender read it at launch.
+LAUNCH_REVISION = _option("--t3-revision")
+# Embedded scripts follow the user's setting only when T3 didn't turn them off at launch.
+AUTOEXEC = "--disable-autoexec" not in sys.argv
 TICK = 0.1
 # Casting a mark's samples stops after this long, as the 3D preview's does.
 HIT_BUDGET = 0.1
@@ -67,6 +71,18 @@ class _State:
     catalogs_unsaved = False
     # Save and quit is saving: its own result answers T3, not save_post's.
     quit_saving = False
+    # The open file as Blender last read or saved it; anything else on disk is a change Blender
+    # didn't make. Revisions are identity, size and nanosecond times, as T3's previews tell.
+    disk_revision = None
+    # What load_pre saw of the file it was about to read: its real path and revision.
+    loading = None
+    # The revision on disk once T3 saw it settle, while it isn't the one Blender has.
+    stale = None
+    # A pane shows this Blender, so T3 asked for the reload now.
+    reload_wanted = False
+    # A revision that didn't load, never tried again.
+    reload_failed = None
+    reload_copies = 0
 
 
 def _listen():
@@ -125,6 +141,8 @@ def _snapshot():
         snapshot["restore"] = _State.restore
     if _State.loaded_at is not None:
         snapshot["loadedAt"] = _State.loaded_at
+    if _State.stale is not None:
+        snapshot["stale"] = True
     return snapshot
 
 
@@ -354,6 +372,7 @@ def _handle(command):
         "view": lambda: _view(command),
         "hits": lambda: _hits(command),
         "setView": lambda: _set_view(command),
+        "restore": lambda: _restore_copy(command),
     }
     if kind in requests:
         try:
@@ -365,6 +384,9 @@ def _handle(command):
         return
     if kind == "stopAgentListener":
         _end_grant()
+        return
+    if kind == "diskChanged":
+        _check_disk(command)
         return
     if kind == "grantAgentListener":
         _grant_agent_listener()
@@ -401,6 +423,10 @@ def _handle(command):
             })
             _push_undo_step()
         else:
+            if _changed_on_disk():
+                # What Blender read would be written over the newer file; nothing is saved.
+                _send({"type": "quitFailed", "reason": "changedOnDisk"})
+                return
             # Answered before the save, which blocks Blender for as long as a big file takes.
             _send({"type": "saving"})
             _State.quit_saving = True
@@ -518,6 +544,8 @@ def _tick():
             # Casting blocks Blender's UI; the next request waits for the next tick.
             if command.get("type") == "hits":
                 break
+        if _State.reload_wanted:
+            _State.reload_wanted = _reload_if_stale()
         _check_authorized_file()
     _check_guard()
     _sweep_deferred()
@@ -849,6 +877,100 @@ def _open_viewport_window():
     return None
 
 
+def _revision(path):
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    return "%d:%d:%d:%d:%d" % (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _changed_on_disk():
+    current = _revision(bpy.data.filepath) if bpy.data.filepath else None
+    return current is not None and current != _State.disk_revision
+
+
+def _check_disk(command):
+    # T3 saw the file settle after a change; a revision Blender read or saved itself is no change.
+    current = _revision(bpy.data.filepath) if bpy.data.filepath else None
+    _State.stale = current if current is not None and current != _State.disk_revision else None
+    if command.get("reload"):
+        _State.reload_wanted = True
+
+
+def _keep_unsaved():
+    # Blender's own autosave, which keeps the file's path, so restoring it saves to the file.
+    # Renamed at once, so Blender's next autosave can't overwrite it before T3 keeps it.
+    base = os.path.dirname(os.path.normpath(bpy.app.tempdir))
+    stem = os.path.basename(bpy.data.filepath)[:-len(".blend")]
+    autosave = os.path.join(base, "%s_%d_autosave.blend" % (stem, os.getpid()))
+    try:
+        with bpy.context.temp_override(window=_main_window()):
+            if "FINISHED" not in bpy.ops.wm.save_auto_save():
+                return None
+        _State.reload_copies += 1
+        name = "t3-reload-%d.blend" % _State.reload_copies
+        os.replace(autosave, os.path.join(base, name))
+    except Exception as error:  # noqa: BLE001 - without a copy there is no reload
+        print("T3 control add-on: could not keep unsaved changes:", error, file=sys.stderr)
+        return None
+    return name
+
+
+def _reload_if_stale():
+    # Jumps to the file on disk once T3 saw it settle and it hasn't moved since. True to be asked
+    # again next tick: the agent's deferred work that can write is still running in this data.
+    if _State.stale is None or _State.stale == _State.reload_failed or not bpy.data.filepath:
+        return False
+    if any(record["writes"] for record in _Guard.deferred):
+        return True
+    if _revision(bpy.data.filepath) != _State.stale:
+        return False
+    # Edited images and asset catalogs live outside the .blend, where no copy could keep them.
+    if _State.catalogs_unsaved or any(image.is_dirty for image in bpy.data.images):
+        return False
+    copy = None
+    if bpy.data.is_dirty or _State.restored:
+        copy = _keep_unsaved()
+        if copy is None:
+            return False
+        _send({"type": "reloading", "copy": copy})
+    target = _State.stale
+    # The current windows stay, T3's viewport window and its view among them.
+    options = {} if AUTOEXEC else {"use_scripts": False}
+    try:
+        with bpy.context.temp_override(window=_main_window()):
+            loaded = "FINISHED" in bpy.ops.wm.open_mainfile(
+                filepath=bpy.data.filepath, load_ui=False, display_file_selector=False, **options
+            )
+    except Exception as error:  # noqa: BLE001 - the session as it was stays open
+        print("T3 control add-on: reload failed:", error, file=sys.stderr)
+        loaded = False
+    if not loaded:
+        _State.reload_failed = target
+        return False
+    _State.restored = False
+    # No window came from the file, so none is replaced.
+    _State.replace_loaded = False
+    # The file as loaded first, so T3 never shows the reload with the old unsaved mark.
+    _publish_state()
+    _send({"type": "reloaded", "kept": copy is not None})
+    return False
+
+
+def _restore_copy(command):
+    # A copy T3 kept of this file, put back over it unsaved, as a launch's restore is.
+    expected = bpy.data.filepath
+    try:
+        with bpy.context.temp_override(window=_main_window()):
+            restored = "FINISHED" in bpy.ops.wm.recover_auto_save(filepath=command["path"], use_scripts=False)
+    except Exception as error:  # noqa: BLE001 - reported to T3, which keeps the copy
+        print("T3 control add-on: restore failed:", error, file=sys.stderr)
+        return False
+    _State.restored = restored
+    return restored and bpy.data.filepath == expected
+
+
 @persistent
 def _on_save_post(*args):
     _State.restored = False
@@ -859,6 +981,9 @@ def _on_save_post(*args):
     # is a confirmed save that T3 forgets the file's older copy on. A copy saved elsewhere names
     # another path than the open file's.
     target = args[0] if args and isinstance(args[0], str) else ""
+    if target and target == bpy.data.filepath:
+        _State.disk_revision = _revision(target)
+        _State.stale = None
     if target and target == bpy.data.filepath and not _State.quit_saving:
         _send({
             "type": "saved",
@@ -869,7 +994,23 @@ def _on_save_post(*args):
 
 
 @persistent
+def _on_load_pre(*args):
+    target = args[0] if args and isinstance(args[0], str) else ""
+    _State.loading = (os.path.realpath(target), _revision(target)) if target else None
+
+
+@persistent
 def _on_load_post(*_args):
+    # Read before the load, so a change made while a large file loads still counts as one.
+    loading, _State.loading = _State.loading, None
+    current = bpy.data.filepath
+    if loading is not None and current and loading[0] == os.path.realpath(current):
+        _State.disk_revision = loading[1]
+    else:
+        # Recovered from a copy: the file itself wasn't read.
+        _State.disk_revision = _revision(current) if current else None
+    _State.stale = None
+    _State.reload_failed = None
     _State.loaded_at = time.time() * 1000
     _check_authorized_file()
     _State.replace_loaded = True
@@ -877,6 +1018,7 @@ def _on_load_post(*_args):
 
 
 def register():
+    _State.disk_revision = LAUNCH_REVISION or (_revision(bpy.data.filepath) if bpy.data.filepath else None)
     _setup_mcp_addon()
     _keep_recovery_files()
     try:
@@ -886,6 +1028,7 @@ def register():
     if SOCKET_PATH is not None:
         _State.server = _listen()
         bpy.app.timers.register(_tick, first_interval=TICK, persistent=True)
+    bpy.app.handlers.load_pre.append(_on_load_pre)
     bpy.app.handlers.load_post.append(_on_load_post)
     # Save As to another name is another file too, checked before anything else can run.
     bpy.app.handlers.save_post.append(_on_save_post)
