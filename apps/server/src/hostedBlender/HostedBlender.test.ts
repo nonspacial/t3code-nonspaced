@@ -486,7 +486,10 @@ threading.Thread(target=control, daemon=True).start()
 def stopped(how):
     marker = os.environ.get("STANDIN_MARKER")
     if marker:
-        open(marker, "w").write(how)
+        # Whole once it appears: a test waits for the file, then reads it.
+        with open(marker + ".partial", "w") as out:
+            out.write(how)
+        os.replace(marker + ".partial", marker)
     os._exit(0)
 # As the helper does once detached: T3's quit and its going away are ignored, and it exits once
 # Blender has finished its quit copy.
