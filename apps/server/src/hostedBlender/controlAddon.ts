@@ -933,9 +933,7 @@ def _open_viewport_window():
             return TICK
         _show_timeline(own[0], _State.timeline)
         return None
-    # Announced before it exists, so T3 counts only a capture that follows.
-    if _State.client is None:
-        return TICK
+    # Announced before it exists while T3 is connected; otherwise T3 hears it on connecting.
     _State.viewport_generation += 1
     _publish_state()
     areas = [area for area in window.screen.areas if area.type == "VIEW_3D"]

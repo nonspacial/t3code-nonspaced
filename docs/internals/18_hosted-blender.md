@@ -49,9 +49,9 @@ Blender gives that title only to a window holding a lone 3D view; split, it may 
 (on 4.5 even a split made before the window is shown does, so it is never made fullscreen), and
 removing the strip doesn't give it back. So the control add-on opens each viewport window as a
 lone 3D view and adds the Timeline strip only once the helper has it: the add-on numbers the
-window and announces it over the control socket before it exists (closing every other one
-first), T3 answers `viewportShown` once the helper reports a live capture after that, and the
-add-on waits too for the window to fill the output, whose size T3 sends with `display`. With
+window in its reports (closing every other one first), T3 answers `viewportShown` once it knows
+that number and the helper holds a live capture, and the add-on waits too for the window to fill
+the output, whose size T3 sends with `display`. With
 the whole output streamed there is nothing to wait for. Once captured, the helper keeps the
 window whatever its title becomes. Screenshots, marks, view capture and view links read the 3D
 view's own area and region, never the strip's; the stream and the pane's size follow the whole
