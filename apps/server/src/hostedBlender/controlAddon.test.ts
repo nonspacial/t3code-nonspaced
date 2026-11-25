@@ -217,14 +217,15 @@ elif _then in ("saveAndQuit", "failedSaveAndQuit"):
     bpy.ops.wm = types.SimpleNamespace(save_mainfile=_save_mainfile, quit_blender=_quit_blender)
     _t3.sendall(b'{"type": "quit", "save": true}\n')
     _tick()
-elif _then in ("replaceViewport", "stuckViewport"):
-    # The working copy was saved with T3's viewport window open, and the user's own second
-    # 3D view: the add-on swaps T3's for its own and leaves the user's alone.
+elif _then in ("replaceViewport", "stuckViewport", "ownChanged"):
+    # The file was saved with T3's viewport window open, and the user's own second 3D view:
+    # after a recovery the add-on swaps T3's for its own, and always leaves the user's alone.
     import contextlib, types
     class _Area:
         def __init__(self, kind):
             self.type = kind; self.width = 100; self.height = 100
             self.regions = [types.SimpleNamespace(type="WINDOW")]
+            self.spaces = types.SimpleNamespace(active=None)
     class _Screen(dict):
         def __init__(self, kind):
             super().__init__(); self.areas = [_Area(kind)]
@@ -251,12 +252,26 @@ elif _then in ("replaceViewport", "stuckViewport"):
     def _dupli(_mode):
         window = _Window("VIEW_3D"); _windows.append(window); _opened.append(window)
     bpy.context.temp_override = _override
-    bpy.ops.wm = types.SimpleNamespace(window_close=_close)
+    bpy.ops.wm = types.SimpleNamespace(
+        window_close=_close, recover_auto_save=lambda **_kwargs: {"FINISHED"}
+    )
     bpy.ops.screen = types.SimpleNamespace(area_dupli=_dupli)
+    if RECOVER_PATH is not None:
+        _recover()
     # The timer runs until it returns None; a stuck close must not keep it going.
     _runs = 0
     while _open_viewport_window() is not None and _runs < 10:
         _runs += 1
+    if _then == "ownChanged":
+        # The person turns T3's window into another editor: it's no longer T3's viewport.
+        _opened[0].screen.areas[0].type = "IMAGE_EDITOR"
+        _changed = _viewport()
+        _open_viewport_window()
+        _steps.append(dict(
+            stillOwn=_changed is not None and _changed[0] is _opened[0],
+            reopened=_viewport() is not None and _viewport()[0] is _opened[-1],
+            fresh=len(_opened),
+        ))
     _steps.append(dict(
         _report(),
         windows=len(_windows),
@@ -311,8 +326,11 @@ const runAddon = (input: {
   readonly pressStartBeforeGrant?: boolean;
   /** Another file is open by the time T3's grant arrives. */
   readonly fileBeforeGrant?: boolean;
+  /** Launched to restore a recovery copy, as Reopen does. */
+  readonly recover?: boolean;
   readonly then?:
     | "stuckViewport"
+    | "ownChanged"
     | "revoke"
     | "drop"
     | "otherFile"
@@ -342,6 +360,7 @@ const runAddon = (input: {
       "--t3-mcp-port",
       String(port),
       ...(input.listen ? ["--t3-mcp-listen"] : []),
+      ...(input.recover ? ["--t3-recover", NodePath.join(dir, "session.blend")] : []),
     ],
     {
       env: { ...process.env, PYTHONPATH: dir, STUB_STATE: JSON.stringify(input), STUB_LOG: log },
@@ -406,11 +425,12 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     expect(after(failed)).toEqual({ listener: "ready", listening: failed.port, enabled: true });
   });
 
-  it("keeps the grant when it replaces a viewport window the working copy brought back", () => {
+  it("keeps the grant when it replaces a viewport window a recovery copy brought back", () => {
     const result = runAddon({
       installed: [MCP],
       enabled: [MCP],
       listen: true,
+      recover: true,
       then: "replaceViewport",
     });
     const ready = { listener: "ready", listening: result.port, enabled: true };
@@ -429,10 +449,36 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       installed: [MCP],
       enabled: [MCP],
       listen: true,
+      recover: true,
       then: "stuckViewport",
     });
     expect(result.steps.at(-4)).toMatchObject({ closes: 1, usersKept: true, fresh: 1 });
     expect(result.steps.at(-4).runs).toBeLessThan(10);
+  });
+
+  it("leaves a marked window an ordinary file brought back, and opens its own", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      then: "replaceViewport",
+    });
+    // A file saved from a hosted Blender keeps the mark, but only a recovery copy is T3's own.
+    expect(result.steps.at(-4)).toMatchObject({ windows: 4, fresh: 1, closes: 0, usersKept: true });
+  });
+
+  it("stops taking a window for its viewport once it no longer holds a lone 3D view", () => {
+    const result = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      then: "ownChanged",
+    });
+    expect(result.steps.find((step: { stillOwn?: boolean }) => "stillOwn" in step)).toEqual({
+      stillOwn: false,
+      reopened: true,
+      fresh: 2,
+    });
   });
 
   it("never starts it when T3 revokes before it grants", () => {

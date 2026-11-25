@@ -49,6 +49,8 @@ class _State:
     viewport_window = None
     # Restored viewport windows already asked to close, by pointer.
     closed_viewports = set()
+    # The recovery copy just loaded may bring T3's viewport window back, to be replaced.
+    replace_recovered = False
 
 
 def _listen():
@@ -133,15 +135,16 @@ def _push_undo_step():
             bpy.ops.ed.undo_push(message="T3 recovery copy")
     except Exception as error:  # noqa: BLE001 - quitting matters more than the extra step
         print("T3 control add-on: undo step failed:", error, file=sys.stderr)
+def _lone_3d_view(window):
+    return len(window.screen.areas) == 1 and window.screen.areas[0].type == "VIEW_3D"
+
+
 def _viewport():
     # The person's viewport window: the one _open_viewport_window made, never the main window.
     windows = bpy.context.window_manager.windows
     candidates = [window for window in _viewport_windows() if window.as_pointer() == _State.viewport_window]
-    candidates += [
-        window
-        for index, window in enumerate(windows)
-        if index > 0 and len(window.screen.areas) == 1 and window.screen.areas[0].type == "VIEW_3D"
-    ]
+    candidates += [window for index, window in enumerate(windows) if index > 0]
+    candidates = [window for window in candidates if _lone_3d_view(window)]
     for window in candidates:
         area = window.screen.areas[0]
         region = next((region for region in area.regions if region.type == "WINDOW"), None)
@@ -448,6 +451,7 @@ def _recover():
         with bpy.context.temp_override(window=window):
             result = bpy.ops.wm.recover_auto_save(filepath=RECOVER_PATH, use_scripts=False)
             _State.restored = "FINISHED" in result
+            _State.replace_recovered = _State.restored
     except Exception as error:  # noqa: BLE001 - reported to T3, which keeps the copy
         print("T3 control add-on: recovery failed:", error, file=sys.stderr)
     _State.restore = "ok" if _State.restored else "failed"
@@ -582,17 +586,24 @@ def _open_viewport_window():
     if window is None:
         return None
     found = _viewport_windows()
-    own = [other for other in found if other.as_pointer() == _State.viewport_window]
-    # A file saved with T3's viewport window open (a recovery copy, or a save from here) brings
-    # it back in its saved fullscreen state, which the compositor's fullscreen toggle then
-    # undoes. It is replaced by a fresh one, which fills the display as on a first open. One
-    # that didn't close when asked is left be rather than asked again forever.
+    own = [
+        other
+        for other in found
+        if other.as_pointer() == _State.viewport_window and _lone_3d_view(other)
+    ]
+    # A recovery copy brings T3's viewport window back in its saved fullscreen state, which the
+    # compositor's fullscreen toggle then undoes. It is replaced by a fresh one, which fills the
+    # display as on a first open. Any file saved from a hosted Blender keeps the mark, so only
+    # the copy just recovered is replaced. One that didn't close when asked is left be rather
+    # than asked again forever.
     restored = [
         other
         for other in found
-        if other.as_pointer() != _State.viewport_window
+        if _State.replace_recovered
+        and other.as_pointer() != _State.viewport_window
         and other.as_pointer() not in _State.closed_viewports
     ]
+    _State.replace_recovered = bool(restored)
     if restored:
         for other in restored:
             _State.closed_viewports.add(other.as_pointer())
