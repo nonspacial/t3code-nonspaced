@@ -82,10 +82,8 @@ class _Guard:
     acting_until = 0.0
     accept = None
     execute = None
-    # Deferred calls still running, each owing a step if its deferred part changes the scene.
+    # Deferred calls still running whose deferred part can write, each owing an undo step.
     deferred = []
-    # Depsgraph updates seen, to tell whether a deferred part changed anything.
-    updates = 0
 
 
 def _mcp_version(module_file):
@@ -216,19 +214,22 @@ def _confirm_grant(server):
     return _still_granted(server)
 
 
-@persistent
-def _on_depsgraph_update(_scene, depsgraph=None):
-    # Only an evaluation with something updated counts; redraws alone change nothing.
-    if depsgraph is None or len(depsgraph.updates):
-        _Guard.updates += 1
+# Blender Lab 1.0.3's deferred paths: render_viewport_to_path and render_thumbnail_to_path defer
+# through this template checker with job "RENDER", which only waits for the render and puts back
+# the output path it set. The agent's own check_is_finished (execute_blender_code) can do anything.
+_RENDER_CHECKER = "_deferred_tool_check_for_file_output.<locals>.check_is_finished"
 
 
-def _flush_depsgraph():
-    # Evaluating runs the update handlers for what is tagged so far.
+def _deferred_can_write(check, strict_json):
+    # Anything not known to be read-only counts as writing, including paths a later version adds.
+    if not strict_json or getattr(check, "__qualname__", None) != _RENDER_CHECKER:
+        return True
+    names = getattr(getattr(check, "__code__", None), "co_freevars", ())
+    cells = dict(zip(names, getattr(check, "__closure__", None) or ()))
     try:
-        bpy.context.evaluated_depsgraph_get()
-    except Exception:  # noqa: BLE001 - nothing to flush without a scene
-        pass
+        return cells["job_type"].cell_contents != "RENDER"
+    except (KeyError, ValueError):
+        return True
 
 
 def _guard_mcp_server(server):
@@ -269,18 +270,15 @@ def _guard_mcp_server(server):
             raise
         finally:
             _Guard.acting_until = time.monotonic() + AGENT_ACTING_LINGER
-        if strict_json:
-            return result
-        # The call's undo step, holding what it did before any deferred part, so edits made in
-        # between never fold into it.
-        _flush_depsgraph()
-        warning = _push_agent_undo()
         check = getattr(result, "check_fn", None)
+        # The agent's own code gets its step now, so edits made while a deferred part runs never
+        # fold into it. Blender Lab's own tool code only reads.
+        warning = None if strict_json else _push_agent_undo()
         if check is None:
-            _with_undo_warning(result.response, warning)
+            if not strict_json:
+                _with_undo_warning(result.response, warning)
             return result
-        _flush_depsgraph()
-        record = {"check": None, "updates": _Guard.updates}
+        record = {"check": None, "writes": _deferred_can_write(check, strict_json)}
 
         def check_then_undo():
             if not _confirm_grant(server):
@@ -302,8 +300,6 @@ def _guard_mcp_server(server):
         _Guard.deferred.append(record)
         return result._replace(check_fn=check_then_undo)
 
-    if _on_depsgraph_update not in bpy.app.handlers.depsgraph_update_post:
-        bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph_update)
     server._accept_clients = accept_clients
     server._execute_code = execute_code
     _Guard.accept = accept_clients
@@ -312,12 +308,12 @@ def _guard_mcp_server(server):
 
 
 def _finish_deferred(record):
-    # A second step only when the deferred part changed the scene: one call, one Ctrl+Z.
+    # Deferred work that can write gets its own step when it ends, however it ends, which also
+    # marks the file unsaved again if it was saved in between. A known read-only part gets none.
     if record not in _Guard.deferred:
         return None
     _Guard.deferred.remove(record)
-    _flush_depsgraph()
-    return _push_agent_undo() if _Guard.updates != record["updates"] else None
+    return _push_agent_undo() if record["writes"] else None
 
 
 def _sweep_deferred():

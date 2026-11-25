@@ -49,13 +49,6 @@ context = types.SimpleNamespace(
     mode="OBJECT",
 )
 data = types.SimpleNamespace(filepath=state.get("filepath", "/work/hero.wip-1a2b3c4d.blend"), is_dirty=False)
-# As in Blender, evaluating runs the update handlers for whatever was tagged since: here, code
-# that set data.tagged.
-def _evaluated_depsgraph_get():
-    if data.__dict__.pop("tagged", False):
-        for handler in list(app.handlers.depsgraph_update_post):
-            handler(None, types.SimpleNamespace(updates=[True]))
-context.evaluated_depsgraph_get = _evaluated_depsgraph_get
 from . import app, ops
 # Blender runs startup scripts (T3's gate), then registers the enabled add-ons, then --python.
 if not state.get("gateSkipped"):
@@ -405,9 +398,12 @@ if _call is not None:
     }) + "\0").encode())
     _server().poll()
     _dirty_first = bpy.data.is_dirty
-    if _call.get("deferredChanges"):
-        # The deferred part (a background job) changing the scene after the code returned.
-        bpy.data.tagged = True
+    if _call.get("savedBetween"):
+        # The user saves while the deferred part runs: the file is clean again.
+        bpy.data.is_dirty = False
+    if _call.get("userStepBetween"):
+        # The user edits while the deferred part runs, which pushes their own undo step.
+        bpy.ops.ed.undo_push(message="User edit")
     if _call.get("revokeBeforeCheck"):
         # T3's stop, sent while the deferred part runs; no tick has read it yet.
         _t3.sendall(b'{"type": "stopAgentListener"}\n')
@@ -448,7 +444,7 @@ if _call is not None:
         "ranSecond": getattr(bpy.data, "ran_second", False),
         "checked": getattr(bpy.data, "checked", False),
         "listenerAfter": _snapshot()["agentListener"],
-        "undoPushes": sum(1 for line in open(os.environ["STUB_LOG"]) if '"undo_push"' in line) if os.path.exists(os.environ["STUB_LOG"]) else 0,
+        "undoPushes": sum(1 for line in open(os.environ["STUB_LOG"]) if '"Agent edit"' in line) if os.path.exists(os.environ["STUB_LOG"]) else 0,
         "dirty": bpy.data.is_dirty,
         "acting": _acting,
         "actingAfter": _snapshot()["agentActing"],
@@ -532,8 +528,10 @@ const runAddon = (input: {
     readonly controlBreaks?: boolean;
     /** Blender Lab drops the deferred call after its first poll, as on a disconnect. */
     readonly deferredDropped?: boolean;
-    /** The deferred part changes the scene after the code returned. */
-    readonly deferredChanges?: boolean;
+    /** The user saves while the deferred part runs. */
+    readonly savedBetween?: boolean;
+    /** The user edits (and pushes an undo step) while the deferred part runs. */
+    readonly userStepBetween?: boolean;
     /** T3 sends its stop while the deferred part runs. */
     readonly revokeBeforeCheck?: boolean;
     /** T3's connection closes after this call, and a second call follows. */
@@ -821,9 +819,12 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     });
 
     const deferredCode = (check: string) =>
-      `import bpy\nbpy.data.tagged = True\ndef check_is_finished():\n${check}\nresult = {}`;
+      `import bpy\ndef check_is_finished():\n${check}\nresult = {}`;
+    // Blender Lab 1.0.3's render tools defer through this template checker.
+    const renderToolCode = (job: string, name = "_deferred_tool_check_for_file_output") =>
+      `def ${name}(job_type, output_path, restore_attrs=None):\n    def check_is_finished():\n        # Like 1.0.3's, it waits on its job.\n        if job_type is None:\n            return None\n        return {"status": "ok", "filepath": output_path}\n    return check_is_finished\ncheck_is_finished = ${name}(${JSON.stringify(job)}, "/tmp/out.png")\nresult = {}`;
 
-    it("gives a deferred call one undo step when its deferred part only answers", () => {
+    it("gives the agent's deferred call a step now and one more when its work ends", () => {
       const result = runAddon({
         ...granted,
         call: { code: deferredCode("    return {'rendered': 1}") },
@@ -831,32 +832,47 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       expect(result.call).toMatchObject({
         reply: { status: "ok", result: { rendered: 1 } },
         dirtyAfterFirstPoll: true,
-        undoPushes: 1,
+        undoPushes: 2,
       });
     });
 
-    it("adds a step only when the deferred part changed the scene", () => {
+    it("marks the file unsaved again when deferred work writes after the user saved", () => {
       const result = runAddon({
         ...granted,
-        call: { code: deferredCode("    bpy.data.tagged = True\n    return {'baked': 1}") },
+        call: {
+          code: deferredCode("    bpy.data.notes = 'written'\n    return {'done': 1}"),
+          savedBetween: true,
+        },
       });
-      expect(result.call).toMatchObject({ reply: { status: "ok" }, undoPushes: 2 });
+      expect(result.call).toMatchObject({ dirty: true, undoPushes: 2 });
+    });
+
+    it("adds no step for Blender Lab's read-only render, even with a user edit in between", () => {
+      const result = runAddon({
+        ...granted,
+        call: { code: renderToolCode("RENDER"), strictJson: true, userStepBetween: true },
+      });
+      expect(result.call).toMatchObject({ reply: { status: "ok" }, undoPushes: 0 });
+    });
+
+    it.each([
+      ["a deferred path it doesn't know", deferredCode("    return {'done': 1}")],
+      ["the render checker on another job", renderToolCode("BAKE")],
+      ["another checker shaped like it", renderToolCode("RENDER", "_some_other_checker")],
+    ])("treats %s as writing, and records its step", (_name, code) => {
+      const result = runAddon({ ...granted, call: { code, strictJson: true } });
+      expect(result.call.undoPushes).toBe(1);
     });
 
     it.each([
       ["Blender Lab drops the call", { deferredDropped: true }],
       ["its checker raises", { code: deferredCode("    raise RuntimeError('bake failed')") }],
-    ] as const)("records the deferred part's changes when %s", (_name, call) => {
-      const changed = runAddon({
-        ...granted,
-        call: { code: deferredCode("    return None"), deferredChanges: true, ...call },
-      });
-      expect(changed.call.undoPushes).toBe(2);
-      const unchanged = runAddon({
+    ] as const)("still records the deferred step when %s", (_name, call) => {
+      const result = runAddon({
         ...granted,
         call: { code: deferredCode("    return None"), ...call },
       });
-      expect(unchanged.call.undoPushes).toBe(1);
+      expect(result.call.undoPushes).toBe(2);
     });
 
     it("runs no deferred checker after T3's stop arrived, even before a tick", () => {

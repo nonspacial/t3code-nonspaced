@@ -55,9 +55,13 @@ Once granted, the add-on replaces two functions Blender Lab's `poll()` looks up 
 connection applies the check above. Before the agent's code runs, and before each check of a
 deferred call, the add-on reads what T3 has sent and runs nothing if the connection is gone or a
 stop is waiting; it doesn't wait for its own timer. After the code it pushes one undo step, which
-is what marks the file unsaved; Blender's data API alone leaves it clean. A deferred part (a
-render, a bake) gets a second step only if a depsgraph update shows it changed the scene, so a
-call stays one Ctrl+Z. The push reports success even when it records nothing, so the add-on reads
+is what marks the file unsaved; Blender's data API alone leaves it clean. A call is one step,
+plus one more when its deferred part can change the file: that step comes when the part finishes,
+fails or is dropped, and marks the file unsaved again if it was saved meanwhile. Change detection
+can't decide this (a Text or image pixel write triggers no depsgraph update), so the add-on
+decides by what the deferred part is. Only Blender Lab's renders, which defer through its file
+output checker with job `RENDER`, count as read-only; the agent's own deferred code and any path
+it doesn't recognise count as writing. The push reports success even when it records nothing, so the add-on reads
 Undo Steps and Global Undo itself and warns the agent. Any listener without a live, guarded grant
 is stopped, so Reload Scripts ends access.
 
