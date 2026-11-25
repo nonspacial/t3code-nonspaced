@@ -39,5 +39,5 @@ Because this reaches into Blender Lab's internals, the add-on reads the installe
 manifest version and enables nothing unless it is in `TESTED_BLENDER_LAB_MCP_VERSIONS`. When
 Blender Lab releases a version, check that `_accept_clients`, `_Client`, `_state.clients` and
 `_execute_code(code, strict_json)` still mean what the guard assumes, and only then add it to the list.
-Reload Scripts runs the module again without the guard, so the add-on guards it again on its next
-tick or ends access.
+Reload Scripts runs the module again, stopped and without the guard, so the add-on ends access on
+its next tick.

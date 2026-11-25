@@ -872,7 +872,6 @@ function BlenderStatusStrip(
           <T context="hosted Blender pane status, viewing without control">Watching</T>
         )}
       </span>
-      {/* From T3's add-on in that Blender, while the agent's Blender Lab calls run. */}
       {props.agentActing ? (
         <Badge variant="info" size="sm">
           <T context="hosted Blender pane status badge">Agent editing</T>

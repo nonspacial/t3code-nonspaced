@@ -481,9 +481,9 @@ def _check_authorized_file():
 
 
 def _check_guard():
-    # Reload Scripts runs Blender Lab's module again without the guard: guard it again or end.
+    # Reload Scripts runs Blender Lab's module again, stopped and without the guard: access ends.
     server = _mcp_server()
-    if _State.agent_listener == "ready" and server is not None and not _guard_mcp_server(server):
+    if _State.agent_listener == "ready" and not (_is_guarded(server) and server.is_running()):
         _end_grant()
 
 

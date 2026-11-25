@@ -5,9 +5,11 @@
  */
 const TESTED_BLENDER_LAB_MCP_VERSIONS: ReadonlyArray<string> = ["1.0.3"];
 
-const newer = (a: string, b: string) => {
-  const left = a.split(".").map(Number);
-  const right = b.split(".").map(Number);
+const isNewer = (a: string, b: string) => {
+  const parts = (version: string) =>
+    version.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const left = parts(a);
+  const right = parts(b);
   for (let index = 0; index < Math.max(left.length, right.length); index++) {
     const difference = (left[index] ?? 0) - (right[index] ?? 0);
     if (difference !== 0) return difference > 0;
@@ -21,7 +23,7 @@ export const untestedBlenderLabReason = (name: string, version: string | null): 
   const installed =
     version === null ? "an MCP extension whose version T3 can't read" : `MCP ${version}`;
   const update =
-    version !== null && TESTED_BLENDER_LAB_MCP_VERSIONS.every((known) => newer(version, known))
+    version !== null && TESTED_BLENDER_LAB_MCP_VERSIONS.every((known) => isNewer(version, known))
       ? "T3 Code, which hasn't tested this newer version yet"
       : "the MCP extension in their Blender (Edit > Preferences > Get Extensions)";
   return `${name} is open, but T3 Code refused you access: the user's Blender has Blender Lab's ${installed}, and T3 Code has tested only ${tested}. Tell the user to update ${update}, then call blender_quit and blender_start again.`;
@@ -56,16 +58,19 @@ def _mcp_version(module_file):
     return found.group(1) if found else None
 
 
+def _unmapped(raw):
+    return raw[12:] if raw[:12] == _IPV4_MAPPED else raw
+
+
 def _proc_address(text):
     # "0100007F:1F90": the address as the kernel's 32-bit words in host byte order, then the port.
     address, port = text.split(":")
     raw = b"".join(struct.pack("=I", int(address[i:i + 8], 16)) for i in range(0, len(address), 8))
-    return (raw[12:] if raw[:12] == _IPV4_MAPPED else raw), int(port, 16)
+    return _unmapped(raw), int(port, 16)
 
 
 def _address(family, sockaddr):
-    raw = socket.inet_pton(family, sockaddr[0])
-    return (raw[12:] if raw[:12] == _IPV4_MAPPED else raw), sockaddr[1]
+    return _unmapped(socket.inet_pton(family, sockaddr[0])), sockaddr[1]
 
 
 def _peer_uid(connection):
@@ -110,6 +115,7 @@ def _guard_mcp_server(server):
     ):
         return False
 
+    # Background mode's poll_blocking accepts without this; hosted Blenders always have a GUI.
     def accept_clients():
         sock = server._state.sock
         if sock is None:

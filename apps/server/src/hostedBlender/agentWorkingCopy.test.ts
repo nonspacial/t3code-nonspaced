@@ -210,6 +210,7 @@ describe("startAgentWorkingCopy", () => {
 
   it.effect.each([
     { mcpVersion: "1.1.0", says: ["MCP 1.1.0", "tested only 1.0.3", "update T3 Code"] },
+    { mcpVersion: "1.1.0-beta", says: ["update T3 Code"] },
     { mcpVersion: "1.0.1", says: ["MCP 1.0.1", "update the MCP extension in their Blender"] },
     { mcpVersion: null, says: ["can't read", "update the MCP extension"] },
   ])(

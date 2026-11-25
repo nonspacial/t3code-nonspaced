@@ -15,11 +15,13 @@ export interface FloatingBlenderInput {
   readonly panelShown: boolean;
 }
 
-const isUp = (state: HostedBlenderThreadState | null) =>
+const isUp = (
+  state: HostedBlenderThreadState | null,
+): state is Extract<HostedBlenderThreadState, { readonly status: "starting" | "running" }> =>
   state?.status === "starting" || state?.status === "running";
 
 const agentActs = (state: HostedBlenderThreadState | null) =>
-  (state?.status === "starting" || state?.status === "running") && state.agentActing === true;
+  isUp(state) && state.agentActing === true;
 
 /**
  * Once the agent acts in a thread's hosted Blender during a turn, the Blender pane floats over chat,

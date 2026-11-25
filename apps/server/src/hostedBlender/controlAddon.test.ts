@@ -252,6 +252,7 @@ if _scenario.get("reload"):
     _importlib.reload(_server())
     bpy.ops.blmcp.server_start()
     _tick()
+    _steps.append(_report())
 _call = _scenario.get("call")
 _called = None
 if _call is not None:
@@ -553,15 +554,10 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       expect(result.call.reply).toEqual(ok);
     });
 
-    it("guards Blender Lab again after Reload Scripts and its own Start button", () => {
-      const result = runAddon({
-        installed: [MCP],
-        enabled: [MCP],
-        listen: true,
-        reload: true,
-        call: { table: { uidOffset: 1 } },
-      });
-      expect(result.call.reply).toBeNull();
+    it("ends access when Reload Scripts and its own Start button bring back an unguarded listener", () => {
+      const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, reload: true });
+      expect(after(result)).toEqual(off);
+      expect(result.inPrefs).toBe(false);
     });
 
     it("pushes an undo step after the agent's own code, which makes the file unsaved", () => {

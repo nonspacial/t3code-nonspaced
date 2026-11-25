@@ -271,7 +271,6 @@ function BlenderStream({
   readonly bottomInset: number;
   readonly streamRef: RefObject<BlenderStreamRef | null>;
   readonly onControl: (control: HostedBlenderControl) => void;
-  /** T3's add-on in that Blender says the agent's Blender Lab calls are running. */
   readonly agentActing: boolean;
 }) {
   const gt = useGT();
