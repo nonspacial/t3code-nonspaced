@@ -56,6 +56,7 @@ const layerFor = (input: {
             })
           : Effect.fail(input.openError),
       threadState: () => Stream.succeed(input.state ?? { status: "stopped" }),
+      keptCopies: () => Effect.succeed([]),
       agentListener: () =>
         Effect.succeed({
           state: input.listener ?? "ready",

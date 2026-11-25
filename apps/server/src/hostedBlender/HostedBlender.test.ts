@@ -30,6 +30,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as ProjectService from "../project/ProjectService.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { HOSTED_STARTUP_GATE_SOURCE } from "./agentGuard.ts";
+import { startAgentWorkingCopy } from "./agentWorkingCopy.ts";
 import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
 import * as DesktopBlender from "./DesktopBlender.ts";
 import * as HostedBlender from "./HostedBlender.ts";
@@ -4359,6 +4360,67 @@ describe("Agent access at launch", () => {
     yield* service.quit({ threadId, save: false });
     return args;
   });
+  it.live(
+    "R3: the agent's blender_start after its own quit without saving restores what it kept",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tempDir("agent-restart");
+        const bin = fakeTools(dir);
+        NodeFS.writeFileSync(NodePath.join(bin, "helper"), `#!${python}\n${ARGS_HELPER}`, {
+          mode: 0o755,
+        });
+        const runtime = NodePath.join(dir, "run");
+        NodeFS.mkdirSync(runtime);
+        NodeFS.writeFileSync(NodePath.join(dir, "cube.blend"), "");
+        const argsLog = NodePath.join(dir, "args.log");
+        const service = yield* serviceFor(
+          layerFor({
+            env: {
+              PATH: bin,
+              XDG_RUNTIME_DIR: runtime,
+              STANDIN_ARGS: argsLog,
+              // Every agent call marks the working copy unsaved.
+              STANDIN_DIRTY: "1",
+              // Blender stays open when its access ends, as the add-on's does, until it quits.
+              STANDIN_STAY_ON_STOP: "1",
+            },
+            helper: NodePath.join(bin, "helper"),
+            workspaceRoot: dir,
+            baseDir: dir,
+            agentPort: 41234,
+          }),
+        );
+        const blenderStart = startAgentWorkingCopy({ threadId, path: "cube.blend" }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              Layer.succeed(HostedBlender.HostedBlender, service),
+              Layer.mock(ThreadManagementService.ThreadManagementService)({
+                getThreadShell: () =>
+                  Effect.succeed({ worktreePath: dir, projectId: "p" } as never),
+              }),
+              Layer.mock(ProjectService.ProjectService)({}),
+            ).pipe(Layer.provideMerge(NodeServices.layer)),
+          ),
+        );
+        const first = yield* blenderStart;
+        expect(first).not.toHaveProperty("restoredUnsavedChanges");
+        // blender_quit({ save: false }): Blender says the copy is unsaved, so its work is kept.
+        yield* service.quit({ threadId, save: false });
+        const ended = yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status === "closed"),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        expect("copies" in ended && ended.copies[0].recovery).toBe(true);
+
+        const again = yield* blenderStart;
+        expect(again).toMatchObject({ created: false, restoredUnsavedChanges: true });
+        expect(NodeFS.readFileSync(argsLog, "utf8").split("\n")).toContain("--t3-recover");
+        expect((yield* service.agentListener(threadId))?.state).toBe("ready");
+        yield* service.quit({ threadId, save: false });
+      }).pipe(Effect.scoped),
+  );
+
   it.live("starts the Blender Lab listener on the port the thread's agent session holds", () =>
     Effect.gen(function* () {
       const args = yield* launchArgs({ agentPort: 41234 });

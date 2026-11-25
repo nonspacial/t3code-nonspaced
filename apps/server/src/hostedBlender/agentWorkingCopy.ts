@@ -204,10 +204,27 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
     const running =
       (state?.status === "starting" || state?.status === "running") &&
       state.relativePath === relativePath;
+    // The agent's own quit without saving keeps its unsaved work, which only it can get back.
+    const waiting = running
+      ? undefined
+      : (yield* hostedBlender.keptCopies(input.threadId)).find(
+          (copy) =>
+            copy.recovery &&
+            copy.file.kind === "workspace" &&
+            copy.file.relativePath === relativePath,
+        );
     if (!running) {
-      yield* hostedBlender
-        .open({ threadId: input.threadId, relativePath }, { agentWorkingCopy: true })
-        .pipe(Effect.mapError((error) => new HostedBlenderToolError({ reason: error.message })));
+      yield* (
+        waiting === undefined
+          ? hostedBlender.open(
+              { threadId: input.threadId, relativePath },
+              { agentWorkingCopy: true },
+            )
+          : hostedBlender.reopen(
+              { threadId: input.threadId, key: waiting.key, restore: true },
+              { agentWorkingCopy: true },
+            )
+      ).pipe(Effect.mapError((error) => new HostedBlenderToolError({ reason: error.message })));
     }
     // Answered only once Blender Lab's listener has come up on the thread's port.
     const listener = yield* hostedBlender.agentListener(input.threadId);
@@ -229,6 +246,7 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
     )?.status;
     return {
       ...result,
+      ...(waiting === undefined ? {} : { restoredUnsavedChanges: true }),
       status: status === "running" ? "running" : "starting",
     } satisfies HostedBlenderToolStartResult;
   },

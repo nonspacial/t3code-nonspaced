@@ -368,8 +368,14 @@ export class HostedBlender extends Context.Service<
       options?: { readonly wait?: boolean; readonly role?: HostedBlenderRole },
     ) => Effect.Effect<AgentListenerReport | null>;
     readonly quit: (input: HostedBlenderQuitInput) => Effect.Effect<void, HostedBlenderError>;
-    /** Reopens a kept copy's file, restoring the copy if asked. */
-    readonly reopen: (input: HostedBlenderReopenInput) => Effect.Effect<void, HostedBlenderError>;
+    /**
+     * Reopens a kept copy's file, restoring the copy if asked. `agentWorkingCopy`: the agent's
+     * `blender_start` reopens its own working copy, which then listens for it as `open` would.
+     */
+    readonly reopen: (
+      input: HostedBlenderReopenInput,
+      options?: { readonly agentWorkingCopy?: boolean },
+    ) => Effect.Effect<void, HostedBlenderError>;
     /**
      * Discards one kept copy, or clears a failed start. Nothing changes while the thread's
      * Blender runs.
@@ -2345,12 +2351,10 @@ const make = Effect.gen(function* () {
     return record === undefined ? undefined : { known, key, record };
   };
 
-  const reopen: HostedBlender["Service"]["reopen"] = Effect.fn("HostedBlender.reopen")(function* ({
-    threadId,
-    key,
-    restore,
-    role,
-  }) {
+  const reopen: HostedBlender["Service"]["reopen"] = Effect.fn("HostedBlender.reopen")(function* (
+    { threadId, key, restore, role },
+    options,
+  ) {
     yield* Effect.annotateCurrentSpan({ threadId, restore, role });
     yield* afterSalvage;
     if (role === "master") {
@@ -2382,9 +2386,9 @@ const make = Effect.gen(function* () {
         file,
         restore && record.recovery ? sessionPath(threadId, key) : null,
         true,
-        // Reopening is the person's, from the pane: like any file they open, it never listens
+        // Reopening from the pane is the person's: like any file they open, it never listens
         // for the agent, which calls blender_start again to get its copy back.
-        false,
+        options?.agentWorkingCopy === true,
       ),
     );
   });

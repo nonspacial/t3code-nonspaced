@@ -554,6 +554,11 @@ export const HostedBlenderToolStartResult = Schema.Struct({
   master: Schema.String,
   /** False when the thread's earlier working copy was kept. */
   created: Schema.Boolean,
+  /**
+   * The thread's last Blender on the working copy ended with unsaved changes, which T3 kept and
+   * restored: the copy opened with them, unsaved.
+   */
+  restoredUnsavedChanges: Schema.optionalKey(Schema.Boolean),
   status: Schema.Literals(["starting", "running"]),
   /** The MCP server whose tools edit the working copy. */
   mcpServer: Schema.String,
