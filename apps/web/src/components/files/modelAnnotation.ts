@@ -122,7 +122,9 @@ export function markSamples(
     const first = points[0];
     const last = points.at(-1);
     const gap = first && last ? Math.hypot(last.x - first.x, last.y - first.y) : 0;
-    const closed = gap <= Math.hypot(bounds.width, bounds.height) * CLOSED_LOOP_GAP;
+    // A straight line or arrow is never a loop, however short its padded box makes it look.
+    const closed =
+      points.length > 2 && gap <= Math.hypot(bounds.width, bounds.height) * CLOSED_LOOP_GAP;
     return closed ? [toSample(centre.x, centre.y), ...along] : along;
   }
   const grid: PreviewAnnotationPoint[] = [];

@@ -1,19 +1,38 @@
 import type {
   EnvironmentId,
   PreviewAnnotationPoint,
-  PreviewAnnotationRect,
   PreviewAnnotationRegionTarget,
   PreviewAnnotationStrokeTarget,
   ProjectId,
 } from "@t3tools/contracts";
-import { T, useGT } from "gt-react";
-import { EraserIcon, PencilIcon, SquareDashedIcon, Undo2Icon, XIcon } from "lucide-react";
-import { useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { T, useGT, useMessages } from "gt-react";
+import {
+  EraserIcon,
+  MoveUpRightIcon,
+  PaintBucketIcon,
+  PencilIcon,
+  Redo2Icon,
+  SlashIcon,
+  SquareDashedIcon,
+  Undo2Icon,
+  XIcon,
+} from "lucide-react";
+import {
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactElement,
+  type ReactNode,
+  type Ref,
+} from "react";
 
 import { Button } from "~/components/ui/button";
 import { Textarea } from "~/components/ui/textarea";
+import { Toggle as StandaloneToggle } from "~/components/ui/toggle";
 import { Toggle, ToggleGroup } from "~/components/ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
+import { isMacPlatform } from "~/lib/utils";
 import {
   SpeechTextField,
   TextFieldSpeechControls,
@@ -21,7 +40,18 @@ import {
 } from "~/speech/useTextFieldSpeech";
 import { textDirection } from "~/textDirection";
 
-import { strokePieces } from "./modelAnnotation";
+import {
+  type DrawTool,
+  type MarkColorId,
+  type MarkDrag,
+  type MarkDrawing,
+  MARK_COLORS,
+  dragDrawing,
+  isTooSmall,
+  markPaint,
+  markTargets,
+  touchesMark,
+} from "./annotationMarks";
 
 export interface ModelAnnotationResult {
   readonly comment: string;
@@ -31,85 +61,23 @@ export interface ModelAnnotationResult {
   readonly screenshot: string;
 }
 
-type Tool = "draw" | "region" | "erase";
-type Mark =
-  | { readonly kind: "region"; readonly target: PreviewAnnotationRegionTarget }
-  | { readonly kind: "stroke"; readonly target: PreviewAnnotationStrokeTarget };
-type Draft =
-  | { readonly tool: "draw"; readonly points: ReadonlyArray<PreviewAnnotationPoint> }
-  | {
-      readonly tool: "region";
-      readonly start: PreviewAnnotationPoint;
-      readonly end: PreviewAnnotationPoint;
-    };
-
-const STROKE_WIDTH = 4;
-const REGION_STROKE_WIDTH = 2;
-const MIN_REGION_SIZE = 3;
-
-function strokePath(points: ReadonlyArray<PreviewAnnotationPoint>): string {
-  const pieces = strokePieces(points);
-  const last = pieces.at(-1);
-  if (!last) return "";
-  const curves = pieces
-    .slice(0, -1)
-    .map(({ control, to }) => ` Q ${control.x} ${control.y} ${to.x} ${to.y}`)
-    .join("");
-  return `M ${pieces[0]!.from.x} ${pieces[0]!.from.y}${curves} L ${last.to.x} ${last.to.y}`;
+type Tool = DrawTool | "erase";
+const TOOLS: ReadonlyArray<Tool> = ["draw", "line", "arrow", "region", "erase"];
+interface Mark {
+  readonly id: string;
+  readonly drawing: MarkDrawing;
+}
+/** Every list of marks the person has had, newest last; `at` is the one showing. */
+interface MarkHistory {
+  readonly lists: ReadonlyArray<ReadonlyArray<Mark>>;
+  readonly at: number;
 }
 
-/** The topmost mark under a point, for the eraser. */
-function markAt(marks: ReadonlyArray<Mark>, point: PreviewAnnotationPoint): Mark | null {
-  const reach = STROKE_WIDTH + 4;
-  for (const mark of marks.toReversed()) {
-    if (mark.kind === "region") {
-      const { x, y, width, height } = mark.target.rect;
-      if (point.x >= x && point.x <= x + width && point.y >= y && point.y <= y + height)
-        return mark;
-    } else if (
-      mark.target.points.some(
-        (candidate) => Math.hypot(candidate.x - point.x, candidate.y - point.y) <= reach,
-      )
-    ) {
-      return mark;
-    }
-  }
-  return null;
-}
-
-function regionRect(
-  start: PreviewAnnotationPoint,
-  end: PreviewAnnotationPoint,
-): PreviewAnnotationRect {
-  return {
-    x: Math.min(start.x, end.x),
-    y: Math.min(start.y, end.y),
-    width: Math.abs(end.x - start.x),
-    height: Math.abs(end.y - start.y),
-  };
-}
-
-function strokeBounds(points: ReadonlyArray<PreviewAnnotationPoint>): PreviewAnnotationRect {
-  const xs = points.map((point) => point.x);
-  const ys = points.map((point) => point.y);
-  const padding = STROKE_WIDTH + 3;
-  const left = Math.min(...xs) - padding;
-  const top = Math.min(...ys) - padding;
-  return {
-    x: left,
-    y: top,
-    width: Math.max(...xs) + padding - left,
-    height: Math.max(...ys) + padding - top,
-  };
-}
-
-/** Draws the marks onto a copy of the snapshot, as the browser preview's crop shows them. */
+/** Draws the marks onto a copy of the snapshot, from the same paint the editor shows. */
 function annotatedScreenshot(
   image: HTMLCanvasElement,
   size: { readonly width: number; readonly height: number },
-  regions: ReadonlyArray<PreviewAnnotationRegionTarget>,
-  strokes: ReadonlyArray<PreviewAnnotationStrokeTarget>,
-  color: string,
+  marks: ReadonlyArray<Mark>,
 ): string {
   const canvas = document.createElement("canvas");
   canvas.width = image.width;
@@ -118,28 +86,44 @@ function annotatedScreenshot(
   if (!context) return image.toDataURL("image/png");
   context.drawImage(image, 0, 0);
   context.scale(image.width / size.width, image.height / size.height);
-  context.strokeStyle = color;
-  context.fillStyle = color;
   context.lineCap = "round";
   context.lineJoin = "round";
-  for (const { rect } of regions) {
-    context.globalAlpha = 0.1;
-    context.fillRect(rect.x, rect.y, rect.width, rect.height);
-    context.globalAlpha = 1;
-    context.lineWidth = REGION_STROKE_WIDTH;
-    context.strokeRect(rect.x, rect.y, rect.width, rect.height);
-  }
-  for (const stroke of strokes) {
-    context.lineWidth = stroke.width;
-    context.stroke(new Path2D(strokePath(stroke.points)));
+  for (const paint of marks.flatMap((mark) => markPaint(mark.drawing))) {
+    const path = new Path2D(paint.path);
+    context.strokeStyle = paint.color;
+    context.fillStyle = paint.color;
+    if (paint.fill > 0) {
+      context.globalAlpha = paint.fill;
+      // oxlint-disable-next-line unicorn/no-array-fill-with-reference-type -- a canvas fill, not Array#fill
+      context.fill(path);
+      context.globalAlpha = 1;
+    }
+    if (paint.line > 0) {
+      context.lineWidth = paint.line;
+      context.stroke(path);
+    }
   }
   return canvas.toDataURL("image/png");
 }
 
+/** Undo or redo from the platform's shortcut: Ctrl (Cmd on macOS) with Z, Shift+Z or Y. */
+function historyShortcut(event: ReactKeyboardEvent): "undo" | "redo" | null {
+  const mac = isMacPlatform(navigator.platform);
+  const command = mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+  if (!command || event.altKey || event.nativeEvent.isComposing) return null;
+  const key = event.key.toLowerCase();
+  if (key === "z") return event.shiftKey ? "redo" : "undo";
+  return key === "y" && !event.shiftKey ? "redo" : null;
+}
+
+const hasOwnText = (target: EventTarget) =>
+  (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) &&
+  target.value !== "";
+
 /**
- * Draws on a frozen 3D view: strokes, regions and a comment that can be dictated. The browser
- * preview's editor lives inside its Electron guest page, so the 3D preview draws its own with the
- * same tools and hands back the same annotation shape.
+ * Draws on a frozen 3D view: pen, lines, arrows, regions and a comment that can be dictated. The
+ * browser preview's editor lives inside its Electron guest page, so the 3D preview draws its own
+ * with the same tools and hands back the same annotation shape.
  */
 export function ModelAnnotationEditor(props: {
   readonly image: HTMLCanvasElement;
@@ -153,37 +137,74 @@ export function ModelAnnotationEditor(props: {
   readonly onSubmit: (result: ModelAnnotationResult) => void;
 }) {
   const gt = useGT();
+  const m = useMessages();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const undoRef = useRef<HTMLButtonElement>(null);
+  const redoRef = useRef<HTMLButtonElement>(null);
   const surfaceRef = useRef<SVGSVGElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [imageUrl] = useState(() => props.image.toDataURL("image/png"));
   const [tool, setTool] = useState<Tool>("draw");
-  const [marks, setMarks] = useState<ReadonlyArray<Mark>>([]);
+  const [colorId, setColorId] = useState<MarkColorId>("theme");
+  const [filled, setFilled] = useState(true);
+  const [history, setHistory] = useState<MarkHistory>({ lists: [[]], at: 0 });
+  const marks = history.lists[history.at] ?? [];
   const markCount = useRef(0);
-  // Pointer events can outrun renders, so the mark being drawn is read from a ref.
-  const draftRef = useRef<Draft | null>(null);
-  const [draft, setDraftState] = useState<Draft | null>(null);
-  const setDraft = (next: Draft | null) => {
+  // Pointer and key events can outrun renders, so the mark being drawn is read from a ref.
+  const draftRef = useRef<MarkDrag | null>(null);
+  const [draft, setDraftState] = useState<MarkDrag | null>(null);
+  const setDraft = (next: MarkDrag | null) => {
     draftRef.current = next;
     setDraftState(next);
   };
   const [comment, setComment] = useState("");
   const { width, height } = props;
   const hasMarks = marks.length > 0;
-  const regions = marks.flatMap((mark) => (mark.kind === "region" ? [mark.target] : []));
-  const strokes = marks.flatMap((mark) => (mark.kind === "stroke" ? [mark.target] : []));
-  const addMark = (mark: Mark) => setMarks((current) => [...current, mark]);
-  const nextId = (kind: Mark["kind"]) => {
-    markCount.current += 1;
-    return `${kind}_${markCount.current}`;
+  const canUndo = history.at > 0;
+  const canRedo = history.at < history.lists.length - 1;
+  const mac = isMacPlatform(navigator.platform);
+
+  // A focused Undo or Redo that disables itself drops focus out of the editor, and the
+  // history keys with it, so focus moves to the editor first.
+  const updateHistory = (step: (current: MarkHistory) => MarkHistory) => {
+    const next = step(history);
+    const focused = document.activeElement;
+    if (
+      (focused === undoRef.current && next.at === 0) ||
+      (focused === redoRef.current && next.at === next.lists.length - 1)
+    )
+      rootRef.current?.focus();
+    setHistory(step);
+  };
+  const change = (next: (current: ReadonlyArray<Mark>) => ReadonlyArray<Mark>) =>
+    updateHistory(({ lists, at }) => {
+      const current = lists[at] ?? [];
+      const changed = next(current);
+      return changed === current
+        ? { lists, at }
+        : { lists: [...lists.slice(0, at + 1), changed], at: at + 1 };
+    });
+  const undo = () => updateHistory((current) => ({ ...current, at: Math.max(0, current.at - 1) }));
+  const redo = () =>
+    updateHistory((current) => ({
+      ...current,
+      at: Math.min(current.lists.length - 1, current.at + 1),
+    }));
+
+  const markColor = () => {
+    const chosen = MARK_COLORS.find((color) => color.id === colorId)?.value;
+    return (
+      chosen ?? ((surfaceRef.current && getComputedStyle(surfaceRef.current).color) || "#2563eb")
+    );
   };
 
-  const markColor = () =>
-    (surfaceRef.current && getComputedStyle(surfaceRef.current).color) || "#2563eb";
-
-  const pointAt = (event: ReactPointerEvent): PreviewAnnotationPoint | null => {
+  /** Where the pointer is on the snapshot; off it, null unless `clamp` brings it to the edge. */
+  const pointAt = (event: ReactPointerEvent, clamp = true): PreviewAnnotationPoint | null => {
     const matrix = surfaceRef.current?.getScreenCTM()?.inverse();
     if (!matrix) return null;
     const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix);
+    const inside = point.x >= 0 && point.x <= width && point.y >= 0 && point.y <= height;
+    if (!inside && !clamp) return null;
     return {
       x: Math.min(width, Math.max(0, point.x)),
       y: Math.min(height, Math.max(0, point.y)),
@@ -192,12 +213,14 @@ export function ModelAnnotationEditor(props: {
 
   const onPointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
     if (event.button !== 0) return;
-    const point = pointAt(event);
+    const point = pointAt(event, false);
     if (!point) return;
     event.preventDefault();
     if (tool === "erase") {
-      const erased = markAt(marks, point);
-      if (erased) setMarks((current) => current.filter((mark) => mark !== erased));
+      change((current) => {
+        const erased = current.findLast((mark) => touchesMark(mark.drawing, point));
+        return erased ? current.filter((mark) => mark !== erased) : current;
+      });
       return;
     }
     try {
@@ -205,7 +228,7 @@ export function ModelAnnotationEditor(props: {
     } catch {
       // The pointer may already be gone; the drag still works while it stays on the surface.
     }
-    setDraft(tool === "draw" ? { tool, points: [point] } : { tool, start: point, end: point });
+    setDraft({ tool, points: [point], straight: event.shiftKey, color: markColor(), filled });
   };
 
   const onPointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
@@ -213,44 +236,63 @@ export function ModelAnnotationEditor(props: {
     if (!draft) return;
     const point = pointAt(event);
     if (!point) return;
-    setDraft(
-      draft.tool === "draw"
-        ? { ...draft, points: [...draft.points, point] }
-        : { ...draft, end: point },
-    );
+    setDraft({
+      ...draft,
+      straight: event.shiftKey,
+      points: draft.tool === "draw" ? [...draft.points, point] : [draft.points[0] ?? point, point],
+    });
   };
 
-  const onPointerUp = () => {
+  const onPointerUp = (event: ReactPointerEvent<SVGSVGElement>) => {
     const draft = draftRef.current;
     if (!draft) return;
     setDraft(null);
-    if (draft.tool === "draw") {
-      addMark({
-        kind: "stroke",
-        target: {
-          id: nextId("stroke"),
-          color: markColor(),
-          width: STROKE_WIDTH,
-          points: draft.points,
-          bounds: strokeBounds(draft.points),
-        },
-      });
-      return;
-    }
-    const rect = regionRect(draft.start, draft.end);
-    if (rect.width < MIN_REGION_SIZE || rect.height < MIN_REGION_SIZE) return;
-    addMark({ kind: "region", target: { id: nextId("region"), rect } });
+    const end = pointAt(event);
+    const last = draft.points.at(-1);
+    const points =
+      !end || (last && last.x === end.x && last.y === end.y)
+        ? draft.points
+        : draft.tool === "draw"
+          ? [...draft.points, end]
+          : [draft.points[0] ?? end, end];
+    const drawing = dragDrawing({ ...draft, points, straight: event.shiftKey }, props);
+    if (isTooSmall(drawing)) return;
+    markCount.current += 1;
+    const id = `${drawing.kind === "region" ? "region" : "stroke"}_${markCount.current}`;
+    change((current) => [...current, { id, drawing }]);
   };
 
-  const undo = () => setMarks((current) => current.slice(0, -1));
+  // Shift held or let go mid-drag straightens or frees the mark at once, before the pointer moves.
+  const onShift = (event: ReactKeyboardEvent) => {
+    const draft = draftRef.current;
+    if (event.key !== "Shift" || !draft) return;
+    setDraft({ ...draft, straight: event.type === "keydown" });
+  };
+
+  const onKeyDown = (event: ReactKeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      props.onCancel();
+      return;
+    }
+    onShift(event);
+    const shortcut = historyShortcut(event);
+    if (!shortcut) return;
+    event.stopPropagation();
+    if (hasOwnText(event.target)) return;
+    event.preventDefault();
+    // The change can disable the focused button (Add to chat with nothing left), losing the keys.
+    if (event.target instanceof HTMLButtonElement) rootRef.current?.focus();
+    if (shortcut === "undo") undo();
+    else redo();
+  };
 
   const finish = (text: string) => {
     if (!hasMarks && !text.trim()) return;
     props.onSubmit({
       comment: text.trim(),
-      regions,
-      strokes,
-      screenshot: annotatedScreenshot(props.image, props, regions, strokes, markColor()),
+      ...markTargets(marks),
+      screenshot: annotatedScreenshot(props.image, props, marks),
     });
   };
   const submit = (speech: TextFieldSpeech | undefined) => {
@@ -258,7 +300,44 @@ export function ModelAnnotationEditor(props: {
     else finish(comment);
   };
 
-  const draftRect = draft?.tool === "region" ? regionRect(draft.start, draft.end) : null;
+  const shown = [
+    ...marks,
+    ...(draft ? [{ id: "draft", drawing: dragDrawing(draft, props) }] : []),
+  ].flatMap(({ id, drawing }) =>
+    markPaint(drawing).map((paint, piece) => ({ key: `${id}:${piece}`, paint })),
+  );
+  const toolLabels: Record<
+    Tool,
+    { readonly label: string; readonly hint: string; readonly icon: ReactElement }
+  > = {
+    draw: {
+      label: gt("Draw", { $context: "annotation tool that draws freehand lines" }),
+      hint: gt("Draw freehand. Hold Shift for a straight line."),
+      icon: <PencilIcon className="size-3.5" />,
+    },
+    line: {
+      label: gt("Line", { $context: "annotation tool that draws a straight line" }),
+      hint: gt("Draw a line. Hold Shift to snap to 45°."),
+      icon: <SlashIcon className="size-3.5" />,
+    },
+    arrow: {
+      label: gt("Arrow", { $context: "annotation tool that draws an arrow" }),
+      hint: gt("Draw an arrow, pointing where the drag ends. Hold Shift to snap to 45°."),
+      icon: <MoveUpRightIcon className="size-3.5" />,
+    },
+    region: {
+      label: gt("Mark a region"),
+      hint: gt("Mark a region. Hold Shift for a square."),
+      icon: <SquareDashedIcon className="size-3.5" />,
+    },
+    erase: {
+      label: gt("Erase a mark"),
+      hint: gt("Erase a mark"),
+      icon: <EraserIcon className="size-3.5" />,
+    },
+  };
+  const undoKeys = mac ? "⌘Z" : "Ctrl+Z";
+  const redoKeys = mac ? "⇧⌘Z" : "Ctrl+Shift+Z";
 
   const panel = (speech?: TextFieldSpeech) => (
     <div className="pointer-events-auto absolute inset-x-2 bottom-2 mx-auto flex max-w-sm flex-col gap-1.5 rounded-xl border bg-popover/96 p-2 text-popover-foreground shadow-lg backdrop-blur-xl">
@@ -307,13 +386,12 @@ export function ModelAnnotationEditor(props: {
 
   return (
     <div
-      className="absolute inset-0 z-10 bg-background"
-      onKeyDown={(event) => {
-        if (event.key === "Escape") {
-          event.stopPropagation();
-          props.onCancel();
-        }
-      }}
+      ref={rootRef}
+      tabIndex={-1}
+      data-own-undo=""
+      className="absolute inset-0 z-10 bg-background outline-none"
+      onKeyDown={onKeyDown}
+      onKeyUp={onShift}
     >
       <svg
         ref={surfaceRef}
@@ -328,60 +406,108 @@ export function ModelAnnotationEditor(props: {
         onPointerCancel={() => setDraft(null)}
       >
         <image href={imageUrl} width={width} height={height} />
-        {[...regions, ...(draftRect ? [{ id: "draft", rect: draftRect }] : [])].map((region) => (
-          <rect
-            key={region.id}
-            {...region.rect}
-            fill="currentColor"
-            fillOpacity={0.1}
-            stroke="currentColor"
-            strokeWidth={REGION_STROKE_WIDTH}
-          />
-        ))}
-        {[
-          ...strokes,
-          ...(draft?.tool === "draw" ? [{ id: "draft", points: draft.points }] : []),
-        ].map((stroke) => (
-          <path
-            key={stroke.id}
-            d={strokePath(stroke.points)}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={STROKE_WIDTH}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        ))}
+        {/* Clipped to the snapshot, as the screenshot is, so a letterboxed pane shows no more. */}
+        <svg width={width} height={height} overflow="hidden">
+          {shown.map(({ key, paint }) => (
+            <path
+              key={key}
+              d={paint.path}
+              fill={paint.fill > 0 ? paint.color : "none"}
+              fillOpacity={paint.fill > 0 ? paint.fill : undefined}
+              stroke={paint.line > 0 ? paint.color : "none"}
+              strokeWidth={paint.line > 0 ? paint.line : undefined}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          ))}
+        </svg>
       </svg>
-      <div className="pointer-events-none absolute inset-x-0 top-2 flex justify-center">
-        <div className="pointer-events-auto flex items-center gap-0.5 rounded-lg border bg-popover/95 p-1 text-popover-foreground shadow-lg backdrop-blur-xl">
+      <div className="pointer-events-none absolute inset-x-2 top-2 flex justify-center">
+        <div className="pointer-events-auto flex max-w-full flex-wrap items-center justify-center gap-1 rounded-lg border bg-popover/95 p-1 text-popover-foreground shadow-lg backdrop-blur-xl">
           <ToggleGroup
             aria-label={gt("Annotation tool")}
+            size="xs"
             value={[tool]}
             onValueChange={(value) => {
-              const next = value[0];
-              if (next === "draw" || next === "region" || next === "erase") setTool(next);
+              const next = TOOLS.find((candidate) => candidate === value[0]);
+              if (next) setTool(next);
             }}
           >
-            <Toggle
-              aria-label={gt("Draw", { $context: "annotation tool that draws freehand lines" })}
-              value="draw"
-            >
-              <PencilIcon className="size-3.5" />
-            </Toggle>
-            <Toggle aria-label={gt("Mark a region")} value="region">
-              <SquareDashedIcon className="size-3.5" />
-            </Toggle>
-            <Toggle aria-label={gt("Erase a mark")} value="erase">
-              <EraserIcon className="size-3.5" />
-            </Toggle>
+            {TOOLS.map((value) => (
+              <WithTooltip
+                key={value}
+                tooltip={toolLabels[value].hint}
+                render={<Toggle aria-label={toolLabels[value].label} value={value} />}
+              >
+                {toolLabels[value].icon}
+              </WithTooltip>
+            ))}
           </ToggleGroup>
-          <EditorAction label={gt("Undo")} disabled={!hasMarks} onPress={undo}>
-            <Undo2Icon className="size-3.5" />
-          </EditorAction>
-          <EditorAction label={gt("Cancel annotation")} onPress={props.onCancel}>
-            <XIcon className="size-3.5" />
-          </EditorAction>
+          <ToggleGroup
+            aria-label={gt("Mark color")}
+            variant="default"
+            size="xs"
+            value={[colorId]}
+            onValueChange={(value) => {
+              const next = MARK_COLORS.find((color) => color.id === value[0]);
+              if (next) setColorId(next.id);
+            }}
+          >
+            {MARK_COLORS.map((color) => (
+              <WithTooltip
+                key={color.id}
+                tooltip={m(color.label)}
+                render={<Toggle aria-label={m(color.label)} value={color.id} />}
+              >
+                <span
+                  aria-hidden
+                  className={
+                    color.value === null
+                      ? "size-3 rounded-full bg-primary ring-1 ring-foreground/30"
+                      : "size-3 rounded-full ring-1 ring-foreground/30"
+                  }
+                  style={color.value === null ? undefined : { backgroundColor: color.value }}
+                />
+              </WithTooltip>
+            ))}
+          </ToggleGroup>
+          <WithTooltip
+            tooltip={gt("Fill new regions with their color")}
+            render={
+              <StandaloneToggle
+                aria-label={gt("Fill regions")}
+                variant="ghost"
+                size="xs"
+                pressed={filled}
+                onPressedChange={setFilled}
+              />
+            }
+          >
+            <PaintBucketIcon className="size-3.5" />
+          </WithTooltip>
+          <div className="flex items-center gap-0.5">
+            <EditorAction
+              label={gt("Undo")}
+              tooltip={gt("Undo ({keys})", { keys: undoKeys })}
+              ref={undoRef}
+              disabled={!canUndo}
+              onPress={undo}
+            >
+              <Undo2Icon className="size-3.5" />
+            </EditorAction>
+            <EditorAction
+              label={gt("Redo")}
+              tooltip={gt("Redo ({keys})", { keys: redoKeys })}
+              ref={redoRef}
+              disabled={!canRedo}
+              onPress={redo}
+            >
+              <Redo2Icon className="size-3.5" />
+            </EditorAction>
+            <EditorAction label={gt("Cancel annotation")} onPress={props.onCancel}>
+              <XIcon className="size-3.5" />
+            </EditorAction>
+          </div>
         </div>
       </div>
       {props.environmentId ? (
@@ -402,8 +528,26 @@ export function ModelAnnotationEditor(props: {
   );
 }
 
-function EditorAction(props: {
+function WithTooltip(props: {
+  readonly tooltip: string;
+  readonly render: ReactElement;
+  readonly children: ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger render={props.render}>{props.children}</TooltipTrigger>
+      <TooltipPopup side="bottom">{props.tooltip}</TooltipPopup>
+    </Tooltip>
+  );
+}
+
+function EditorAction({
+  ref,
+  ...props
+}: {
+  readonly ref?: Ref<HTMLButtonElement>;
   readonly label: string;
+  readonly tooltip?: string;
   readonly disabled?: boolean;
   readonly onPress: () => void;
   readonly children: ReactNode;
@@ -413,6 +557,7 @@ function EditorAction(props: {
       <TooltipTrigger
         render={
           <Button
+            ref={ref}
             aria-label={props.label}
             size="icon-xs"
             variant="ghost"
@@ -423,7 +568,7 @@ function EditorAction(props: {
       >
         {props.children}
       </TooltipTrigger>
-      <TooltipPopup side="bottom">{props.label}</TooltipPopup>
+      <TooltipPopup side="bottom">{props.tooltip ?? props.label}</TooltipPopup>
     </Tooltip>
   );
 }

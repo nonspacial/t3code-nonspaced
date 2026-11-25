@@ -25,7 +25,7 @@ import {
   resolveShortcutCommand,
   shortcutLabelForCommand,
 } from "../keybindings";
-import { isEditableFocused } from "../lib/editableFocus";
+import { hasOwnUndo, isEditableFocused } from "../lib/editableFocus";
 import { isPreviewFocused } from "../lib/previewFocus";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { isModelPickerOpen } from "../modelPickerVisibility";
@@ -272,7 +272,7 @@ function registerThreadUndoCommands(
           if (!MODIFIER_KEYS.has(event.key)) releaseThreadUndoShortcut();
           return false;
         }
-        if (isCommandPaletteOpen() || isModelPickerOpen()) return false;
+        if (isCommandPaletteOpen() || isModelPickerOpen() || hasOwnUndo(event.target)) return false;
         if (!undoLatestThreadAction()) return false;
         heldUndoKey = event.code;
         event.preventDefault();
