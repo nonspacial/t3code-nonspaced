@@ -103,8 +103,11 @@ const MEMORY_SAMPLE_INTERVAL = Duration.seconds(5);
 const KEYFRAME_REQUEST_INTERVAL_MS = 250;
 const QUIT_TIMEOUT = Duration.seconds(20);
 // The desktop app kills the server 5 seconds after asking it to stop. Blenders get this long
-// to finish their quit copies, and the rest is left for stopping them.
+// to finish their quit copies, and the rest is left for stopping or releasing them.
 const SHUTDOWN_QUIT_TIMEOUT = Duration.millis(4000);
+// A Blender released at shutdown, still writing its quit copy, gets this long at the next start
+// to finish before it is stopped.
+const RELEASED_FINISH_TIMEOUT = Duration.seconds(60);
 const SHUTDOWN_STOP_TIMEOUT = Duration.millis(400);
 // A helper asked to stop gives Blender 5 seconds before killing it.
 const LEFTOVER_STOP_TIMEOUT = Duration.seconds(7);
@@ -535,6 +538,11 @@ interface Instance {
   acknowledged: boolean;
   /** Stopped as a shutdown runs out of time: the helper gets no grace. */
   stopNow: boolean;
+  /**
+   * Out of time at a shutdown while writing its quit copy: left to finish on its own, with its
+   * launch folder, which the next start salvages.
+   */
+  released: boolean;
   /** Its thread settled: T3 is closing it, though the quit itself may not have begun. */
   closeRequested: boolean;
   /** `pending` until the add-on reports the restore of `recover`. */
@@ -1000,10 +1008,6 @@ const make = Effect.gen(function* () {
   // outlasts the grace is killed. True once nothing of it is running, so its files can be
   // collected; a launch still running after that (Blender stuck in the kernel) is left alone.
   const stopLeftover = Effect.fnUntraced(function* (helperPid: number, launchDir: string) {
-    const running = yield* leftoverProcesses(helperPid, launchDir);
-    if (running.length === 0) return true;
-    const asked = running.includes(helperPid) ? [helperPid] : running;
-    yield* Effect.sync(() => asked.forEach((pid) => signalProcess(pid, "SIGTERM")));
     const gone = (timeout: Duration.Input) =>
       leftoverProcesses(helperPid, launchDir).pipe(
         Effect.repeat({
@@ -1012,6 +1016,16 @@ const make = Effect.gen(function* () {
         }),
         Effect.timeoutOption(timeout),
       );
+    // One released at shutdown is still writing its quit copy: it exits once that is done.
+    const released =
+      (yield* fileSystem
+        .readFileString(path.join(launchDir, "outcome"))
+        .pipe(Effect.orElseSucceed(() => ""))) === "released";
+    if (released && Option.isSome(yield* gone(RELEASED_FINISH_TIMEOUT))) return true;
+    const running = yield* leftoverProcesses(helperPid, launchDir);
+    if (running.length === 0) return true;
+    const asked = running.includes(helperPid) ? [helperPid] : running;
+    yield* Effect.sync(() => asked.forEach((pid) => signalProcess(pid, "SIGTERM")));
     if (Option.isSome(yield* gone(LEFTOVER_STOP_TIMEOUT))) return true;
     const left = yield* leftoverProcesses(helperPid, launchDir);
     yield* Effect.sync(() => left.forEach((pid) => signalProcess(pid, "SIGKILL")));
@@ -1043,7 +1057,8 @@ const make = Effect.gen(function* () {
           }),
         );
         // T3 was closing it, or it stopped with the server: a crash, for all T3 knows.
-        const ending = (yield* read("outcome")) === "closing" ? "closed" : "crashed";
+        const outcome = yield* read("outcome");
+        const ending = outcome === "closing" || outcome === "released" ? "closed" : "crashed";
         yield* applyCleanup(
           {
             threadId,
@@ -1902,6 +1917,8 @@ const make = Effect.gen(function* () {
       // never succeeded leaves the copy it came from alone.
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
+          // Still writing its copy, which the next start's salvage keeps.
+          if (instance.released) return;
           const intent = instance.exitIntent ?? instance;
           yield* applyCleanup(
             {
@@ -2021,21 +2038,24 @@ const make = Effect.gen(function* () {
         // killing its process group would take its labwc watchdog down first. Out of time on
         // shutdown, it gets a moment, then the group is killed.
         (child) =>
-          Stream.run(
-            Stream.encodeText(Stream.make(encodeHelperCommand({ type: "quit" }))),
-            child.stdin,
-          ).pipe(
-            Effect.andThen(child.exitCode),
-            Effect.timeout(instance.stopNow ? SHUTDOWN_STOP_TIMEOUT : HELPER_QUIT_TIMEOUT),
-            Effect.catch(() =>
-              child.kill(
-                instance.stopNow
-                  ? { killSignal: "SIGKILL", forceKillAfter: SHUTDOWN_STOP_TIMEOUT }
-                  : undefined,
+          // Released, it outlives T3: nothing may signal its process group, Blender's included.
+          instance.released
+            ? child.unref.pipe(Effect.ignore)
+            : Stream.run(
+                Stream.encodeText(Stream.make(encodeHelperCommand({ type: "quit" }))),
+                child.stdin,
+              ).pipe(
+                Effect.andThen(child.exitCode),
+                Effect.timeout(instance.stopNow ? SHUTDOWN_STOP_TIMEOUT : HELPER_QUIT_TIMEOUT),
+                Effect.catch(() =>
+                  child.kill(
+                    instance.stopNow
+                      ? { killSignal: "SIGKILL", forceKillAfter: SHUTDOWN_STOP_TIMEOUT }
+                      : undefined,
+                  ),
+                ),
+                Effect.ignore,
               ),
-            ),
-            Effect.ignore,
-          ),
       );
       yield* fileSystem.writeFileString(
         path.join(stateDir, "launch.json"),
@@ -2266,6 +2286,7 @@ const make = Effect.gen(function* () {
       exitIntent: null,
       acknowledged: false,
       stopNow: false,
+      released: false,
       closeRequested: false,
       restore: input.recover === null ? "none" : "pending",
       shown: false,
@@ -2472,6 +2493,18 @@ const make = Effect.gen(function* () {
 
   const pastDeadline = Effect.fnUntraced(function* (instance: Instance, deadline: Deadline) {
     if (!deadline.shutdown && instance.acknowledged) return yield* Deferred.await(instance.ended);
+    // T3 is exiting, but this Blender said it is saving or writing its quit copy, which is then
+    // the only copy of its latest work: it is left to finish, never stopped mid-write.
+    if (deadline.shutdown && instance.acknowledged) {
+      instance.released = true;
+      if (instance.stateDir !== null) {
+        yield* fileSystem
+          .writeFileString(path.join(instance.stateDir, "outcome"), "released")
+          .pipe(Effect.ignore);
+      }
+      yield* instance.helper({ type: "detach" });
+      return yield* forceQuit(instance);
+    }
     // Saves go through a temporary file, so stopping Blender never damages the user's file.
     instance.stopNow = deadline.shutdown;
     yield* forceQuit(instance);

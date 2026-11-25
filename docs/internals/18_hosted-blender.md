@@ -21,7 +21,12 @@ carries the file its dialog named, and the add-on refuses it if Blender has anot
 so a file opened from Blender's own menu is never discarded under another's name. It runs beside
 the client's per-thread command lane, so a Save and quit stuck in a busy Blender can't hold it,
 and it stops Blender at its deadline even mid-save. A settle waits on a Save and quit only once
-Blender has begun it; one still queued by the deadline is stopped like any unanswered quit. Deleting a thread ends its Blender, then removes the copies it kept, which
+Blender has begun it; one still queued by the deadline is stopped like any unanswered quit.
+At shutdown, a Blender that has said it is saving or quitting is released, never killed while
+it writes what may be the only copy of its latest work: the helper is told to `detach` (Blender
+dies with the helper, so the helper stays until Blender exits, whatever T3 does), its handle is
+unref'd so the server's exit signals nothing in its process group, and its launch folder stays
+for the next start's salvage, which waits for it before stopping anything. Deleting a thread ends its Blender, then removes the copies it kept, which
 nothing could show again; a master's copy is never the thread's. Agent access is narrower still: it lasts only while T3 holds the control
 connection, Allow agents is on, and the launch file (the working copy, or the master) is still the
 open file; a working Blender also needs its thread's session alive. Once any of those ends, access
