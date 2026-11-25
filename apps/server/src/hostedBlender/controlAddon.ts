@@ -145,13 +145,19 @@ def _snapshot():
     }
     if _State.restore is not None:
         snapshot["restore"] = _State.restore
-    if _State.loaded_at is not None:
-        snapshot["loadedAt"] = _State.loaded_at
+    _loaded(snapshot)
     if _State.stale is not None:
         snapshot["stale"] = True
         if _State.blocked is not None:
             snapshot["staleBlocked"] = _State.blocked
     return snapshot
+
+
+def _loaded(message):
+    # When Blender last loaded a file, once it has since this add-on started.
+    if _State.loaded_at is not None:
+        message["loadedAt"] = _State.loaded_at
+    return message
 
 
 def _main_window():
@@ -464,7 +470,7 @@ def _handle(command):
                 and any(record["writes"] for record in _Guard.deferred)
             )
             _end_grant()
-            _send({"type": "saved", "filepath": bpy.data.filepath, "dirty": pending})
+            _send(_loaded({"type": "saved", "filepath": bpy.data.filepath, "dirty": pending}))
         window = _main_window()
         with bpy.context.temp_override(window=window):
             bpy.ops.wm.quit_blender()
@@ -1183,15 +1189,22 @@ STALE_REASONS = {
 
 def _catch_up_for_agent():
     # The agent works on the file as it is on disk. None once Blender has it; otherwise why not.
-    outcome = _reload_if_stale()
+    current = _revision(bpy.data.filepath) if bpy.data.filepath else None
+    if current is None or current == _State.disk_revision or not _same_disk_file():
+        # Gone, or back to what Blender has: nothing to load, whatever T3 last said.
+        _State.stale = None
+        _State.blocked = None
+        return None
     if _State.stale is None:
-        # Written after Blender read it, before T3's word: T3 is asked to look now, so the retry
-        # doesn't wait on a watch event that may never come. A file gone has nothing to load.
-        current = _revision(bpy.data.filepath) if bpy.data.filepath else None
-        if current is None or current == _State.disk_revision or not _same_disk_file():
-            return None
-        _send({"type": "checkDisk"})
         outcome = "changing"
+    else:
+        outcome = _reload_if_stale()
+        if _State.stale is None:
+            return None
+    if outcome == "changing":
+        # Written since T3's last word, or before any: T3 looks again, so the retry doesn't wait
+        # on a watch event that may never come.
+        _send({"type": "checkDisk"})
     return (
         "The .blend this Blender has open changed on disk and Blender hasn't loaded it yet: "
         + STALE_REASONS.get(outcome or "changing", STALE_REASONS["changing"])
@@ -1248,12 +1261,13 @@ def _on_save_post(*args):
     _State.stale = None
     _State.blocked = None
     if not _State.quit_saving:
-        _send({
+        # With the load it was saved from: a revert saved at once holds no restored copy's work.
+        _send(_loaded({
             "type": "saved",
             "filepath": bpy.data.filepath,
             "dirty": bool(bpy.data.is_dirty),
             "quit": False,
-        })
+        }))
 
 
 @persistent

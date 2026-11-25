@@ -19,13 +19,16 @@ export class BlendFileWatcher extends Context.Service<
     /**
      * Emits once watching has started, then whenever any of these files may have changed.
      * Files are watched through their folders, so a save that replaces a file is still seen;
-     * a folder that cannot be watched is skipped.
+     * a folder that cannot be watched is skipped. `nudges` count as changes, settled with them.
      */
-    readonly changes: (files: ReadonlyArray<string>) => Stream.Stream<void>;
+    readonly changes: (
+      files: ReadonlyArray<string>,
+      nudges?: Stream.Stream<void>,
+    ) => Stream.Stream<void>;
   }
 >()("t3/blend/BlendFileWatcher") {}
 
-const changes = (files: ReadonlyArray<string>) => {
+const changes = (files: ReadonlyArray<string>, nudges: Stream.Stream<void> = Stream.empty) => {
   const namesByFolder = new Map<string, Set<string>>();
   for (const file of files) {
     const folder = NodePath.dirname(file);
@@ -58,7 +61,7 @@ const changes = (files: ReadonlyArray<string>) => {
       ),
     { bufferSize: 1, strategy: "sliding" },
   );
-  return events.pipe(Stream.debounce(SETTLE));
+  return Stream.merge(events, nudges).pipe(Stream.debounce(SETTLE));
 };
 
 export const layer = Layer.succeed(BlendFileWatcher, BlendFileWatcher.of({ changes }));

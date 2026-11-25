@@ -1187,6 +1187,24 @@ describe("B13: a file changed on disk", () => {
     expect(result.received).toContain("checkDisk");
   });
 
+  it("S3: asks T3 again when the file moved on from the revision T3 named, and drops the mark once it's gone", () => {
+    const moved = runAddon({
+      ...granted,
+      diskChanges: ["outsideChange", "changeUnheard"],
+      call: agentCall,
+    });
+    expect(names(moved)).not.toContain("agent code");
+    expect(moved.call.reply.message).toMatch(/still being written/);
+    expect(moved.received).toContain("checkDisk");
+    // Nothing on disk to load: the agent works on what Blender has.
+    const gone = runAddon({
+      ...granted,
+      diskChanges: ["outsideChange", "deleteFile"],
+      call: agentCall,
+    });
+    expect(names(gone)).toContain("agent code");
+  });
+
   it("S3: answers the agent with why, and runs nothing, while a stale scene can't reload", () => {
     const pending = runAddon({
       ...granted,
