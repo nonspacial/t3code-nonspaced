@@ -1287,7 +1287,8 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             label: msg("Blender"),
             icon: Box,
             shortcut: "K",
-            available: blenderState !== null && blenderState.status !== "unavailable",
+            // Only a host known to lack it disables this; opening reports anything else missing.
+            available: blenderState?.status !== "unavailable",
             disabledReason: messages(SURFACE_DISABLED_REASONS.blender),
             onClick: () => useRightPanelStore.getState().open(blenderThreadRef, "blender"),
           },
