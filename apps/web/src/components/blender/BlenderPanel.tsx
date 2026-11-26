@@ -42,6 +42,7 @@ import {
   useEffectEvent,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 import {
@@ -127,6 +128,30 @@ interface StreamStats {
   readonly rate: HostedBlenderFrameRate | null;
   readonly server: HostedBlenderStreamStats | null;
 }
+
+type StatsUpdate = (update: (current: StreamStats) => StreamStats) => void;
+
+/** The stream's figures change every second; only the status strip re-renders for them. */
+function createStatsFeed() {
+  let stats: StreamStats = { frameSize: null, rate: null, server: null };
+  const listeners = new Set<() => void>();
+  const update: StatsUpdate = (change) => {
+    stats = change(stats);
+    for (const listener of listeners) listener();
+  };
+  return {
+    update,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    get: () => stats,
+    hasFrame: () => stats.frameSize !== null,
+  };
+}
+type StatsFeed = ReturnType<typeof createStatsFeed>;
 
 // Per device: the keyboard and mouse belong to the device, not the account.
 const KEYBOARD_LAYOUT_KEY = "t3code:hosted-blender:keyboard-layout";
@@ -768,7 +793,8 @@ function RunningBlender(
 ) {
   const gt = useGT();
   const master = props.master === true;
-  const [stats, setStats] = useState<StreamStats>({ frameSize: null, rate: null, server: null });
+  const [statsFeed] = useState(createStatsFeed);
+  const hasFrame = useSyncExternalStore(statsFeed.subscribe, statsFeed.hasFrame);
   const [control, setControl] = useState<HostedBlenderControl>(VIEW_ONLY);
   const streamRef = useRef<BlenderStreamHandle | null>(null);
   const annotation = useBlenderAnnotation({
@@ -779,7 +805,7 @@ function RunningBlender(
     master,
     onClose: () => streamRef.current?.focus(),
   });
-  const live = props.state.status === "running" && props.visible && stats.frameSize !== null;
+  const live = props.state.status === "running" && props.visible && hasFrame;
   // Hidden until the next reload keeps a copy; the copy itself stays as any kept copy does.
   const dismissedReload = useKeptCopySelection(
     (selection) => selection.dismissedReloads[reloadKey(props.threadRef, master)],
@@ -840,7 +866,7 @@ function RunningBlender(
           environmentId={props.threadRef.environmentId}
           threadId={props.threadRef.threadId}
           master={master}
-          onStats={setStats}
+          onStats={statsFeed.update}
           onControl={setControl}
           handleRef={streamRef}
           canvasRef={annotation.canvasRef}
@@ -851,7 +877,7 @@ function RunningBlender(
         <div className="min-h-0 flex-1" />
       )}
       <BlenderStatusStrip
-        {...stats}
+        feed={statsFeed}
         agentActing={props.state.agentActing === true}
         control={control}
         environmentId={props.threadRef.environmentId}
@@ -1134,7 +1160,7 @@ function BlenderStream(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: string;
   readonly master?: boolean;
-  readonly onStats: (update: (current: StreamStats) => StreamStats) => void;
+  readonly onStats: StatsUpdate;
   readonly onControl: (control: HostedBlenderControl) => void;
   readonly handleRef: RefObject<BlenderStreamHandle | null>;
   readonly onFrameSize?: (size: { readonly width: number; readonly height: number }) => void;
@@ -1466,24 +1492,24 @@ function StreamStatus(props: { readonly status: Exclude<HostedBlenderStreamStatu
   }
 }
 
-function BlenderStatusStrip(
-  props: StreamStats & {
-    readonly agentActing: boolean;
-    readonly control: HostedBlenderControl;
-    readonly environmentId: EnvironmentId;
-  },
-) {
+function BlenderStatusStrip(props: {
+  readonly feed: StatsFeed;
+  readonly agentActing: boolean;
+  readonly control: HostedBlenderControl;
+  readonly environmentId: EnvironmentId;
+}) {
   const gt = useGT();
+  const stats = useSyncExternalStore(props.feed.subscribe, props.feed.get);
   const setup = useHostedBlenderSetupState(props.environmentId)?.result;
   const gpu =
     setup?.status === "checked"
       ? setup.checks.find((check) => check.item === "gpu")?.status
       : undefined;
   const parts = [
-    props.frameSize ? `${props.frameSize.width}×${props.frameSize.height}` : null,
-    props.rate ? `${props.rate.framesPerSecond} fps` : null,
-    props.rate ? `${(props.rate.bitsPerSecond / 1_000_000).toFixed(1)} Mbps` : null,
-    props.server?.encoder ?? null,
+    stats.frameSize ? `${stats.frameSize.width}×${stats.frameSize.height}` : null,
+    stats.rate ? `${stats.rate.framesPerSecond} fps` : null,
+    stats.rate ? `${(stats.rate.bitsPerSecond / 1_000_000).toFixed(1)} Mbps` : null,
+    stats.server?.encoder ?? null,
   ].filter((part) => part !== null);
   return (
     <div className="flex h-7 shrink-0 items-center gap-3 overflow-hidden border-t border-border bg-muted/40 px-3 text-xs whitespace-nowrap text-muted-foreground">
@@ -1501,7 +1527,7 @@ function BlenderStatusStrip(
           <T context="hosted Blender pane status badge">Agent editing</T>
         </Badge>
       ) : null}
-      {props.server?.target === "output" ? (
+      {stats.server?.target === "output" ? (
         <span className="min-w-0 truncate text-warning-foreground">
           <T>Showing the whole display</T>
         </span>
@@ -1519,9 +1545,9 @@ function BlenderStatusStrip(
       {parts.length > 0 ? (
         <span className="ml-auto min-w-0 truncate font-mono">{parts.join(" · ")}</span>
       ) : null}
-      {props.server?.memoryBytes != null ? (
+      {stats.server?.memoryBytes != null ? (
         <span className={`shrink-0 font-mono${parts.length > 0 ? "" : " ml-auto"}`}>
-          {gt("Blender memory {size}", { size: formatBytes(props.server.memoryBytes) })}
+          {gt("Blender memory {size}", { size: formatBytes(stats.server.memoryBytes) })}
         </span>
       ) : null}
     </div>
