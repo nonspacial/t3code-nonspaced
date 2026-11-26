@@ -38,7 +38,6 @@ import { useClientSettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 
 import { BinaryFilePreview } from "./BinaryFilePreview";
-import { BlendFilePreview } from "./BlendFilePreview";
 import type { ModelAnnotationTarget, ModelViewRequest } from "./ModelFilePreview";
 import { PreviewImage } from "./PreviewImage";
 import { AudioPreview } from "./AudioPreview";
@@ -53,6 +52,10 @@ import {
 } from "./fileSurfaceChrome";
 
 const LargeTextViewer = lazy(() => import("./LargeTextViewer"));
+
+const BlendFilePreview = lazy(() =>
+  import("./BlendFilePreview").then((module) => ({ default: module.BlendFilePreview })),
+);
 
 const OfficeFilePreview = lazy(() =>
   import("./OfficeFilePreview").then((module) => ({ default: module.OfficeFilePreview })),
@@ -354,11 +357,13 @@ export function AttachmentFilePreview(props: {
       <FontFilePreview src={url} name={props.name} />
     </Suspense>
   ) : blendAttachmentId !== null && props.asset ? (
-    <BlendFilePreview
-      environmentId={props.asset.environmentId}
-      name={props.name}
-      source={{ kind: "attachment", attachmentId: blendAttachmentId }}
-    />
+    <Suspense fallback={<FileSurfaceLoading />}>
+      <BlendFilePreview
+        environmentId={props.asset.environmentId}
+        name={props.name}
+        source={{ kind: "attachment", attachmentId: blendAttachmentId }}
+      />
+    </Suspense>
   ) : modelFormat ? (
     <Suspense fallback={<FileSurfaceLoading />}>
       <ModelFilePreview
