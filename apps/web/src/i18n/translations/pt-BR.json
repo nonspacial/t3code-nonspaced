@@ -13227,6 +13227,15 @@
     },
     " quando esta conversa foi concluída ou o T3 Code parou, e manteve as alterações não salvas. Reabrir as restaura."
   ],
+  "5065123e0dd81fe3": [
+    "O T3 Code tirou ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " deste projeto quando a conversa terminou e o guarda por até 30 dias. Reabrir o coloca de volta e o abre."
+  ],
   "891e3d7d231af485": [
     "O T3 Code fechou ",
     {

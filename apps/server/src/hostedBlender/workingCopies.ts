@@ -31,6 +31,8 @@ export const WorkingCopyRecord = Schema.Struct({
   master: Schema.String,
   /** Where the copy sits in the project, by its real folder: beside the master. */
   path: Schema.String,
+  /** That place under the workspace's real root, which the pane names it by. */
+  relativePath: Schema.optional(Schema.String),
   state: Schema.Literals(["live", "holding", "held", "returning"]),
   heldAt: Schema.optional(Schema.Number),
   /** The master's revision as the copy was held, which tells when the master moved on. */

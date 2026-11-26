@@ -13227,6 +13227,15 @@
     },
     " lorsque ce fil a été réglé ou que T3 Code s’est arrêté, et a conservé ses modifications non enregistrées. Rouvrir les restaure."
   ],
+  "5065123e0dd81fe3": [
+    "T3 Code a sorti ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " de ce projet à la fin du fil et le conserve jusqu’à 30 jours. Rouvrir le remet en place et l’ouvre."
+  ],
   "891e3d7d231af485": [
     "T3 Code a fermé ",
     {

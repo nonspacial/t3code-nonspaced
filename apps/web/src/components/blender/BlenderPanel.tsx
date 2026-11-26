@@ -588,6 +588,11 @@ function ReopenCard(props: {
               T3 Code closed <Var>{name}</Var> when this thread settled or T3 Code stopped, and kept
               its unsaved changes. Reopen restores them.
             </T>
+          ) : copy.held === true ? (
+            <T>
+              T3 Code moved <Var>{name}</Var> out of this project when the thread finished, and
+              holds it for up to 30 days. Reopen puts it back and opens it.
+            </T>
           ) : (
             <T>
               T3 Code closed <Var>{name}</Var> when this thread settled or T3 Code stopped.
@@ -676,16 +681,19 @@ function ReopenCard(props: {
                   ) : null}
                 </>
               )}
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={pending}
-                onClick={() =>
-                  recovery ? setConfirmingDiscard({ keptAt: copy.keptAt }) : void run("dismiss")
-                }
-              >
-                {recovery ? <T>Discard</T> : <T>Dismiss</T>}
-              </Button>
+              {/* A held copy is deleted from Settings › Blender, never dismissed here. */}
+              {copy.held === true && !recovery ? null : (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={pending}
+                  onClick={() =>
+                    recovery ? setConfirmingDiscard({ keptAt: copy.keptAt }) : void run("dismiss")
+                  }
+                >
+                  {recovery ? <T>Discard</T> : <T>Dismiss</T>}
+                </Button>
+              )}
             </>
           ) : null
         }

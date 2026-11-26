@@ -167,7 +167,7 @@ function HeldWorkingCopyRow(props: {
     setPending(true);
     const result = await deleteHeld({
       environmentId: props.environmentId,
-      input: { ids: [copy.id] },
+      input: { copies: [{ id: copy.id, heldAt: copy.heldAt }] },
     });
     setPending(false);
     if (result._tag === "Failure") {

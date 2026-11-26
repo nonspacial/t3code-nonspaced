@@ -5759,6 +5759,7 @@
   "792547acc53a4ce2": "{name} parou inesperadamente. Reiniciar abre o arquivo como foi salvo pela última vez.",
   "e246f868014d4c31": "O T3 Code guardou estas alterações não salvas de {name} quando o Blender recarregou o arquivo depois que ele mudou no disco. O arquivo no disco é mais recente que elas.",
   "fdd6cbdc0d9ca4b3": "O T3 Code fechou {name} quando esta conversa foi concluída ou o T3 Code parou, e manteve as alterações não salvas. Reabrir as restaura.",
+  "2a9dded1af50e2c5": "O T3 Code tirou {name} deste projeto quando a conversa terminou e o guarda por até 30 dias. Reabrir o coloca de volta e o abre.",
   "d67cf20e84648ded": "O T3 Code fechou {name} quando esta conversa foi concluída ou o T3 Code parou.",
   "a7182a5836f625f0": "Restaurar salvamento automático",
   "30c53f2f85ed34da": "Reabrir",

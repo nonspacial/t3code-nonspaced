@@ -431,7 +431,7 @@ function HeldCopiesNotice(props: {
   const [pending, setPending] = useState(false);
   const answer = async (keep: boolean) => {
     setPending(true);
-    const input = { environmentId: props.environmentId, input: { ids: props.behind.ids } };
+    const input = { environmentId: props.environmentId, input: { copies: props.behind.copies } };
     const result = await (keep ? keepHeld(input) : deleteHeld(input)).finally(() =>
       setPending(false),
     );
@@ -452,7 +452,7 @@ function HeldCopiesNotice(props: {
         message={gt(
           "{count, plural, =1 {{master} has changed since T3 Code held the working copy of it from {threads} ({size}). That copy holds an edition you've moved past. Delete it now, or keep it until {date}.} other {{master} has changed since T3 Code held {count} working copies of it from {threads} ({size}). They hold an edition you've moved past. Delete them now, or keep them until {date}.}}",
           {
-            count: props.behind.ids.length,
+            count: props.behind.copies.length,
             master: fileName(props.behind.master),
             threads,
             size: formatAttachmentSize(props.behind.bytes, messages),
@@ -648,9 +648,14 @@ function KeptCopyCard(props: {
                       "T3 Code closed {name} when this thread settled or T3 Code stopped, and kept its unsaved changes. Reopen restores them.",
                       { name },
                     )
-                  : gt("T3 Code closed {name} when this thread settled or T3 Code stopped.", {
-                      name,
-                    });
+                  : copy.held === true
+                    ? gt(
+                        "T3 Code moved {name} out of this project when the thread finished, and holds it for up to 30 days. Reopen puts it back and opens it.",
+                        { name },
+                      )
+                    : gt("T3 Code closed {name} when this thread settled or T3 Code stopped.", {
+                        name,
+                      });
   const actions: ReadonlyArray<{ readonly label: string; readonly onPress: () => void }> =
     !reopenable
       ? []
@@ -715,12 +720,15 @@ function KeptCopyCard(props: {
               onPress={action.onPress}
             />
           ))}
-          <Button
-            label={recovery ? gt("Discard") : gt("Dismiss")}
-            tone="text"
-            disabled={pending}
-            onPress={recovery ? discard : () => void run("dismiss")}
-          />
+          {/* A held copy is deleted from Settings › Blender, never dismissed here. */}
+          {copy.held === true && !recovery ? null : (
+            <Button
+              label={recovery ? gt("Discard") : gt("Dismiss")}
+              tone="text"
+              disabled={pending}
+              onPress={recovery ? discard : () => void run("dismiss")}
+            />
+          )}
         </View>
       ) : null}
     </StateMessage>

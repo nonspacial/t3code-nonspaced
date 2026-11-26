@@ -193,6 +193,11 @@ export const HostedBlenderKeptCopy = Schema.Struct({
   missing: Schema.optional(Schema.Boolean),
   /** When this copy was kept, which a Discard names so it never removes a newer one. */
   keptAt: Schema.optionalKey(Schema.Number),
+  /**
+   * The working copy itself is held outside the project since the thread finished; Reopen puts
+   * it back and opens it.
+   */
+  held: Schema.optionalKey(Schema.Boolean),
 });
 export type HostedBlenderKeptCopy = typeof HostedBlenderKeptCopy.Type;
 
@@ -225,6 +230,10 @@ export const HostedBlenderHeldCopy = Schema.Struct({
 export type HostedBlenderHeldCopy = typeof HostedBlenderHeldCopy.Type;
 
 export const HostedBlenderHeldList = Schema.Array(HostedBlenderHeldCopy);
+
+/** A held copy as the person saw it: one held again since has another `heldAt`, and is left alone. */
+export const HostedBlenderHeldRef = Schema.Struct({ id: Schema.String, heldAt: Schema.Number });
+export type HostedBlenderHeldRef = typeof HostedBlenderHeldRef.Type;
 export type HostedBlenderHeldList = typeof HostedBlenderHeldList.Type;
 
 /**
@@ -232,7 +241,7 @@ export type HostedBlenderHeldList = typeof HostedBlenderHeldList.Type;
  * the person hasn't kept: the pane asks once whether to delete them.
  */
 export const HostedBlenderHeldBehind = Schema.Struct({
-  ids: Schema.NonEmptyArray(Schema.String),
+  copies: Schema.NonEmptyArray(HostedBlenderHeldRef),
   /** The thread's master, relative to its workspace. */
   master: TrimmedNonEmptyString,
   threadTitles: Schema.Array(Schema.String),
@@ -243,7 +252,7 @@ export const HostedBlenderHeldBehind = Schema.Struct({
 export type HostedBlenderHeldBehind = typeof HostedBlenderHeldBehind.Type;
 
 export const HostedBlenderHeldInput = Schema.Struct({
-  ids: Schema.NonEmptyArray(Schema.String),
+  copies: Schema.NonEmptyArray(HostedBlenderHeldRef),
 });
 export type HostedBlenderHeldInput = typeof HostedBlenderHeldInput.Type;
 
@@ -501,6 +510,7 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "sceneChanged",
       "stillSaving",
       "heldCopyInTheWay",
+      "heldCopyNotDeleted",
     ]),
     /** With `unsavedImages` from a save: the edited images Blender couldn't save. */
     images: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -581,6 +591,8 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "Blender didn't answer, so it stays open, and the quit won't run later on its own. Try again once Blender has finished what it's doing.";
       case "stillSaving":
         return "Blender is still saving its last copy of this file from before T3 Code restarted. Try again in a moment.";
+      case "heldCopyNotDeleted":
+        return "T3 Code couldn't delete the held working copy, so it is still held. Try again.";
       case "heldCopyInTheWay":
         return "T3 Code is holding this thread's working copy, but another file now has its name in the project, so T3 Code didn't put the copy back. Move that file aside, then try again.";
     }

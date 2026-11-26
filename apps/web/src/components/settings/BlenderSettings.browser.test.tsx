@@ -95,7 +95,10 @@ it("B19: lists held working copies with their thread, master, size and expiry, a
   expect(state.commands).toEqual([
     {
       label: "environment-data:hosted-blender:delete-held",
-      value: { environmentId: "environment-1", input: { ids: ["held-a"] } },
+      value: {
+        environmentId: "environment-1",
+        input: { copies: [{ id: "held-a", heldAt: new Date(2026, 10, 20).getTime() }] },
+      },
     },
   ]);
 });

@@ -218,6 +218,7 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
         threadId: input.threadId,
         master,
         path: workingCopy,
+        relativePath: path.relative(realRoot, workingCopy),
       });
     }
     // Paths under the workspace as configured, as the client matches file links against it.

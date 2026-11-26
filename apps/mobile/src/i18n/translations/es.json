@@ -5759,6 +5759,7 @@
   "792547acc53a4ce2": "{name} se detuvo inesperadamente. Reiniciar abre el archivo tal como se guardó por última vez.",
   "e246f868014d4c31": "T3 Code conservó estos cambios sin guardar de {name} cuando Blender volvió a cargar el archivo tras cambiar en el disco. El archivo en el disco es más reciente que ellos.",
   "fdd6cbdc0d9ca4b3": "T3 Code cerró {name} cuando este hilo se resolvió o T3 Code se detuvo, y conservó sus cambios sin guardar. Volver a abrir los restaura.",
+  "2a9dded1af50e2c5": "T3 Code sacó {name} de este proyecto cuando terminó el hilo y lo guarda hasta 30 días. Reabrir lo devuelve y lo abre.",
   "d67cf20e84648ded": "T3 Code cerró {name} cuando este hilo se resolvió o T3 Code se detuvo.",
   "a7182a5836f625f0": "Restaurar guardado automático",
   "30c53f2f85ed34da": "Reabrir",

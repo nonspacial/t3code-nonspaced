@@ -2261,7 +2261,7 @@ const WsHostedBlenderSubscribeHeldRpc = Rpc.make(WS_METHODS.hostedBlenderSubscri
 /** Deletes held working copies now. */
 const WsHostedBlenderDeleteHeldRpc = Rpc.make(WS_METHODS.hostedBlenderDeleteHeld, {
   payload: HostedBlenderHeldInput,
-  error: EnvironmentAuthorizationError,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
 });
 
 /** Keeps held working copies the master has moved past, until they expire, without asking again. */

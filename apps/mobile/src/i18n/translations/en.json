@@ -5767,6 +5767,7 @@
   "792547acc53a4ce2": "{name} stopped unexpectedly. Restart opens the file as last saved.",
   "e246f868014d4c31": "T3 Code kept these unsaved changes to {name} when Blender reloaded the file after it changed on disk. The file on disk is newer than them.",
   "fdd6cbdc0d9ca4b3": "T3 Code closed {name} when this thread settled or T3 Code stopped, and kept its unsaved changes. Reopen restores them.",
+  "2a9dded1af50e2c5": "T3 Code moved {name} out of this project when the thread finished, and holds it for up to 30 days. Reopen puts it back and opens it.",
   "d67cf20e84648ded": "T3 Code closed {name} when this thread settled or T3 Code stopped.",
   "a7182a5836f625f0": "Restore autosave",
   "30c53f2f85ed34da": "Reopen",

@@ -690,7 +690,10 @@ it("B19: asks about other threads' held copies once the master moved on, and Del
   stream.state = {
     status: "stopped",
     heldBehind: {
-      ids: ["held-a", "held-b"],
+      copies: [
+        { id: "held-a", heldAt: 1 },
+        { id: "held-b", heldAt: 2 },
+      ],
       master: "models/hero.blend",
       threadTitles: ["Hero pass", "Rig fix"],
       bytes: 3 * 1024 * 1024,
@@ -714,11 +717,27 @@ it("B19: asks about other threads' held copies once the master moved on, and Del
   expect(stream.commands).toEqual([
     {
       label: "environment-data:hosted-blender:delete-held",
-      value: { environmentId: threadRef.environmentId, input: { ids: ["held-a", "held-b"] } },
+      value: {
+        environmentId: threadRef.environmentId,
+        input: {
+          copies: [
+            { id: "held-a", heldAt: 1 },
+            { id: "held-b", heldAt: 2 },
+          ],
+        },
+      },
     },
     {
       label: "environment-data:hosted-blender:keep-held",
-      value: { environmentId: threadRef.environmentId, input: { ids: ["held-a", "held-b"] } },
+      value: {
+        environmentId: threadRef.environmentId,
+        input: {
+          copies: [
+            { id: "held-a", heldAt: 1 },
+            { id: "held-b", heldAt: 2 },
+          ],
+        },
+      },
     },
   ]);
 });

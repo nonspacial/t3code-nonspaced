@@ -5765,6 +5765,7 @@
   "792547acc53a4ce2": "{name} stannade oväntat. Starta om öppnar filen som den senast sparades.",
   "e246f868014d4c31": "T3 Code behöll de här osparade ändringarna i {name} när Blender läste in filen igen efter att den ändrats på disken. Filen på disken är nyare än dem.",
   "fdd6cbdc0d9ca4b3": "T3 Code stängde {name} när den här tråden avslutades eller T3 Code stoppades, och behöll de osparade ändringarna. Öppna igen återställer dem.",
+  "2a9dded1af50e2c5": "T3 Code flyttade {name} ut ur projektet när tråden avslutades och sparar den i upp till 30 dagar. Öppna igen lägger tillbaka den och öppnar den.",
   "d67cf20e84648ded": "T3 Code stängde {name} när den här tråden avslutades eller T3 Code stoppades.",
   "a7182a5836f625f0": "Återställ automatisk sparning",
   "30c53f2f85ed34da": "Öppna igen",

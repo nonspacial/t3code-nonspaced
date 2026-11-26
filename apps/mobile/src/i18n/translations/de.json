@@ -5765,6 +5765,7 @@
   "792547acc53a4ce2": "{name} wurde unerwartet beendet. „Neu starten“ öffnet die zuletzt gespeicherte Datei.",
   "e246f868014d4c31": "T3 Code hat diese ungespeicherten Änderungen an {name} behalten, als Blender die Datei nach einer Änderung auf der Festplatte neu geladen hat. Die Datei auf der Festplatte ist neuer als sie.",
   "fdd6cbdc0d9ca4b3": "T3 Code hat {name} geschlossen, als dieser Thread abgeschlossen wurde oder T3 Code beendet wurde, und die nicht gespeicherten Änderungen behalten. „Erneut öffnen“ stellt sie wieder her.",
+  "2a9dded1af50e2c5": "T3 Code hat {name} beim Abschluss des Threads aus diesem Projekt verschoben und bewahrt es bis zu 30 Tage auf. „Erneut öffnen“ legt es zurück und öffnet es.",
   "d67cf20e84648ded": "T3 Code hat {name} geschlossen, als dieser Thread abgeschlossen wurde oder T3 Code beendet wurde.",
   "a7182a5836f625f0": "Automatische Sicherung wiederherstellen",
   "30c53f2f85ed34da": "Wieder öffnen",

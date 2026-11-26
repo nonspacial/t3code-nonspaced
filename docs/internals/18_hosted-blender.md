@@ -42,8 +42,11 @@ Its thread settling or being archived holds it once the thread's Blender has rea
 still write it): copied into the state folder through a synced temporary name, then the
 original and its `.blend1` backups removed. The project and the state are on different drives,
 so the record says which way a move was going, and a start finishes it from the side that is
-whole, removing only T3's own files. Opening the thread's Blender puts it back by hard link,
-which never replaces a file that took its name. The master "moving on" is its revision (as the
+whole, removing only T3's own files. Each copy's moves run under a lock of its own, by path,
+which every open of a recorded copy takes too, so an open during a move waits for it and acts on
+what it left. Opening the thread's Blender (the pane shows its held copy as a kept one) puts it
+back by hard link, which never replaces a file that took its name. Delete and Keep name a hold
+by when it was held, so an answer to an earlier hold never reaches a later one. The master "moving on" is its revision (as the
 reload watcher reads one) differing from the one recorded at hold, read only when it costs
 nothing (start, a thread opening or saving that master, Settings, the daily pass); nothing
 watches it. The daily pass, the only timer, also deletes what is past 30 days and what a

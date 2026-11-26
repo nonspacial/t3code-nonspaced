@@ -13227,6 +13227,15 @@
     },
     " geschlossen, als dieser Thread abgeschlossen wurde oder T3 Code beendet wurde, und die nicht gespeicherten Änderungen behalten. „Erneut öffnen“ stellt sie wieder her."
   ],
+  "5065123e0dd81fe3": [
+    "T3 Code hat ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " beim Abschluss des Threads aus diesem Projekt verschoben und bewahrt es bis zu 30 Tage auf. „Erneut öffnen“ legt es zurück und öffnet es."
+  ],
   "891e3d7d231af485": [
     "T3 Code hat ",
     {

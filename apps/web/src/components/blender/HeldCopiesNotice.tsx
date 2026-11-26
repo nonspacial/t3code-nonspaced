@@ -32,7 +32,7 @@ export function HeldCopiesNotice(props: {
   const [pending, setPending] = useState(false);
   const answer = async (keep: boolean) => {
     setPending(true);
-    const input = { environmentId, input: { ids: props.behind.ids } };
+    const input = { environmentId, input: { copies: props.behind.copies } };
     const result = await (keep ? keepHeld(input) : deleteHeld(input));
     setPending(false);
     if (result._tag === "Failure") {
@@ -55,7 +55,7 @@ export function HeldCopiesNotice(props: {
         {gt(
           "{count, plural, =1 {{master} has changed since T3 Code held the working copy of it from {threads} ({size}). That copy holds an edition you've moved past. Delete it now, or keep it until {date}.} other {{master} has changed since T3 Code held {count} working copies of it from {threads} ({size}). They hold an edition you've moved past. Delete them now, or keep them until {date}.}}",
           {
-            count: props.behind.ids.length,
+            count: props.behind.copies.length,
             master: fileName(props.behind.master),
             threads,
             size: formatBytes(props.behind.bytes),

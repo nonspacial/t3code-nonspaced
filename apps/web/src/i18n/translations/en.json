@@ -13237,6 +13237,15 @@
     },
     " when this thread settled or T3 Code stopped, and kept its unsaved changes. Reopen restores them."
   ],
+  "5065123e0dd81fe3": [
+    "T3 Code moved ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " out of this project when the thread finished, and holds it for up to 30 days. Reopen puts it back and opens it."
+  ],
   "891e3d7d231af485": [
     "T3 Code closed ",
     {

@@ -5759,6 +5759,7 @@
   "792547acc53a4ce2": "{name} s’est arrêté de façon inattendue. Redémarrer ouvre le fichier tel qu’enregistré en dernier.",
   "e246f868014d4c31": "T3 Code a conservé ces modifications non enregistrées de {name} quand Blender a rechargé le fichier après sa modification sur le disque. Le fichier sur le disque est plus récent qu’elles.",
   "fdd6cbdc0d9ca4b3": "T3 Code a fermé {name} lorsque ce fil a été réglé ou que T3 Code s’est arrêté, et a conservé ses modifications non enregistrées. Rouvrir les restaure.",
+  "2a9dded1af50e2c5": "T3 Code a sorti {name} de ce projet à la fin du fil et le conserve jusqu’à 30 jours. Rouvrir le remet en place et l’ouvre.",
   "d67cf20e84648ded": "T3 Code a fermé {name} lorsque ce fil a été réglé ou que T3 Code s’est arrêté.",
   "a7182a5836f625f0": "Restaurer l’enregistrement automatique",
   "30c53f2f85ed34da": "Rouvrir",

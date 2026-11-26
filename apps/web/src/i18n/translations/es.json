@@ -13222,6 +13222,15 @@
     },
     " cuando este hilo se resolvió o T3 Code se detuvo, y conservó sus cambios sin guardar. Volver a abrir los restaura."
   ],
+  "5065123e0dd81fe3": [
+    "T3 Code sacó ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " de este proyecto cuando terminó el hilo y lo guarda hasta 30 días. Reabrir lo devuelve y lo abre."
+  ],
   "891e3d7d231af485": [
     "T3 Code cerró ",
     {
