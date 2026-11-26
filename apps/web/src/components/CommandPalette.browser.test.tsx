@@ -523,7 +523,7 @@ describe("S1: Hosted Blender in the command palette", () => {
       },
     });
     expect(entities.commands).toEqual([
-      quit({ save: true }),
+      quit({ save: true, openFile: opened("models/other.blend").openFile }),
       quit({ save: false, discard: true, openFile: opened("models/other.blend").openFile }),
       quit({ save: false, discard: true, openFile: opened("models/third.blend").openFile }),
     ]);
