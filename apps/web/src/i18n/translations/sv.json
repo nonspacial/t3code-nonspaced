@@ -13279,6 +13279,16 @@
   "3caa4fb20ff3277d": "Blender sparar den här bilden med filen, så den kan vara inaktuell om ett skript sparade filen.",
   "301ece9c34df1726": "Blenders logg",
   "20fc073d179a63f5": "Blender skrev inget i sin logg.",
+  "c4dd9c716703715d": "Visa 3D-vy",
+  "1811c8b47499cb54": [
+    "Konverterar den här filen på ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " med Blender på servern, som läser in hela scenen."
+  ],
   "71f9aa2ee31aac46": "Ingen miniatyr sparad i den här filen",
   "27088355449cdd28": "Scendetaljer",
   "3a87f8c40f3b8065": "Konvertera",

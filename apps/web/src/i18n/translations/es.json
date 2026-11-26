@@ -13267,6 +13267,16 @@
   "3caa4fb20ff3277d": "Blender guarda esta imagen con el archivo, así que puede estar desactualizada si un script guardó el archivo.",
   "301ece9c34df1726": "Registro de Blender",
   "20fc073d179a63f5": "Blender no escribió nada en su registro.",
+  "c4dd9c716703715d": "Mostrar vista 3D",
+  "1811c8b47499cb54": [
+    "Convierte este archivo de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " con Blender en el servidor, que carga toda la escena."
+  ],
   "71f9aa2ee31aac46": "Este archivo no tiene una miniatura guardada",
   "27088355449cdd28": "Detalles de la escena",
   "3a87f8c40f3b8065": "Convertir",

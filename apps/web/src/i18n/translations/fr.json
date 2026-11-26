@@ -13272,6 +13272,16 @@
   "3caa4fb20ff3277d": "Blender enregistre cette image avec le fichier ; elle peut donc être obsolète si un script a enregistré le fichier.",
   "301ece9c34df1726": "Journal de Blender",
   "20fc073d179a63f5": "Blender n’a rien écrit dans son journal.",
+  "c4dd9c716703715d": "Afficher la vue 3D",
+  "1811c8b47499cb54": [
+    "Convertit ce fichier de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " avec Blender sur le serveur, qui charge toute la scène."
+  ],
   "71f9aa2ee31aac46": "Aucune miniature enregistrée dans ce fichier",
   "27088355449cdd28": "Détails de la scène",
   "3a87f8c40f3b8065": "Convertir",

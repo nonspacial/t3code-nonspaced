@@ -13272,6 +13272,16 @@
   "3caa4fb20ff3277d": "O Blender salva esta imagem com o arquivo, então ela pode estar desatualizada se um script salvou o arquivo.",
   "301ece9c34df1726": "Log do Blender",
   "20fc073d179a63f5": "O Blender não escreveu nada no log.",
+  "c4dd9c716703715d": "Mostrar visualização 3D",
+  "1811c8b47499cb54": [
+    "Converte este arquivo de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " com o Blender no servidor, que carrega a cena inteira."
+  ],
   "71f9aa2ee31aac46": "Nenhuma miniatura salva neste arquivo",
   "27088355449cdd28": "Detalhes da cena",
   "3a87f8c40f3b8065": "Converter",

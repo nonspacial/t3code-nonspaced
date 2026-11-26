@@ -13271,6 +13271,16 @@
   "3caa4fb20ff3277d": "Blender speichert dieses Bild mit der Datei. Hat ein Skript die Datei gespeichert, kann es veraltet sein.",
   "301ece9c34df1726": "Blender-Protokoll",
   "20fc073d179a63f5": "Blender hat nichts protokolliert.",
+  "c4dd9c716703715d": "3D-Ansicht zeigen",
+  "1811c8b47499cb54": [
+    "Konvertiert diese ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "-Datei mit Blender auf dem Server, der dafür die ganze Szene lädt."
+  ],
   "71f9aa2ee31aac46": "In dieser Datei ist keine Miniatur gespeichert",
   "27088355449cdd28": "Szenendetails",
   "3a87f8c40f3b8065": "Konvertieren",
