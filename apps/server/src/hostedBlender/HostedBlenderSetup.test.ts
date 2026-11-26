@@ -62,7 +62,9 @@ const fakeHost = (dir: string) => {
   );
   const helper = script(
     NodePath.join(dir, "helper"),
-    `[ "$1" = probe ] || exit 2\necho run >> "${probes}"\necho '{"encoder":"x264enc"}'`,
+    // \`busy-first\` beside it fails the first test encode, as a busy GPU does; \`busy\` every one.
+    // Shell builtins only: the check runs it without a PATH.
+    `[ "$1" = probe ] || exit 2\necho run >> "${probes}"\nn=0; while read -r _; do n=$((n+1)); done < "${probes}"\nif [ -f "${dir}/busy" ] || { [ -f "${dir}/busy-first" ] && [ "$n" = 1 ]; }; then echo '{"encoder":null}'; else echo '{"encoder":"x264enc"}'; fi`,
   );
   NodeFS.mkdirSync(NodePath.join(root, "etc"), { recursive: true });
   NodeFS.writeFileSync(
@@ -350,6 +352,38 @@ describe("HostedBlenderSetup", () => {
       expect(rechecked.checks).toContainEqual({ item: "labwc", status: "missing" });
       expect(host.probeCount()).toBe(2);
     }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "an open checks a not-ready result again once, as after a test encode on a busy GPU",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tempDir;
+        const host = fakeHost(dir);
+        NodeFS.writeFileSync(NodePath.join(dir, "busy-first"), "");
+        const service = yield* serviceFor({ host, home: dir });
+        const next = yield* watch(service);
+        // The check at startup ran while the GPU was busy: installed, but the encode failed.
+        yield* service.ensureChecked;
+        const first = checkedResult(yield* next((state) => state.result !== null));
+        expect(first.ready).toBe(false);
+        expect(first.checks).toContainEqual({ item: "encoder", status: "failed" });
+        yield* service.ensureChecked;
+        expect(host.probeCount()).toBe(1);
+        // Two opens at once retry once.
+        yield* Effect.all([service.ensureCheckedForOpen, service.ensureCheckedForOpen], {
+          concurrency: "unbounded",
+        });
+        expect(host.probeCount()).toBe(2);
+        expect(checkedResult(yield* next((state) => !state.checking)).ready).toBe(true);
+        // A retry that still fails isn't run again on every open.
+        NodeFS.writeFileSync(NodePath.join(dir, "busy"), "");
+        yield* service.check;
+        yield* service.ensureCheckedForOpen;
+        expect(host.probeCount()).toBe(4);
+        yield* service.ensureCheckedForOpen;
+        expect(host.probeCount()).toBe(4);
+      }).pipe(Effect.scoped),
   );
 
   it.live("finds the official Blender MCP in ~/.local/bin, where uv and pipx put it", () =>

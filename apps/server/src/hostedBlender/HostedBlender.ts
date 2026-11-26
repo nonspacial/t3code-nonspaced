@@ -2876,7 +2876,7 @@ const make = Effect.gen(function* () {
    */
   // Runs inside open's or openMaster's span.
   const checkedBlend = Effect.fnUntraced(function* (threadId: ThreadId, relativePath: string) {
-    yield* setup.ensureChecked;
+    yield* setup.ensureCheckedForOpen;
     const tools = yield* setup.readiness.pipe(Stream.runHead, Effect.map(Option.getOrNull));
     if (tools?.status !== "ok") {
       return yield* new HostedBlenderError({ reason: tools?.status ?? "notSetUp" });

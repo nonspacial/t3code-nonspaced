@@ -488,6 +488,11 @@ it("gives control straight back when it's granted after focus has moved elsewher
 
 it("shows Setup needed, saying what is missing, with a way into Settings › Blender", async () => {
   using _app = startup();
+  const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
+  const { Atom } = await import("effect/reactivity");
+  using _check = vi
+    .spyOn(hostedBlenderEnvironment.checkSetup, "permissionAtom")
+    .mockReturnValue(Atom.make(true) as never);
   const running = stream.state;
   try {
     stream.state = { status: "notSetUp", missing: ["enabled"] };
@@ -512,6 +517,37 @@ it("shows Setup needed, saying what is missing, with a way into Settings › Ble
     await expect
       .element(screen.getByText("labwc, an H.264 encoder", { exact: false }))
       .toBeInTheDocument();
+    // Installed, but the test encode failed: nothing to install, and Check again retries it.
+    stream.setup = {
+      result: {
+        status: "checked",
+        ready: false,
+        checks: [{ item: "encoder", status: "failed" }],
+        distro: null,
+        packageManager: null,
+        capture: null,
+        commands: [],
+        checkedAt: 1,
+      },
+      checking: false,
+      installThreadId: null,
+    };
+    stream.state = { status: "notSetUp", missing: ["encoder"] };
+    await screen.rerender(
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+    );
+    await expect
+      .element(screen.getByText("If the GPU was busy, check again.", { exact: false }))
+      .toBeInTheDocument();
+    await expect
+      .element(screen.getByText("This server is missing", { exact: false }))
+      .not.toBeInTheDocument();
+    await screen.getByRole("button", { name: "Check again" }).click();
+    expect(stream.commands.at(-1)?.value).toEqual({
+      environmentId: threadRef.environmentId,
+      input: {},
+    });
+    stream.setup = null;
     await screen.getByRole("button", { name: "Open Blender settings" }).click();
     expect(screen.router?.state.location.pathname).toBe("/settings/blender");
     expect(screen.router?.state.location.search).toEqual({ machine: "environment-1" });

@@ -13217,6 +13217,7 @@
   "efd53a6196afbf6d": "暂不支持 Flatpak 和 Snap 版本的 Blender。“设置 › Blender”中说明了如何使用其他 Blender。",
   "ec1b57292361ae76": "在“设置 › Blender”中开启 Hosted Blender，即可在这里查看和操控 Blender。",
   "e4ec327ad1a82eb5": "T3 Code 尚未检查此服务器。请在 Hosted Blender 中打开一个 .blend，或在“设置 › Blender”中检查。",
+  "00720d9a3d565862": "已安装 H.264 编码器，但没有一个通过测试编码。如果当时 GPU 正忙，请重新检查。",
   "af467bacc13f5e57": [
     "此服务器缺少：",
     {
@@ -13383,6 +13384,7 @@
   "d724abd4cc4a85e5": "版本过旧",
   "7b01b12da1a9fd17": "较慢",
   "a5fe3dee0a941705": "不是 Blender Lab 的",
+  "8becfcfe3e575a76": "测试失败",
   "76b81a9f9a2687ed": "未能启动",
   "7174ef3cfccc7a54": "在隐藏显示器上运行 Blender 并进行串流。",
   "59e399ec181acb63": "此安装中缺少 T3 Code 自带的助手。请更新或重新安装 T3 Code。",
@@ -13434,6 +13436,7 @@
     },
     "。"
   ],
+  "154b8f20f1645434": "已安装 H.264 编码器，但没有一个通过一秒钟的测试编码。如果当时 GPU 正忙，请重新检查。",
   "ba5e2c560dd26d57": "没有 H.264 编码器通过测试编码。请安装 GStreamer 插件：nvh264enc、vah264enc、x264enc 或 openh264enc 之一。",
   "2ab5a1fabca22fd0": "NVIDIA 编码器直接从 GPU 读取 Blender 的帧。",
   "fce6aa0c10874b0c": "NVIDIA 编码器需要 GStreamer 的 OpenGL 插件。",

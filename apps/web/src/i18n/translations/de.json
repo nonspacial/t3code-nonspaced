@@ -13203,6 +13203,7 @@
   "efd53a6196afbf6d": "Flatpak- und Snap-Builds von Blender werden noch nicht unterstützt. Unter Einstellungen › Blender steht, wie du ein anderes Blender verwendest.",
   "ec1b57292361ae76": "Schalte Hosted Blender unter Einstellungen › Blender ein, um Blender hier zu sehen und zu steuern.",
   "e4ec327ad1a82eb5": "T3 Code hat diesen Server noch nicht geprüft. Öffne eine .blend-Datei in Hosted Blender oder prüfe ihn unter Einstellungen › Blender.",
+  "00720d9a3d565862": "Ein H.264-Encoder ist installiert, aber keiner hat die Testkodierung bestanden. Wenn die GPU ausgelastet war, prüfe erneut.",
   "af467bacc13f5e57": [
     "Auf diesem Server fehlt: ",
     {
@@ -13368,6 +13369,7 @@
   "d724abd4cc4a85e5": "Zu alt",
   "7b01b12da1a9fd17": "Langsam",
   "a5fe3dee0a941705": "Nicht von Blender Lab",
+  "8becfcfe3e575a76": "Test fehlgeschlagen",
   "76b81a9f9a2687ed": "Startet nicht",
   "7174ef3cfccc7a54": "Führt Blender auf dem verborgenen Display aus und streamt es.",
   "59e399ec181acb63": "Das Hilfsprogramm von T3 Code fehlt in dieser Installation. Aktualisiere T3 Code oder installiere es neu.",
@@ -13419,6 +13421,7 @@
     },
     "."
   ],
+  "154b8f20f1645434": "Ein H.264-Encoder ist installiert, aber keiner hat die einsekündige Testkodierung bestanden. Wenn die GPU ausgelastet war, prüfe erneut.",
   "ba5e2c560dd26d57": "Kein H.264-Encoder hat die Testkodierung bestanden. Installiere die GStreamer-Plugins: nvh264enc, vah264enc, x264enc oder openh264enc.",
   "2ab5a1fabca22fd0": "Der NVIDIA-Encoder liest die Frames von Blender direkt aus der GPU.",
   "fce6aa0c10874b0c": "Der NVIDIA-Encoder benötigt das OpenGL-Plugin von GStreamer.",

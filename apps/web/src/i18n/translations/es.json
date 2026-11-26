@@ -13198,6 +13198,7 @@
   "efd53a6196afbf6d": "Las versiones Flatpak y Snap de Blender aún no son compatibles. En Ajustes › Blender se explica cómo usar otro Blender.",
   "ec1b57292361ae76": "Activa Hosted Blender en Ajustes › Blender para ver y controlar Blender aquí.",
   "e4ec327ad1a82eb5": "T3 Code aún no ha comprobado este servidor. Abre un .blend en Hosted Blender o compruébalo en Ajustes › Blender.",
+  "00720d9a3d565862": "Hay un codificador H.264 instalado, pero ninguno superó la codificación de prueba. Si la GPU estaba ocupada, vuelve a comprobar.",
   "af467bacc13f5e57": [
     "A este servidor le falta: ",
     {
@@ -13364,6 +13365,7 @@
   "d724abd4cc4a85e5": "Demasiado antiguo",
   "7b01b12da1a9fd17": "Lento",
   "a5fe3dee0a941705": "No es el de Blender Lab",
+  "8becfcfe3e575a76": "Prueba fallida",
   "76b81a9f9a2687ed": "No arrancó",
   "7174ef3cfccc7a54": "Ejecuta Blender en la pantalla oculta y lo transmite.",
   "59e399ec181acb63": "Falta el asistente propio de T3 Code en esta instalación. Actualiza o reinstala T3 Code.",
@@ -13415,6 +13417,7 @@
     },
     "."
   ],
+  "154b8f20f1645434": "Hay un codificador H.264 instalado, pero ninguno superó la codificación de prueba de un segundo. Si la GPU estaba ocupada, vuelve a comprobar.",
   "ba5e2c560dd26d57": "Ningún codificador H.264 superó la codificación de prueba. Instala los plugins de GStreamer: uno de nvh264enc, vah264enc, x264enc u openh264enc.",
   "2ab5a1fabca22fd0": "El codificador de NVIDIA lee los fotogramas de Blender directamente de la GPU.",
   "fce6aa0c10874b0c": "El codificador de NVIDIA necesita el plugin OpenGL de GStreamer.",

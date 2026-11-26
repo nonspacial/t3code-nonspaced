@@ -13213,6 +13213,7 @@
   "efd53a6196afbf6d": "Flatpak and Snap builds of Blender aren't supported yet. Settings › Blender says how to use another Blender.",
   "ec1b57292361ae76": "Switch on Hosted Blender in Settings › Blender to watch and steer Blender here.",
   "e4ec327ad1a82eb5": "T3 Code hasn't checked this server yet. Open a .blend in hosted Blender, or check it in Settings › Blender.",
+  "00720d9a3d565862": "An H.264 encoder is installed, but none passed the test encode. If the GPU was busy, check again.",
   "af467bacc13f5e57": [
     "This server is missing: ",
     {
@@ -13379,6 +13380,7 @@
   "d724abd4cc4a85e5": "Too old",
   "7b01b12da1a9fd17": "Slow",
   "a5fe3dee0a941705": "Not Blender Lab's",
+  "8becfcfe3e575a76": "Test failed",
   "76b81a9f9a2687ed": "Didn't start",
   "7174ef3cfccc7a54": "Runs Blender on the hidden display and streams it.",
   "59e399ec181acb63": "T3 Code's own helper is missing from this install. Update or reinstall T3 Code.",
@@ -13430,6 +13432,7 @@
     },
     "."
   ],
+  "154b8f20f1645434": "An H.264 encoder is installed, but none passed the one-second test encode. If the GPU was busy, check again.",
   "ba5e2c560dd26d57": "No H.264 encoder passed the test encode. Install GStreamer's plugins: one of nvh264enc, vah264enc, x264enc or openh264enc.",
   "2ab5a1fabca22fd0": "NVIDIA's encoder reads Blender's frames straight from the GPU.",
   "fce6aa0c10874b0c": "NVIDIA's encoder needs GStreamer's OpenGL plugin.",

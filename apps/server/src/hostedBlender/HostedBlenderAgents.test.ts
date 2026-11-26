@@ -85,6 +85,7 @@ const layerFor = (input: {
             ensureChecked: Effect.sync(() => {
               input.checks?.push("check");
             }),
+            ensureCheckedForOpen: Effect.void,
             installWithAgent: Effect.die("not used"),
             readiness: Stream.concat(
               Stream.succeed(input.readiness ?? READY),

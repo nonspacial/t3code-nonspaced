@@ -97,6 +97,12 @@ export class HostedBlenderSetup extends Context.Service<
     readonly check: Effect.Effect<void>;
     /** Checks unless a result is already kept: first use by a caller allowed to run programs. */
     readonly ensureChecked: Effect.Effect<void>;
+    /**
+     * A person opening a file: as `ensureChecked`, and once more when the kept result isn't
+     * ready, since a test encode fails while the GPU is busy. A retry that still isn't ready
+     * isn't run again until another check.
+     */
+    readonly ensureCheckedForOpen: Effect.Effect<void>;
     readonly installWithAgent: Effect.Effect<HostedBlenderInstallResult, HostedBlenderSetupError>;
     /** Follows the switch and the last check; passive, like `state`. */
     readonly readiness: Stream.Stream<HostedBlenderReadiness>;
@@ -117,6 +123,9 @@ interface Internal {
 
 const ProbeOutput = Schema.fromJsonString(Schema.Struct({ encoder: Schema.NullOr(Schema.String) }));
 const decodeProbe = Schema.decodeUnknownOption(ProbeOutput);
+
+// The encoders the helper's probe tries, by their GStreamer element names.
+const H264_ENCODERS = ["nvh264enc", "vah264enc", "x264enc", "openh264enc"];
 
 const BLOCKING_REQUIREMENTS: ReadonlyArray<HostedBlenderRequirement> = [
   "helper",
@@ -358,6 +367,7 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
       labwcVersion: null,
       gstreamerVersion: null,
       encoder: null,
+      encoderInstalled: false,
       nvidia: false,
       glupload: false,
       renderNodes: { total: 0, accessible: 0 },
@@ -413,7 +423,17 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
                 : null,
             ),
           );
-    const gstInspect = nvidia ? yield* which("gst-inspect-1.0") : null;
+    // None passed: installed ones can still fail, as with the GPU busy.
+    const inspect = gstreamerVersion === null ? null : yield* which("gst-inspect-1.0");
+    const encoderInstalled =
+      encoder === null && inspect !== null
+        ? yield* Effect.forEach(H264_ENCODERS, (element) =>
+            run(inspect, [element]).pipe(
+              Effect.map((output) => Option.isSome(output) && output.value.code === 0),
+            ),
+          ).pipe(Effect.map((found) => found.includes(true)))
+        : false;
+    const gstInspect = nvidia ? inspect : null;
     const glupload =
       gstInspect === null
         ? false
@@ -428,6 +448,7 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
         labwcVersion,
         gstreamerVersion,
         encoder,
+        encoderInstalled,
         nvidia,
         glupload,
         renderNodes: gpu,
@@ -491,6 +512,26 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
   const ensureChecked = SubscriptionRef.get(ref).pipe(
     Effect.flatMap((internal) => (internal.state.result === null ? check : Effect.void)),
   );
+
+  // When the kept result came from an open's retry, so the next open doesn't run it again.
+  let retriedAt: number | null = null;
+  const ensureCheckedForOpen = Effect.suspend(() => {
+    if (pending !== null) return Deferred.await(pending);
+    return SubscriptionRef.get(ref).pipe(
+      Effect.flatMap(({ state: { result } }) => {
+        if (result === null) return check;
+        if (result.status !== "checked" || result.ready || result.checkedAt === retriedAt) {
+          return Effect.void;
+        }
+        return check.pipe(
+          Effect.andThen(SubscriptionRef.get(ref)),
+          Effect.map(({ state }) => {
+            if (state.result?.status === "checked") retriedAt = state.result.checkedAt;
+          }),
+        );
+      }),
+    );
+  }).pipe(Effect.withSpan("HostedBlenderSetup.ensureCheckedForOpen"));
 
   const state: HostedBlenderSetup["Service"]["state"] = SubscriptionRef.changes(ref).pipe(
     Stream.map((internal) => internal.state),
@@ -651,7 +692,14 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
     Effect.withSpan("HostedBlenderSetup.installWithAgent"),
   );
 
-  return HostedBlenderSetup.of({ state, check, ensureChecked, installWithAgent, readiness });
+  return HostedBlenderSetup.of({
+    state,
+    check,
+    ensureChecked,
+    ensureCheckedForOpen,
+    installWithAgent,
+    readiness,
+  });
 });
 
 export const layer = Layer.effect(HostedBlenderSetup, makeWith({ systemRoot: "/" }));

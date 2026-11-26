@@ -13210,6 +13210,7 @@
   "efd53a6196afbf6d": "Flatpak- och Snap-versioner av Blender stöds inte än. Inställningar › Blender beskriver hur du använder en annan Blender.",
   "ec1b57292361ae76": "Slå på Hosted Blender under Inställningar › Blender för att se och styra Blender här.",
   "e4ec327ad1a82eb5": "T3 Code har inte kontrollerat den här servern än. Öppna en .blend i Hosted Blender eller kontrollera den under Inställningar › Blender.",
+  "00720d9a3d565862": "En H.264-kodare är installerad, men ingen klarade testkodningen. Om GPU:n var upptagen, kontrollera igen.",
   "af467bacc13f5e57": [
     "Den här servern saknar: ",
     {
@@ -13376,6 +13377,7 @@
   "d724abd4cc4a85e5": "För gammal",
   "7b01b12da1a9fd17": "Långsam",
   "a5fe3dee0a941705": "Inte Blender Labs",
+  "8becfcfe3e575a76": "Testet misslyckades",
   "76b81a9f9a2687ed": "Startade inte",
   "7174ef3cfccc7a54": "Kör Blender på den dolda skärmen och strömmar den.",
   "59e399ec181acb63": "T3 Codes eget hjälpprogram saknas i den här installationen. Uppdatera eller installera om T3 Code.",
@@ -13427,6 +13429,7 @@
     },
     "."
   ],
+  "154b8f20f1645434": "En H.264-kodare är installerad, men ingen klarade testkodningen på en sekund. Om GPU:n var upptagen, kontrollera igen.",
   "ba5e2c560dd26d57": "Ingen H.264-kodare klarade testkodningen. Installera GStreamers insticksmoduler: någon av nvh264enc, vah264enc, x264enc eller openh264enc.",
   "2ab5a1fabca22fd0": "NVIDIA:s kodare läser Blenders bildrutor direkt från GPU:n.",
   "fce6aa0c10874b0c": "NVIDIA:s kodare kräver GStreamers OpenGL-insticksmodul.",

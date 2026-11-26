@@ -80,13 +80,10 @@ export function OpenInHostedBlender(props: {
   };
   const openFile = async () => {
     if (isMaster) return showMaster();
-    // The pane explains what's missing; there is nothing to start yet. A server nobody has
-    // checked is checked by opening, which needs the same permission.
-    if (
-      state.status === "notSetUp" &&
-      !(state.missing.length === 1 && state.missing[0] === "check")
-    )
-      return showPane();
+    // Switched off, the pane says so. Otherwise opening checks the server, the first time or
+    // again once when it wasn't ready (a busy GPU fails the test encode); it needs the same
+    // permission.
+    if (state.status === "notSetUp" && state.missing.includes("enabled")) return showPane();
     // The pane offers the unsaved changes a closed Blender kept of this file first.
     if (keptCopyOf(state, props.relativePath)?.recovery === true) {
       showKeptCopy(props.threadRef, state, props.relativePath);

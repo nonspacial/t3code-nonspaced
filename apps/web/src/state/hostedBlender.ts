@@ -77,7 +77,7 @@ export function useHostedBlenderMasterState(
   ).data;
 }
 
-/** The environment's hosted Blender setup; subscribing starts the first check. */
+/** The environment's hosted Blender setup. Watching it runs no check. */
 export function useHostedBlenderSetupState(
   environmentId: EnvironmentId | null,
 ): HostedBlenderSetupState | null {

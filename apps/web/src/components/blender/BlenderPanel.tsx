@@ -246,8 +246,20 @@ function WorkingBlender(
       return (
         <StateCard
           title={<T>Setup needed</T>}
-          description={<MissingRequirements missing={state.missing} />}
-          action={<OpenBlenderSettings environmentId={props.threadRef.environmentId} />}
+          description={
+            <MissingRequirements
+              missing={state.missing}
+              environmentId={props.threadRef.environmentId}
+            />
+          }
+          action={
+            <>
+              {state.missing.includes("enabled") ? null : (
+                <CheckSetupAgain environmentId={props.threadRef.environmentId} />
+              )}
+              <OpenBlenderSettings environmentId={props.threadRef.environmentId} />
+            </>
+          }
         />
       );
     case "stopped":
@@ -648,8 +660,46 @@ function UnavailableReason(props: {
   }
 }
 
-function MissingRequirements(props: { readonly missing: ReadonlyArray<HostedBlenderRequirement> }) {
+/** The setup check again, as Settings › Blender's: after installing, or a GPU that was busy. */
+function CheckSetupAgain(props: { readonly environmentId: EnvironmentId }) {
   const gt = useGT();
+  const m = useMessages();
+  const canCheck = useAtomValue(
+    hostedBlenderEnvironment.checkSetup.permissionAtom(props.environmentId),
+  );
+  const check = useAtomCommand(hostedBlenderEnvironment.checkSetup, { reportFailure: false });
+  const checking = useHostedBlenderSetupState(props.environmentId)?.checking === true;
+  if (!canCheck) return null;
+  const run = async () => {
+    const result = await check({ environmentId: props.environmentId, input: {} });
+    if (result._tag === "Failure") {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: gt("Couldn't check hosted Blender's setup"),
+          description: formatEnvironmentQueryError(result.cause, m),
+        }),
+      );
+    }
+  };
+  return (
+    <Button size="sm" disabled={checking} onClick={() => void run()}>
+      {checking ? <Spinner /> : null}
+      <T>Check again</T>
+    </Button>
+  );
+}
+
+function MissingRequirements(props: {
+  readonly missing: ReadonlyArray<HostedBlenderRequirement>;
+  readonly environmentId: EnvironmentId;
+}) {
+  const gt = useGT();
+  const setup = useHostedBlenderSetupState(props.environmentId)?.result;
+  // Installed, but no encoder passed the test encode: nothing to install, and a busy GPU does it.
+  const encoderFailed =
+    setup?.status === "checked" &&
+    setup.checks.some((check) => check.item === "encoder" && check.status === "failed");
   if (props.missing.includes("enabled")) {
     return <T>Switch on Hosted Blender in Settings › Blender to watch and steer Blender here.</T>;
   }
@@ -669,15 +719,28 @@ function MissingRequirements(props: { readonly missing: ReadonlyArray<HostedBlen
     encoder: gt("an H.264 encoder"),
     glupload: gt("GStreamer's OpenGL plugin"),
   };
-  const list = props.missing
-    .filter((requirement) => requirement !== "enabled" && requirement !== "check")
-    .map((requirement) => names[requirement])
-    .join(", ");
-  return (
+  const missing = props.missing.filter(
+    (requirement): requirement is keyof typeof names =>
+      requirement !== "enabled" &&
+      requirement !== "check" &&
+      !(encoderFailed && requirement === "encoder"),
+  );
+  const list = missing.map((requirement) => names[requirement]).join(", ");
+  const failed = encoderFailed ? (
     <T>
-      This server is missing: <Var>{list}</Var>. Settings › Blender can install them with an agent
-      or show you the commands.
+      An H.264 encoder is installed, but none passed the test encode. If the GPU was busy, check
+      again.
     </T>
+  ) : null;
+  if (missing.length === 0) return failed;
+  return (
+    <>
+      <T>
+        This server is missing: <Var>{list}</Var>. Settings › Blender can install them with an agent
+        or show you the commands.
+      </T>
+      {failed === null ? null : <> {failed}</>}
+    </>
   );
 }
 

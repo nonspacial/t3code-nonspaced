@@ -130,6 +130,7 @@ const layerFor = (host: Host) =>
             state: Stream.never,
             check: Effect.void,
             ensureChecked: Effect.void,
+            ensureCheckedForOpen: Effect.void,
             installWithAgent: Effect.die("not used"),
             readiness: Stream.concat(
               Stream.succeed(readinessFor(host)),
