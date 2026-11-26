@@ -63,6 +63,7 @@ const state: HostedBlenderRunningState = {
 vi.mock("~/state/hostedBlender", () => ({
   hostedBlenderEnvironment: {
     quit: { label: "quit", permissionAtom: () => Atom.make(false) },
+    setTimeline: { label: "setTimeline", permissionAtom: () => Atom.make(false) },
     captureView: { label: "captureView" },
     findHits: { label: "findHits" },
   },
@@ -194,6 +195,22 @@ it("freezes the pane's frame and attaches the viewport window's camera and what 
   expect(request.input.marks).toHaveLength(1);
   expect(request.input.marks[0]![0]!.x).toBeCloseTo(0.5, 2);
   expect(blender.draft()?.images.map((image) => image.id)).toEqual([annotation.id]);
+});
+
+it("links to the file Blender rendered, opened since it started, and asks for hits on that load", async () => {
+  const blender = setup("thread-blender-other-file", "window");
+  commands.captureView.mockReset().mockResolvedValue({
+    ...capture,
+    openFile: { kind: "workspace", relativePath: "models/other.blend" },
+    loadedAt: 7,
+  });
+  await using screen = await render(blender.element, pane());
+  await annotateRegion(screen);
+  await vi.waitFor(() => expect(blender.draft()?.previewAnnotations).toHaveLength(1));
+  const annotation = blender.draft()!.previewAnnotations[0]!;
+  expect(annotation.pageTitle).toBe("other.blend · Master");
+  expect(annotation.pageUrl.startsWith("models/other.blend#view=")).toBe(true);
+  expect(commands.findHits.mock.calls[0]?.[0]).toMatchObject({ input: { loadedAt: 7 } });
 });
 
 it("asks Blender what an arrow points at first, from its tip", async () => {

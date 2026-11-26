@@ -270,7 +270,8 @@ export function ModelAnnotationEditor(props: {
   };
 
   const onKeyDown = (event: ReactKeyboardEvent) => {
-    if (event.key === "Escape") {
+    // An IME's own Escape cancels its composition, not the annotation.
+    if (event.key === "Escape" && !event.nativeEvent.isComposing) {
       event.stopPropagation();
       props.onCancel();
       return;
@@ -353,7 +354,7 @@ export function ModelAnnotationEditor(props: {
         aria-label={gt("Annotation comment")}
         onChange={(event) => setComment(event.currentTarget.value)}
         onKeyDown={(event) => {
-          if (event.key === "Escape") {
+          if (event.key === "Escape" && !event.nativeEvent.isComposing) {
             event.preventDefault();
             event.stopPropagation();
             if (speech && speech.state.phase !== "idle") speech.cancel();

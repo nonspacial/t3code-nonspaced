@@ -5,7 +5,12 @@ import type {
   HostedBlenderControl,
   HostedBlenderStreamEvents,
 } from "@t3tools/client-runtime/hosted-blender/stream";
-import { EnvironmentId, type HostedBlenderViewerMessage, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  type HostedBlenderViewerMessage,
+  type ProjectId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { expect, it, vi } from "vite-plus/test";
 import { commands } from "vite-plus/test/browser";
 
@@ -76,6 +81,7 @@ vi.mock(import("~/state/hostedBlender"), async (original) => ({
 
 import { BlenderPanel, FloatingBlender } from "./BlenderPanel";
 import { useBlenderRoleStore } from "./blenderRole";
+import { useKeptCopySelection } from "./keptCopies";
 
 const threadRef = {
   environmentId: EnvironmentId.make("environment-1"),
@@ -87,6 +93,13 @@ const kept = (kind: "closed" | "crashed", relativePath: string, recovery: boolea
   file: { kind: "workspace" as const, relativePath },
   recovery,
 });
+const canReopen = async () => {
+  const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
+  const { Atom } = await import("effect/reactivity");
+  return vi
+    .spyOn(hostedBlenderEnvironment.reopen, "permissionAtom")
+    .mockReturnValue(Atom.make(true) as never);
+};
 const control = (next: HostedBlenderControl) => act(() => stream.events?.onControl?.(next));
 
 /** The app installs keyboard capture at startup; each test starts with a fresh stream. */
@@ -99,6 +112,7 @@ const startup = (): Disposable => {
   stream.targets = [];
   stream.commands = [];
   useBlenderRoleStore.setState({ roles: {} });
+  useKeptCopySelection.setState({ byThread: {}, dismissedReloads: {} });
   stream.master = { status: "none" };
   stream.state = { status: "running", relativePath: "models/hero.blend", dirty: false };
   return { [Symbol.dispose]: installKeyboardCapture() };
@@ -455,6 +469,37 @@ it("keeps the status strip on one line in a narrow pane, shortening the stats fi
   };
   expect(lines(label)).toBe(1);
   expect(lines(stats)).toBe(1);
+  // The memory figure says whose it is, still on the same line.
+  const memory = screen.getByText(/^Blender memory /).element();
+  expect(lines(memory)).toBe(1);
+});
+
+it("keeps a reload notice dismissed when the pane is shown again", async () => {
+  using _app = startup();
+  stream.state = {
+    status: "running",
+    relativePath: "models/hero.blend",
+    dirty: false,
+    reloadKept: { key: "workspace:models/hero.blend", at: 5 },
+  };
+  const pane = () => (
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>
+  );
+  {
+    await using screen = await render(pane());
+    await screen.getByRole("button", { name: "Dismiss" }).click();
+    await expect
+      .element(screen.getByText("changed on disk, so Blender reloaded it", { exact: false }))
+      .not.toBeInTheDocument();
+  }
+  // The right panel unmounts a hidden surface; showing it again mounts the pane anew.
+  await using again = await render(pane());
+  await expect.element(again.getByText("Watching")).toBeInTheDocument();
+  await expect
+    .element(again.getByText("changed on disk, so Blender reloaded it", { exact: false }))
+    .not.toBeInTheDocument();
 });
 
 it("gives control straight back when it's granted after focus has moved elsewhere in T3", async () => {
@@ -481,6 +526,11 @@ it("gives control straight back when it's granted after focus has moved elsewher
 
 it("shows Setup needed, saying what is missing, with a way into Settings › Blender", async () => {
   using _app = startup();
+  const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
+  const { Atom } = await import("effect/reactivity");
+  using _check = vi
+    .spyOn(hostedBlenderEnvironment.checkSetup, "permissionAtom")
+    .mockReturnValue(Atom.make(true) as never);
   const running = stream.state;
   try {
     stream.state = { status: "notSetUp", missing: ["enabled"] };
@@ -505,6 +555,37 @@ it("shows Setup needed, saying what is missing, with a way into Settings › Ble
     await expect
       .element(screen.getByText("labwc, an H.264 encoder", { exact: false }))
       .toBeInTheDocument();
+    // Installed, but the test encode failed: nothing to install, and Check again retries it.
+    stream.setup = {
+      result: {
+        status: "checked",
+        ready: false,
+        checks: [{ item: "encoder", status: "failed" }],
+        distro: null,
+        packageManager: null,
+        capture: null,
+        commands: [],
+        checkedAt: 1,
+      },
+      checking: false,
+      installThreadId: null,
+    };
+    stream.state = { status: "notSetUp", missing: ["encoder"] };
+    await screen.rerender(
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+    );
+    await expect
+      .element(screen.getByText("If the GPU was busy, check again.", { exact: false }))
+      .toBeInTheDocument();
+    await expect
+      .element(screen.getByText("This server is missing", { exact: false }))
+      .not.toBeInTheDocument();
+    await screen.getByRole("button", { name: "Check again" }).click();
+    expect(stream.commands.at(-1)?.value).toEqual({
+      environmentId: threadRef.environmentId,
+      input: {},
+    });
+    stream.setup = null;
     await screen.getByRole("button", { name: "Open Blender settings" }).click();
     expect(screen.router?.state.location.pathname).toBe("/settings/blender");
     expect(screen.router?.state.location.search).toEqual({ machine: "environment-1" });
@@ -585,6 +666,102 @@ it("shows each kept file's card, naming its own file, and acts on that file", as
   } finally {
     stream.state = running;
   }
+});
+
+it("fits its toolbar in a 380 px pane with a master, the menu still in reach", async () => {
+  using _app = startup();
+  const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
+  const { Atom } = await import("effect/reactivity");
+  using _quit = vi
+    .spyOn(hostedBlenderEnvironment.quit, "permissionAtom")
+    .mockReturnValue(Atom.make(true) as never);
+  stream.master = {
+    status: "running",
+    relativePath: "models/hero.blend",
+    dirty: false,
+  };
+  await using screen = await render(
+    <div style={{ height: 400, width: 380 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>,
+  );
+  await control({ canOperate: true, controller: "unclaimed" });
+  const toolbar = screen.getByRole("button", { name: "Blender menu" }).element().parentElement!;
+  const bounds = toolbar.getBoundingClientRect();
+  for (const name of ["Blender menu", "Take control", "Screenshot & annotate"]) {
+    const box = screen.getByRole("button", { name }).element().getBoundingClientRect();
+    expect(box.width).toBeGreaterThan(0);
+    expect(box.right).toBeLessThanOrEqual(bounds.right);
+  }
+  expect(screen.getByText("hero.wip-a1b2.blend", { exact: false }).query()).toBeNull();
+  const name = screen.getByText("hero.blend").element().getBoundingClientRect();
+  expect(name.width).toBeGreaterThan(20);
+});
+
+it("points a thread with no Blender running at Files, where .blend files open", async () => {
+  using _app = startup();
+  const { useRightPanelStore } = await import("~/rightPanelStore");
+  using openPane = vi.spyOn(useRightPanelStore.getState(), "open").mockImplementation(() => {});
+  stream.state = { status: "stopped" };
+  await using pane = await render(
+    <BlenderPanel
+      threadRef={threadRef}
+      visible
+      composerTarget={threadRef}
+      projectId={"project-1" as ProjectId}
+    />,
+  );
+  await pane.getByRole("button", { name: "Open Files" }).click();
+  expect(openPane).toHaveBeenCalledWith(threadRef, "files");
+});
+
+it("offers a reload's copy as older than the file, opening the file first", async () => {
+  using _app = startup();
+  using _reopen = await canReopen();
+  stream.state = {
+    status: "closed",
+    copies: [{ ...kept("closed", "models/hero.blend", true), reloaded: true }],
+  };
+  await using pane = await render(
+    <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+  );
+  await expect
+    .element(pane.getByText("The file on disk is newer than them", { exact: false }))
+    .toBeInTheDocument();
+  await expect.element(pane.getByRole("button", { name: "Reopen" })).not.toBeInTheDocument();
+  const open = pane.getByRole("button", { name: "Open as last saved" }).element();
+  const restore = pane.getByRole("button", { name: "Restore changes" }).element();
+  expect(open.compareDocumentPosition(restore) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  await pane.getByRole("button", { name: "Open as last saved" }).click();
+  expect(stream.commands.at(-1)?.value).toMatchObject({ input: { restore: false } });
+});
+
+it("shows where a copy is once its file is gone, offering no open of the file as saved", async () => {
+  using _app = startup();
+  using _reopen = await canReopen();
+  stream.state = {
+    status: "closed",
+    copies: [
+      {
+        ...kept("closed", "models/hero.blend", true),
+        missing: true,
+        copyPath: "/srv/state/session.blend",
+      },
+    ],
+  };
+  await using pane = await render(
+    <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+  );
+  await expect
+    .element(pane.getByText("hero.blend is no longer in this project", { exact: false }))
+    .toBeInTheDocument();
+  await expect
+    .element(pane.getByText("/srv/state/session.blend", { exact: false }))
+    .toBeInTheDocument();
+  await expect.element(pane.getByRole("button", { name: "Copy path" })).toBeInTheDocument();
+  await expect
+    .element(pane.getByRole("button", { name: "Open as last saved" }))
+    .not.toBeInTheDocument();
 });
 
 it("warns in the status strip when the server has no usable GPU", async () => {

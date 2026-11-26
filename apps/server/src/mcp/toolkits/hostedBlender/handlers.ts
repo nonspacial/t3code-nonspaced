@@ -235,9 +235,17 @@ const handlers = {
       const threadId = yield* requireHostedBlender;
       yield* refuseInPlanMode(threadId, "blender_quit");
       const hostedBlender = yield* HostedBlender.HostedBlender;
-      yield* hostedBlender
-        .quit({ threadId, save: input.save })
-        .pipe(Effect.mapError((error) => new HostedBlenderToolError({ reason: error.message })));
+      yield* hostedBlender.quit({ threadId, save: input.save }).pipe(
+        Effect.mapError(
+          (error) =>
+            new HostedBlenderToolError({
+              reason:
+                error.reason === "unsavedImages" && error.images !== undefined
+                  ? `${error.message} You can do that yourself: save each image to a file Blender can write (set its filepath_raw, then image.save()) or pack it (image.pack()), then call blender_quit with save: true again.`
+                  : error.message,
+            }),
+        ),
+      );
       return {};
     }),
   ),

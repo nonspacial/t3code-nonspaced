@@ -1,7 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { type EnvironmentId, HostedBlenderError, type ThreadId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
+import * as Schema from "effect/Schema";
 import { msg, useGT } from "gt-react-native";
 import { useState } from "react";
 
@@ -12,6 +14,7 @@ import { formatEnvironmentQueryError } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
 
 const noPermission = Atom.make(false);
+const isHostedBlenderError = Schema.is(HostedBlenderError);
 
 /**
  * "Open in hosted Blender" for a workspace `.blend`: starts the thread's hosted Blender with it,
@@ -47,14 +50,25 @@ export function useOpenInHostedBlender(
       threadId: String(target.threadId),
     });
   const openFile = async () => {
-    // Blender explains what's missing; there is nothing to start yet.
-    if (alreadyOpen || state.status === "notSetUp") return showBlender();
+    // Switched off, Blender says so. Otherwise opening checks the server, the first time or
+    // again once when it wasn't ready, as on web.
+    if (alreadyOpen || (state.status === "notSetUp" && state.missing.includes("enabled"))) {
+      return showBlender();
+    }
     setPending(true);
     const result = await open({
       environmentId: target.environmentId,
       input: { threadId: target.threadId, relativePath: target.relativePath },
     }).finally(() => setPending(false));
     if (result._tag === "Success") return showBlender();
+    // The check found something missing: Blender shows what.
+    const error = squashAtomCommandFailure(result);
+    if (
+      isHostedBlenderError(error) &&
+      (error.reason === "notSetUp" || error.reason === "unavailable")
+    ) {
+      return showBlender();
+    }
     Dialog.alert(
       m(msg("Couldn't open in hosted Blender")),
       formatEnvironmentQueryError(result.cause),

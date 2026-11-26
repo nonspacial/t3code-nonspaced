@@ -2424,6 +2424,7 @@
   "4a87cae01ccde544": "Der Branch dieses Threads hat noch keinen Pull Request.",
   "32535dba0b9af642": "Dieser Thread hat keine verknüpften Elemente.",
   "07080dead70f4cc5": "Geräte sind nur aus einem Thread verfügbar.",
+  "6a531293dc35167a": "Hosted Blender ist auf diesem Host nicht verfügbar.",
   "a4bf49b31758ff7e": "Nur in der Desktop-App verfügbar.",
   "e917841cb66f9af1": "Verfügbar, wenn ein Projekt geöffnet ist.",
   "14c15fad0c2ee0c8": "Verfügbar für Git-Repositorys.",
@@ -4609,6 +4610,7 @@
   "b29e1856c4aab31f": "Dieser Rechner",
   "0cb5a221e9e13a4e": "Der Agent liest hier die Logs und den Quellcode von T3 Code und fragt nach, bevor er eine Korrektur anwendet oder etwas veröffentlicht.",
   "e7588632064e0364": "Kopiert",
+  "afb8bba375e0ff0e": "Pfad kopieren",
   "996f7752fa033da6": [
     "oder führe aus:",
     {
@@ -13065,6 +13067,7 @@
   "c77caac5b764ef8c": "Englisch (Dvorak)",
   "7b15925473b02c07": "Englisch (Colemak)",
   "7c6bc1129dc9f48e": "Unbenannte Szene",
+  "83f2e3a5ca79c4ca": "Pfad konnte nicht kopiert werden",
   "cd078f4497dfcd36": "Blender konnte nicht neu gestartet werden",
   "ad3ce6044792509a": "Blender konnte nicht erneut geöffnet werden",
   "90e3c64eab32945e": "Die automatische Sicherung von {name} verwerfen?",
@@ -13073,13 +13076,18 @@
   "759aa5a1a95bc013": "einen H.264-Encoder",
   "f5a8efdb194519df": "das OpenGL-Plugin von GStreamer",
   "d6fcf229c9306851": "Screenshot & anmerken",
+  "746c576ea195806b": "Steuerung übernehmen",
+  "156baef53680396e": "Steuerung übernehmen",
+  "8f7153ef68b0a1cc": "Vollbild",
   "32cf9ac006229af1": "Blender-Menü",
   "9287e12fbeade687": "Ein anderes Gerät hat die Steuerung von Blender übernommen",
   "d2b10ff67d190925": "Blender-Viewport",
+  "541e8079a70c3b6f": "Blender-Speicher {size}",
   "2151790bc5e65b31": "Auf diesem Host nicht verfügbar",
   "b94f5fc6d71bc852": "Einrichtung erforderlich",
   "7050870331ac8b9a": "Kein Hosted Blender aktiv",
   "fb2c65328a8a2e17": "Öffne eine .blend-Datei in der Dateivorschau und wähle „In Hosted Blender öffnen“.",
+  "61363df2a96b100b": "Dateien öffnen",
   "3f25b97ec987231e": "Blender konnte die Datei auf dem verborgenen Display nicht öffnen. Prüfe, ob Blender sie öffnet und ob GStreamer einen H.264-Encoder hat, und öffne sie dann erneut in Hosted Blender.",
   "c9d23ccb15073177": "Blender ist abgestürzt",
   "9f406050b6efb934": "Blender wurde geschlossen",
@@ -13115,6 +13123,28 @@
     " aufbewahrt."
   ],
   "c3528aaa534d9a33": "Blender hatte eine unbenannte Szene geöffnet, die T3 Code nicht erneut öffnen kann.",
+  "24bbaa011bf94b06": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ist nicht mehr in diesem Projekt, daher kann T3 Code sie nicht erneut öffnen. Ihre ungespeicherten Änderungen liegen unter ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "8ca51613f669ada0": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ist nicht mehr in diesem Projekt, daher kann T3 Code sie nicht erneut öffnen."
+  ],
   "df374db2c12ff019": [
     "Blender konnte die Kopie von ",
     {
@@ -13139,6 +13169,15 @@
       "v": "v"
     },
     " wurde unerwartet beendet. „Neu starten“ öffnet die zuletzt gespeicherte Datei."
+  ],
+  "7a2548c51178b2e1": [
+    "T3 Code hat diese ungespeicherten Änderungen an ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " behalten, als Blender die Datei nach einer Änderung auf der Festplatte neu geladen hat. Die Datei auf der Festplatte ist neuer als sie."
   ],
   "a1705e3412c3634e": [
     "T3 Code hat ",
@@ -13170,6 +13209,7 @@
   "efd53a6196afbf6d": "Flatpak- und Snap-Builds von Blender werden noch nicht unterstützt. Unter Einstellungen › Blender steht, wie du ein anderes Blender verwendest.",
   "ec1b57292361ae76": "Schalte Hosted Blender unter Einstellungen › Blender ein, um Blender hier zu sehen und zu steuern.",
   "e4ec327ad1a82eb5": "T3 Code hat diesen Server noch nicht geprüft. Öffne eine .blend-Datei in Hosted Blender oder prüfe ihn unter Einstellungen › Blender.",
+  "00720d9a3d565862": "Ein H.264-Encoder ist installiert, aber keiner hat die Testkodierung bestanden. Wenn die GPU ausgelastet war, prüfe erneut.",
   "af467bacc13f5e57": [
     "Auf diesem Server fehlt: ",
     {
@@ -13188,8 +13228,6 @@
     },
     " wird auf dem verborgenen Display geöffnet."
   ],
-  "4e4f72c4986c5f68": "Steuerung übernehmen",
-  "14d410b8b9a578d0": "Vollbild",
   "2026a467bc778ad9": "Tastaturlayout",
   "1d9b37b42f1216c8": "Automatisch",
   "4b0ca2d2af30068a": "Scrollen",
@@ -13209,6 +13247,7 @@
   "907a0f7ed16a709d": "Konnte nicht in Hosted Blender geöffnet werden",
   "7b0cb06d256e6b28": "In Hosted Blender öffnen",
   "119259d2fa66fadf": "Blender konnte nicht beendet werden",
+  "65c73c884114dcf8": "Blender hat nicht geantwortet und bleibt deshalb mit seinen Änderungen geöffnet. Antwortet es weiterhin nicht, beendet ein erneutes „Ohne Speichern beenden“ Blender und behält, was Blender zuletzt automatisch gespeichert hat.",
   "e2d3b41b3731a6c1": "Änderungen an {name} vor dem Beenden speichern?",
   "32504fe5e26d8233": "Nicht gespeicherte Änderungen in Blender gehen verloren, wenn du ohne Speichern beendest.",
   "9ceb68fb844584c9": "Ohne Speichern beenden",
@@ -13235,6 +13274,16 @@
   "3caa4fb20ff3277d": "Blender speichert dieses Bild mit der Datei. Hat ein Skript die Datei gespeichert, kann es veraltet sein.",
   "301ece9c34df1726": "Blender-Protokoll",
   "20fc073d179a63f5": "Blender hat nichts protokolliert.",
+  "c4dd9c716703715d": "3D-Ansicht zeigen",
+  "1811c8b47499cb54": [
+    "Konvertiert diese ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "-Datei mit Blender auf dem Server, der dafür die ganze Szene lädt."
+  ],
   "71f9aa2ee31aac46": "In dieser Datei ist keine Miniatur gespeichert",
   "27088355449cdd28": "Szenendetails",
   "3a87f8c40f3b8065": "Konvertieren",
@@ -13335,6 +13384,7 @@
   "d724abd4cc4a85e5": "Zu alt",
   "7b01b12da1a9fd17": "Langsam",
   "a5fe3dee0a941705": "Nicht von Blender Lab",
+  "8becfcfe3e575a76": "Test fehlgeschlagen",
   "76b81a9f9a2687ed": "Startet nicht",
   "7174ef3cfccc7a54": "Führt Blender auf dem verborgenen Display aus und streamt es.",
   "59e399ec181acb63": "Das Hilfsprogramm von T3 Code fehlt in dieser Installation. Aktualisiere T3 Code oder installiere es neu.",
@@ -13386,6 +13436,7 @@
     },
     "."
   ],
+  "154b8f20f1645434": "Ein H.264-Encoder ist installiert, aber keiner hat die einsekündige Testkodierung bestanden. Wenn die GPU ausgelastet war, prüfe erneut.",
   "ba5e2c560dd26d57": "Kein H.264-Encoder hat die Testkodierung bestanden. Installiere die GStreamer-Plugins: nvh264enc, vah264enc, x264enc oder openh264enc.",
   "2ab5a1fabca22fd0": "Der NVIDIA-Encoder liest die Frames von Blender direkt aus der GPU.",
   "fce6aa0c10874b0c": "Der NVIDIA-Encoder benötigt das OpenGL-Plugin von GStreamer.",

@@ -10,7 +10,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
-import { T, useGT, useMessages } from "gt-react";
+import { T, useGT, useMessages, Var } from "gt-react";
 import { BoxIcon } from "lucide-react";
 import { lazy, type ReactNode, Suspense, useState } from "react";
 
@@ -25,6 +25,7 @@ import {
 import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { useNowSecond } from "~/hooks/useNowSecond";
+import { formatBytes } from "~/lib/formatBytes";
 import { projectEnvironment } from "~/state/projects";
 import { useEnvironmentQuery } from "~/state/query";
 import { revisionedQuery } from "~/state/revisionedQuery";
@@ -62,6 +63,12 @@ interface ConversionRequest {
 }
 
 const INITIAL_REQUEST: ConversionRequest = { keepTrying: false, refresh: false, cancelled: false };
+
+/**
+ * Converting loads the whole scene in a headless Blender, so a file larger than this converts
+ * only when asked, once, and not again on its own when it changes.
+ */
+const LARGE_BLEND_BYTES = 512 * 1024 * 1024;
 
 /**
  * A `.blend`'s saved thumbnail and scene facts, read on its environment without Blender, then
@@ -106,8 +113,11 @@ export function BlendFilePreview(props: {
     useAtomValue(serverEnvironment.configValueAtom(environmentId))?.environment.capabilities
       .blendConversion === true;
   const [request, setRequest] = useState(INITIAL_REQUEST);
+  const large = preview !== null && preview.byteLength > LARGE_BLEND_BYTES;
+  const [asked, setAsked] = useState(false);
+  const converts = source.kind === "file" && supportsConversion && preview !== null;
   const conversion = useEnvironmentQuery(
-    source.kind === "file" && supportsConversion && preview !== null && !request.cancelled
+    source.kind === "file" && converts && !request.cancelled && (!large || asked)
       ? projectEnvironment.convertBlend({
           environmentId,
           input: {
@@ -115,6 +125,7 @@ export function BlendFilePreview(props: {
             relativePath: source.relativePath,
             ...(request.keepTrying ? { keepTrying: true } : {}),
             ...(request.refresh ? { refresh: true } : {}),
+            ...(large ? { once: true } : {}),
           },
         })
       : null,
@@ -149,7 +160,7 @@ export function BlendFilePreview(props: {
   };
   const refresh = () => {
     refreshFacts();
-    if (source.kind === "file" && supportsConversion) convert({ refresh: true });
+    if (converts && (!large || asked)) convert({ refresh: true });
   };
 
   const facts = preview ? <BlendFacts preview={preview} /> : null;
@@ -169,7 +180,19 @@ export function BlendFilePreview(props: {
       />
     );
   const action =
-    preview === null ? null : (
+    preview === null ? null : converts && large && !asked ? (
+      <div className="absolute start-2 bottom-2 flex max-w-[calc(100%-14rem)] flex-col items-start gap-1">
+        <Button size="xs" variant="glass" onClick={() => setAsked(true)}>
+          <T>Show 3D view</T>
+        </Button>
+        <span className="min-w-0 text-muted-foreground text-xs">
+          <T>
+            Converts this <Var>{formatBytes(preview.byteLength)}</Var> file with Blender on the
+            server, which loads the whole scene.
+          </T>
+        </span>
+      </div>
+    ) : (
       <ConversionAction
         status={status}
         cancelled={request.cancelled}

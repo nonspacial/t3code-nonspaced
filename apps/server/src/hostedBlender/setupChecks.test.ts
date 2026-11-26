@@ -3,6 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   evaluateSetup,
   installPrompt,
+  needsInstall,
   parseGstreamerVersion,
   parseLabwcVersion,
   parseOsRelease,
@@ -19,6 +20,7 @@ const complete: SetupFacts = {
   labwcVersion: "0.9.2",
   gstreamerVersion: "1.26.5",
   encoder: "vah264enc",
+  encoderInstalled: true,
   nvidia: false,
   glupload: false,
   renderNodes: { total: 1, accessible: 1 },
@@ -162,8 +164,15 @@ describe("evaluateSetup", () => {
   it("needs GStreamer 1.24 or later and a working encoder", () => {
     expect(statusOf({ ...complete, gstreamerVersion: "1.22.0" }, "gstreamer")).toBe("outdated");
     expect(checked({ ...complete, gstreamerVersion: "1.22.0" }).ready).toBe(false);
-    expect(statusOf({ ...complete, encoder: null }, "encoder")).toBe("missing");
-    expect(checked({ ...complete, encoder: null }).ready).toBe(false);
+    const none = { ...complete, encoder: null, encoderInstalled: false };
+    expect(statusOf(none, "encoder")).toBe("missing");
+    expect(checked(none).ready).toBe(false);
+    // Installed, but none passed the test encode (a busy GPU): not ready, nothing to install.
+    const failing = { ...complete, encoder: null };
+    expect(statusOf(failing, "encoder")).toBe("failed");
+    expect(checked(failing).ready).toBe(false);
+    expect(needsInstall(checked(failing))).toBe(false);
+    expect(needsInstall(checked(none))).toBe(true);
   });
 
   it("asks for glupload on NVIDIA", () => {
@@ -209,6 +218,7 @@ describe("evaluateSetup", () => {
       labwcVersion: null,
       gstreamerVersion: null,
       encoder: null,
+      encoderInstalled: false,
       nvidia: true,
       glupload: false,
       renderNodes: { total: 1, accessible: 0 },

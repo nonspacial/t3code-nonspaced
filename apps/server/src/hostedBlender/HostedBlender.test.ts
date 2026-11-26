@@ -130,6 +130,7 @@ const layerFor = (host: Host) =>
             state: Stream.never,
             check: Effect.void,
             ensureChecked: Effect.void,
+            ensureCheckedForOpen: Effect.void,
             installWithAgent: Effect.die("not used"),
             readiness: Stream.concat(
               Stream.succeed(readinessFor(host)),
@@ -398,6 +399,10 @@ def control():
         other = os.path.join(os.path.dirname(opened), "other.blend")
         send(connection, dict(first, filepath=other, dirty=True))
     saves = 0
+    discards = [0]
+    if scenario in ("deaf-discard", "answers-second"):
+        # What Blender last autosaved, which a crash keeps.
+        open(os.path.join(tmp, "cube_4242_autosave.blend"), "w").write("autosave")
     view = {"position": [7, -7, 5], "target": [0, 0, 1]}
     outstanding = [0]
     def slow_hits(command):
@@ -540,6 +545,25 @@ def control():
                 send(connection, {"type": "saved", "filepath": opened, "dirty": False, "quit": False})
             send(connection, {"type": "state", "filepath": opened, "dirty": True, "loadedAt": loaded})
             continue
+        if command.get("type") == "quit" and not command.get("save") \
+                and scenario in ("deaf-discard", "answers-second"):
+            # Too busy to answer a discard; "answers-second" answers its second, refusing it.
+            discards[0] += 1
+            if scenario == "answers-second" and discards[0] == 2:
+                send(connection, {"type": "discardRefused"})
+            continue
+        held = os.path.join(os.path.dirname(os.environ["STANDIN_SAVES"]), "images-saved")
+        if command.get("type") == "quit" and command.get("hold") and scenario == "unsaved-images" \
+                and not os.path.exists(held):
+            # Unsaved image edits, which no copy keeps, hold a quit that asks, as the add-on does;
+            # a save first saves what it can, and names what it couldn't.
+            if command.get("save"):
+                send(connection, {"type": "saving", "filepath": opened})
+                send(connection, {"type": "quitFailed", "reason": "images", "images": ["paint"]})
+            else:
+                send(connection, {"type": "quitFailed", "reason": "images"})
+            open(os.environ["STANDIN_SAVES"] + ".held", "a").write("held\n")
+            continue
         if command.get("type") == "quit" and command.get("save") and scenario == "reloads" and revision() != disk[0]:
             send(connection, {"type": "quitFailed", "reason": "changedOnDisk"})
             continue
@@ -571,6 +595,7 @@ def control():
             quiet = os.path.join(os.path.dirname(os.environ["STANDIN_SAVES"]), "staged-quietly")
             if scenario != "no-quit-copy" and not os.path.exists(quiet):
                 open(os.path.join(tmp, "quit.blend"), "w").write("quit copy %d" % os.getpid())
+                open(os.environ["STANDIN_SAVES"] + ".quitInode", "w").write(str(os.stat(os.path.join(tmp, "quit.blend")).st_ino))
             event({"type": "exited", "process": "blender", "code": 0, "signal": None})
             connection.close()
             state["finishing"].set()
@@ -598,6 +623,8 @@ def control():
             continue
         elif kind == "view":
             result = {"screenshot": view_reply(command),
+                      # The file it has open, by its path as given, and when it loaded it.
+                      "filepath": opened, "loadedAt": 7.0,
                       "cameraView": {**view, "upAxis": "z"},
                       "projection": {"matrix": [2] + [0] * 15,
                                      "region": {"x": 0.1, "y": 0.05, "width": 0.8, "height": 0.9}}}
@@ -629,7 +656,7 @@ def control():
             # Blender's main thread never frees up: the save is never begun, and nothing after
             # it is read.
             threading.Event().wait()
-        connection.sendall(b'{"type": "saving"}\n')
+        send(connection, {"type": "saving", "filepath": opened})
         if scenario == "stuck-saving":
             # Begun, and stuck in the write: nothing after it is read.
             threading.Event().wait()
@@ -1726,6 +1753,40 @@ describe("Salvaging what a stopped server left", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect(
+    "finishes a run's copy whose record was written before T3 stopped, with or without an older copy there",
+    () =>
+      Effect.gen(function* () {
+        for (const older of [true, false]) {
+          const dir = yield* tempDir("salvage-record-first");
+          const { hostedDir, launchDir } = leftover(dir, {
+            facts: { restore: "none", saved: false, changed: true },
+            waiting: "older copy",
+          });
+          // The record went first, as of the quit copy's capture; T3 stopped before the move.
+          const recordPath = recoveryOf(hostedDir)!.session.replace(
+            /session\.blend$/,
+            "record.json",
+          );
+          const captured = Math.floor(
+            NodeFS.statSync(NodePath.join(launchDir, "tmp", "quit.blend")).mtimeMs,
+          );
+          NodeFS.writeFileSync(
+            recordPath,
+            JSON.stringify({
+              ...JSON.parse(NodeFS.readFileSync(recordPath, "utf8")),
+              keptAt: captured,
+            }),
+          );
+          if (!older) NodeFS.rmSync(recordPath.replace(/record\.json$/, "session.blend"));
+          const service = yield* idleService(dir);
+          expect((yield* firstState(service)).status).toBe("closed");
+          expect(recoveryOf(hostedDir)?.contents).toBe("left behind");
+          expect(NodeFS.existsSync(launchDir)).toBe(false);
+        }
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("replaces the waiting copy with a changed run's", () =>
     Effect.gen(function* () {
       const dir = yield* tempDir("salvage-changed");
@@ -1755,6 +1816,10 @@ describe("Endings and recovery", () => {
       expect(saveCommands()).toBe(0);
       const recovery = recoveryOf(hostedDir);
       expect(recovery?.contents).toMatch(/^quit copy /);
+      // Moved, not copied: a large file costs no read or write.
+      expect(String(NodeFS.statSync(recovery!.session).ino)).toBe(
+        NodeFS.readFileSync(NodePath.join(hostedDir, "../../saves.log.quitInode"), "utf8"),
+      );
       expect(NodeFS.readdirSync(NodePath.join(hostedDir, "launches"))).toEqual([]);
 
       yield* service.reopen({ threadId, key: CUBE, restore: true });
@@ -1879,6 +1944,31 @@ describe("Endings and recovery", () => {
       yield* service.reopen({ threadId, key: OTHER, restore: true });
       yield* awaitStatus("running");
       expect(launches().at(-1)).toContain(NodeFS.realpathSync(NodePath.join(dir, "other.blend")));
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("says where a copy is once Reopen finds its file gone from the workspace", () =>
+    Effect.gen(function* () {
+      const { dir, service, openReady, awaitStatus, hostedDir } = yield* standIn("gone", "");
+      yield* openReady;
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      expect((yield* service.keptCopies(threadId))[0]).not.toHaveProperty("copyPath");
+      // A checkout removed it.
+      NodeFS.rmSync(NodePath.join(dir, "cube.blend"));
+      const refused = yield* service
+        .reopen({ threadId, key: CUBE, restore: true })
+        .pipe(Effect.flip);
+      expect(refused.reason).toBe("fileNotFound");
+      expect((yield* service.keptCopies(threadId))[0]).toMatchObject({
+        missing: true,
+        copyPath: recoveryOf(hostedDir)?.session,
+      });
+      // Back again, it reopens as any copy does.
+      NodeFS.writeFileSync(NodePath.join(dir, "cube.blend"), "");
+      yield* service.reopen({ threadId, key: CUBE, restore: true });
+      yield* awaitStatus("running");
+      expect((yield* service.keptCopies(threadId))[0]).not.toHaveProperty("missing");
     }).pipe(Effect.scoped),
   );
 
@@ -2063,23 +2153,104 @@ describe("Endings and recovery", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("R3: Quit without saving ends a Blender stuck in a Save and quit, begun or not", () =>
-    Effect.gen(function* () {
-      const discardStuck = Effect.fnUntraced(function* (scenario: string) {
-        const { dir, service, openReady, awaitStatus } = yield* standIn(scenario, scenario);
+  it.live(
+    "R3: Quit without saving ends a Blender stuck saving the file it names, and stops nothing it can't confirm",
+    () =>
+      Effect.gen(function* () {
+        const discardStuck = Effect.fnUntraced(function* (scenario: string) {
+          const { dir, service, openReady, awaitStatus } = yield* standIn(scenario, scenario);
+          yield* openReady;
+          const saving = yield* service
+            .quit({ threadId, save: true })
+            .pipe(Effect.flip, Effect.forkChild);
+          yield* fileAppears(dir, NodePath.join(dir, "saves.log"));
+          const openFile = { kind: "workspace" as const, relativePath: "cube.blend" };
+          const discard = yield* service
+            .quit({ threadId, save: false, discard: true, openFile })
+            .pipe(Effect.flip, Effect.option);
+          return { saving, discard, state: yield* firstState(service), awaitStatus };
+        });
+        const [busy, stuck] = yield* Effect.all(
+          [discardStuck("busy-save"), discardStuck("stuck-saving")],
+          { concurrency: "unbounded" },
+        );
+        // Begun, the save is of the file the dialog named, which Blender can't change mid-save.
+        expect(Option.isNone(stuck.discard)).toBe(true);
+        expect(yield* stuck.awaitStatus("stopped")).toEqual({ status: "stopped" });
+        expect((yield* Fiber.join(stuck.saving)).reason).toBe("saveFailed");
+        // Never begun, Blender never said which file it has: nothing is stopped as a discard.
+        expect(Option.getOrThrow(busy.discard).reason).toBe("discardUnconfirmed");
+        expect(busy.state.status).toBe("running");
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "a second unanswered discard stops Blender as a crash, keeping its autosave; an answer between resets it",
+    () =>
+      Effect.gen(function* () {
+        const openFile = { kind: "workspace" as const, relativePath: "cube.blend" };
+        const discard = (service: HostedBlender.HostedBlender["Service"]) =>
+          service
+            .quit({ threadId, save: false, discard: true, openFile })
+            .pipe(Effect.flip, Effect.option);
+        const deaf = Effect.gen(function* () {
+          const { service, openReady, awaitStatus, hostedDir } = yield* standIn(
+            "deaf",
+            "deaf-discard",
+          );
+          yield* openReady;
+          expect(Option.getOrThrow(yield* discard(service)).reason).toBe("discardUnconfirmed");
+          expect((yield* firstState(service)).status).toBe("running");
+          expect(Option.isNone(yield* discard(service))).toBe(true);
+          // Never a discard: the card offers what Blender last autosaved.
+          expect(yield* awaitStatus("crashed")).toMatchObject({ recovery: true });
+          expect(recoveryOf(hostedDir)?.contents).toBe("autosave");
+        });
+        const answered = Effect.gen(function* () {
+          const { service, openReady } = yield* standIn("answered", "answers-second");
+          yield* openReady;
+          expect(Option.getOrThrow(yield* discard(service)).reason).toBe("discardUnconfirmed");
+          expect(Option.getOrThrow(yield* discard(service)).reason).toBe("openFileChanged");
+          expect(Option.getOrThrow(yield* discard(service)).reason).toBe("discardUnconfirmed");
+          expect((yield* firstState(service)).status).toBe("running");
+        });
+        yield* Effect.all([deaf, answered], { concurrency: "unbounded" });
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "a quit or a settle leaves a Blender with unsaved image edits open, saying so; Quit without saving still quits",
+    () =>
+      Effect.gen(function* () {
+        const { dir, service, openReady, awaitStatus, saveCommands } = yield* standIn(
+          "images",
+          "unsaved-images",
+        );
         yield* openReady;
-        const saving = yield* service
-          .quit({ threadId, save: true })
-          .pipe(Effect.flip, Effect.forkChild);
-        yield* fileAppears(dir, NodePath.join(dir, "saves.log"));
-        yield* service.quit({ threadId, save: false, discard: true });
+        const held = NodePath.join(dir, "saves.log.held");
+        const heldCount = () =>
+          NodeFS.existsSync(held) ? NodeFS.readFileSync(held, "utf8").split("\n").length - 1 : 0;
+        // The pane's one-click quit, an agent's blender_quit and Save and quit all say what to save.
+        expect((yield* service.quit({ threadId, save: false }).pipe(Effect.flip)).reason).toBe(
+          "unsavedImages",
+        );
+        const saving = yield* service.quit({ threadId, save: true }).pipe(Effect.flip);
+        expect(saving).toMatchObject({ reason: "unsavedImages", images: ["paint"] });
+        expect(saving.message).toContain("couldn't save paint,");
+        expect(saveCommands()).toBe(0);
+        // A settle leaves it running as it was.
+        yield* service.closeOnSettle({ threadId });
+        yield* fileAppears(dir, held, () => heldCount() === 3);
+        expect((yield* firstState(service)).status).toBe("running");
+        // The person's discard doesn't ask.
+        yield* service.quit({
+          threadId,
+          save: false,
+          discard: true,
+          openFile: { kind: "workspace", relativePath: "cube.blend" },
+        });
         expect(yield* awaitStatus("stopped")).toEqual({ status: "stopped" });
-        expect((yield* Fiber.join(saving)).reason).toBe("saveFailed");
-      });
-      yield* Effect.all([discardStuck("busy-save"), discardStuck("stuck-saving")], {
-        concurrency: "unbounded",
-      });
-    }).pipe(Effect.scoped),
+      }).pipe(Effect.scoped),
   );
 
   it.live(
@@ -2639,7 +2810,7 @@ describe("Endings and recovery", () => {
 describe("The viewport window", () => {
   it.live("reads its camera and casts each mark through the frozen view", () =>
     Effect.gen(function* () {
-      const { service, openReady, runtime } = yield* standIn("view", "");
+      const { service, openReady, runtime, dir } = yield* standIn("view", "");
       yield* openReady;
       const capture = yield* service.captureView(threadId);
       assert.deepStrictEqual(capture, {
@@ -2650,13 +2821,23 @@ describe("The viewport window", () => {
           matrix: [2, ...Array.from({ length: 15 }, () => 0)],
           region: { x: 0.1, y: 0.05, width: 0.8, height: 0.9 },
         },
+        // What the picture is of, which the annotation links to and its hits are checked against.
+        loadedAt: 7,
+        openFile: { kind: "workspace", relativePath: "cube.blend" },
       });
       const hits = yield* service.findHits({
         threadId,
         projection: capture.projection,
+        loadedAt: 7,
         marks: [[{ x: 0.5, y: 0.25 }], []],
       });
       assert.deepStrictEqual(hits, [{ object: "m2", point: [0.5, 0.25, 2] }, null]);
+      const asked = NodeFS.readFileSync(NodePath.join(dir, "saves.log.control"), "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+        .find((command) => command.type === "hits");
+      expect(asked).toMatchObject({ loadedAt: 7 });
       expect(
         NodeFS.readdirSync(runtime, { recursive: true }).filter((name) =>
           String(name).endsWith(".png"),
@@ -3217,6 +3398,15 @@ describe("B13: a file changed on disk", () => {
         });
       }
       expect(disk.reloads()).toBe(1);
+      // Quit with nothing newer to keep, the Master side offers the reload's copy as what it is.
+      NodeFS.writeFileSync(NodePath.join(dir, "staged-quietly"), "");
+      yield* service.quit({ threadId, save: false, role: "master" });
+      const closed = yield* service.masterState(threadId).pipe(
+        Stream.filter((state) => state.status === "closed"),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
+      expect(closed).toMatchObject({ copies: [{ recovery: true, reloaded: true }] });
     }).pipe(Effect.scoped),
   );
 
@@ -4091,6 +4281,145 @@ print("T3-RESULT", json.dumps(results))`,
       ["BLENDER_EEVEE", "RENDERED", true],
       ["BLENDER_WORKBENCH", "RENDERED", true],
     ]);
+  });
+
+  it("Save and quit saves the images it can, holds on one it can't and names it, then saves all once it is packed", () => {
+    // Background Blenders of the test's own, settings and temporary files in its folder.
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-hosted-blender-images-"));
+    const blender = (script: string) =>
+      NodeChildProcess.execFileSync(
+        "blender",
+        ["--background", "--factory-startup", "--python-expr", script],
+        {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+          env: {
+            PATH: hostEnvironment.PATH,
+            HOME: dir,
+            TMPDIR: NodePath.join(dir, "tmp"),
+            BLENDER_USER_RESOURCES: dir,
+          },
+        },
+      );
+    const result = (output: string) => {
+      const line = output.split("\n").find((entry) => entry.startsWith("T3-RESULT "));
+      return JSON.parse(line!.slice("T3-RESULT ".length));
+    };
+    const readOnly = NodePath.join(dir, "read-only");
+    try {
+      NodeFS.mkdirSync(NodePath.join(dir, "tmp"));
+      NodeFS.mkdirSync(readOnly);
+      const blend = JSON.stringify(NodePath.join(dir, "scene.blend"));
+      const fileImage = (name: string, folder: string) => `
+${name} = bpy.data.images.new("${name}", 4, 4)
+${name}.filepath_raw = ${JSON.stringify(NodePath.join(folder, `${name}.png`))}
+${name}.file_format = "PNG"
+${name}.save()
+${name}.source = "FILE"
+${name}.reload()`;
+      const first = blender(`${CONTROL_ADDON_SOURCE}
+assert bpy.app.tempdir.startswith(${JSON.stringify(dir)}), bpy.app.tempdir
+bpy.ops.wm.save_as_mainfile(filepath=${blend})
+${fileImage("paint", dir)}
+${fileImage("locked", readOnly)}
+os.chmod(${JSON.stringify(NodePath.join(readOnly, "locked.png"))}, 0o444)
+os.chmod(${JSON.stringify(readOnly)}, 0o555)
+generated = bpy.data.images.new("generated", 4, 4)
+for image in (paint, locked, generated):
+    # In use, as a material's would be, so the save keeps it.
+    image.use_fake_user = True
+    image.pixels[0] = 0.25
+sent = []
+_send = sent.append
+# A background Blender has no window to save from, and quits only once its script ends.
+_save = lambda: "FINISHED" in bpy.ops.wm.save_mainfile()
+_handle({"type": "quit", "save": True, "hold": True})
+first = list(sent)
+dirty = [image.name for image in bpy.data.images if image.is_dirty]
+locked.pack()
+sent.clear()
+_handle({"type": "quit", "save": True, "hold": True})
+print("T3-RESULT", json.dumps({
+    "first": [message["type"] for message in first],
+    "held": [message.get("images") for message in first if message["type"] == "quitFailed"],
+    "dirty": dirty,
+    "second": [message["type"] for message in sent],
+}))`);
+      expect(result(first)).toEqual({
+        first: ["saving", "quitFailed"],
+        held: [["locked"]],
+        dirty: ["locked"],
+        second: ["saving", "saved"],
+      });
+      const reopened = blender(`import bpy, json
+bpy.ops.wm.open_mainfile(filepath=${blend})
+images = bpy.data.images
+paint = images.load(${JSON.stringify(NodePath.join(dir, "paint.png"))}, check_existing=False)
+print("T3-RESULT", json.dumps({
+    "packed": [images["generated"].packed_file is not None, images["locked"].packed_file is not None],
+    "pixels": [round(image.pixels[0], 2) for image in (paint, images["generated"], images["locked"])],
+}))`);
+      expect(result(reopened)).toEqual({ packed: [true, true], pixels: [0.25, 0.25, 0.25] });
+    } finally {
+      NodeFS.chmodSync(readOnly, 0o755);
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("holds a quit that asks while an image is edited, and finds no hits on a load the screenshot isn't of", () => {
+    // A background Blender of the test's own, settings and temporary files in its folder.
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-hosted-blender-hold-"));
+    try {
+      NodeFS.mkdirSync(NodePath.join(dir, "tmp"));
+      const output = NodeChildProcess.execFileSync(
+        "blender",
+        [
+          "--background",
+          "--factory-startup",
+          "--python-expr",
+          `${CONTROL_ADDON_SOURCE}
+assert bpy.app.tempdir.startswith(${JSON.stringify(dir)}), bpy.app.tempdir
+sent = []
+_send = sent.append
+image = bpy.data.images.new("paint", 4, 4)
+image.pixels[0] = 0.5
+dirty = image.is_dirty
+_handle({"type": "quit", "save": False, "hold": True})
+# Background Blender has no viewport: whether hits looked for one says whether they went ahead.
+looked = []
+_viewport = lambda: looked.append(True)
+_State.loaded_at = 2.0
+hits = {"matrix": [0] * 16, "region": {}, "marks": [[]]}
+_hits({**hits, "loadedAt": 1.0})
+other_load = len(looked)
+_hits({**hits, "loadedAt": 2.0})
+print("T3-RESULT", json.dumps({
+    "dirty": dirty,
+    "sent": sent,
+    "looked": [other_load, len(looked)],
+}))`,
+        ],
+        {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+          env: {
+            PATH: hostEnvironment.PATH,
+            HOME: dir,
+            TMPDIR: NodePath.join(dir, "tmp"),
+            BLENDER_USER_RESOURCES: dir,
+          },
+        },
+      );
+      // Had either quit gone ahead, Blender would have exited before printing.
+      const line = output.split("\n").find((entry) => entry.startsWith("T3-RESULT "));
+      expect(JSON.parse(line!.slice("T3-RESULT ".length))).toEqual({
+        dirty: true,
+        sent: [{ type: "quitFailed", reason: "images" }],
+        looked: [0, 1],
+      });
+    } finally {
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it.each([

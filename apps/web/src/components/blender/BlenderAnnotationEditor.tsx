@@ -1,5 +1,6 @@
 import type {
   HostedBlenderHits,
+  HostedBlenderKeptFile,
   HostedBlenderViewCapture,
   ProjectId,
   ScopedThreadRef,
@@ -23,6 +24,8 @@ export interface FrozenBlenderFrame {
   readonly height: number;
   /** Null for a stream frame, which can't be tied to a camera. */
   readonly capture: HostedBlenderViewCapture | null;
+  /** The file the frame is of, as it froze. */
+  readonly file: HostedBlenderKeptFile;
 }
 
 const hasFrame = (canvas: HTMLCanvasElement | null): canvas is HTMLCanvasElement => {
@@ -31,19 +34,23 @@ const hasFrame = (canvas: HTMLCanvasElement | null): canvas is HTMLCanvasElement
 };
 
 /** Copies the stream's current frame, which keeps changing underneath while the person draws. */
-function freezeStreamFrame(canvas: HTMLCanvasElement | null): FrozenBlenderFrame | null {
+function freezeStreamFrame(
+  canvas: HTMLCanvasElement | null,
+  file: HostedBlenderKeptFile,
+): FrozenBlenderFrame | null {
   if (!hasFrame(canvas)) return null;
   const { width, height } = canvas.getBoundingClientRect();
   const image = document.createElement("canvas");
   image.width = canvas.width;
   image.height = canvas.height;
   image.getContext("2d")?.drawImage(canvas, 0, 0);
-  return { image, width, height, capture: null };
+  return { image, width, height, capture: null, file };
 }
 
 /** Blender's own render of the viewport region, drawn with the capture's camera. */
 async function renderedFrame(
   capture: HostedBlenderViewCapture,
+  file: HostedBlenderKeptFile,
 ): Promise<FrozenBlenderFrame | null> {
   const rendered = new Image();
   rendered.src = capture.screenshot.dataUrl;
@@ -57,7 +64,13 @@ async function renderedFrame(
   image.height = rendered.naturalHeight;
   image.getContext("2d")?.drawImage(rendered, 0, 0);
   const ratio = globalThis.devicePixelRatio || 1;
-  return { image, width: image.width / ratio, height: image.height / ratio, capture };
+  return {
+    image,
+    width: image.width / ratio,
+    height: image.height / ratio,
+    capture,
+    file: capture.openFile ?? file,
+  };
 }
 
 /**
@@ -67,7 +80,8 @@ async function renderedFrame(
  */
 export function useBlenderAnnotation(input: {
   readonly threadRef: ScopedThreadRef;
-  readonly relativePath: string;
+  /** The file the pane last heard Blender has open, for a frame Blender didn't render. */
+  readonly openFile: HostedBlenderKeptFile;
   readonly composerTarget: ComposerThreadTarget;
   readonly projectId?: ProjectId | undefined;
   /** The thread's master Blender rather than its working Blender. */
@@ -86,17 +100,17 @@ export function useBlenderAnnotation(input: {
 
   const start = async () => {
     if (!hasFrame(canvasRef.current)) return;
+    const openFile = input.openFile;
     setCapturing(true);
     const result = await captureView({ environmentId, input: { threadId, ...role } });
-    const rendered = result._tag === "Success" ? await renderedFrame(result.value) : null;
+    const rendered = result._tag === "Success" ? await renderedFrame(result.value, openFile) : null;
     setCapturing(false);
-    setFrozen(rendered ?? freezeStreamFrame(canvasRef.current));
+    setFrozen(rendered ?? freezeStreamFrame(canvasRef.current, openFile));
   };
 
   const editor = frozen ? (
     <BlenderAnnotationEditor
       frozen={frozen}
-      relativePath={input.relativePath}
       composerTarget={input.composerTarget}
       environmentId={environmentId}
       projectId={input.projectId}
@@ -120,7 +134,6 @@ export function useBlenderAnnotation(input: {
 
 function BlenderAnnotationEditor(props: {
   readonly frozen: FrozenBlenderFrame;
-  readonly relativePath: string;
   readonly composerTarget: ComposerThreadTarget;
   readonly environmentId: ScopedThreadRef["environmentId"];
   readonly projectId?: ProjectId | undefined;
@@ -136,14 +149,14 @@ function BlenderAnnotationEditor(props: {
       height={frozen.height}
       environmentId={props.environmentId}
       projectId={props.projectId}
-      ownerKey={JSON.stringify(["blender-annotation", props.relativePath])}
+      ownerKey={JSON.stringify(["blender-annotation", frozen.file])}
       onCancel={props.onClose}
       onSubmit={(result) => {
         props.onClose();
         void (async () => {
           const payload = await blenderAnnotationPayload({
             id: `model_${randomUUID()}`,
-            relativePath: props.relativePath,
+            file: frozen.file,
             comment: result.comment,
             regions: result.regions,
             strokes: result.strokes,

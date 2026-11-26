@@ -62,9 +62,19 @@ it("opens the file on a server nobody has checked, so the open runs the first ch
   });
 });
 
-it("only shows the pane while something else is missing", async () => {
+it("opens the file on a server whose check wasn't ready, so the open checks it again", async () => {
   state.open.mockClear();
-  state.thread = { status: "notSetUp", missing: ["labwc"] };
+  state.thread = { status: "notSetUp", missing: ["encoder"] };
+  await using _screen = await render(
+    <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
+  );
+  await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
+  expect(state.open).toHaveBeenCalledTimes(1);
+});
+
+it("only shows the pane while Hosted Blender is switched off", async () => {
+  state.open.mockClear();
+  state.thread = { status: "notSetUp", missing: ["enabled"] };
   await using _screen = await render(
     <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
   );

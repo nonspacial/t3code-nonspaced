@@ -2424,6 +2424,7 @@
   "4a87cae01ccde544": "La rama de este hilo aún no tiene ninguna pull request.",
   "32535dba0b9af642": "Este hilo no tiene elementos vinculados.",
   "07080dead70f4cc5": "Los dispositivos solo están disponibles desde un hilo.",
+  "6a531293dc35167a": "Hosted Blender no está disponible en este host.",
   "a4bf49b31758ff7e": "Solo disponible en la app de escritorio.",
   "e917841cb66f9af1": "Disponible cuando hay un proyecto abierto.",
   "14c15fad0c2ee0c8": "Disponible para repositorios Git.",
@@ -4606,6 +4607,7 @@
   "b29e1856c4aab31f": "Esta máquina",
   "0cb5a221e9e13a4e": "Aquí el agente lee los registros y el código fuente de T3 Code, y pregunta antes de aplicar una corrección o publicar nada.",
   "e7588632064e0364": "Copiado",
+  "afb8bba375e0ff0e": "Copiar ruta",
   "996f7752fa033da6": [
     "o ejecuta",
     {
@@ -13060,6 +13062,7 @@
   "c77caac5b764ef8c": "Inglés (Dvorak)",
   "7b15925473b02c07": "Inglés (Colemak)",
   "7c6bc1129dc9f48e": "Escena sin título",
+  "83f2e3a5ca79c4ca": "No se pudo copiar la ruta",
   "cd078f4497dfcd36": "No se pudo reiniciar Blender",
   "ad3ce6044792509a": "No se pudo volver a abrir Blender",
   "90e3c64eab32945e": "¿Descartar el guardado automático de {name}?",
@@ -13068,13 +13071,18 @@
   "759aa5a1a95bc013": "un codificador H.264",
   "f5a8efdb194519df": "el plugin OpenGL de GStreamer",
   "d6fcf229c9306851": "Capturar y anotar",
+  "746c576ea195806b": "Tomar el control",
+  "156baef53680396e": "Tomar el control",
+  "8f7153ef68b0a1cc": "Pantalla completa",
   "32cf9ac006229af1": "Menú de Blender",
   "9287e12fbeade687": "Otro dispositivo tomó el control de Blender",
   "d2b10ff67d190925": "Viewport de Blender",
+  "541e8079a70c3b6f": "Memoria de Blender {size}",
   "2151790bc5e65b31": "No disponible en este host",
   "b94f5fc6d71bc852": "Falta configurar",
   "7050870331ac8b9a": "No hay ningún Hosted Blender en ejecución",
   "fb2c65328a8a2e17": "Abre un archivo .blend en la vista previa de archivos y elige Abrir en Hosted Blender.",
+  "61363df2a96b100b": "Abrir Archivos",
   "3f25b97ec987231e": "Blender no pudo abrir el archivo en la pantalla oculta. Comprueba que Blender lo abre y que GStreamer tiene un codificador H.264, y vuelve a abrirlo en Hosted Blender.",
   "c9d23ccb15073177": "Blender se cerró inesperadamente",
   "9f406050b6efb934": "Blender se cerró",
@@ -13110,6 +13118,28 @@
     "."
   ],
   "c3528aaa534d9a33": "Blender tenía abierta una escena sin título, que T3 Code no puede volver a abrir.",
+  "24bbaa011bf94b06": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ya no está en este proyecto, así que T3 Code no puede volver a abrirlo. Sus cambios sin guardar se conservan en ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "8ca51613f669ada0": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ya no está en este proyecto, así que T3 Code no puede volver a abrirlo."
+  ],
   "df374db2c12ff019": [
     "Blender no pudo restaurar la copia de ",
     {
@@ -13134,6 +13164,15 @@
       "v": "v"
     },
     " se detuvo inesperadamente. Reiniciar abre el archivo tal como se guardó por última vez."
+  ],
+  "7a2548c51178b2e1": [
+    "T3 Code conservó estos cambios sin guardar de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " cuando Blender volvió a cargar el archivo tras cambiar en el disco. El archivo en el disco es más reciente que ellos."
   ],
   "a1705e3412c3634e": [
     "T3 Code cerró ",
@@ -13165,6 +13204,7 @@
   "efd53a6196afbf6d": "Las versiones Flatpak y Snap de Blender aún no son compatibles. En Ajustes › Blender se explica cómo usar otro Blender.",
   "ec1b57292361ae76": "Activa Hosted Blender en Ajustes › Blender para ver y controlar Blender aquí.",
   "e4ec327ad1a82eb5": "T3 Code aún no ha comprobado este servidor. Abre un .blend en Hosted Blender o compruébalo en Ajustes › Blender.",
+  "00720d9a3d565862": "Hay un codificador H.264 instalado, pero ninguno superó la codificación de prueba. Si la GPU estaba ocupada, vuelve a comprobar.",
   "af467bacc13f5e57": [
     "A este servidor le falta: ",
     {
@@ -13184,8 +13224,6 @@
     },
     " en la pantalla oculta."
   ],
-  "4e4f72c4986c5f68": "Tomar el control",
-  "14d410b8b9a578d0": "Pantalla completa",
   "2026a467bc778ad9": "Distribución del teclado",
   "1d9b37b42f1216c8": "Automático",
   "4b0ca2d2af30068a": "Desplazamiento",
@@ -13205,6 +13243,7 @@
   "907a0f7ed16a709d": "No se pudo abrir en Hosted Blender",
   "7b0cb06d256e6b28": "Abrir en Hosted Blender",
   "119259d2fa66fadf": "No se pudo cerrar Blender",
+  "65c73c884114dcf8": "Blender no respondió, así que sigue abierto con sus cambios. Si sigue sin responder, volver a elegir «Salir sin guardar» lo detiene y conserva lo último que Blender guardó automáticamente.",
   "e2d3b41b3731a6c1": "¿Guardar los cambios de {name} antes de salir?",
   "32504fe5e26d8233": "Los cambios que Blender no haya guardado se pierden si sales sin guardar.",
   "9ceb68fb844584c9": "Salir sin guardar",
@@ -13231,6 +13270,16 @@
   "3caa4fb20ff3277d": "Blender guarda esta imagen con el archivo, así que puede estar desactualizada si un script guardó el archivo.",
   "301ece9c34df1726": "Registro de Blender",
   "20fc073d179a63f5": "Blender no escribió nada en su registro.",
+  "c4dd9c716703715d": "Mostrar vista 3D",
+  "1811c8b47499cb54": [
+    "Convierte este archivo de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " con Blender en el servidor, que carga toda la escena."
+  ],
   "71f9aa2ee31aac46": "Este archivo no tiene una miniatura guardada",
   "27088355449cdd28": "Detalles de la escena",
   "3a87f8c40f3b8065": "Convertir",
@@ -13331,6 +13380,7 @@
   "d724abd4cc4a85e5": "Demasiado antiguo",
   "7b01b12da1a9fd17": "Lento",
   "a5fe3dee0a941705": "No es el de Blender Lab",
+  "8becfcfe3e575a76": "Prueba fallida",
   "76b81a9f9a2687ed": "No arrancó",
   "7174ef3cfccc7a54": "Ejecuta Blender en la pantalla oculta y lo transmite.",
   "59e399ec181acb63": "Falta el asistente propio de T3 Code en esta instalación. Actualiza o reinstala T3 Code.",
@@ -13382,6 +13432,7 @@
     },
     "."
   ],
+  "154b8f20f1645434": "Hay un codificador H.264 instalado, pero ninguno superó la codificación de prueba de un segundo. Si la GPU estaba ocupada, vuelve a comprobar.",
   "ba5e2c560dd26d57": "Ningún codificador H.264 superó la codificación de prueba. Instala los plugins de GStreamer: uno de nvh264enc, vah264enc, x264enc u openh264enc.",
   "2ab5a1fabca22fd0": "El codificador de NVIDIA lee los fotogramas de Blender directamente de la GPU.",
   "fce6aa0c10874b0c": "El codificador de NVIDIA necesita el plugin OpenGL de GStreamer.",

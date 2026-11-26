@@ -1,5 +1,7 @@
-import { type HostedBlenderKeptFile, WS_METHODS } from "@t3tools/contracts";
+import { HostedBlenderError, type HostedBlenderKeptFile, WS_METHODS } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import type { Atom } from "effect/reactivity";
+import * as Schema from "effect/Schema";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import {
@@ -24,6 +26,20 @@ export const chatHostedBlenderThread = <T>(
     | undefined,
   thread: T | null,
 ): T | null => (serverConfig?.settings.hostedBlenderEnabled === true ? thread : null);
+
+const isHostedBlenderError = Schema.is(HostedBlenderError);
+
+/** A restore in place refused because it would replace unsaved changes nobody agreed to lose. */
+export const isRestoreReplacingUnsaved = (cause: Cause.Cause<unknown>) => {
+  const error = Cause.squash(cause);
+  return isHostedBlenderError(error) && error.reason === "restoreReplacesUnsaved";
+};
+
+/** A discard Blender didn't answer: it stays open, and the same discard again stops it. */
+export const isDiscardUnconfirmed = (cause: Cause.Cause<unknown>) => {
+  const error = Cause.squash(cause);
+  return isHostedBlenderError(error) && error.reason === "discardUnconfirmed";
+};
 
 /** A file's name as the pane shows it; `untitled` for an unsaved scene. */
 export const blendFileName = (file: HostedBlenderKeptFile, untitled: string): string => {

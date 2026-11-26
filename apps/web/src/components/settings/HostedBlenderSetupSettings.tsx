@@ -40,7 +40,8 @@ const canInstall = (result: CheckedSetup) =>
       check.status === "missing" ||
       check.status === "outdated" ||
       check.status === "unrecognized" ||
-      check.status === "failed",
+      // An encoder that failed its test encode, as on a busy GPU, is installed already.
+      (check.status === "failed" && check.item !== "encoder"),
   );
 
 /**
@@ -291,7 +292,11 @@ function CheckBadge(props: { readonly check: HostedBlenderSetupCheck }) {
     case "failed":
       return (
         <Badge variant="warning">
-          <T>Didn't start</T>
+          {props.check.item === "encoder" ? (
+            <T context="the setup check's one-second test encode">Test failed</T>
+          ) : (
+            <T>Didn't start</T>
+          )}
         </Badge>
       );
   }
@@ -351,6 +356,11 @@ function CheckDescription(props: {
       return check.status === "ok" ? (
         <T>
           The one-second test encode used <Var>{found}</Var>.
+        </T>
+      ) : check.status === "failed" ? (
+        <T>
+          An H.264 encoder is installed, but none passed the one-second test encode. If the GPU was
+          busy, check again.
         </T>
       ) : (
         <T>

@@ -475,22 +475,53 @@ describe("BlendConversion", () => {
     },
   );
 
-  it.effect("converts again at once when the file was saved while it converted", () => {
-    const release = Deferred.makeUnsafe<void>();
-    const run: Run = (input) => Deferred.await(release).pipe(Effect.andThen(writeGlb(input)));
-    return Effect.gen(function* () {
-      const { root, path } = yield* workspace;
-      const live = yield* startConversion({ cwd: root, relativePath: "bracket.blend" }, "watch");
-      expect((yield* Queue.take(live.progress)).status).toBe("converting");
-      yield* touchFile(path.join(root, "bracket.blend"), Date.UTC(2031, 0, 1));
-      yield* Deferred.succeed(release, undefined);
-      expect((yield* Queue.take(live.progress)).status).toBe("ready");
-      expect(yield* Queue.take(live.progress)).toEqual(
-        expect.objectContaining({ status: "converting", changed: "bracket.blend" }),
-      );
-      yield* Fiber.interrupt(live.fiber);
-    }).pipe(Effect.provide(layerFor({ run })));
-  });
+  it.effect(
+    "converts again at once when the file was saved while it converted, keeping nothing of it",
+    () => {
+      const release = Deferred.makeUnsafe<void>();
+      const run: Run = (input) => Deferred.await(release).pipe(Effect.andThen(writeGlb(input)));
+      return Effect.gen(function* () {
+        const { root, path, fileSystem } = yield* workspace;
+        const live = yield* startConversion({ cwd: root, relativePath: "bracket.blend" }, "watch");
+        expect((yield* Queue.take(live.progress)).status).toBe("converting");
+        yield* touchFile(path.join(root, "bracket.blend"), Date.UTC(2031, 0, 1));
+        yield* Deferred.succeed(release, undefined);
+        // The export was of neither version, so it is neither shown nor cached.
+        expect(yield* Queue.take(live.progress)).toEqual(
+          expect.objectContaining({ status: "converting", changed: "bracket.blend" }),
+        );
+        expect((yield* Queue.take(live.progress)).status).toBe("ready");
+        const cached = (yield* fileSystem.readDirectory(yield* cacheDirectory)).filter((name) =>
+          name.endsWith(".glb"),
+        );
+        expect(cached).toHaveLength(1);
+        yield* Fiber.interrupt(live.fiber);
+      }).pipe(Effect.provide(layerFor({ run })));
+    },
+  );
+
+  it.effect(
+    "converts a file replaced with one of the same size and time, never the cached one",
+    () =>
+      Effect.gen(function* () {
+        const { root, path, fileSystem } = yield* workspace;
+        const file = path.join(root, "bracket.blend");
+        const at = Date.UTC(2031, 0, 1);
+        yield* touchFile(file, at);
+        const input = { cwd: root, relativePath: "bracket.blend" };
+        expect(yield* convertAll(input)).toEqual(["converting", "ready"]);
+        // A checkout writes another file in its place, with the same size and time.
+        const replacement = path.join(root, "bracket.blend.new");
+        yield* fileSystem.copyFile(file, replacement);
+        yield* touchFile(replacement, at);
+        yield* fileSystem.rename(replacement, file);
+        expect(yield* convertAll(input)).toEqual(["converting", "ready"]);
+        // A once-only conversion converts it, and hears of no change after.
+        const once = yield* startConversion({ ...input, once: true }, "watch");
+        expect((yield* Queue.take(once.progress)).status).toBe("ready");
+        yield* Fiber.join(once.fiber);
+      }).pipe(Effect.provide(layerFor({ run: writeGlb }))),
+  );
 
   it.effect("keeps watching a file that is missing for a moment while it is saved", () =>
     Effect.gen(function* () {

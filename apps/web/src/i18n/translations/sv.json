@@ -2424,6 +2424,7 @@
   "4a87cae01ccde544": "Den här trådens gren har ingen pull request än.",
   "32535dba0b9af642": "Den här tråden har inga länkade objekt.",
   "07080dead70f4cc5": "Enheter är bara tillgängliga från en tråd.",
+  "6a531293dc35167a": "Hosted Blender är inte tillgängligt på den här värden.",
   "a4bf49b31758ff7e": "Finns bara i skrivbordsappen.",
   "e917841cb66f9af1": "Tillgängligt när ett projekt är öppet.",
   "14c15fad0c2ee0c8": "Tillgängligt för Git-repon.",
@@ -4607,6 +4608,7 @@
   "b29e1856c4aab31f": "Den här datorn",
   "0cb5a221e9e13a4e": "Agenten läser T3 Codes loggar och källkod här och frågar innan den tillämpar en åtgärd eller publicerar något.",
   "e7588632064e0364": "Kopierat",
+  "afb8bba375e0ff0e": "Kopiera sökväg",
   "996f7752fa033da6": [
     "eller kör",
     {
@@ -13072,6 +13074,7 @@
   "c77caac5b764ef8c": "Engelska (Dvorak)",
   "7b15925473b02c07": "Engelska (Colemak)",
   "7c6bc1129dc9f48e": "Namnlös scen",
+  "83f2e3a5ca79c4ca": "Det gick inte att kopiera sökvägen",
   "cd078f4497dfcd36": "Det gick inte att starta om Blender",
   "ad3ce6044792509a": "Det gick inte att öppna Blender igen",
   "90e3c64eab32945e": "Ta bort den automatiska sparningen av {name}?",
@@ -13080,13 +13083,18 @@
   "759aa5a1a95bc013": "en H.264-kodare",
   "f5a8efdb194519df": "GStreamers OpenGL-insticksmodul",
   "d6fcf229c9306851": "Skärmbild och anteckning",
+  "746c576ea195806b": "Ta kontrollen",
+  "156baef53680396e": "Ta kontrollen",
+  "8f7153ef68b0a1cc": "Helskärm",
   "32cf9ac006229af1": "Blender-meny",
   "9287e12fbeade687": "En annan enhet tog kontrollen över Blender",
   "d2b10ff67d190925": "Blender-vyport",
+  "541e8079a70c3b6f": "Blenders minne {size}",
   "2151790bc5e65b31": "Inte tillgängligt på den här värden",
   "b94f5fc6d71bc852": "Konfiguration krävs",
   "7050870331ac8b9a": "Ingen Hosted Blender körs",
   "fb2c65328a8a2e17": "Öppna en .blend-fil i filförhandsvisningen och välj Öppna i Hosted Blender.",
+  "61363df2a96b100b": "Öppna Filer",
   "3f25b97ec987231e": "Blender kunde inte öppna filen på den dolda skärmen. Kontrollera att Blender kan öppna den och att GStreamer har en H.264-kodare, och öppna den sedan i Hosted Blender igen.",
   "c9d23ccb15073177": "Blender kraschade",
   "9f406050b6efb934": "Blender stängdes",
@@ -13122,6 +13130,28 @@
     "."
   ],
   "c3528aaa534d9a33": "Blender hade en namnlös scen öppen, som T3 Code inte kan öppna igen.",
+  "24bbaa011bf94b06": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " finns inte längre i det här projektet, så T3 Code kan inte öppna den igen. Dess osparade ändringar finns kvar i ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "8ca51613f669ada0": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " finns inte längre i det här projektet, så T3 Code kan inte öppna den igen."
+  ],
   "df374db2c12ff019": [
     "Blender kunde inte återställa kopian av ",
     {
@@ -13146,6 +13176,15 @@
       "v": "v"
     },
     " stannade oväntat. Starta om öppnar filen som den senast sparades."
+  ],
+  "7a2548c51178b2e1": [
+    "T3 Code behöll de här osparade ändringarna i ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " när Blender läste in filen igen efter att den ändrats på disken. Filen på disken är nyare än dem."
   ],
   "a1705e3412c3634e": [
     "T3 Code stängde ",
@@ -13177,6 +13216,7 @@
   "efd53a6196afbf6d": "Flatpak- och Snap-versioner av Blender stöds inte än. Inställningar › Blender beskriver hur du använder en annan Blender.",
   "ec1b57292361ae76": "Slå på Hosted Blender under Inställningar › Blender för att se och styra Blender här.",
   "e4ec327ad1a82eb5": "T3 Code har inte kontrollerat den här servern än. Öppna en .blend i Hosted Blender eller kontrollera den under Inställningar › Blender.",
+  "00720d9a3d565862": "En H.264-kodare är installerad, men ingen klarade testkodningen. Om GPU:n var upptagen, kontrollera igen.",
   "af467bacc13f5e57": [
     "Den här servern saknar: ",
     {
@@ -13196,8 +13236,6 @@
     },
     " på den dolda skärmen."
   ],
-  "4e4f72c4986c5f68": "Ta kontrollen",
-  "14d410b8b9a578d0": "Helskärm",
   "2026a467bc778ad9": "Tangentbordslayout",
   "1d9b37b42f1216c8": "Automatisk",
   "4b0ca2d2af30068a": "Rullning",
@@ -13217,6 +13255,7 @@
   "907a0f7ed16a709d": "Det gick inte att öppna i Hosted Blender",
   "7b0cb06d256e6b28": "Öppna i Hosted Blender",
   "119259d2fa66fadf": "Det gick inte att avsluta Blender",
+  "65c73c884114dcf8": "Blender svarade inte, så det förblir öppet med sina ändringar. Om det fortfarande inte svarar stoppar ett nytt val av ”Avsluta utan att spara” det och behåller det Blender senast sparade automatiskt.",
   "e2d3b41b3731a6c1": "Spara ändringarna i {name} innan du avslutar?",
   "32504fe5e26d8233": "Ändringar som Blender inte har sparat går förlorade om du avslutar utan att spara.",
   "9ceb68fb844584c9": "Avsluta utan att spara",
@@ -13243,6 +13282,16 @@
   "3caa4fb20ff3277d": "Blender sparar den här bilden med filen, så den kan vara inaktuell om ett skript sparade filen.",
   "301ece9c34df1726": "Blenders logg",
   "20fc073d179a63f5": "Blender skrev inget i sin logg.",
+  "c4dd9c716703715d": "Visa 3D-vy",
+  "1811c8b47499cb54": [
+    "Konverterar den här filen på ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " med Blender på servern, som läser in hela scenen."
+  ],
   "71f9aa2ee31aac46": "Ingen miniatyr sparad i den här filen",
   "27088355449cdd28": "Scendetaljer",
   "3a87f8c40f3b8065": "Konvertera",
@@ -13343,6 +13392,7 @@
   "d724abd4cc4a85e5": "För gammal",
   "7b01b12da1a9fd17": "Långsam",
   "a5fe3dee0a941705": "Inte Blender Labs",
+  "8becfcfe3e575a76": "Testet misslyckades",
   "76b81a9f9a2687ed": "Startade inte",
   "7174ef3cfccc7a54": "Kör Blender på den dolda skärmen och strömmar den.",
   "59e399ec181acb63": "T3 Codes eget hjälpprogram saknas i den här installationen. Uppdatera eller installera om T3 Code.",
@@ -13394,6 +13444,7 @@
     },
     "."
   ],
+  "154b8f20f1645434": "En H.264-kodare är installerad, men ingen klarade testkodningen på en sekund. Om GPU:n var upptagen, kontrollera igen.",
   "ba5e2c560dd26d57": "Ingen H.264-kodare klarade testkodningen. Installera GStreamers insticksmoduler: någon av nvh264enc, vah264enc, x264enc eller openh264enc.",
   "2ab5a1fabca22fd0": "NVIDIA:s kodare läser Blenders bildrutor direkt från GPU:n.",
   "fce6aa0c10874b0c": "NVIDIA:s kodare kräver GStreamers OpenGL-insticksmodul.",

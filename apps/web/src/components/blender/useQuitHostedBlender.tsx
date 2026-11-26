@@ -1,4 +1,8 @@
-import { blendFileName, quitFileOf } from "@t3tools/client-runtime/state/hosted-blender";
+import {
+  blendFileName,
+  isDiscardUnconfirmed,
+  quitFileOf,
+} from "@t3tools/client-runtime/state/hosted-blender";
 import type { HostedBlenderKeptFile, ScopedThreadRef } from "@t3tools/contracts";
 import type * as Cause from "effect/Cause";
 import { T, useGT, useMessages } from "gt-react";
@@ -52,7 +56,11 @@ export function useQuitHostedBlender(
       stackedThreadToast({
         type: "error",
         title: gt("Couldn't quit Blender"),
-        description: formatEnvironmentQueryError(cause, m),
+        description: isDiscardUnconfirmed(cause)
+          ? gt(
+              "Blender didn't answer, so it stays open with its changes. If it still doesn't answer, choosing Quit without saving again stops it and keeps what Blender last autosaved.",
+            )
+          : formatEnvironmentQueryError(cause, m),
       }),
     );
   const saveAndQuit = async () => {

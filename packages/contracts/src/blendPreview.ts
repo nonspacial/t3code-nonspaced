@@ -88,6 +88,8 @@ export const BlendConversionInput = Schema.Struct({
   keepTrying: Schema.optionalKey(Schema.Boolean),
   /** Converts again instead of answering from the cache. */
   refresh: Schema.optionalKey(Schema.Boolean),
+  /** Converts once, not again when the file changes: a large file converts only when asked. */
+  once: Schema.optionalKey(Schema.Boolean),
 });
 export type BlendConversionInput = typeof BlendConversionInput.Type;
 

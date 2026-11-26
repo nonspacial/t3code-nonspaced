@@ -133,7 +133,6 @@ import { FULL_TEXT_MAX_BYTES } from "./largeTextProtocol";
 import { resolveCenteredFileLineScrollTop } from "./fileLineReveal";
 import { DiffCommentAnnotation } from "../diffs/DiffCommentAnnotation";
 import { projectFileCacheKey } from "./fileContentRevision";
-import { BlendFilePreview } from "./BlendFilePreview";
 import {
   filePreviewReadErrorMessage,
   isMarkdownPreviewFile,
@@ -182,6 +181,9 @@ interface FilePreviewPanelProps {
   workspaceMutationId: string | null;
 }
 
+const BlendFilePreview = lazy(() =>
+  import("./BlendFilePreview").then((module) => ({ default: module.BlendFilePreview })),
+);
 const MermaidFilePreview = lazy(() =>
   import("./MermaidFilePreview").then((module) => ({ default: module.MermaidFilePreview })),
 );
@@ -1826,30 +1828,32 @@ export default function FilePreviewPanel({
               wordWrap={wordWrap}
             />
           ) : relativePath && isBlend ? (
-            <BlendFilePreview
-              key={`${environmentId}:${cwd}:${relativePath}`}
-              environmentId={environmentId}
-              name={relativePath.split(/[\\/]/).at(-1) || relativePath}
-              source={{
-                kind: "file",
-                cwd,
-                relativePath,
-                workspaceMutationId,
-                refreshRevision: fileRefreshRevision,
-              }}
-              actions={
-                threadRef && !isHostFile && isBlendFile(relativePath) ? (
-                  <OpenInHostedBlender threadRef={threadRef} relativePath={relativePath} />
-                ) : null
-              }
-              view={revealView ? { view: revealView, requestId: revealRequestId } : null}
-              annotation={{
-                composerTarget: composerDraftTarget,
-                environmentId,
-                projectId,
-                linkPath: relativePath,
-              }}
-            />
+            <Suspense fallback={<FileSurfaceLoading />}>
+              <BlendFilePreview
+                key={`${environmentId}:${cwd}:${relativePath}`}
+                environmentId={environmentId}
+                name={relativePath.split(/[\\/]/).at(-1) || relativePath}
+                source={{
+                  kind: "file",
+                  cwd,
+                  relativePath,
+                  workspaceMutationId,
+                  refreshRevision: fileRefreshRevision,
+                }}
+                actions={
+                  threadRef && !isHostFile && isBlendFile(relativePath) ? (
+                    <OpenInHostedBlender threadRef={threadRef} relativePath={relativePath} />
+                  ) : null
+                }
+                view={revealView ? { view: revealView, requestId: revealRequestId } : null}
+                annotation={{
+                  composerTarget: composerDraftTarget,
+                  environmentId,
+                  projectId,
+                  linkPath: relativePath,
+                }}
+              />
+            </Suspense>
           ) : relativePath &&
             absolutePath &&
             (isDocument || file.readError?.failure === "binary_file") ? (

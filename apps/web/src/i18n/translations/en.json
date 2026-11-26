@@ -2424,6 +2424,7 @@
   "4a87cae01ccde544": "This thread's branch has no pull request yet.",
   "32535dba0b9af642": "This thread has no linked items.",
   "07080dead70f4cc5": "Devices are only available from a thread.",
+  "6a531293dc35167a": "Hosted Blender isn't available on this host.",
   "a4bf49b31758ff7e": "Only available in the desktop app.",
   "e917841cb66f9af1": "Available when a project is open.",
   "14c15fad0c2ee0c8": "Available for Git repositories.",
@@ -4608,6 +4609,7 @@
   "b29e1856c4aab31f": "This machine",
   "0cb5a221e9e13a4e": "The agent reads T3 Code's logs and source here, and asks before it applies a fix or posts anything.",
   "e7588632064e0364": "Copied",
+  "afb8bba375e0ff0e": "Copy path",
   "996f7752fa033da6": [
     "or run",
     {
@@ -13075,6 +13077,7 @@
   "c77caac5b764ef8c": "English (Dvorak)",
   "7b15925473b02c07": "English (Colemak)",
   "7c6bc1129dc9f48e": "Untitled scene",
+  "83f2e3a5ca79c4ca": "Couldn't copy the path",
   "cd078f4497dfcd36": "Couldn't restart Blender",
   "ad3ce6044792509a": "Couldn't reopen Blender",
   "90e3c64eab32945e": "Discard the autosave of {name}?",
@@ -13083,13 +13086,18 @@
   "759aa5a1a95bc013": "an H.264 encoder",
   "f5a8efdb194519df": "GStreamer's OpenGL plugin",
   "d6fcf229c9306851": "Screenshot & annotate",
+  "746c576ea195806b": "Take over",
+  "156baef53680396e": "Take control",
+  "8f7153ef68b0a1cc": "Fullscreen",
   "32cf9ac006229af1": "Blender menu",
   "9287e12fbeade687": "Another device took control of Blender",
   "d2b10ff67d190925": "Blender viewport",
+  "541e8079a70c3b6f": "Blender memory {size}",
   "2151790bc5e65b31": "Not available on this host",
   "b94f5fc6d71bc852": "Setup needed",
   "7050870331ac8b9a": "No hosted Blender running",
   "fb2c65328a8a2e17": "Open a .blend file in the file preview and choose Open in hosted Blender.",
+  "61363df2a96b100b": "Open Files",
   "3f25b97ec987231e": "Blender couldn't open the file on the hidden display. Check that Blender opens it and that GStreamer has an H.264 encoder, then open it in hosted Blender again.",
   "c9d23ccb15073177": "Blender crashed",
   "9f406050b6efb934": "Blender was closed",
@@ -13125,6 +13133,28 @@
     "."
   ],
   "c3528aaa534d9a33": "Blender had an untitled scene open, which T3 Code can't reopen.",
+  "24bbaa011bf94b06": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " is no longer in this project, so T3 Code can't reopen it. Its unsaved changes are kept at ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "8ca51613f669ada0": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " is no longer in this project, so T3 Code can't reopen it."
+  ],
   "df374db2c12ff019": [
     "Blender couldn't restore the copy of ",
     {
@@ -13149,6 +13179,15 @@
       "v": "v"
     },
     " stopped unexpectedly. Restart opens the file as last saved."
+  ],
+  "7a2548c51178b2e1": [
+    "T3 Code kept these unsaved changes to ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " when Blender reloaded the file after it changed on disk. The file on disk is newer than them."
   ],
   "a1705e3412c3634e": [
     "T3 Code closed ",
@@ -13180,6 +13219,7 @@
   "efd53a6196afbf6d": "Flatpak and Snap builds of Blender aren't supported yet. Settings › Blender says how to use another Blender.",
   "ec1b57292361ae76": "Switch on Hosted Blender in Settings › Blender to watch and steer Blender here.",
   "e4ec327ad1a82eb5": "T3 Code hasn't checked this server yet. Open a .blend in hosted Blender, or check it in Settings › Blender.",
+  "00720d9a3d565862": "An H.264 encoder is installed, but none passed the test encode. If the GPU was busy, check again.",
   "af467bacc13f5e57": [
     "This server is missing: ",
     {
@@ -13199,8 +13239,6 @@
     },
     " on the hidden display."
   ],
-  "4e4f72c4986c5f68": "Take over",
-  "14d410b8b9a578d0": "Fullscreen",
   "2026a467bc778ad9": "Keyboard layout",
   "1d9b37b42f1216c8": "Automatic",
   "4b0ca2d2af30068a": "Scrolling",
@@ -13220,6 +13258,7 @@
   "907a0f7ed16a709d": "Couldn't open in hosted Blender",
   "7b0cb06d256e6b28": "Open in hosted Blender",
   "119259d2fa66fadf": "Couldn't quit Blender",
+  "65c73c884114dcf8": "Blender didn't answer, so it stays open with its changes. If it still doesn't answer, choosing Quit without saving again stops it and keeps what Blender last autosaved.",
   "e2d3b41b3731a6c1": "Save changes to {name} before quitting?",
   "32504fe5e26d8233": "Changes Blender hasn't saved are lost if you quit without saving.",
   "9ceb68fb844584c9": "Quit without saving",
@@ -13246,6 +13285,16 @@
   "3caa4fb20ff3277d": "Blender saves this picture with the file, so it can be out of date when a script saved the file.",
   "301ece9c34df1726": "Blender's log",
   "20fc073d179a63f5": "Blender wrote nothing to its log.",
+  "c4dd9c716703715d": "Show 3D view",
+  "1811c8b47499cb54": [
+    "Converts this ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " file with Blender on the server, which loads the whole scene."
+  ],
   "71f9aa2ee31aac46": "No thumbnail saved in this file",
   "27088355449cdd28": "Scene details",
   "3a87f8c40f3b8065": "Convert",
@@ -13346,6 +13395,7 @@
   "d724abd4cc4a85e5": "Too old",
   "7b01b12da1a9fd17": "Slow",
   "a5fe3dee0a941705": "Not Blender Lab's",
+  "8becfcfe3e575a76": "Test failed",
   "76b81a9f9a2687ed": "Didn't start",
   "7174ef3cfccc7a54": "Runs Blender on the hidden display and streams it.",
   "59e399ec181acb63": "T3 Code's own helper is missing from this install. Update or reinstall T3 Code.",
@@ -13397,6 +13447,7 @@
     },
     "."
   ],
+  "154b8f20f1645434": "An H.264 encoder is installed, but none passed the one-second test encode. If the GPU was busy, check again.",
   "ba5e2c560dd26d57": "No H.264 encoder passed the test encode. Install GStreamer's plugins: one of nvh264enc, vah264enc, x264enc or openh264enc.",
   "2ab5a1fabca22fd0": "NVIDIA's encoder reads Blender's frames straight from the GPU.",
   "fce6aa0c10874b0c": "NVIDIA's encoder needs GStreamer's OpenGL plugin.",

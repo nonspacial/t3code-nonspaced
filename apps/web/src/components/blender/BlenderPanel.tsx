@@ -31,7 +31,7 @@ import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { blendFileName, quitFileOf } from "@t3tools/client-runtime/state/hosted-blender";
 import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
-import { CameraIcon, MoreVertical } from "lucide-react";
+import { CameraIcon, HandIcon, MaximizeIcon, MoreVertical } from "lucide-react";
 import { msg, T, useGT, useMessages, Var } from "gt-react";
 import {
   type MouseEvent as ReactMouseEvent,
@@ -83,6 +83,7 @@ import { isElectron } from "~/env";
 import { getLocalStorageItem, useLocalStorage } from "~/hooks/useLocalStorage";
 import { resolveShortcutCommand } from "~/keybindings";
 import { getKeyboardLayoutMap } from "~/keyboardLayout";
+import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { formatBytes } from "~/lib/formatBytes";
 import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
@@ -97,6 +98,7 @@ import {
 import { formatEnvironmentQueryError } from "~/state/query";
 import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { useRightPanelStore } from "~/rightPanelStore";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 
 import { HiddenThreadContext } from "../chat/backgroundThread";
@@ -117,7 +119,7 @@ import {
   type TakeScroll,
   wheelScroll,
 } from "./blenderInput";
-import { useKeptCopySelection } from "./keptCopies";
+import { reloadKey, useKeptCopySelection } from "./keptCopies";
 import { fileName, useQuitHostedBlender } from "./useQuitHostedBlender";
 
 interface StreamStats {
@@ -245,8 +247,20 @@ function WorkingBlender(
       return (
         <StateCard
           title={<T>Setup needed</T>}
-          description={<MissingRequirements missing={state.missing} />}
-          action={<OpenBlenderSettings environmentId={props.threadRef.environmentId} />}
+          description={
+            <MissingRequirements
+              missing={state.missing}
+              environmentId={props.threadRef.environmentId}
+            />
+          }
+          action={
+            <>
+              {state.missing.includes("enabled") ? null : (
+                <CheckSetupAgain environmentId={props.threadRef.environmentId} />
+              )}
+              <OpenBlenderSettings environmentId={props.threadRef.environmentId} />
+            </>
+          }
         />
       );
     case "stopped":
@@ -255,6 +269,17 @@ function WorkingBlender(
           title={<T>No hosted Blender running</T>}
           description={
             <T>Open a .blend file in the file preview and choose Open in hosted Blender.</T>
+          }
+          action={
+            props.projectId === undefined ? null : (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => useRightPanelStore.getState().open(props.threadRef, "files")}
+              >
+                <T>Open Files</T>
+              </Button>
+            )
           }
         />
       );
@@ -373,6 +398,13 @@ function ReopenCard(props: {
   const crashed = copy.kind === "crashed";
   // T3 opens only workspace files, so only there can it check where a restore would save.
   const reopenable = copy.file.kind === "workspace";
+  // Older than the file on disk, which Open as last saved shows; Restore puts these back over it.
+  const reloaded = copy.reloaded === true && copy.recovery && !crashed;
+  const missing = copy.missing === true;
+  const { copyToClipboard, isCopied } = useCopyToClipboard<void>({
+    onError: () =>
+      toastManager.add(stackedThreadToast({ type: "error", title: gt("Couldn't copy the path") })),
+  });
   const run = async (action: "restore" | "fresh" | "dismiss") => {
     setPending(true);
     const input = {
@@ -422,6 +454,17 @@ function ReopenCard(props: {
             ) : (
               <T>Blender had an untitled scene open, which T3 Code can't reopen.</T>
             )
+          ) : missing ? (
+            recovery ? (
+              <T>
+                <Var>{name}</Var> is no longer in this project, so T3 Code can't reopen it. Its
+                unsaved changes are kept at <Var>{copyPath}</Var>.
+              </T>
+            ) : (
+              <T>
+                <Var>{name}</Var> is no longer in this project, so T3 Code can't reopen it.
+              </T>
+            )
           ) : restoreFailed ? (
             <T>
               Blender couldn't restore the copy of <Var>{name}</Var>. The copy is kept: try again,
@@ -438,6 +481,11 @@ function ReopenCard(props: {
                 <Var>{name}</Var> stopped unexpectedly. Restart opens the file as last saved.
               </T>
             )
+          ) : reloaded ? (
+            <T>
+              T3 Code kept these unsaved changes to <Var>{name}</Var> when Blender reloaded the file
+              after it changed on disk. The file on disk is newer than them.
+            </T>
           ) : recovery ? (
             <T>
               T3 Code closed <Var>{name}</Var> when this thread settled or T3 Code stopped, and kept
@@ -452,7 +500,41 @@ function ReopenCard(props: {
         action={
           canOperate ? (
             <>
-              {!reopenable ? null : crashed ? (
+              {copyPath === undefined ? null : (
+                <Button
+                  size="sm"
+                  variant={missing ? "default" : "outline"}
+                  onClick={() => copyToClipboard(copyPath, undefined)}
+                >
+                  {isCopied ? <T>Copied</T> : <T>Copy path</T>}
+                </Button>
+              )}
+              {!reopenable ? null : missing ? (
+                recovery ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={pending}
+                    onClick={() => void run("restore")}
+                  >
+                    {crashed ? <T>Restore autosave</T> : <T>Reopen</T>}
+                  </Button>
+                ) : null
+              ) : reloaded ? (
+                <>
+                  <Button size="sm" disabled={pending} onClick={() => void run("fresh")}>
+                    <T>Open as last saved</T>
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={pending}
+                    onClick={() => void run("restore")}
+                  >
+                    <T>Restore changes</T>
+                  </Button>
+                </>
+              ) : crashed ? (
                 <>
                   <Button size="sm" disabled={pending} onClick={() => void run("fresh")}>
                     <T>Restart</T>
@@ -590,8 +672,46 @@ function UnavailableReason(props: {
   }
 }
 
-function MissingRequirements(props: { readonly missing: ReadonlyArray<HostedBlenderRequirement> }) {
+/** The setup check again, as Settings › Blender's: after installing, or a GPU that was busy. */
+function CheckSetupAgain(props: { readonly environmentId: EnvironmentId }) {
   const gt = useGT();
+  const m = useMessages();
+  const canCheck = useAtomValue(
+    hostedBlenderEnvironment.checkSetup.permissionAtom(props.environmentId),
+  );
+  const check = useAtomCommand(hostedBlenderEnvironment.checkSetup, { reportFailure: false });
+  const checking = useHostedBlenderSetupState(props.environmentId)?.checking === true;
+  if (!canCheck) return null;
+  const run = async () => {
+    const result = await check({ environmentId: props.environmentId, input: {} });
+    if (result._tag === "Failure") {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: gt("Couldn't check hosted Blender's setup"),
+          description: formatEnvironmentQueryError(result.cause, m),
+        }),
+      );
+    }
+  };
+  return (
+    <Button size="sm" disabled={checking} onClick={() => void run()}>
+      {checking ? <Spinner /> : null}
+      <T>Check again</T>
+    </Button>
+  );
+}
+
+function MissingRequirements(props: {
+  readonly missing: ReadonlyArray<HostedBlenderRequirement>;
+  readonly environmentId: EnvironmentId;
+}) {
+  const gt = useGT();
+  const setup = useHostedBlenderSetupState(props.environmentId)?.result;
+  // Installed, but no encoder passed the test encode: nothing to install, and a busy GPU does it.
+  const encoderFailed =
+    setup?.status === "checked" &&
+    setup.checks.some((check) => check.item === "encoder" && check.status === "failed");
   if (props.missing.includes("enabled")) {
     return <T>Switch on Hosted Blender in Settings › Blender to watch and steer Blender here.</T>;
   }
@@ -611,15 +731,28 @@ function MissingRequirements(props: { readonly missing: ReadonlyArray<HostedBlen
     encoder: gt("an H.264 encoder"),
     glupload: gt("GStreamer's OpenGL plugin"),
   };
-  const list = props.missing
-    .filter((requirement) => requirement !== "enabled" && requirement !== "check")
-    .map((requirement) => names[requirement])
-    .join(", ");
-  return (
+  const missing = props.missing.filter(
+    (requirement): requirement is keyof typeof names =>
+      requirement !== "enabled" &&
+      requirement !== "check" &&
+      !(encoderFailed && requirement === "encoder"),
+  );
+  const list = missing.map((requirement) => names[requirement]).join(", ");
+  const failed = encoderFailed ? (
     <T>
-      This server is missing: <Var>{list}</Var>. Settings › Blender can install them with an agent
-      or show you the commands.
+      An H.264 encoder is installed, but none passed the test encode. If the GPU was busy, check
+      again.
     </T>
+  ) : null;
+  if (missing.length === 0) return failed;
+  return (
+    <>
+      <T>
+        This server is missing: <Var>{list}</Var>. Settings › Blender can install them with an agent
+        or show you the commands.
+      </T>
+      {failed === null ? null : <> {failed}</>}
+    </>
   );
 }
 
@@ -640,7 +773,7 @@ function RunningBlender(
   const streamRef = useRef<BlenderStreamHandle | null>(null);
   const annotation = useBlenderAnnotation({
     threadRef: props.threadRef,
-    relativePath: props.state.relativePath,
+    openFile: quitFileOf(props.state),
     composerTarget: props.composerTarget,
     projectId: props.projectId,
     master,
@@ -648,7 +781,9 @@ function RunningBlender(
   });
   const live = props.state.status === "running" && props.visible && stats.frameSize !== null;
   // Hidden until the next reload keeps a copy; the copy itself stays as any kept copy does.
-  const [dismissedReload, setDismissedReload] = useState<number | null>(null);
+  const dismissedReload = useKeptCopySelection(
+    (selection) => selection.dismissedReloads[reloadKey(props.threadRef, master)],
+  );
   const reloadKept = props.state.reloadKept;
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -673,7 +808,9 @@ function RunningBlender(
           threadRef={props.threadRef}
           copyKey={reloadKept.key}
           master={master}
-          onDismiss={() => setDismissedReload(reloadKept.at)}
+          onDismiss={() =>
+            useKeptCopySelection.getState().dismissReload(props.threadRef, master, reloadKept.at)
+          }
         />
       ) : null}
       {props.state.status === "starting" ? (
@@ -755,7 +892,8 @@ function BlenderToolbar(props: {
     props.master ? { role: "master" } : {},
   );
   return (
-    <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
+    // A container, so a narrow pane drops the buttons' words before anything leaves its edge.
+    <div className="@container/blender-toolbar flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
       {props.switcher}
       <span className="min-w-0 flex-1 truncate font-mono text-xs font-semibold">{name}</span>
       <Tooltip>
@@ -778,25 +916,19 @@ function BlenderToolbar(props: {
         <TooltipPopup side="bottom">{gt("Screenshot & annotate")}</TooltipPopup>
       </Tooltip>
       {!canOperate ? null : controller !== "you" ? (
-        <Button
-          variant="outline"
-          size="xs"
-          type="button"
+        <ToolbarAction
+          label={controller === "another-viewer" ? gt("Take over") : gt("Take control")}
+          icon={<HandIcon />}
           onClick={() => props.streamRef.current?.takeControl(controller === "another-viewer")}
-        >
-          {controller === "another-viewer" ? <T>Take over</T> : <T>Take control</T>}
-        </Button>
+        />
       ) : canUseFullscreen() ? (
-        <Button
-          variant="outline"
-          size="xs"
-          type="button"
+        <ToolbarAction
+          label={gt("Fullscreen")}
+          icon={<MaximizeIcon />}
           // Pressing it must not move focus off the stream, which would give control back.
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => props.streamRef.current?.fullscreen()}
-        >
-          <T>Fullscreen</T>
-        </Button>
+        />
       ) : null}
       {canQuit || canOperate || canSetTimeline ? (
         <Menu>
@@ -885,6 +1017,35 @@ function BlenderToolbar(props: {
       ) : null}
       {quit.dialog}
     </div>
+  );
+}
+
+/** A toolbar button that shows only its icon, its label as a tooltip, in a narrow pane. */
+function ToolbarAction(props: {
+  readonly label: string;
+  readonly icon: ReactNode;
+  readonly onClick: () => void;
+  readonly onMouseDown?: (event: ReactMouseEvent) => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            variant="outline"
+            size="xs"
+            type="button"
+            aria-label={props.label}
+            onMouseDown={props.onMouseDown}
+            onClick={props.onClick}
+          />
+        }
+      >
+        <span className="hidden @max-[30rem]/blender-toolbar:contents">{props.icon}</span>
+        <span className="@max-[30rem]/blender-toolbar:hidden">{props.label}</span>
+      </TooltipTrigger>
+      <TooltipPopup side="bottom">{props.label}</TooltipPopup>
+    </Tooltip>
   );
 }
 
@@ -1270,6 +1431,7 @@ function BlenderStatusStrip(
     readonly environmentId: EnvironmentId;
   },
 ) {
+  const gt = useGT();
   const setup = useHostedBlenderSetupState(props.environmentId)?.result;
   const gpu =
     setup?.status === "checked"
@@ -1317,7 +1479,7 @@ function BlenderStatusStrip(
       ) : null}
       {props.server?.memoryBytes != null ? (
         <span className={`shrink-0 font-mono${parts.length > 0 ? "" : " ml-auto"}`}>
-          {formatBytes(props.server.memoryBytes)}
+          {gt("Blender memory {size}", { size: formatBytes(props.server.memoryBytes) })}
         </span>
       ) : null}
     </div>

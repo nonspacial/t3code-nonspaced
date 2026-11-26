@@ -46,6 +46,8 @@ export interface SetupFacts {
   readonly gstreamerVersion: string | null;
   /** The encoder the helper's test encode kept, null when none worked or it couldn't run. */
   readonly encoder: string | null;
+  /** An H.264 encoder is installed, though none may have passed the test encode. */
+  readonly encoderInstalled: boolean;
   readonly nvidia: boolean;
   readonly glupload: boolean;
   readonly renderNodes: { readonly total: number; readonly accessible: number };
@@ -288,7 +290,12 @@ export const evaluateSetup = (
     facts.gstreamerVersion === null
       ? check("gstreamer", "missing")
       : check("gstreamer", gstreamerOk ? "ok" : "outdated", facts.gstreamerVersion),
-    check("encoder", facts.encoder === null ? "missing" : "ok", facts.encoder),
+    // Installed but failing its test encode, as on a busy GPU, is nothing to install.
+    check(
+      "encoder",
+      facts.encoder !== null ? "ok" : facts.encoderInstalled ? "failed" : "missing",
+      facts.encoder,
+    ),
     ...(facts.nvidia ? [check("glupload", facts.glupload ? "ok" : "missing")] : []),
     facts.renderNodes.total === 0
       ? check("gpu", "warning")
@@ -329,7 +336,7 @@ export const needsInstall = (result: Pick<CheckedSetup, "checks">) =>
       entry.status === "missing" ||
       entry.status === "outdated" ||
       entry.status === "unrecognized" ||
-      entry.status === "failed",
+      (entry.status === "failed" && entry.item !== "encoder"),
   );
 
 const ITEM_NAMES: Record<HostedBlenderSetupItem, string> = {

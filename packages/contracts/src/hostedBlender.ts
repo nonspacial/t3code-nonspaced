@@ -183,10 +183,12 @@ export const HostedBlenderKeptCopy = Schema.Struct({
   recovery: Schema.Boolean,
   /** The last try to restore it failed; the copy is kept. */
   restoreFailed: Schema.optional(Schema.Boolean),
-  /** Where the copy is on the server, for one T3 can't reopen: untitled or outside the workspace. */
+  /** Where the copy is on the server, for one T3 can't reopen: untitled, outside the workspace, or missing. */
   copyPath: Schema.optional(Schema.String),
   /** Kept as Blender reloaded the file after it changed on disk: older than the file there. */
   reloaded: Schema.optional(Schema.Boolean),
+  /** The file is gone from the workspace, as the last Reopen found; `copyPath` says where the copy is. */
+  missing: Schema.optional(Schema.Boolean),
 });
 export type HostedBlenderKeptCopy = typeof HostedBlenderKeptCopy.Type;
 
@@ -353,6 +355,10 @@ export const HostedBlenderViewCapture = Schema.Struct({
   }),
   cameraView: PreviewAnnotationCameraViewSchema,
   projection: HostedBlenderViewProjection,
+  /** The file Blender had open as it rendered: after File > Open, not the launch file. */
+  openFile: Schema.optionalKey(HostedBlenderKeptFile),
+  /** When Blender had last loaded it, null before any load since it started; hits name it. */
+  loadedAt: Schema.optionalKey(Schema.NullOr(Schema.Number)),
 });
 export type HostedBlenderViewCapture = typeof HostedBlenderViewCapture.Type;
 
@@ -363,6 +369,8 @@ export const HostedBlenderFindHitsInput = Schema.Struct({
   threadId: ThreadId,
   role: Schema.optionalKey(HostedBlenderRole),
   projection: HostedBlenderViewProjection,
+  /** The capture's load: Blender answers no hits once it has loaded something else since. */
+  loadedAt: Schema.optionalKey(Schema.NullOr(Schema.Number)),
   /** Each mark's samples, tried in order until one meets a surface. */
   marks: Schema.Array(Schema.Array(WindowSample).check(Schema.isMaxLength(256))).check(
     Schema.isMaxLength(64),
@@ -423,7 +431,12 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "restoreFailed",
       "restoreReplacesUnsaved",
       "unkeepableEdits",
+      "unsavedImages",
+      "unsavedCatalogs",
+      "discardUnconfirmed",
     ]),
+    /** With `unsavedImages` from a save: the edited images Blender couldn't save. */
+    images: Schema.optionalKey(Schema.Array(Schema.String)),
   },
 ) {
   override get message(): string {
@@ -484,6 +497,17 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "This Blender has unsaved changes the restore would replace.";
       case "unkeepableEdits":
         return "This Blender has unsaved image or asset catalog edits a recovery copy can't keep. Save or discard them first.";
+      case "unsavedImages":
+        if (this.images !== undefined && this.images.length > 0) {
+          const names = this.images.slice(0, 3).join(", ");
+          const more = this.images.length > 3 ? ` and ${this.images.length - 3} more` : "";
+          return `Blender saved the images it could, but couldn't save ${names}${more}, so it didn't save the file or quit. Save them somewhere Blender can write, or pack them into the .blend, then Save and quit again.`;
+        }
+        return "Blender has unsaved image edits, which quitting would lose: they live outside the .blend, so its recovery copy can't keep them. Save them in Blender's Image Editor (Image > Save All Images) first, or quit without saving to discard them.";
+      case "unsavedCatalogs":
+        return "Blender has unsaved asset catalog edits, which quitting would lose: they live outside the .blend, so its recovery copy can't keep them. Save them in Blender's asset browser first, or quit without saving to discard them.";
+      case "discardUnconfirmed":
+        return "Blender didn't answer, so it stays open with its changes. If it still doesn't answer, choosing Quit without saving again stops it and keeps what Blender last autosaved.";
     }
   }
 }

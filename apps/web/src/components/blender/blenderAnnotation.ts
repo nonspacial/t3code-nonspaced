@@ -1,6 +1,7 @@
 import type {
   HostedBlenderFindHitsInput,
   HostedBlenderHits,
+  HostedBlenderKeptFile,
   HostedBlenderViewCapture,
   PreviewAnnotationPayload,
   PreviewAnnotationRegionTarget,
@@ -11,7 +12,10 @@ import { markSamples, modelAnnotationPayload } from "../files/modelAnnotation";
 
 const WORKING_COPY = /\.wip-[^/.]+\.blend$/i;
 
-export type BlenderHitsRequest = Pick<HostedBlenderFindHitsInput, "projection" | "marks">;
+export type BlenderHitsRequest = Pick<
+  HostedBlenderFindHitsInput,
+  "projection" | "marks" | "loadedAt"
+>;
 
 /**
  * "hero.wip-a1b2.blend · Working copy", or "· Master" for any other file. Working copies are
@@ -29,7 +33,8 @@ export function blenderAnnotationTitle(relativePath: string): string {
  */
 export async function blenderAnnotationPayload(input: {
   readonly id: string;
-  readonly relativePath: string;
+  /** The file the frame is of: the capture's, else the one the pane last heard was open. */
+  readonly file: HostedBlenderKeptFile;
   readonly comment: string;
   readonly regions: ReadonlyArray<PreviewAnnotationRegionTarget>;
   readonly strokes: ReadonlyArray<PreviewAnnotationStrokeTarget>;
@@ -48,14 +53,25 @@ export async function blenderAnnotationPayload(input: {
     ...input.regions.map((region) => markSamples(region.rect, input.size)),
     ...input.strokes.map((stroke) => markSamples(stroke.bounds, input.size, stroke.points)),
   ];
+  const capture = input.capture;
   const found =
-    input.capture && input.findHits && marks.length > 0
-      ? await input.findHits({ projection: input.capture.projection, marks })
+    capture && input.findHits && marks.length > 0
+      ? await input.findHits({
+          projection: capture.projection,
+          marks,
+          ...(capture.loadedAt === undefined ? {} : { loadedAt: capture.loadedAt }),
+        })
       : null;
+  const linkPath =
+    input.file.kind === "workspace"
+      ? input.file.relativePath
+      : input.file.kind === "outside"
+        ? input.file.path
+        : null;
   return modelAnnotationPayload({
     id: input.id,
-    name: blenderAnnotationTitle(input.relativePath),
-    linkPath: input.relativePath,
+    name: linkPath === null ? "Untitled scene" : blenderAnnotationTitle(linkPath),
+    linkPath,
     comment: input.comment,
     regions: input.regions,
     strokes: input.strokes,

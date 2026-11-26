@@ -5,10 +5,16 @@ import {
   VIEW_ONLY,
 } from "@t3tools/client-runtime/hosted-blender/stream";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
-import { blendFileName, quitFileOf } from "@t3tools/client-runtime/state/hosted-blender";
+import {
+  blendFileName,
+  isDiscardUnconfirmed,
+  isRestoreReplacingUnsaved,
+  quitFileOf,
+} from "@t3tools/client-runtime/state/hosted-blender";
 import {
   EnvironmentId,
   type HostedBlenderKeptCopy,
+  type HostedBlenderRunningState,
   type HostedBlenderThreadState,
   ThreadId,
 } from "@t3tools/contracts";
@@ -117,7 +123,16 @@ function BlenderScreen(props: {
       },
     }).finally(() => setQuitting(false));
     if (result._tag === "Failure") {
-      Dialog.alert(m(msg("Couldn't quit Blender")), formatEnvironmentQueryError(result.cause));
+      Dialog.alert(
+        m(msg("Couldn't quit Blender")),
+        isDiscardUnconfirmed(result.cause)
+          ? m(
+              msg(
+                "Blender didn't answer, so it stays open with its changes. If it still doesn't answer, choosing Quit without saving again stops it and keeps what Blender last autosaved.",
+              ),
+            )
+          : formatEnvironmentQueryError(result.cause),
+      );
     }
   };
   const askToQuit = () => {
@@ -198,6 +213,13 @@ function BlenderScreen(props: {
           ) : null}
         </GlassSurface>
       </View>
+      {running ? (
+        <ReloadNotices
+          environmentId={props.environmentId}
+          threadId={props.threadId}
+          state={running}
+        />
+      ) : null}
       {blender === null ? (
         <StateMessage>
           {state.error ? (
@@ -230,6 +252,109 @@ function BlenderScreen(props: {
       ) : (
         <BlenderStateCard state={blender} />
       )}
+    </View>
+  );
+}
+
+/** A reload that kept Blender's unsaved changes, which Restore changes puts back, or one held. */
+function ReloadNotices(props: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly state: HostedBlenderRunningState;
+}) {
+  const gt = useGT();
+  const canRestore = useAtomValue(
+    hostedBlenderEnvironment.reopen.permissionAtom(props.environmentId),
+  );
+  const reopen = useAtomCommand(hostedBlenderEnvironment.reopen, { reportFailure: false });
+  const [pending, setPending] = useState(false);
+  // Hidden until the next reload keeps a copy; the copy itself stays as any kept copy does.
+  const [dismissed, setDismissed] = useState<number | null>(null);
+  const name = blendFileName(quitFileOf(props.state), gt("Untitled scene"));
+  const kept = props.state.reloadKept;
+  const blocked = props.state.reloadBlocked;
+  const restore = async (key: string, replaceUnsaved: boolean) => {
+    setPending(true);
+    const result = await reopen({
+      environmentId: props.environmentId,
+      input: {
+        threadId: props.threadId,
+        key,
+        restore: true,
+        ...(replaceUnsaved ? { replaceUnsaved: true } : {}),
+      },
+    }).finally(() => setPending(false));
+    if (result._tag === "Success") return;
+    // Unsaved work since the reload is replaced only once the person agrees; it becomes the copy.
+    if (!replaceUnsaved && isRestoreReplacingUnsaved(result.cause)) {
+      Dialog.alert(
+        gt("Replace the unsaved changes to {name}?", { name }),
+        gt(
+          "Blender has changes since it reloaded the file. Restoring puts the kept changes back and keeps these as the recovery copy instead, so you can restore them again.",
+        ),
+        [
+          { text: gt("Cancel"), style: "cancel" },
+          { text: gt("Restore changes"), onPress: () => void restore(key, true) },
+        ],
+      );
+      return;
+    }
+    Dialog.alert(m(msg("Couldn't restore the changes")), formatEnvironmentQueryError(result.cause));
+  };
+  const blockedText =
+    blocked === undefined
+      ? null
+      : blocked === "agentWork"
+        ? gt(
+            "{name} changed on disk. Blender loads it once the agent's work running in it has finished.",
+            { name },
+          )
+        : blocked === "images"
+          ? gt(
+              "{name} changed on disk. Blender loads it once its unsaved image edits are saved or discarded, since a recovery copy can't keep them.",
+              { name },
+            )
+          : blocked === "catalogs"
+            ? gt(
+                "{name} changed on disk. Blender loads it once its unsaved asset catalog edits are saved or discarded, since a recovery copy can't keep them.",
+                { name },
+              )
+            : blocked === "copyFailed"
+              ? gt(
+                  "{name} changed on disk, but Blender couldn't keep its unsaved changes first, so it hasn't loaded the new version.",
+                  { name },
+                )
+              : gt(
+                  "{name} changed on disk, but Blender couldn't load the new version. It tries again when the file changes.",
+                  { name },
+                );
+  const showKept = kept !== undefined && kept.at !== dismissed;
+  if (blockedText === null && !showKept) return null;
+  return (
+    <View className="gap-2 px-3 pt-2">
+      {blockedText === null ? null : <Notice message={blockedText} />}
+      {kept !== undefined && showKept ? (
+        <>
+          <Notice
+            message={gt(
+              "{name} changed on disk, so Blender reloaded it. Its unsaved changes are kept as a recovery copy.",
+              { name },
+            )}
+            onDismiss={() => setDismissed(kept.at)}
+            dismissLabel={gt("Dismiss")}
+          />
+          {canRestore ? (
+            <View className="items-start">
+              <Button
+                label={gt("Restore changes")}
+                tone="secondary"
+                disabled={pending}
+                onPress={() => void restore(kept.key, false)}
+              />
+            </View>
+          ) : null}
+        </>
+      ) : null}
     </View>
   );
 }
@@ -271,14 +396,27 @@ function BlenderStateCard(props: { readonly state: HostedBlenderThreadState }) {
         const untitled = gt("Untitled scene");
         const name = keptName(newest, untitled);
         const detail =
-          newest.kind === "closed"
+          newest.missing === true && newest.copyPath !== undefined
             ? gt(
-                "T3 Code closed {name} when this thread settled or T3 Code stopped. Reopen it from T3 Code on the web or desktop.",
-                { name },
+                "{name} is no longer in this project, so T3 Code can't reopen it. Its unsaved changes are kept at {path}.",
+                { name, path: newest.copyPath },
               )
-            : gt("{name} stopped unexpectedly. Restart it from T3 Code on the web or desktop.", {
-                name,
-              });
+            : newest.reloaded === true && newest.recovery && newest.kind === "closed"
+              ? gt(
+                  "T3 Code kept these unsaved changes to {name} when Blender reloaded the file after it changed on disk. The file on disk is newer than them. Open it as last saved or restore them from T3 Code on the web or desktop.",
+                  { name },
+                )
+              : newest.kind === "closed"
+                ? gt(
+                    "T3 Code closed {name} when this thread settled or T3 Code stopped. Reopen it from T3 Code on the web or desktop.",
+                    { name },
+                  )
+                : gt(
+                    "{name} stopped unexpectedly. Restart it from T3 Code on the web or desktop.",
+                    {
+                      name,
+                    },
+                  );
         return [
           newest.kind === "closed" ? gt("Blender was closed") : gt("Blender crashed"),
           others.length === 0

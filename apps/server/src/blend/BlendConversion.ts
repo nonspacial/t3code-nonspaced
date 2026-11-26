@@ -60,7 +60,8 @@ export class BlendConversion extends Context.Service<
     ) => Effect.Effect<void, ConversionError>;
     /**
      * Converts like `convert`, then again each time the file or a library it links changes,
-     * until interrupted. It ends only when the file cannot be converted at all.
+     * until interrupted. It ends only when the file cannot be converted at all, or after the one
+     * conversion `once` asks for.
      */
     readonly watch: (
       input: BlendConversionInput,
@@ -101,9 +102,24 @@ interface Source {
   readonly blendPath: string;
   readonly libraries: ReadonlyArray<string>;
   readonly blender: BlenderDetection.DetectedBlender;
-  /** The file and the libraries it links, as they were when checked; null while missing. */
-  readonly revisions: ReadonlyArray<{ readonly file: string; readonly revision: string | null }>;
+  /** The file and the libraries it watches, as they were when checked; null while missing. */
+  readonly revisions: ReadonlyArray<Revision>;
+  /** The file and every library it links, the server's own too: what its cache entry is of. */
+  readonly keyRevisions: ReadonlyArray<Revision>;
 }
+
+interface Revision {
+  readonly file: string;
+  readonly revision: string | null;
+}
+
+const readRevisions = (files: ReadonlyArray<Revision>) =>
+  Effect.forEach(files, ({ file }) =>
+    Effect.map(readFileRevision(file), (revision) => ({ file, revision })),
+  );
+
+const sameRevisions = (a: ReadonlyArray<Revision>, b: ReadonlyArray<Revision>) =>
+  a.length === b.length && a.every((entry, index) => entry.revision === b[index]?.revision);
 
 const encodeCacheKey = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
@@ -170,23 +186,18 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
       ? path.resolve(path.dirname(blendPath), saved.slice(2).replaceAll("\\", "/"))
       : saved;
 
+  // The revisions the watcher compares, so a change it sees is never answered from the cache.
   const cacheKey = Effect.fnUntraced(function* (input: Source) {
-    const file = yield* modifiedAt(input.blendPath);
-    const libraries = yield* Effect.forEach(input.libraries, (saved) => {
-      const resolved = libraryPath(input.blendPath, saved);
-      return Effect.map(modifiedAt(resolved), (info) => [resolved, info?.mtime ?? null] as const);
-    });
     const key = yield* encodeCacheKey({
       path: input.blendPath,
-      file,
-      libraries,
+      revisions: input.keyRevisions,
       blender: input.blender,
       script: BLEND_EXPORT_SCRIPT,
-    }).pipe(Effect.orDie);
+    });
     return yield* digest
       .digest(Digest.sha256, new TextEncoder().encode(key))
-      .pipe(Effect.map(Hex.encode), Effect.orDie);
-  });
+      .pipe(Effect.map(Hex.encode));
+  }, Effect.orDie);
 
   /** Marks a hit as recently used, so the size cap evicts other entries first. */
   const touch = (file: string) =>
@@ -250,6 +261,10 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
       readonly blender: BlenderDetection.DetectedBlender;
       readonly cacheFileName: string;
       readonly keepTrying: boolean;
+      /** What the export must still be of when it is cached. */
+      readonly keyRevisions: ReadonlyArray<Revision>;
+      /** A watch converts a file changed meanwhile again, so it hears nothing of this one. */
+      readonly watching: boolean;
       readonly emit: (status: BlendConversionStatus) => Effect.Effect<void>;
     }) {
       yield* fileSystem.makeDirectory(cacheDir, { recursive: true });
@@ -320,6 +335,14 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
           log: `The converted model is ${megabytes(written.size)}, over the ${megabytes(admissible)} a 3D preview can hold.`,
         });
       }
+      // Changed while Blender read it: the export is of no version the key names.
+      if (!sameRevisions(yield* readRevisions(input.keyRevisions), input.keyRevisions)) {
+        if (input.watching) return;
+        return yield* input.emit({
+          status: "failed",
+          log: "The file changed while Blender converted it, so the result wasn't kept. Try again.",
+        });
+      }
       const target = path.join(cacheDir, input.cacheFileName);
       yield* fileSystem.rename(outputPath, target);
       yield* evict(input.cacheFileName);
@@ -343,7 +366,11 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
   );
 
   /** Converts once, returning the file as it was last checked, or null when it can't be. */
-  const convertOnce = Effect.fnUntraced(function* (input: BlendConversionInput, emit: Emit) {
+  const convertOnce = Effect.fnUntraced(function* (
+    input: BlendConversionInput,
+    emit: Emit,
+    watching: boolean,
+  ) {
     // Checked again once the conversion gets its turn: the file can be replaced while it waits.
     const check = Effect.fnUntraced(function* () {
       const target = yield* workspaceFileSystem.resolveReadPath(input);
@@ -384,19 +411,21 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
       if (savedByNewerBlender(facts.blenderVersion, blender.version)) {
         return unavailable({ reason: "newerBlender", blenderVersion: blender.version });
       }
-      // The server's own files are never watched, so no change notice can tell of them.
-      const watchable = yield* Effect.filter(
+      const libraries = yield* Effect.forEach(
         facts.libraries.map((saved) => libraryPath(target.realPath, saved)),
-        (file) => Effect.map(isServerInternalPath(file), (internal) => !internal),
+        (file) => Effect.map(readFileRevision(file), (revision) => ({ file, revision })),
       );
-      const libraries = yield* Effect.forEach(watchable, (file) =>
-        Effect.map(readFileRevision(file), (revision) => ({ file, revision })),
+      // The server's own files are never watched, so no change notice can tell of them.
+      const watchable = yield* Effect.filter(libraries, ({ file }) =>
+        Effect.map(isServerInternalPath(file), (internal) => !internal),
       );
+      const own = { file: target.realPath, revision };
       const source: Source = {
         blendPath: target.realPath,
         libraries: facts.libraries,
         blender,
-        revisions: [{ file: target.realPath, revision }, ...libraries],
+        revisions: [own, ...watchable],
+        keyRevisions: [own, ...libraries],
       };
       return source;
     });
@@ -450,6 +479,8 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
             blender: source.blender,
             cacheFileName: lookup.cacheFileName,
             keepTrying: input.keepTrying === true,
+            keyRevisions: source.keyRevisions,
+            watching,
             emit,
           });
           return source;
@@ -468,11 +499,7 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
   /** The first file that differs from when it was checked, and every file as it was then. */
   const nextChange = (source: Source) =>
     watcher.changes(source.revisions.map(({ file }) => file)).pipe(
-      Stream.mapEffect(() =>
-        Effect.forEach(source.revisions, ({ file }) =>
-          Effect.map(readFileRevision(file), (revision) => ({ file, revision })),
-        ),
-      ),
+      Stream.mapEffect(() => readRevisions(source.revisions)),
       Stream.map((revisions) => ({
         changed: revisions.find(
           ({ revision }, index) => revision !== source.revisions[index]?.revision,
@@ -497,7 +524,10 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
           ? emit({ ...status, changed })
           : emit(status);
       };
-      let source = yield* convertOnce(request, withChange);
+      // A large file converts only when asked, and not again on its own.
+      if (input.once === true)
+        return yield* convertOnce(request, withChange, false).pipe(Effect.asVoid);
+      let source = yield* convertOnce(request, withChange, true);
       while (true) {
         if (source === null || seen.last?.status === "unavailable") return;
         const change = yield* nextChange(source);
@@ -508,7 +538,7 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
         // A file caught mid-save fails this round, not the watch, which then waits for a version
         // other than the one that failed, even one saved before it watches again.
         const failedOn: Source = { ...source, revisions: change.value.revisions };
-        source = yield* convertOnce(request, withChange).pipe(
+        source = yield* convertOnce(request, withChange, true).pipe(
           Effect.catch((error) =>
             withChange({ status: "failed", log: error.message }).pipe(Effect.as(failedOn)),
           ),
@@ -519,7 +549,7 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
 
   const convert: BlendConversion["Service"]["convert"] = Effect.fn("BlendConversion.convert")(
     function* (input, emit) {
-      yield* convertOnce(input, emit);
+      yield* convertOnce(input, emit, false);
     },
   );
 
