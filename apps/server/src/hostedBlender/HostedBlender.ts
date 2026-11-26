@@ -18,6 +18,7 @@ import {
   HostedBlenderReloadBlocker,
   HostedBlenderRole,
   type HostedBlenderStreamServerMessage,
+  type ServerSettingsError,
   type HostedBlenderViewerMessage,
   type HostedBlenderThreadState,
   ThreadId,
@@ -56,6 +57,7 @@ import * as BlendFileWatcher from "../blend/BlendFileWatcher.ts";
 import * as ServerConfig from "../config.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import { threadWorkspaceRoot } from "../project/threadWorkspaceRoot.ts";
 import { isWithinRoot } from "../workspace/KnownWorkspaces.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
@@ -128,6 +130,11 @@ export const LeftoverSignal = Context.Reference<(pid: number, signal: NodeJS.Sig
     },
   },
 );
+
+/** Holds back T3's words to the add-on, on connecting or when a viewport shows; tests use it. */
+export const HeldWords = Context.Reference<
+  (word: "connected" | "viewportShown") => Effect.Effect<void>
+>("t3/hostedBlender/HeldWords", { defaultValue: () => () => Effect.void });
 // A desktop Blender that doesn't answer by then counts as one T3 couldn't ask.
 const DESKTOP_PROBE_DEADLINE = Duration.seconds(8);
 // A start that shows no viewport window by then has failed (a broken file, no encoder).
@@ -161,6 +168,12 @@ const ControlMessage = Schema.Union([
     mcpVersion: Schema.optional(Schema.NullOr(Schema.String)),
     /** When Blender last loaded a file (open, revert, recover), epoch ms. */
     loadedAt: Schema.optional(Schema.Number),
+    /** The number of the viewport window Blender opened last, announced before it opens. */
+    viewport: Schema.optional(Schema.Int),
+    /** That window is up and whole, waiting for T3's word that the hidden display has it. */
+    viewportWaiting: Schema.optional(Schema.Boolean),
+    /** It opened while T3 wasn't connected, so T3 never expected it. */
+    viewportAlone: Schema.optional(Schema.Boolean),
     /** The file on disk changed since Blender read or saved it. */
     stale: Schema.optional(Schema.Boolean),
     /** What holds the reload of a stale file. */
@@ -235,6 +248,27 @@ const PANES_HIDDEN = '{"type":"panesHidden"}\n';
 const GRANT_AGENT_LISTENER = `${encodeListenerCommand({ type: "grantAgentListener" })}\n`;
 // Quits only if Blender, asked at that moment, has no unsaved changes. A quit T3 gave up on is
 // cancelled by its id, so a late one never closes a master someone has joined since.
+const encodeTimeline = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("timeline"), shown: Schema.Boolean })),
+);
+const timelineCommand = (shown: boolean) => `${encodeTimeline({ type: "timeline", shown })}\n`;
+const encodeViewportWord = Schema.encodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      type: Schema.Literals(["viewportExpected", "viewportShown"]),
+      generation: Schema.Int,
+    }),
+  ),
+);
+const encodeDisplay = Schema.encodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      type: Schema.Literal("display"),
+      width: Schema.NullOr(Schema.Number),
+      height: Schema.NullOr(Schema.Number),
+    }),
+  ),
+);
 const encodeQuitRequest = Schema.encodeSync(
   Schema.fromJsonString(
     Schema.Struct({ type: Schema.Literals(["quitIfClean", "cancelQuit"]), id: Schema.Int }),
@@ -554,6 +588,8 @@ export class HostedBlender extends Context.Service<
     ) => Effect.Effect<HostedBlenderHits, HostedBlenderError>;
     /** Moves the person's viewport window, never the agent's main window. */
     readonly setView: (input: HostedBlenderSetViewInput) => Effect.Effect<void, HostedBlenderError>;
+    /** Shows or hides the Timeline strip in every hosted Blender, now and at later launches. */
+    readonly setTimeline: (shown: boolean) => Effect.Effect<void, ServerSettingsError>;
   }
 >()("t3/hostedBlender/HostedBlender") {}
 
@@ -600,6 +636,20 @@ interface Instance {
   stats: { readonly encoder: string; readonly target: "window" | "output" } | null;
   memoryBytes: number | null;
   viewport: { readonly width: number; readonly height: number } | null;
+  /** The hidden display's output size, which a captured window fills once fullscreen. */
+  output: { readonly width: number; readonly height: number } | null;
+  /**
+   * The viewport window Blender announced last: whether the hidden display captured a window
+   * since T3 told the add-on to open it, and whether the add-on has been told so.
+   */
+  shownViewport: { readonly generation: number; captured: boolean; shown: boolean } | null;
+  /** The Timeline switch as Blender last heard it, from its launch or T3's last word. */
+  sentTimeline: boolean;
+  /** Words that shape Blender's window go out one at a time, and none once a quit is queued. */
+  readonly words: Semaphore.Semaphore;
+  wordsClosed: boolean;
+  /** The hidden display holds a window: captured, and not closed since. */
+  captureLive: boolean;
   lastKeyframeRequest: number;
   /** A keyframe request is waiting out the throttle. */
   keyframeDeferred: boolean;
@@ -757,6 +807,12 @@ const make = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const net = yield* NetService.NetService;
   const setup = yield* HostedBlenderSetup.HostedBlenderSetup;
+  const settings = yield* ServerSettings.ServerSettingsService;
+  // Unreadable settings show the strip, as it is by default.
+  const timelineShown = settings.getSettings.pipe(
+    Effect.map((value) => value.hostedBlenderTimeline),
+    Effect.orElseSucceed(() => true),
+  );
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
   const watcher = yield* BlendFileWatcher.BlendFileWatcher;
   const environment = yield* HostProcess.Environment;
@@ -771,6 +827,7 @@ const make = Effect.gen(function* () {
   >();
   const serviceScope = yield* Effect.scope;
   const signalProcess = yield* LeftoverSignal;
+  const heldWords = yield* HeldWords;
   // Runs live here, so on shutdown they are ended with recovery copies before it closes.
   const runScope = yield* Scope.fork(serviceScope);
   let screenshots = 0;
@@ -1572,6 +1629,12 @@ const make = Effect.gen(function* () {
     switch (event.type) {
       case "ready": {
         instance.stats = { encoder: event.encoder, target: event.target };
+        instance.output = { width: event.width, height: event.height };
+        yield* sendDisplay(instance);
+        if (event.target === "output" && instance.shownViewport !== null) {
+          instance.shownViewport.captured = true;
+          yield* viewportShown(instance);
+        }
         // Sizes asked for before the helper ran went nowhere; ask for the wanted one now.
         instance.displaySize = `${event.width}x${event.height}`;
         yield* applySize(instance);
@@ -1584,7 +1647,13 @@ const make = Effect.gen(function* () {
         return;
       }
       case "windowCaptured":
+        instance.captureLive = true;
+        if (instance.shownViewport !== null) instance.shownViewport.captured = true;
+        yield* viewportShown(instance);
         return yield* markRunning(instance);
+      case "resized":
+        instance.output = { width: event.width, height: event.height };
+        return yield* sendDisplay(instance);
       case "frameSize":
         instance.viewport = { width: event.width, height: event.height };
         return yield* broadcast(instance, { type: "viewport", ...instance.viewport });
@@ -1606,11 +1675,103 @@ const make = Effect.gen(function* () {
         return yield* broadcast(instance, { type: "cursor", captured });
       }
       case "windowClosed":
+        instance.captureLive = false;
+        if (instance.shownViewport?.shown === false) instance.shownViewport.captured = false;
         return;
     }
   });
 
-  // Running once Blender shows its viewport window and any restore asked for has succeeded.
+  /**
+   * A word that shapes Blender's window (Timeline, display, viewport), made when it is written.
+   * One at a time, so a stale one can't follow a newer one; never once a quit is queued, which a
+   * Blender that closes with it unread answers by dropping its last report.
+   */
+  const sendWord = (
+    instance: Instance,
+    make: Effect.Effect<string | null>,
+    onSent: () => void = () => undefined,
+  ) =>
+    instance.words.withPermits(1)(
+      Effect.gen(function* () {
+        const line = yield* make;
+        const control = instance.control;
+        if (line === null || control === null || instance.wordsClosed) return false;
+        yield* control.write(line);
+        onSent();
+        return true;
+      }),
+    );
+
+  // The setting as it is when written, only if Blender last heard otherwise on this connection.
+  const sendTimeline = (instance: Instance) => {
+    let shown = instance.sentTimeline;
+    return sendWord(
+      instance,
+      Effect.map(timelineShown, (current) => {
+        shown = current;
+        return current === instance.sentTimeline ? null : timelineCommand(current);
+      }),
+      () => {
+        instance.sentTimeline = shown;
+      },
+    );
+  };
+
+  const sendDisplay = (instance: Instance) =>
+    sendWord(
+      instance,
+      Effect.sync(() => {
+        if (instance.stats === null) return null;
+        const output = instance.stats.target === "window" ? instance.output : null;
+        return `${encodeDisplay({ type: "display", width: output?.width ?? null, height: output?.height ?? null })}\n`;
+      }),
+    );
+
+  // While connected, the add-on opens a viewport window only once T3 expects it, so the capture
+  // T3 hears next is that window's: every window with its title is made fullscreen, so the
+  // window's size alone can't say which one the helper selected.
+  const expectViewport = Effect.fnUntraced(function* (
+    instance: Instance,
+    generation: number,
+    opened: boolean,
+  ) {
+    instance.shownViewport = {
+      generation,
+      // Streaming the whole output, there's no capture to wait for; a window opened before T3
+      // could expect it is the one a capture live now holds.
+      captured: instance.stats?.target === "output" || (opened && instance.captureLive),
+      shown: false,
+    };
+    if (!opened) {
+      yield* sendWord(
+        instance,
+        Effect.succeed(`${encodeViewportWord({ type: "viewportExpected", generation })}\n`),
+      );
+    }
+    yield* viewportShown(instance);
+  });
+
+  const viewportShown = Effect.fnUntraced(function* (instance: Instance, again = false) {
+    const shown = instance.shownViewport;
+    if (shown === null || !shown.captured || (shown.shown && !again)) return;
+    yield* heldWords("viewportShown").pipe(
+      Effect.andThen(
+        sendWord(
+          instance,
+          Effect.succeed(
+            `${encodeViewportWord({ type: "viewportShown", generation: shown.generation })}\n`,
+          ),
+        ),
+      ),
+      Effect.tap((sent) =>
+        Effect.sync(() => {
+          if (sent) shown.shown = true;
+        }),
+      ),
+      Effect.forkIn(serviceScope),
+    );
+  });
+
   const markRunning = Effect.fnUntraced(function* (instance: Instance) {
     instance.shown = true;
     if (instance.status === "running" || instance.restore === "pending") return;
@@ -1983,10 +2144,38 @@ const make = Effect.gen(function* () {
     const message = decodeControlMessage(line);
     if (Option.isNone(message)) return;
     switch (message.value.type) {
-      case "hello":
+      case "hello": {
         instance.pid = message.value.pid;
-        return;
+        // Sent once the connection is being read: anything awaited before reading starts can
+        // lose a quick quit's answer.
+        const control = instance.control;
+        if (control === null) return;
+        // Beside the reader, which a write to a Blender already gone must not hold up.
+        return yield* Effect.gen(function* () {
+          yield* heldWords("connected");
+          yield* sendTimeline(instance);
+          yield* sendDisplay(instance);
+          // Words a connection before this one may not have carried.
+          const viewport = instance.shownViewport;
+          if (viewport !== null) {
+            yield* sendWord(
+              instance,
+              Effect.succeed(
+                `${encodeViewportWord({ type: "viewportExpected", generation: viewport.generation })}\n`,
+              ),
+            );
+            yield* viewportShown(instance, true);
+          }
+        }).pipe(Effect.forkIn(serviceScope), Effect.asVoid);
+      }
       case "state": {
+        const generation = message.value.viewport ?? 0;
+        if (generation > 0 && instance.shownViewport?.generation !== generation) {
+          yield* expectViewport(instance, generation, message.value.viewportAlone === true);
+        } else if (message.value.viewportWaiting === true) {
+          // Still whole and waiting: T3's word may not have reached it.
+          yield* viewportShown(instance, true);
+        }
         if (message.value.restore !== undefined) {
           // Blender restores the path the copy was saved from; saving must not write elsewhere
           // than the file it reopened (a workspace moved, say), so then the copy is kept unsaved.
@@ -2005,7 +2194,9 @@ const make = Effect.gen(function* () {
         const openBefore = instance.openFile;
         // Its quit pushes an undo step for the quit copy, so a report after "quitting" is always
         // unsaved and says nothing about the person's work; "quitting" itself carried the facts.
-        if (!instance.quitHeard) {
+        // A Save and quit's "saved" is the last word too: Blender may still read unsaved until it
+        // handles the save's notifier, which comes after the reports ending the agent's grant.
+        if (!instance.quitHeard && !instance.saveConfirmed) {
           yield* noteFile(instance, message.value.filepath, message.value.dirty, {
             loadedAt: message.value.loadedAt,
           });
@@ -2115,6 +2306,7 @@ const make = Effect.gen(function* () {
         return yield* publishNow();
       }
       case "discardRefused":
+        instance.wordsClosed = false;
         if (instance.discardRefused) yield* Deferred.succeed(instance.discardRefused, undefined);
         return;
       case "saving":
@@ -2478,6 +2670,7 @@ const make = Effect.gen(function* () {
               recover: instance.recover,
               revision,
               mcpListen: agentPort !== null,
+              timeline: (instance.sentTimeline = yield* timelineShown),
               ...(mcpSnapshot === null ? {} : { mcpSnapshot }),
               // Plan mode is read-only, whatever the runtime mode. A master serves threads of
               // any mode, so its embedded scripts never run.
@@ -2738,6 +2931,12 @@ const make = Effect.gen(function* () {
       stats: null,
       memoryBytes: null,
       viewport: null,
+      output: null,
+      shownViewport: null,
+      sentTimeline: true,
+      words: yield* Semaphore.make(1),
+      wordsClosed: false,
+      captureLive: false,
       lastKeyframeRequest: Number.NEGATIVE_INFINITY,
       keyframeDeferred: false,
       controlDir: null,
@@ -3091,6 +3290,7 @@ const make = Effect.gen(function* () {
     );
     const control = instance.control;
     if (Option.isNone(connected) || control === null) return false;
+    instance.wordsClosed = true;
     yield* control
       .write(
         `${encodeControlCommand({ type: "quit", save: false, ...(filepath === undefined ? {} : { filepath }) })}\n`,
@@ -3230,6 +3430,23 @@ const make = Effect.gen(function* () {
     yield* end(instance, deadline).pipe(Effect.forkIn(serviceScope));
   });
 
+  // The Timeline switch reaches every running Blender at once, without a restart.
+  const settingsChanges = yield* settings.subscribeChanges;
+  yield* settingsChanges.pipe(
+    Stream.map((value) => value.hostedBlenderTimeline),
+    Stream.changes,
+    Stream.runForEach(() =>
+      Effect.forEach([...instances.values()], sendTimeline, { discard: true }),
+    ),
+    Effect.forkIn(serviceScope),
+  );
+
+  const setTimeline: HostedBlender["Service"]["setTimeline"] = Effect.fn(
+    "HostedBlender.setTimeline",
+  )(function* (shown) {
+    yield* settings.updateSettings({ hostedBlenderTimeline: shown });
+  });
+
   // Switching Hosted Blender off closes every hosted Blender as a settle does, copies kept.
   // Set before the scan, which an open checks as it reserves its launch, so none slips past.
   yield* setup.readiness.pipe(
@@ -3348,13 +3565,17 @@ const make = Effect.gen(function* () {
       // the file as saved over the copy's changes: checked right before the save goes out.
       if (instance.restore === "pending" || instance.restore === "failed") return false;
       instance.saveReplies = replies;
-      return yield* requestSave({
+      instance.wordsClosed = true;
+      const saved = yield* requestSave({
         connection,
         replies,
         ended: Deferred.await(instance.ended),
         command: `${encodeControlCommand({ type: "quit", save: true })}\n`,
         writeTimeout: CONTROL_REPLY_TIMEOUT,
       });
+      // Not saved, Blender stays open.
+      if (!saved) instance.wordsClosed = false;
+      return saved;
     },
     (effect, instance) =>
       effect.pipe(
@@ -3931,6 +4152,7 @@ const make = Effect.gen(function* () {
     const refused = yield* Deferred.make<void>();
     instance.quitRefused = { id, done: refused };
     instance.quitting = true;
+    instance.wordsClosed = true;
     const ended = Deferred.await(instance.ended).pipe(Effect.as<QuitOutcome>("quit"));
     // The write is part of the attempt: a stalled socket counts against its deadline.
     const outcome = yield* control
@@ -3943,7 +4165,10 @@ const make = Effect.gen(function* () {
       );
     instance.quitRefused = null;
     if (Option.isSome(outcome)) {
-      if (outcome.value !== "quit") instance.quitting = false;
+      if (outcome.value !== "quit") {
+        instance.quitting = false;
+        instance.wordsClosed = false;
+      }
       return outcome.value;
     }
     // No answer in time: the request may still be waiting in a busy Blender. The leave ends
@@ -4210,6 +4435,7 @@ const make = Effect.gen(function* () {
     captureView,
     findHits,
     setView,
+    setTimeline,
   });
 });
 

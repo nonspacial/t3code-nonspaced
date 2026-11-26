@@ -19,6 +19,8 @@ const state = vi.hoisted(() => ({
   settings: {} as Record<string, unknown>,
   setup: null as HostedBlenderSetupState | null,
   canOperate: true,
+  canSetTimeline: true,
+  setTimeline: vi.fn(async () => ({ _tag: "Success", value: undefined })),
   updateSettings: vi.fn<(patch: ScopedSettingsPatch) => void>(),
   install: vi.fn(async () => ({ _tag: "Success", value: { threadId: "thread-install" } })),
   check: vi.fn(async () => ({ _tag: "Success", value: undefined })),
@@ -54,13 +56,21 @@ vi.mock(import("~/state/hostedBlender"), async (original) => {
         ...actual.hostedBlenderEnvironment.installWithAgent,
         permissionAtom: allowed,
       },
+      setTimeline: {
+        ...actual.hostedBlenderEnvironment.setTimeline,
+        permissionAtom: () => Atom.make(state.canSetTimeline),
+      },
     } as never,
   };
 });
 vi.mock(import("~/state/use-atom-command"), async (original) => ({
   ...(await original()),
   useAtomCommand: ((command: { label: string }) =>
-    command.label.includes("install") ? state.install : state.check) as never,
+    command.label.includes("install")
+      ? state.install
+      : command.label.includes("timeline")
+        ? state.setTimeline
+        : state.check) as never,
 }));
 
 import { HostedBlenderSetupSettings } from "./HostedBlenderSetupSettings";
@@ -144,6 +154,35 @@ describe("HostedBlenderSetupSettings", () => {
       .toBeEnabled();
     await userEvent.click(screen.getByRole("button", { name: "Check again" }));
     expect(state.check).toHaveBeenCalledWith({ environmentId, input: {} });
+  });
+
+  it("B16: shows the Timeline switch, on by default, writing it as the pane's menu does", async () => {
+    state.settings = { hostedBlenderEnabled: true };
+    state.setup = checked(OK);
+    state.updateSettings.mockClear();
+    await using screen = await render(<HostedBlenderSetupSettings environmentId={environmentId} />);
+    const timeline = screen.getByRole("switch", { name: "Timeline in the Blender pane" });
+    await expect.element(timeline).toBeChecked();
+    await userEvent.click(timeline);
+    // The operate-gated command, never a plain settings write.
+    expect(state.setTimeline).toHaveBeenCalledWith({ environmentId, input: { shown: false } });
+    expect(state.updateSettings).not.toHaveBeenCalledWith({ hostedBlenderTimeline: false });
+  });
+
+  it("S2: offers the Timeline switch only to a session that may operate hosted Blender", async () => {
+    state.canSetTimeline = false;
+    try {
+      state.settings = { hostedBlenderEnabled: true };
+      state.setup = checked(OK);
+      await using screen = await render(
+        <HostedBlenderSetupSettings environmentId={environmentId} />,
+      );
+      await expect
+        .element(screen.getByRole("switch", { name: "Timeline in the Blender pane" }))
+        .toBeDisabled();
+    } finally {
+      state.canSetTimeline = true;
+    }
   });
 
   it("offers an agent or the commands for what is missing, and warns about the GPU", async () => {

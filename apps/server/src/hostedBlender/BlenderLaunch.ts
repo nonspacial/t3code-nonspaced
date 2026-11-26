@@ -20,6 +20,8 @@ export interface BlenderLaunch {
   readonly mcpSnapshot?: string;
   /** Embedded scripts follow the user's "Auto Run Python Scripts"; otherwise they are forced off. */
   readonly autoRun?: boolean;
+  /** Blender's Timeline in a strip under the viewport window's 3D view. */
+  readonly timeline?: boolean;
   readonly width: number;
   readonly height: number;
 }
@@ -58,6 +60,7 @@ export const helperArguments = (launch: BlenderLaunch): ReadonlyArray<string> =>
   ...(launch.revision ? ["--t3-revision", launch.revision] : []),
   ...(launch.recover ? ["--t3-recover", launch.recover] : []),
   ...(launch.mcpListen === true ? ["--t3-mcp-listen"] : []),
+  ...(launch.timeline === true ? ["--t3-timeline"] : []),
   ...(launch.mcpSnapshot === undefined ? [] : ["--t3-mcp-snapshot", launch.mcpSnapshot]),
 ];
 

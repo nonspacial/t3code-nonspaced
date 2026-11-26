@@ -1408,6 +1408,8 @@ export const ServerSettings = Schema.Struct({
   hostedBlenderEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Agents may start hosted Blenders, through the official Blender Lab MCP. */
   hostedBlenderAllowAgents: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** Hosted Blenders show Blender's Timeline in a strip under the pane's 3D view. */
+  hostedBlenderTimeline: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   /** The official `blender-mcp` server. Empty finds it on PATH and in `~/.local/bin`. */
   blenderMcpPath: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   /** macOS only, Labs beta: clone new worktrees from a cached checkout instead of writing every file. */
@@ -1900,6 +1902,7 @@ export const ServerSettingsPatch = Schema.Struct({
   blenderPath: Schema.optionalKey(TrimmedString),
   hostedBlenderEnabled: Schema.optionalKey(Schema.Boolean),
   hostedBlenderAllowAgents: Schema.optionalKey(Schema.Boolean),
+  hostedBlenderTimeline: Schema.optionalKey(Schema.Boolean),
   blenderMcpPath: Schema.optionalKey(TrimmedString),
   fastWorktreeCheckout: Schema.optionalKey(Schema.Boolean),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
@@ -2097,10 +2100,12 @@ export function requiredScopesForServerSettingsPatch(
     ...(changesAccess ? [AuthAccessWriteScope] : []),
     // Saving a script or a Blender or Blender MCP path is choosing a command for the host to run;
     // switching Hosted Blender on runs its setup check, as Check again does. Off runs nothing.
+    // The Timeline strip changes every running Blender's window, as operating one does.
     ...(carriesProjectScripts(patch) ||
     patch.blenderPath !== undefined ||
     patch.blenderMcpPath !== undefined ||
-    patch.hostedBlenderEnabled === true
+    patch.hostedBlenderEnabled === true ||
+    patch.hostedBlenderTimeline !== undefined
       ? [AuthOrchestrationOperateScope]
       : []),
   ];

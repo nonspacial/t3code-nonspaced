@@ -1,11 +1,12 @@
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type {
-  EnvironmentId,
-  HostedBlenderSetupCheck,
-  HostedBlenderSetupItem,
-  HostedBlenderSetupResult,
-  ThreadId,
+import {
+  AuthOrchestrationOperateScope,
+  type EnvironmentId,
+  type HostedBlenderSetupCheck,
+  type HostedBlenderSetupItem,
+  type HostedBlenderSetupResult,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { resolvePastedPath } from "@t3tools/shared/path";
 import { useNavigate } from "@tanstack/react-router";
@@ -55,6 +56,11 @@ export function HostedBlenderSetupSettings(props: { readonly environmentId: Envi
   const canOperate = useAtomValue(
     hostedBlenderEnvironment.checkSetup.permissionAtom(props.environmentId),
   );
+  // The same command as the pane's menu, gated the same way: it changes every running Blender.
+  const canSetTimeline = useAtomValue(
+    hostedBlenderEnvironment.setTimeline.permissionAtom(props.environmentId),
+  );
+  const setTimeline = useAtomCommand(hostedBlenderEnvironment.setTimeline);
   // Only a switched-on Hosted Blender is checked, so the subscription waits for the switch.
   const state = useHostedBlenderSetupState(enabled ? props.environmentId : null);
   const result = state?.result ?? null;
@@ -110,6 +116,32 @@ export function HostedBlenderSetupSettings(props: { readonly environmentId: Envi
                 updateSettings({ hostedBlenderAllowAgents: Boolean(checked) })
               }
               aria-label={gt("Allow agents to start hosted Blenders")}
+            />
+          }
+        />
+      ) : null}
+      {enabled ? (
+        <SettingsRow
+          {...setting("hosted-blender-timeline")}
+          serverScoped
+          // The pane's command writes it, so operating hosted Blender is what it takes.
+          writeScope={AuthOrchestrationOperateScope}
+          settingKeys={["hostedBlenderTimeline"]}
+          description={gt(
+            "Show Blender's Timeline under the 3D view in the Blender pane, for every hosted Blender on this server.",
+          )}
+          control={
+            <ScopedSwitch
+              settingKeys={["hostedBlenderTimeline"]}
+              checked={settings.hostedBlenderTimeline}
+              disabled={!canSetTimeline}
+              onCheckedChange={(checked) =>
+                void setTimeline({
+                  environmentId: props.environmentId,
+                  input: { shown: Boolean(checked) },
+                })
+              }
+              aria-label={gt("Timeline in the Blender pane")}
             />
           }
         />

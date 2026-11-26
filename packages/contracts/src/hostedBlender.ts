@@ -374,6 +374,10 @@ export type HostedBlenderFindHitsInput = typeof HostedBlenderFindHitsInput.Type;
 export const HostedBlenderHits = Schema.Array(Schema.NullOr(PreviewAnnotationHitSchema));
 export type HostedBlenderHits = typeof HostedBlenderHits.Type;
 
+/** Shows or hides the Timeline strip in every hosted Blender's viewport window. */
+export const HostedBlenderSetTimelineInput = Schema.Struct({ shown: Schema.Boolean });
+export type HostedBlenderSetTimelineInput = typeof HostedBlenderSetTimelineInput.Type;
+
 export const HostedBlenderSetViewInput = Schema.Struct({
   threadId: ThreadId,
   role: Schema.optionalKey(HostedBlenderRole),

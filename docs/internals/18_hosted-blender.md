@@ -41,6 +41,27 @@ session, and a master's only through relays, one per agent thread and session, o
 current session and closed when that session's access ends. With no agent thread, nothing listens
 for a master's agents.
 
+## The viewport window is found by its title
+
+The hidden display helper streams, and makes fullscreen, the first window whose title contains
+"3D Viewport" ([`BlenderLaunch.ts`](../../apps/server/src/hostedBlender/BlenderLaunch.ts)), and
+Blender gives that title only to a window holding a lone 3D view; split, it may become "Blender"
+(on 4.5 even a split made before the window is shown does, so it is never made fullscreen), and
+removing the strip doesn't give it back. So the control add-on opens each viewport window as a
+lone 3D view and adds the Timeline strip only once the helper has it. Every window with that
+title is made fullscreen, selected or not, so the window's size alone can't say the helper chose
+it. While T3 is connected, the add-on closes every other viewport window, announces the new
+one's number and opens it only once T3 answers `viewportExpected`, so the next `windowCaptured`
+T3 hears is that window's; without T3 it opens at once. T3 answers `viewportShown` once it has
+that capture, and the add-on splits only once T3 has also said the capture's mode with
+`display`: an output size its window fills, or the whole output. Unknown, it waits; a window
+that never fills the output stays whole and capturable. T3's words that shape the window go out
+one at a time, the Timeline's read as it is written, and none once a quit is queued: a Blender
+that closes with a command unread can make T3's end of the socket drop its last report. Once captured, the helper keeps the
+window whatever its title becomes. Screenshots, marks, view capture and view links read the 3D
+view's own area and region, never the strip's; the stream and the pane's size follow the whole
+window.
+
 ## A change on disk Blender didn't make
 
 The add-on, not the server, decides whether the open file changed. T3's watcher only says the

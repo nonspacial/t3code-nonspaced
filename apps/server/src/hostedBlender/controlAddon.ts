@@ -28,6 +28,7 @@ RECOVER_PATH = _option("--t3-recover")
 # The launch's own copy of Blender Lab: a folder holding its "mcp" package.
 MCP_SNAPSHOT = _option("--t3-mcp-snapshot")
 MCP_LISTEN = "--t3-mcp-listen" in (sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
+TIMELINE = "--t3-timeline" in (sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
 # The file's revision as T3 saw it before Blender read it at launch.
 LAUNCH_REVISION = _option("--t3-revision")
 # Embedded scripts follow the user's setting only when T3 didn't turn them off at launch.
@@ -61,6 +62,21 @@ class _State:
     restore = None
     # The viewport window this session opened, by pointer: one a loaded file brings back is not.
     viewport_window = None
+    # Whether that window has Blender's Timeline in a strip under its 3D view.
+    timeline = TIMELINE
+    # Each viewport window this session opens is numbered; T3 says once the hidden display has
+    # captured that one, and the output's size it must fill, or "output" when the whole output
+    # is streamed. Until T3 has said which, the window waits whole.
+    viewport_generation = 0
+    viewport_shown = 0
+    display = None
+    # The number announced for the next window, until T3, if connected, answers that it expects it.
+    viewport_wanted = None
+    viewport_expected = 0
+    # The window opened while T3 wasn't connected, so T3 never expected it.
+    viewport_alone = False
+    # The window is up and whole, waiting for T3's word before the strip.
+    viewport_waiting = False
     # When Blender last loaded a file (open, revert, recover), epoch ms; T3 ignores autosaves
     # from before it.
     loaded_at = None
@@ -142,6 +158,9 @@ def _snapshot():
         "agentListener": _State.agent_listener,
         "agentActing": _agent_acting(_mcp_server()),
         "mcpVersion": _State.mcp_version,
+        "viewport": _State.viewport_generation,
+        "viewportWaiting": _State.viewport_waiting,
+        "viewportAlone": _State.viewport_alone,
     }
     if _State.restore is not None:
         snapshot["restore"] = _State.restore
@@ -191,8 +210,28 @@ def _lone_3d_view(window):
     return len(window.screen.areas) == 1 and window.screen.areas[0].type == "VIEW_3D"
 
 
+# The strip may be any of these; the person can switch it, as in Blender's own layout.
+ANIMATION_EDITORS = {"DOPESHEET_EDITOR", "GRAPH_EDITOR", "NLA_EDITOR"}
+# About the Timeline's height in Blender's default layout, before the UI scale.
+STRIP_HEIGHT = 48
+
+
+def _viewport_areas(window):
+    # T3's viewport window is one 3D view with at most one animation editor in a strip under it:
+    # (3D view, strip or None), else None.
+    areas = list(window.screen.areas)
+    views = [area for area in areas if area.type == "VIEW_3D"]
+    if len(views) != 1 or len(areas) > 2:
+        return None
+    view = views[0]
+    strip = next((area for area in areas if area is not view), None)
+    if strip is not None and (strip.type not in ANIMATION_EDITORS or strip.y >= view.y):
+        return None
+    return view, strip
+
+
 def _viewport_lost():
-    # T3's viewport window closed, or turned into another editor.
+    # T3's viewport window closed, or its 3D view turned into another editor.
     if _State.viewport_window is None:
         return False
     tracked = [
@@ -200,7 +239,7 @@ def _viewport_lost():
         for window in bpy.context.window_manager.windows
         if window.as_pointer() == _State.viewport_window
     ]
-    return not tracked or not _lone_3d_view(tracked[0])
+    return not tracked or _viewport_areas(tracked[0]) is None
 
 
 def _viewport():
@@ -209,10 +248,10 @@ def _viewport():
     candidates = [
         window
         for window in _viewport_windows()
-        if window.as_pointer() == _State.viewport_window and _lone_3d_view(window)
+        if window.as_pointer() == _State.viewport_window and _viewport_areas(window) is not None
     ]
     for window in candidates:
-        area = window.screen.areas[0]
+        area = _viewport_areas(window)[0]
         region = next((region for region in area.regions if region.type == "WINDOW"), None)
         if region is not None:
             return window, area, region, area.spaces.active
@@ -398,6 +437,20 @@ def _handle(command):
         return
     if kind == "stopAgentListener":
         _end_grant()
+        return
+    if kind in ("timeline", "viewportExpected", "viewportShown", "display"):
+        if kind == "timeline":
+            _State.timeline = bool(command.get("shown"))
+        elif kind == "viewportExpected":
+            _State.viewport_expected = command.get("generation", 0)
+        elif kind == "viewportShown":
+            _State.viewport_shown = command.get("generation", 0)
+        else:
+            width, height = command.get("width"), command.get("height")
+            _State.display = (width, height) if width and height else "output"
+        # Applied on the viewport window's own pass, never in the pass that opens it.
+        if not bpy.app.timers.is_registered(_open_viewport_window):
+            bpy.app.timers.register(_open_viewport_window, first_interval=TICK)
         return
     if kind == "diskChanged":
         _check_disk(command)
@@ -856,7 +909,7 @@ def _open_viewport_window():
     own = [
         other
         for other in found
-        if other.as_pointer() == _State.viewport_window and _lone_3d_view(other)
+        if other.as_pointer() == _State.viewport_window and _viewport_areas(other) is not None
     ]
     # The hidden display streams the first lone 3D view window it finds, so a file's own (T3's
     # from an earlier session, marked or from a build before the mark, in its saved fullscreen
@@ -887,7 +940,22 @@ def _open_viewport_window():
                 bpy.ops.wm.window_close()
         return 0.2
     if own:
+        # Split, its title is no longer the one the hidden display finds it by.
+        _State.viewport_waiting = _State.timeline and not _viewport_settled(own[0])
+        if _State.viewport_waiting:
+            return TICK
+        _show_timeline(own[0], _State.timeline)
         return None
+    _State.viewport_waiting = False
+    if _State.viewport_wanted is None:
+        _State.viewport_generation += 1
+        _State.viewport_wanted = _State.viewport_generation
+        _publish_state()
+    # With T3 connected, opened once it expects it, so the capture T3 hears next is this window's.
+    if _State.client is not None and _State.viewport_expected != _State.viewport_wanted:
+        return TICK
+    _State.viewport_alone = _State.client is None
+    _State.viewport_wanted = None
     areas = [area for area in window.screen.areas if area.type == "VIEW_3D"]
     if not areas:
         area = max(window.screen.areas, key=lambda area: area.width * area.height)
@@ -904,7 +972,39 @@ def _open_viewport_window():
     if opened:
         opened[-1].screen[VIEWPORT_MARKER] = True
         _State.viewport_window = opened[-1].as_pointer()
+        return TICK
     return None
+
+
+def _viewport_settled(window):
+    # The hidden display captured this window (T3 says so by its number) and made it fill the
+    # output, which Blender sees as the window's own size.
+    if _State.viewport_shown != _State.viewport_generation or _State.display is None:
+        return False
+    return _State.display == "output" or (window.width, window.height) == _State.display
+
+
+def _show_timeline(window, shown):
+    # Adds or removes the strip; how the person has sized or switched it is theirs.
+    found = _viewport_areas(window)
+    if found is None:
+        return
+    view, strip = found
+    if shown and strip is None:
+        region = next(region for region in view.regions if region.type == "WINDOW")
+        before = {area.as_pointer() for area in window.screen.areas}
+        height = STRIP_HEIGHT * bpy.context.preferences.system.ui_scale
+        factor = min(0.5, max(0.05, height / max(view.height, 1)))
+        with bpy.context.temp_override(window=window, screen=window.screen, area=view, region=region):
+            bpy.ops.screen.area_split(direction="HORIZONTAL", factor=factor)
+        added = [area for area in window.screen.areas if area.as_pointer() not in before]
+        if added:
+            # The split's lower part, a second 3D view until it becomes the Timeline.
+            added[0].type = "DOPESHEET_EDITOR"
+            added[0].ui_type = "TIMELINE"
+    elif not shown and strip is not None:
+        with bpy.context.temp_override(window=window, screen=window.screen, area=strip):
+            bpy.ops.screen.area_close()
 
 
 def _revision(path):

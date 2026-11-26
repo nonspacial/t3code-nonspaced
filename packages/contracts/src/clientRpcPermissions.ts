@@ -108,6 +108,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.hostedBlenderReopen]: AuthOrchestrationOperateScope,
   [WS_METHODS.hostedBlenderDismiss]: AuthOrchestrationOperateScope,
   [WS_METHODS.hostedBlenderSetView]: AuthOrchestrationOperateScope,
+  // The strip belongs to the Blender window every viewer sees: the bar of operating it.
+  [WS_METHODS.hostedBlenderSetTimeline]: AuthOrchestrationOperateScope,
   [WS_METHODS.hostedBlenderOpenMaster]: AuthOrchestrationOperateScope,
   [WS_METHODS.hostedBlenderMoveIntoT3]: AuthOrchestrationOperateScope,
   [WS_METHODS.hostedBlenderCheckSetup]: AuthOrchestrationOperateScope,

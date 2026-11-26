@@ -22,7 +22,9 @@ Switching Hosted Blender off stops new hosted Blenders from starting and closes 
 
 ## Open a file
 
-Open a `.blend` from the file tree or a file link, then choose **Open in hosted Blender** above the preview. T3 Code starts Blender with that file and the Blender pane opens. The pane shows a 3D Viewport window of its own, with its header and menus, so whatever happens in Blender's main window stays out of it.
+Open a `.blend` from the file tree or a file link, then choose **Open in hosted Blender** above the preview. T3 Code starts Blender with that file and the Blender pane opens. The pane shows a 3D Viewport window of its own, with its header and menus and Blender's Timeline along the bottom, so whatever happens in Blender's main window stays out of it.
+
+The Timeline is Blender's own, and works as in Blender once you're in control: drag in it to scrub, click to jump to a frame, press Space to play. Drag its top edge to make it taller, or switch it to another animation editor such as the Dope Sheet or Graph Editor. To hide it, untick **Timeline** in the pane's menu or in **Settings › Blender**. That applies at once to every hosted Blender on the server, working copies and masters alike, for everyone watching, and to the ones started later. Anyone who can quit Blender can switch it.
 
 If Blender can't open the file, the pane says Blender didn't start. Check that the file opens in Blender, then try again.
 

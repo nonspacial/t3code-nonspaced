@@ -378,6 +378,7 @@ import {
   HostedBlenderQuitInput,
   HostedBlenderReopenInput,
   HostedBlenderRunningList,
+  HostedBlenderSetTimelineInput,
   HostedBlenderSetViewInput,
   HostedBlenderInstallResult,
   HostedBlenderSetupError,
@@ -624,6 +625,7 @@ export const WS_METHODS = {
   hostedBlenderCaptureView: "hostedBlender.captureView",
   hostedBlenderFindHits: "hostedBlender.findHits",
   hostedBlenderSetView: "hostedBlender.setView",
+  hostedBlenderSetTimeline: "hostedBlender.setTimeline",
   hostedBlenderSubscribeMaster: "hostedBlender.subscribeMaster",
   hostedBlenderOpenMaster: "hostedBlender.openMaster",
   hostedBlenderMoveIntoT3: "hostedBlender.moveIntoT3",
@@ -2211,6 +2213,11 @@ const WsHostedBlenderSetViewRpc = Rpc.make(WS_METHODS.hostedBlenderSetView, {
   error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
 });
 
+const WsHostedBlenderSetTimelineRpc = Rpc.make(WS_METHODS.hostedBlenderSetTimeline, {
+  payload: HostedBlenderSetTimelineInput,
+  error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
+});
+
 const WsHostedBlenderSubscribeThreadRpc = Rpc.make(WS_METHODS.hostedBlenderSubscribeThread, {
   payload: HostedBlenderSubscribeInput,
   success: HostedBlenderThreadState,
@@ -2885,6 +2892,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsHostedBlenderCaptureViewRpc,
   WsHostedBlenderFindHitsRpc,
   WsHostedBlenderSetViewRpc,
+  WsHostedBlenderSetTimelineRpc,
   WsHostedBlenderSubscribeMasterRpc,
   WsHostedBlenderOpenMasterRpc,
   WsHostedBlenderMoveIntoT3Rpc,

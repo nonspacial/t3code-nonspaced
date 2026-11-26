@@ -64,6 +64,7 @@ import {
 } from "~/components/ui/empty";
 import {
   Menu,
+  MenuCheckboxItem,
   MenuItem,
   MenuPopup,
   MenuRadioGroup,
@@ -94,7 +95,7 @@ import {
   useHostedBlenderStreamAccess,
 } from "~/state/hostedBlender";
 import { formatEnvironmentQueryError } from "~/state/query";
-import { primaryServerKeybindingsAtom } from "~/state/server";
+import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 
@@ -726,6 +727,14 @@ function BlenderToolbar(props: {
   const canQuit = useAtomValue(
     hostedBlenderEnvironment.quit.permissionAtom(props.threadRef.environmentId),
   );
+  const canSetTimeline = useAtomValue(
+    hostedBlenderEnvironment.setTimeline.permissionAtom(props.threadRef.environmentId),
+  );
+  // A server setting, not this device's: the strip is part of the window every viewer sees.
+  const timeline =
+    useAtomValue(environmentServerConfigsAtom).get(props.threadRef.environmentId)?.settings
+      .hostedBlenderTimeline ?? true;
+  const setTimeline = useAtomCommand(hostedBlenderEnvironment.setTimeline);
   const m = useMessages();
   const [keyboardLayout, setKeyboardLayout] = useLocalStorage<KeyboardLayoutSetting, string>(
     KEYBOARD_LAYOUT_KEY,
@@ -789,7 +798,7 @@ function BlenderToolbar(props: {
           <T>Fullscreen</T>
         </Button>
       ) : null}
-      {canQuit || canOperate ? (
+      {canQuit || canOperate || canSetTimeline ? (
         <Menu>
           <MenuTrigger
             render={
@@ -804,6 +813,20 @@ function BlenderToolbar(props: {
             <MoreVertical />
           </MenuTrigger>
           <MenuPopup align="end" sideOffset={6}>
+            {canSetTimeline ? (
+              <MenuCheckboxItem
+                checked={timeline}
+                onCheckedChange={(shown) =>
+                  void setTimeline({
+                    environmentId: props.threadRef.environmentId,
+                    input: { shown },
+                  })
+                }
+              >
+                <T context="Blender's animation editor, shown under the 3D view">Timeline</T>
+              </MenuCheckboxItem>
+            ) : null}
+            {canSetTimeline && canOperate ? <MenuSeparator /> : null}
             {canOperate ? (
               <>
                 <MenuSub>
@@ -851,7 +874,7 @@ function BlenderToolbar(props: {
                 </MenuSub>
               </>
             ) : null}
-            {canQuit && canOperate ? <MenuSeparator /> : null}
+            {canQuit && (canOperate || canSetTimeline) ? <MenuSeparator /> : null}
             {canQuit ? (
               <MenuItem disabled={quit.quitting} onClick={() => quit.request(props.state.dirty)}>
                 <T>Quit Blender</T>

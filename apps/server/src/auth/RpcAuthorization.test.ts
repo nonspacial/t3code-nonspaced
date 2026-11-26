@@ -76,6 +76,8 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.hostedBlenderReopen,
       WS_METHODS.hostedBlenderDismiss,
       WS_METHODS.hostedBlenderSetView,
+      // The Timeline strip is part of the Blender window every viewer shares.
+      WS_METHODS.hostedBlenderSetTimeline,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
     }
@@ -578,6 +580,56 @@ describe("settings mutation authorization", () => {
           patch: { secretProviders: { [SecretProviderId.make("personal")]: null } },
         }).pipe(Effect.flip),
       ).toMatchObject({ requiredPermission: AuthSettingsWriteScope });
+      expect(handled).toBe(2);
+    }),
+  );
+
+  it.effect("S2: the Timeline switch needs operate, through Settings as through the pane", () =>
+    Effect.gen(function* () {
+      let handled = 0;
+      const handlers = group.toLayerHandler(WS_METHODS.serverUpdateSettings, () =>
+        Effect.sync(() => {
+          handled++;
+          return DEFAULT_SERVER_SETTINGS;
+        }),
+      );
+      // Settings access alone writes other Hosted Blender settings, not the strip.
+      const settingsOnly = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(Layer.mergeAll(handlers, RpcAuthorization.layer([AuthSettingsWriteScope]))),
+      );
+      yield* settingsOnly[WS_METHODS.serverUpdateSettings]({
+        patch: { hostedBlenderAllowAgents: false },
+      });
+      expect(handled).toBe(1);
+      expect(
+        yield* settingsOnly[WS_METHODS.serverUpdateSettings]({
+          patch: { hostedBlenderTimeline: false },
+        }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthOrchestrationOperateScope });
+      // Operate alone has the pane's command, not a settings write of the same flag.
+      const operateOnly = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(handlers, RpcAuthorization.layer([AuthOrchestrationOperateScope])),
+        ),
+      );
+      expect(
+        yield* operateOnly[WS_METHODS.serverUpdateSettings]({
+          patch: { hostedBlenderTimeline: false },
+        }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthSettingsWriteScope });
+      expect(requiredScopeForRpcMethod(WS_METHODS.hostedBlenderSetTimeline)).toBe(
+        AuthOrchestrationOperateScope,
+      );
+      // Both grants together may write it either way.
+      const both = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            handlers,
+            RpcAuthorization.layer([AuthSettingsWriteScope, AuthOrchestrationOperateScope]),
+          ),
+        ),
+      );
+      yield* both[WS_METHODS.serverUpdateSettings]({ patch: { hostedBlenderTimeline: false } });
       expect(handled).toBe(2);
     }),
   );

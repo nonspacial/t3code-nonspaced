@@ -1173,6 +1173,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("blender hosted agents mcp start allow")],
   },
   {
+    id: "hosted-blender-timeline",
+    title: msg("Timeline in the Blender pane"),
+    to: "/settings/blender",
+    scope: "environment-defaults",
+    searchTerms: [msg("blender hosted timeline animation keyframes playback frames strip")],
+  },
+  {
     id: "blender-mcp-path",
     title: msg("Blender MCP path"),
     to: "/settings/blender",

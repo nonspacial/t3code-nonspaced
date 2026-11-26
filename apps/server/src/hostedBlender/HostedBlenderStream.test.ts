@@ -46,6 +46,7 @@ const serve = (
       captureView: () => Effect.die("unused"),
       findHits: () => Effect.die("unused"),
       setView: () => Effect.die("unused"),
+      setTimeline: () => Effect.die("unused"),
       openMaster: () => Effect.die("unused"),
       reopenMaster: () => Effect.die("unused"),
       knowMaster: () => Effect.die("unused"),

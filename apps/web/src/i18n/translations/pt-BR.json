@@ -13434,6 +13434,10 @@
   "37d76dab21a26b2a": "blender hosted configuração instalar verificar labwc gstreamer codificador gpu tela oculta linux agente comandos",
   "f74fb1f1e951cb67": "blender hosted agentes mcp iniciar permitir",
   "3cf7f8ed35b33c5f": "blender lab mcp servidor caminho binário instalar uv pipx",
+  "0b7950be09ae6c3f": "Linha do tempo",
+  "05d1fff2e7325939": "Mostra a linha do tempo do Blender abaixo da visão 3D no painel do Blender, para cada Blender hospedado neste servidor.",
+  "138dedd43ae601b2": "Linha do tempo no painel do Blender",
+  "d75cc4b1152e0425": "blender hospedado linha do tempo animação quadros-chave reprodução quadros faixa",
   "b75a2837e20ac029": "Não foi possível restaurar as alterações",
   "656229dd34610e6d": [
     {

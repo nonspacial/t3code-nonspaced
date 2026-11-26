@@ -259,6 +259,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.hostedBlenderCaptureView]: AuthOrchestrationReadScope,
   [WS_METHODS.hostedBlenderFindHits]: AuthOrchestrationReadScope,
   [WS_METHODS.hostedBlenderSetView]: AuthOrchestrationOperateScope,
+  [WS_METHODS.hostedBlenderSetTimeline]: AuthOrchestrationOperateScope,
   [WS_METHODS.hostedBlenderSubscribeMaster]: AuthOrchestrationReadScope,
   [WS_METHODS.hostedBlenderOpenMaster]: AuthOrchestrationOperateScope,
   [WS_METHODS.hostedBlenderMoveIntoT3]: AuthOrchestrationOperateScope,
