@@ -643,6 +643,10 @@ it("asks first for a compressed .blend that is small on disk but large once infl
   state.queries = [];
   state.status = null;
   await using screen = await render(preview("packed.blend"));
+  // Its size on disk is no reason to ask: the size once opened is.
+  await expect
+    .element(screen.getByText("This compressed file is over 512 MB once opened.", { exact: false }))
+    .toBeInTheDocument();
   await screen.getByRole("button", { name: "Show 3D view" }).click();
   expect(conversions()).toHaveLength(1);
   expect(conversions()[0]).toMatchObject({

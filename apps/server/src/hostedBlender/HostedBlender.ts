@@ -560,7 +560,7 @@ export class HostedBlender extends Context.Service<
      * Discards one kept copy, or clears a failed start. Nothing changes while the thread's
      * Blender runs.
      */
-    readonly dismiss: (input: HostedBlenderDismissInput) => Effect.Effect<void>;
+    readonly dismiss: (input: HostedBlenderDismissInput) => Effect.Effect<void, HostedBlenderError>;
     /** Every copy the thread keeps, newest first, running Blender or not. */
     readonly keptCopies: (
       threadId: ThreadId,
@@ -2290,8 +2290,7 @@ const make = Effect.gen(function* () {
       ({ quit, phase }) =>
         quit.heard._tag === "accepted" ||
         (quit.kind === "discard" && phase === "stopping") ||
-        (quit.kind === "stop" && quitLive({ ...quit, phase })) ||
-        (quit.kind === "ifClean" && (phase === "asking" || phase === "cancelling")),
+        (quit.kind === "stop" && quitLive({ ...quit, phase })),
     );
     const discarded = exits.some(
       ({ quit, phase }) =>
@@ -3662,6 +3661,10 @@ const make = Effect.gen(function* () {
     function* ({ threadId, key, role }) {
       yield* Effect.annotateCurrentSpan({ threadId, role });
       yield* afterSalvage;
+      // A Blender released at shutdown is still writing that copy, which would come back.
+      if (key !== undefined && releasedHolds(role === "master" ? MASTER_OWNER : threadId, key)) {
+        return yield* new HostedBlenderError({ reason: "stillSaving" });
+      }
       if (role === "master") {
         const copy = masterCopyOf(threadId);
         if (copy === undefined || copy.key !== key) return;
@@ -3879,6 +3882,19 @@ const make = Effect.gen(function* () {
     const live = instance.quit;
     if (live?.kind === "close" && quitLive(live)) {
       if (live.by === "person" && (by === "settle" || by === "switchOff")) live.by = by;
+      // Blender's answer to that close answers this one: the edits that hold it, or too late.
+      const answered = holds
+        ? yield* within(
+            Effect.raceFirst(
+              Deferred.await(instance.ended).pipe(Effect.as(false)),
+              Deferred.await(live.settled).pipe(Effect.as(true)),
+            ),
+            given,
+          )
+        : Option.none();
+      if (Option.isSome(answered) && answered.value) {
+        return live.heard._tag === "held" ? live.heard.edits : ("expired" as const);
+      }
       return yield* awaitEnded(instance, given, live, holds);
     }
     // Marked first, so a connection dropping during the stop reads as this close, not a loss.
@@ -4214,9 +4230,9 @@ const make = Effect.gen(function* () {
         if (instance.pendingSave !== started) return Effect.void;
         instance.pendingSave = null;
         request.phase = "gaveUp";
-        // Blender stays open after a failed save: capture follows the panes again, and a change
-        // on disk seen meanwhile, or that refused it, is caught up with.
-        return applyCapture(instance).pipe(Effect.andThen(checkWaitingDisk(instance)));
+        // Blender stays open after a failed save: capture follows the panes again, a change on
+        // disk seen meanwhile, or that refused it, is caught up with, and held words go again.
+        return stayOpen(instance);
       });
       yield* saveThenQuit(instance, control, request).pipe(
         // Only a failure clears it, before answering, so a retry starts a new save.

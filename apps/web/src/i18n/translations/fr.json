@@ -13298,6 +13298,15 @@
     },
     " avec Blender sur le serveur, qui charge toute la scène."
   ],
+  "757bc09b09dce86a": [
+    "Ce fichier compressé dépasse ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " une fois ouvert. Le convertir avec Blender sur le serveur charge toute la scène."
+  ],
   "71f9aa2ee31aac46": "Aucune miniature enregistrée dans ce fichier",
   "27088355449cdd28": "Détails de la scène",
   "3a87f8c40f3b8065": "Convertir",

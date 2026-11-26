@@ -203,10 +203,17 @@ export function BlendFilePreview(props: {
           <T>Show 3D view</T>
         </Button>
         <span className="min-w-0 text-muted-foreground text-xs">
-          <T>
-            Converts this <Var>{formatBytes(largeBytes)}</Var> file with Blender on the server,
-            which loads the whole scene.
-          </T>
+          {largeBytes > BLEND_LARGE_FILE_BYTES ? (
+            <T>
+              Converts this <Var>{formatBytes(largeBytes)}</Var> file with Blender on the server,
+              which loads the whole scene.
+            </T>
+          ) : (
+            <T>
+              This compressed file is over <Var>{formatBytes(BLEND_LARGE_FILE_BYTES)}</Var> once
+              opened. Converting it with Blender on the server loads the whole scene.
+            </T>
+          )}
         </span>
       </div>
     ) : (

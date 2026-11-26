@@ -13293,6 +13293,15 @@
     },
     " con Blender en el servidor, que carga toda la escena."
   ],
+  "757bc09b09dce86a": [
+    "Este archivo comprimido ocupa más de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " una vez abierto. Al convertirlo con Blender en el servidor se carga toda la escena."
+  ],
   "71f9aa2ee31aac46": "Este archivo no tiene una miniatura guardada",
   "27088355449cdd28": "Detalles de la escena",
   "3a87f8c40f3b8065": "Convertir",

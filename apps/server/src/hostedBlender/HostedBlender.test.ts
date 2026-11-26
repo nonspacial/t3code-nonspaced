@@ -575,6 +575,13 @@ def control():
                 send(connection, {"type": "saving", "filepath": opened})
                 send(connection, {"type": "quitFailed", "reason": "images", "images": ["paint"]})
             else:
+                gate = os.path.join(os.path.dirname(os.environ["STANDIN_SAVES"]), "held-gate")
+                if os.path.exists(gate):
+                    # Busy for a moment: it answers once the test opens the gate.
+                    os.remove(gate)
+                    open(gate + ".asked", "w").close()
+                    while not os.path.exists(gate + ".open"):
+                        time.sleep(0.05)
                 send(connection, {"type": "quitFailed", "reason": "images"})
             open(os.environ["STANDIN_SAVES"] + ".held", "a").write("held\n")
             continue
@@ -587,6 +594,12 @@ def control():
             event({"type": "exited", "process": "blender", "code": 0, "signal": None})
             connection.close()
             return
+        if command.get("type") == "quit" and command.get("save") and scenario == "opens-during-discard":
+            # A window announced while the save is queued, then the save fails.
+            send(connection, {"type": "saving", "filepath": opened})
+            send(connection, {"type": "state", "filepath": opened, "dirty": True, "viewport": 3})
+            send(connection, {"type": "quitFailed", "reason": "saveFailed"})
+            continue
         if command.get("type") == "quit" and not command.get("save") and scenario == "opens-during-discard":
             # File > Open finishes while the discard waits, announcing a viewport window T3 must
             # expect; the discard, naming the file that was open, is then refused.
@@ -1601,6 +1614,11 @@ describe("Salvaging what a stopped server left", () => {
             .pipe(Effect.flip, Effect.timeout("5 seconds"));
           expect(refused.reason).toBe("stillSaving");
         }
+        // Nor is the copy it writes discarded, which would only come back once it exits.
+        const discard = yield* service
+          .dismiss({ threadId, key: CUBE })
+          .pipe(Effect.flip, Effect.timeout("5 seconds"));
+        expect(discard.reason).toBe("stillSaving");
         NodeFS.writeFileSync(done, "");
         // Kept once it exits, and then an open finds the copy waiting.
         yield* service.threadState(threadId).pipe(
@@ -2303,10 +2321,21 @@ describe("Endings and recovery", () => {
       }).pipe(Effect.scoped),
   );
 
-  it.live("a discard Blender refuses sends the window words it held back", () =>
+  it.live("a discard or a save Blender refuses sends the window words it held back", () =>
     Effect.gen(function* () {
       const { dir, service, openReady } = yield* standIn("held-words", "opens-during-discard");
       yield* openReady;
+      const control = NodePath.join(dir, "saves.log.control");
+      const expected = (generation: number) =>
+        fileAppears(
+          dir,
+          control,
+          () =>
+            NodeFS.existsSync(control) &&
+            NodeFS.readFileSync(control, "utf8").includes(
+              `"type":"viewportExpected","generation":${generation}`,
+            ),
+        );
       const refused = yield* service
         .quit({
           threadId,
@@ -2317,14 +2346,11 @@ describe("Endings and recovery", () => {
         .pipe(Effect.flip);
       expect(refused.reason).toBe("openFileChanged");
       // The window announced while the discard was queued is expected after all.
-      const control = NodePath.join(dir, "saves.log.control");
-      yield* fileAppears(
-        dir,
-        control,
-        () =>
-          NodeFS.existsSync(control) &&
-          NodeFS.readFileSync(control, "utf8").includes('"type":"viewportExpected","generation":2'),
-      );
+      yield* expected(2);
+      // So is one announced while a Save and quit that then failed was queued.
+      const failed = yield* service.quit({ threadId, save: true }).pipe(Effect.flip);
+      expect(failed.reason).toBe("saveFailed");
+      yield* expected(3);
     }).pipe(Effect.scoped),
   );
 
@@ -2352,6 +2378,18 @@ describe("Endings and recovery", () => {
         yield* service.closeOnSettle({ threadId });
         yield* fileAppears(dir, held, () => heldCount() === 3);
         expect((yield* firstState(service)).status).toBe("running");
+        // The pane's quit that joins a settle's close still waiting on Blender gets its answer.
+        const gate = NodePath.join(dir, "held-gate");
+        NodeFS.writeFileSync(gate, "");
+        const settling = yield* service.closeOnSettle({ threadId }).pipe(Effect.forkChild);
+        yield* fileAppears(dir, `${gate}.asked`);
+        const joined = yield* service
+          .quit({ threadId, save: false })
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        NodeFS.writeFileSync(`${gate}.open`, "");
+        expect((yield* Fiber.join(joined)).reason).toBe("unsavedImages");
+        yield* Fiber.join(settling);
+        expect(heldCount()).toBe(4);
         // The person's discard doesn't ask.
         yield* service.quit({
           threadId,
@@ -6624,6 +6662,13 @@ def control():
                     os._exit(0)
                 connection.sendall((json.dumps({"type": "quitCancelled", "id": cancelled}) + "\n").encode())
             threading.Thread(target=acknowledge, daemon=True).start()
+        if kind == "quitIfClean" and os.environ.get("STANDIN_CRASH_ON_QUIT") == "1":
+            # Busy with unsaved work it last autosaved, it crashes before reading the quit.
+            state_dir = sys.argv[sys.argv.index("--state-dir") + 1]
+            os.makedirs(os.path.join(state_dir, "tmp"), exist_ok=True)
+            open(os.path.join(state_dir, "tmp", "cube_%d_autosave.blend" % os.getpid()), "w").write("autosave")
+            event({"type": "exited", "process": "blender", "code": None, "signal": 9})
+            os._exit(1)
         if kind == "quitIfClean" and os.environ.get("STANDIN_QUIT_SILENT") == "1":
             # Busy: the quit waits in Blender, unanswered, until T3 cancels it.
             continue
@@ -7488,6 +7533,8 @@ const masterHost = Effect.fn(function* (
     readonly cancelGate?: boolean;
     /** Blender exits once it hears the cancel, as if the quit it was busy with went through. */
     readonly exitOnCancel?: boolean;
+    /** Blender crashes, leaving an autosave, before it reads the quit. */
+    readonly crashOnQuit?: boolean;
     /** The add-on finds a Blender Lab version T3 hasn't tested and never listens. */
     readonly untested?: boolean;
     /** Lays out the home folder before the service starts, as the user's own Blender Lab. */
@@ -7525,6 +7572,7 @@ const masterHost = Effect.fn(function* (
       ...(host.quitSilent ? { STANDIN_QUIT_SILENT: "1" } : {}),
       ...(host.cancelGate ? { STANDIN_CANCEL_GATE: NodePath.join(dir, "cancel-gate") } : {}),
       ...(host.exitOnCancel ? { STANDIN_EXIT_ON_CANCEL: "1" } : {}),
+      ...(host.crashOnQuit ? { STANDIN_CRASH_ON_QUIT: "1" } : {}),
       ...(host.stayOnStop ? { STANDIN_STAY_ON_STOP: "1" } : {}),
       ...(host.controlGate ? { STANDIN_CONTROL_GATE: NodePath.join(dir, "control-gate") } : {}),
     },
@@ -9109,6 +9157,29 @@ describe("A quit still unresolved in a busy Blender", () => {
       yield* host.service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" });
       yield* host.masterStatus(otherThreadId, "running");
       expect(host.launches()).toBe(2);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("ends a master that crashes before it reads the quit as crashed, its autosave kept", () =>
+    Effect.gen(function* () {
+      const host = yield* masterHost({ dirty: true, crashOnQuit: true });
+      yield* host.service.openMaster({ threadId, relativePath: "cube.blend" });
+      yield* host.service.masterState(threadId).pipe(
+        Stream.filter((state) => state.status === "running" && state.dirty),
+        Stream.runHead,
+      );
+      const stopped = yield* watchMaster(host.service, threadId);
+      yield* host.service.releaseMaster(threadId);
+      yield* stopped;
+      expect(masterCopyIn(host.dir, host.blendPath)?.contents).toBe("autosave");
+      // The next open of the master shows its card first.
+      const refused = yield* host.service
+        .openMaster({ threadId: otherThreadId, relativePath: "cube.blend" })
+        .pipe(Effect.flip);
+      expect(refused.reason).toBe("recoveryPending");
+      expect(yield* firstMaster(host.service, otherThreadId)).toMatchObject({
+        status: "crashed",
+      });
     }).pipe(Effect.scoped),
   );
 });

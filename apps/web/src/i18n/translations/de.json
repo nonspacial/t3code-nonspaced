@@ -13297,6 +13297,15 @@
     },
     "-Datei mit Blender auf dem Server, der dafür die ganze Szene lädt."
   ],
+  "757bc09b09dce86a": [
+    "Diese komprimierte Datei ist entpackt größer als ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Beim Konvertieren mit Blender auf dem Server wird die ganze Szene geladen."
+  ],
   "71f9aa2ee31aac46": "In dieser Datei ist keine Miniatur gespeichert",
   "27088355449cdd28": "Szenendetails",
   "3a87f8c40f3b8065": "Konvertieren",

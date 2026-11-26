@@ -13298,6 +13298,15 @@
     },
     " com o Blender no servidor, que carrega a cena inteira."
   ],
+  "757bc09b09dce86a": [
+    "Este arquivo compactado passa de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " quando aberto. Convertê-lo com o Blender no servidor carrega a cena inteira."
+  ],
   "71f9aa2ee31aac46": "Nenhuma miniatura salva neste arquivo",
   "27088355449cdd28": "Detalhes da cena",
   "3a87f8c40f3b8065": "Converter",

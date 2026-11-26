@@ -13308,6 +13308,15 @@
     },
     " file with Blender on the server, which loads the whole scene."
   ],
+  "757bc09b09dce86a": [
+    "This compressed file is over ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " once opened. Converting it with Blender on the server loads the whole scene."
+  ],
   "71f9aa2ee31aac46": "No thumbnail saved in this file",
   "27088355449cdd28": "Scene details",
   "3a87f8c40f3b8065": "Convert",
