@@ -1093,24 +1093,34 @@ const make = Effect.gen(function* () {
    * The thread's own held copies, as the pane's kept copies: Reopen puts one back and opens it.
    * One whose file also has a recovery copy is that copy, marked held.
    */
-  const heldCardsOf = (threadId: string): Array<HostedBlenderKeptCopy> =>
-    [...workingCopies.values()].flatMap((record) =>
-      record.threadId === threadId && record.state === "held" && record.relativePath !== undefined
-        ? [
-            {
-              key: fileKeyOf({ kind: "workspace", relativePath: record.relativePath }),
-              kind: "closed" as const,
-              file: { kind: "workspace" as const, relativePath: record.relativePath },
-              recovery: false,
-              keptAt: record.heldAt ?? 0,
-              held: true,
-            },
-          ]
-        : [],
-    );
+  const heldCardOf = (record: WorkingCopyRecord): HostedBlenderKeptCopy | null =>
+    record.state === "held" && record.relativePath !== undefined
+      ? {
+          key: fileKeyOf({ kind: "workspace", relativePath: record.relativePath }),
+          kind: "closed",
+          file: { kind: "workspace", relativePath: record.relativePath },
+          recovery: false,
+          keptAt: record.heldAt ?? 0,
+          held: true,
+        }
+      : null;
+  /** Each thread's held cards, in one pass over the records. */
+  const heldCardsByThread = () => {
+    const cards = new Map<string, Array<HostedBlenderKeptCopy>>();
+    for (const record of workingCopies.values()) {
+      const card = heldCardOf(record);
+      if (card === null) continue;
+      const thread = cards.get(record.threadId) ?? [];
+      thread.push(card);
+      cards.set(record.threadId, thread);
+    }
+    return cards;
+  };
   /** The pane's kept copies: the recovery copies, and the held copies with no recovery copy. */
-  const shownCopiesOf = (threadId: string): Array<HostedBlenderKeptCopy> => {
-    const held = heldCardsOf(threadId);
+  const shownCopiesOf = (
+    threadId: string,
+    held: ReadonlyArray<HostedBlenderKeptCopy>,
+  ): Array<HostedBlenderKeptCopy> => {
     const keys = new Set(held.map((card) => card.key));
     const kept = copiesOf(threadId).map((copy) =>
       keys.has(copy.key) ? { ...copy, held: true } : copy,
@@ -1337,17 +1347,16 @@ const make = Effect.gen(function* () {
             threadId,
             { status: "failed" },
           ]),
-          ...Array.from(
-            new Set([
-              ...records.keys(),
-              ...[...workingCopies.values()].map((record) => record.threadId),
-            ]),
-          ).flatMap((threadId): Array<[string, PublishedState]> => {
-            const [newest, ...rest] = shownCopiesOf(threadId);
-            return newest === undefined
-              ? []
-              : [[threadId, { status: newest.kind, copies: [newest, ...rest] }]];
-          }),
+          ...((held) =>
+            // Only threads with something to show: a recovery copy or a held copy.
+            Array.from(new Set([...records.keys(), ...held.keys()])).flatMap(
+              (threadId): Array<[string, PublishedState]> => {
+                const [newest, ...rest] = shownCopiesOf(threadId, held.get(threadId) ?? []);
+                return newest === undefined
+                  ? []
+                  : [[threadId, { status: newest.kind, copies: [newest, ...rest] }]];
+              },
+            ))(heldCardsByThread()),
           ...Array.from(instances.values())
             .filter((instance) => instance.role === "working")
             .map((instance): [string, PublishedState] => [
@@ -3591,6 +3600,11 @@ const make = Effect.gen(function* () {
             );
             yield* publishNow();
             yield* Deferred.succeed(instance.ended, undefined);
+            // However it ended, a finished thread's copy leaves the project again, as at settle;
+            // never while a Blender released at shutdown still writes it.
+            if (instance.role === "working" && !instance.released && !shuttingDown) {
+              yield* holdFinished(instance.threadId).pipe(Effect.forkIn(serviceScope));
+            }
           }),
         ),
       ),
@@ -3908,7 +3922,7 @@ const make = Effect.gen(function* () {
     }
     const record = records.get(threadId)?.get(key);
     // A held working copy shows as a copy of its own, with no unsaved work to restore.
-    const held = heldCardsOf(threadId).find((card) => card.key === key);
+    const held = (heldCardsByThread().get(threadId) ?? []).find((card) => card.key === key);
     const file = record?.file ?? held?.file;
     if (file === undefined) return yield* new HostedBlenderError({ reason: "nothingToReopen" });
     // T3 opens only workspace files, so only there can it check where a restore would save.
@@ -4388,12 +4402,9 @@ const make = Effect.gen(function* () {
   )(function* ({ threadId }) {
     yield* Effect.annotateCurrentSpan({ threadId });
     const instance = instanceFor(threadId, undefined);
-    if (instance !== undefined) yield* closeInstance(instance, "settle");
-    // Once its Blender has really ended, however long a held close keeps it open.
-    yield* (instance === undefined ? Effect.void : Deferred.await(instance.ended)).pipe(
-      Effect.andThen(holdFinished(threadId)),
-      Effect.forkIn(serviceScope),
-    );
+    // With a Blender, its end holds the copy, however long a held close keeps it open.
+    if (instance !== undefined) return yield* closeInstance(instance, "settle");
+    yield* holdFinished(threadId).pipe(Effect.forkIn(serviceScope));
   });
 
   const forgetThread: HostedBlender["Service"]["forgetThread"] = Effect.fn(
@@ -4425,16 +4436,8 @@ const make = Effect.gen(function* () {
       yield* Effect.forEach(
         [...workingCopies].filter(([, record]) => record.threadId === threadId),
         ([id]) =>
-          onCopy(id, (found) =>
-            settleMove(id, found).pipe(
-              Effect.flatMap((record) =>
-                record === null
-                  ? Effect.void
-                  : record.state === "held"
-                    ? dropWorkingCopy(id)
-                    : deleteFromProject(id, record),
-              ),
-            ),
+          onCopy(id, (record) =>
+            record.state === "held" ? dropWorkingCopy(id) : deleteFromProject(id, record),
           ).pipe(Effect.catch(logHeldFailure)),
       );
       yield* publishNow();
@@ -5598,7 +5601,7 @@ const make = Effect.gen(function* () {
   const onCopy = <A, E, R>(
     id: string,
     act: (record: WorkingCopyRecord) => Effect.Effect<A, E, R>,
-  ): Effect.Effect<A | undefined, E, R> =>
+  ): Effect.Effect<A | undefined, E | PlatformError, R> =>
     Effect.suspend(() => {
       const found = workingCopies.get(id);
       if (found === undefined) return Effect.undefined;
@@ -5606,7 +5609,12 @@ const make = Effect.gen(function* () {
         found.path,
         Effect.suspend(() => {
           const record = workingCopies.get(id);
-          return record === undefined ? Effect.undefined : act(record);
+          // Nothing is mid-move under the lock: a state left between two is a write that failed.
+          return record === undefined
+            ? Effect.undefined
+            : settleMove(id, record).pipe(
+                Effect.flatMap((settled) => (settled === null ? Effect.undefined : act(settled))),
+              );
         }),
       );
     });
@@ -5655,10 +5663,8 @@ const make = Effect.gen(function* () {
   const sweepWorkingCopies = Effect.fn("HostedBlender.sweepWorkingCopies")(function* () {
     const now = yield* Clock.currentTimeMillis;
     for (const id of Array.from(workingCopies.keys())) {
-      yield* onCopy(id, (found) =>
+      yield* onCopy(id, (record) =>
         Effect.gen(function* () {
-          const record = yield* settleMove(id, found);
-          if (record === null) return;
           const lookup = yield* threadLookup(record.threadId);
           // Unknown for now: the next pass looks again.
           if (Option.isNone(lookup)) return;
@@ -5705,8 +5711,9 @@ const make = Effect.gen(function* () {
 
   /** Puts a held copy back; runs under its copy's lock. Null when it isn't held. */
   const putBack = Effect.fnUntraced(
-    function* (id: string, record: WorkingCopyRecord) {
-      if (record.state !== "held") return null;
+    function* (id: string, found: WorkingCopyRecord) {
+      const record = yield* settleMove(id, found);
+      if (record?.state !== "held") return null;
       if (Option.isSome(yield* fileSystem.lstat(record.path).pipe(Effect.option))) {
         return yield* new HostedBlenderError({ reason: "heldCopyInTheWay" });
       }
@@ -5741,7 +5748,14 @@ const make = Effect.gen(function* () {
   )(function* ({ threadId, path: copyPath }) {
     yield* afterSalvage;
     const id = workingCopyId(threadId, copyPath);
-    return (yield* onCopy(id, (record) => putBack(id, record))) ?? null;
+    return (
+      (yield* onCopy(id, (record) => putBack(id, record)).pipe(
+        Effect.catchIf(
+          (error) => !isHostedBlenderError(error),
+          () => Effect.fail(new HostedBlenderError({ reason: "restoreFailed" })),
+        ),
+      )) ?? null
+    );
   });
 
   /**

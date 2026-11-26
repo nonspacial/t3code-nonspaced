@@ -1913,10 +1913,11 @@ describe("B19: a finished thread's working copy is held", () => {
   /** A workspace with cube.blend and the copy of it T3 made for the thread, and no Blender. */
   const heldHost = Effect.fn(function* (
     prefix: string,
-    host: Pick<Host, "threadSettled" | "threadArchived"> = {},
+    host: Pick<Host, "threadSettled" | "threadArchived" | "holdGate"> = {},
   ) {
     const dir = NodeFS.realpathSync(yield* tempDir(prefix));
-    const bin = fakeTools(dir);
+    // A Blender that stays starting until it is quit, never launching anything.
+    const bin = fakeTools(dir, WAITING_HELPER);
     NodeFS.writeFileSync(NodePath.join(dir, "cube.blend"), "master");
     NodeFS.writeFileSync(NodePath.join(dir, COPY), "working copy");
     const layer = layerFor({
@@ -1979,6 +1980,11 @@ describe("B19: a finished thread's working copy is held", () => {
       ).toMatchObject({ status: "closed", copies: [{ key, held: true, recovery: false }] });
       yield* service.reopen({ threadId, key, restore: true });
       expect(NodeFS.readFileSync(at(COPY), "utf8")).toBe("working copy");
+      // The thread is still settled, so its Blender quitting holds the copy again.
+      yield* service.quit({ threadId, save: false });
+      yield* heldWhen(service, (list) => list.length === 1);
+      expect(NodeFS.existsSync(at(COPY))).toBe(false);
+      yield* service.putBackHeld({ threadId, path: at(COPY) });
       // Then held again when the thread is archived instead.
       yield* heldWhen(service, (list) => list.length === 0);
       archived = true;
@@ -2034,7 +2040,14 @@ describe("B19: a finished thread's working copy is held", () => {
 
   it.live("a move a crash interrupted ends with one whole copy, never none", () =>
     Effect.gen(function* () {
-      const { at, record, heldWhen, heldFile, start } = yield* heldHost("held-crash");
+      let failWrites: (() => void) | null = null;
+      const gated = yield* Deferred.make<void>();
+      const { at, record, heldWhen, heldFile, start } = yield* heldHost("held-crash", {
+        holdGate: () =>
+          Effect.sync(() => failWrites?.()).pipe(
+            Effect.andThen(failWrites === null ? Effect.void : Deferred.succeed(gated, undefined)),
+          ),
+      });
       const first = yield* Effect.scoped(
         Effect.gen(function* () {
           const service = yield* start;
@@ -2064,6 +2077,23 @@ describe("B19: a finished thread's working copy is held", () => {
       );
       expect(held[0]?.id).toBe(first.id);
       expect(NodeFS.readFileSync(heldFile(first.id), "utf8")).toBe("working copy");
+
+      // No crash: the hold's last record write fails (a full disk, say) once the project's file
+      // is gone. The thread's next start still gets its own copy back, not a fresh one.
+      const service = yield* start;
+      yield* service.putBackHeld({ threadId, path: at(COPY) });
+      const folder = NodePath.dirname(heldFile(first.id));
+      failWrites = () => NodeFS.chmodSync(folder, 0o500);
+      yield* service.closeOnSettle({ threadId });
+      yield* Deferred.await(gated);
+      // Waits for the hold to let go of the copy; its own write fails the same way.
+      yield* service.keepHeld([{ id: first.id, heldAt: -1 }]);
+      NodeFS.chmodSync(folder, 0o700);
+      expect(NodeFS.existsSync(at(COPY))).toBe(false);
+      expect(yield* service.putBackHeld({ threadId, path: at(COPY) })).toEqual({
+        masterChanged: false,
+      });
+      expect(NodeFS.readFileSync(at(COPY), "utf8")).toBe("working copy");
     }).pipe(Effect.scoped),
   );
 
@@ -6687,6 +6717,8 @@ scene.frame_set(1)`;
 describe.skipIf(!canHostBlender)("B19: a real hosted Blender's held working copy", () => {
   /** A workspace with cube.blend, and a Blender of this test's own settings. */
   const realHeld = Effect.fn(function* (prefix: string) {
+    // Settled until a test makes it active again, as an agent's next turn does.
+    const thread = { settled: true };
     const dir = NodeFS.realpathSync(yield* tempDir(prefix));
     const workspace = NodePath.join(dir, "work");
     NodeFS.mkdirSync(workspace, { recursive: true });
@@ -6723,6 +6755,7 @@ describe.skipIf(!canHostBlender)("B19: a real hosted Blender's held working copy
         helper: helperBuild,
         workspaceRoot: workspace,
         baseDir: dir,
+        threadSettled: () => thread.settled,
       }),
     );
     const states = yield* Queue.unbounded<HostedBlenderThreadState>();
@@ -6761,6 +6794,7 @@ describe.skipIf(!canHostBlender)("B19: a real hosted Blender's held working copy
     const ended = (state: HostedBlenderThreadState) =>
       state.status !== "running" && state.status !== "starting";
     return {
+      thread,
       service,
       awaitState,
       command,
@@ -6777,6 +6811,7 @@ describe.skipIf(!canHostBlender)("B19: a real hosted Blender's held working copy
   it.live("a saved working copy leaves the project at settle and comes back with its edit", () =>
     Effect.gen(function* () {
       const {
+        thread,
         service,
         awaitState,
         command,
@@ -6800,6 +6835,8 @@ describe.skipIf(!canHostBlender)("B19: a real hosted Blender's held working copy
       expect(NodeFS.existsSync(`${copy}1`)).toBe(false);
       expect(objects(heldFile(held!.id))).toContain("T3Saved");
 
+      // The agent's next turn makes the thread active, so its quit leaves the copy in place.
+      thread.settled = false;
       yield* blenderStart;
       expect(NodeFS.existsSync(heldFile(held!.id))).toBe(false);
       yield* awaitState(running(false));
@@ -6812,6 +6849,7 @@ describe.skipIf(!canHostBlender)("B19: a real hosted Blender's held working copy
   it.live("an edited working copy comes back from being held with its unsaved changes", () =>
     Effect.gen(function* () {
       const {
+        thread,
         service,
         awaitState,
         command,
@@ -6834,6 +6872,7 @@ describe.skipIf(!canHostBlender)("B19: a real hosted Blender's held working copy
       // Held as last saved; the unsaved work is the recovery copy, restored over it.
       expect(objects(heldFile(held!.id))).not.toContain("T3Unsaved");
 
+      thread.settled = false;
       yield* blenderStart;
       expect(NodeFS.existsSync(heldFile(held!.id))).toBe(false);
       yield* awaitState(running(true));
