@@ -26,6 +26,7 @@ function setup(pane = "relative h-[300px] w-[400px]") {
   context.fillStyle = "rgb(128, 128, 128)";
   context.fillRect(0, 0, WIDTH, HEIGHT);
   const onSubmit = vi.fn<(result: ModelAnnotationResult) => void>();
+  const onCancel = vi.fn();
   const outside = vi.fn();
   const container = document.createElement("div");
   // The size of the snapshot, so a point on the surface is the same point on the snapshot.
@@ -38,12 +39,12 @@ function setup(pane = "relative h-[300px] w-[400px]") {
         height={HEIGHT}
         environmentId={null}
         ownerKey="model-annotation-test"
-        onCancel={() => {}}
+        onCancel={onCancel}
         onSubmit={onSubmit}
       />
     </div>
   );
-  return { element, container, onSubmit, outside };
+  return { element, container, onSubmit, onCancel, outside };
 }
 
 type Screen = Awaited<ReturnType<typeof render>>;
@@ -383,4 +384,19 @@ it("fits its toolbar on one row of a 400 px pane in a desktop window", async () 
   expect(box.left).toBeGreaterThanOrEqual(pane.left);
   expect(box.right).toBeLessThanOrEqual(pane.right);
   expect(box.height).toBeLessThan(40);
+});
+
+it("leaves an IME's Escape to the composition, in the comment and on the surface", async () => {
+  const { element, container, onCancel } = setup();
+  await using screen = await render(element, { container });
+  const escape = (target: Element, isComposing: boolean) =>
+    target.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", isComposing, bubbles: true, cancelable: true }),
+    );
+  const comment = screen.getByRole("textbox", { name: "Annotation comment" }).element();
+  escape(comment, true);
+  escape(surfaceOf(screen), true);
+  expect(onCancel).not.toHaveBeenCalled();
+  escape(comment, false);
+  expect(onCancel).toHaveBeenCalledTimes(1);
 });
