@@ -599,7 +599,10 @@ export const HostedBlenderStreamServerMessage = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("stats"),
     encoder: Schema.String,
-    /** `output` when the compositor can't capture the viewport window alone. */
+    /**
+     * `output` when the compositor can't follow the viewport window, so the stream is the whole
+     * display, Blender's main window included.
+     */
     target: Schema.Literals(["window", "output"]),
     memoryBytes: Schema.NullOr(Schema.Number),
   }),

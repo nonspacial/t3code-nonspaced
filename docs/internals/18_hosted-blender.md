@@ -91,9 +91,17 @@ salvage keeps whatever copy or autosave it left.
 
 ## The viewport window is found by its title
 
-The hidden display helper streams, and makes fullscreen, the first window whose title contains
-"3D Viewport" ([`BlenderLaunch.ts`](../../apps/server/src/hostedBlender/BlenderLaunch.ts)), and
-Blender gives that title only to a window holding a lone 3D view; split, it may become "Blender"
+The hidden display helper makes fullscreen every window whose title contains "3D Viewport"
+([`BlenderLaunch.ts`](../../apps/server/src/hostedBlender/BlenderLaunch.ts)) and streams the
+display while the first of them fills it. It streams the display, not that window, so Blender's
+own windows (render view, file browser, Preferences) float centred in front of the viewport and
+take input, as on a desktop: labwc's config gives them a close button, fits them inside the
+display again whenever the pane resizes, and never raises the undecorated viewport over them on a
+click ([`display.rs`](../../native/hidden-display/src/display.rs)). Blender's main window, the
+first window it maps, must never show: the helper keeps it minimized and streams nothing while
+it isn't. With a window in front, Blender's picture of the 3D view alone isn't what the pane
+shows, so the add-on makes none and Screenshot & annotate freezes the pane's own frame, without
+hits. Blender gives the viewport's title only to a window holding a lone 3D view; split, it may become "Blender"
 (on 4.5 even a split made before the window is shown does, so it is never made fullscreen), and
 removing the strip doesn't give it back. So the control add-on opens each viewport window as a
 lone 3D view and adds the Timeline strip only once the helper has it. Every window with that

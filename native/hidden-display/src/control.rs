@@ -103,8 +103,9 @@ pub enum CaptureBackend {
     WlrScreencopy,
 }
 
-/// The window matched by `--window-title`, or the whole display when there is no title or the
-/// compositor cannot capture a single window.
+/// `Window`: the display while the window matched by `--window-title` fills it, with the windows
+/// floating in front of it and never the program's first. `Output`: the whole display, when there
+/// is no title or the compositor cannot list its windows.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum CaptureTarget {

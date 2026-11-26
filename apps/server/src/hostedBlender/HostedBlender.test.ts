@@ -5386,6 +5386,7 @@ describe.skipIf(!canHostBlender)("B13: a real hosted Blender whose file changes 
 // <name>" hides one as H does, "scene <name>" shows that scene in T3's viewport window.
 const LAYOUT_STARTUP_SCRIPT = `import json, os
 import bpy
+from bpy.app.handlers import persistent
 
 _queue = []
 _ticks = [0]
@@ -5397,6 +5398,8 @@ def _areas(window):
         main = regions.get("WINDOW")
         entry = {"type": area.type, "ui": area.ui_type, "x": area.x, "y": area.y,
                  "width": area.width, "height": area.height}
+        if area.type == "VIEW_3D":
+            entry["sidebar"] = area.spaces.active.show_region_ui
         if main is not None:
             entry["region"] = {"x": main.x, "y": main.y, "width": main.width, "height": main.height}
             if area.type == "DOPESHEET_EDITOR":
@@ -5438,6 +5441,17 @@ def _poll():
                 bpy.ops.ed.undo_push(message="T3 test move")
         elif verb in ("hide", "unhide"):
             bpy.data.objects[argument].hide_set(verb == "hide")
+        # F12 renders a flat magenta picture this size.
+        elif verb == "flat":
+            scene = bpy.context.scene
+            scene.render.engine = "BLENDER_WORKBENCH"
+            scene.render.resolution_x, scene.render.resolution_y = (int(n) for n in argument.split("x"))
+            scene.render.resolution_percentage = 100
+            scene.view_settings.view_transform = "Standard"
+            scene.display.shading.light = "FLAT"
+            scene.display.shading.color_type = "SINGLE"
+            scene.display.shading.single_color = (1.0, 0.0, 1.0)
+            scene.world.color = (1.0, 0.0, 1.0)
         elif windows:
             window = windows[0]
             view = next(area for area in window.screen.areas if area.type == "VIEW_3D")
@@ -5460,14 +5474,34 @@ def _poll():
         "windows": [{"pointer": window.as_pointer(), "width": window.width, "height": window.height,
                      "scene": window.scene.name, "areas": _areas(window)}
                     for window in _viewport_windows()],
+        "render": "%s %dx%d" % (bpy.context.scene.render.engine, bpy.context.scene.render.resolution_x,
+                                bpy.context.scene.render.resolution_y),
+        "others": [{"width": window.width, "height": window.height,
+                    "areas": [area.type for area in window.screen.areas]}
+                   for index, window in enumerate(bpy.context.window_manager.windows)
+                   if index > 0 and not window.screen.get("t3_viewport")],
     }
     with open(os.path.join(folder, "layout.json.part"), "w") as out:
         json.dump(layout, out)
     os.replace(os.path.join(folder, "layout.json.part"), os.path.join(folder, "layout.json"))
     return 0.2
 
+# Blender's main window shows green where its Properties editor was, which T3's viewport window
+# never has: a frame showing it shows green.
+@persistent
+def _mark_main(*_args):
+    windows = bpy.context.window_manager.windows
+    if not os.environ.get("HB_TEST_MARK_MAIN") or not len(windows):
+        return
+    for area in windows[0].screen.areas:
+        if area.type == "PROPERTIES":
+            area.type = "VIEW_3D"
+            area.spaces.active.shading.background_type = "VIEWPORT"
+            area.spaces.active.shading.background_color = (0.0, 1.0, 0.0)
+
 def register():
     bpy.app.timers.register(_poll, first_interval=1.0, persistent=True)
+    bpy.app.handlers.load_post.append(_mark_main)
 
 def unregister():
     pass
@@ -5487,6 +5521,8 @@ interface LayoutArea {
     readonly height: number;
   };
   readonly frames?: readonly [number, number];
+  /** A 3D view's sidebar (N) is shown. */
+  readonly sidebar?: boolean;
 }
 interface Layout {
   /** Blender's own count of the script's ticks. */
@@ -5508,6 +5544,14 @@ interface Layout {
     /** Top first. */
     readonly areas: ReadonlyArray<LayoutArea>;
   }>;
+  /** The scene's render engine and size, as "<engine> <width>x<height>". */
+  readonly render: string;
+  /** Blender's windows besides its main window and T3's viewport windows. */
+  readonly others: ReadonlyArray<{
+    readonly width: number;
+    readonly height: number;
+    readonly areas: ReadonlyArray<string>;
+  }>;
 }
 
 describe.skipIf(!canHostBlender)("a real hosted Blender's Timeline strip", () => {
@@ -5523,7 +5567,11 @@ cube.location.z = 6
 cube.keyframe_insert("location", frame=100)
 scene.frame_set(1)`;
 
-  const launch = Effect.fn(function* (prefix: string, viewportGate?: Effect.Effect<void>) {
+  const launch = Effect.fn(function* (
+    prefix: string,
+    viewportGate?: Effect.Effect<void>,
+    options: { readonly markMain?: boolean } = {},
+  ) {
     const dir = yield* tempDir(prefix);
     const workspace = NodePath.join(dir, "work");
     NodeFS.mkdirSync(workspace, { recursive: true });
@@ -5546,6 +5594,7 @@ scene.frame_set(1)`;
           XDG_RUNTIME_DIR: hostEnvironment.XDG_RUNTIME_DIR,
           XDG_CONFIG_HOME: configHome,
           HB_TEST_DIR: dir,
+          ...(options.markMain === true ? { HB_TEST_MARK_MAIN: "1" } : {}),
         },
         helper: helperBuild,
         workspaceRoot: workspace,
@@ -6008,6 +6057,337 @@ scene.frame_set(1)`;
           (layout) => withStrip(layout) && layout.pid !== first.pid,
         );
         expect(reopened.windows[0]!.areas[1]!.ui).toBe("TIMELINE");
+        yield* service.quit({ threadId, save: false, discard: true });
+      }).pipe(Effect.scoped),
+  );
+
+  const KEY_ESC = 1;
+  const KEY_O = 24;
+  const KEY_N = 49;
+  const KEY_COMMA = 51;
+  const KEY_F12 = 88;
+  const SEMU_HEADER_BYTES = 16;
+  // Frames are decoded this small: enough to tell the colours apart.
+  const SMALL = { width: 160, height: 90 };
+  // labwc's default title bar over a floating window, in output pixels.
+  const TITLE_BAR = 28;
+
+  /** Every frame streamed from now, as H.264 access units, acked as a client acks them. */
+  const recordStream = Effect.fn(function* (service: HostedBlender.HostedBlender["Service"]) {
+    const viewer = yield* attach(service, false);
+    const units: Array<Uint8Array> = [];
+    const arrivals = yield* Queue.unbounded<void>();
+    yield* Queue.take(viewer.output).pipe(
+      Effect.flatMap((output) =>
+        output._tag === "frame"
+          ? Effect.sync(() => units.push(output.data.subarray(SEMU_HEADER_BYTES))).pipe(
+              Effect.andThen(Queue.offer(arrivals, undefined)),
+              Effect.andThen(viewer.ack),
+            )
+          : Effect.void,
+      ),
+      Effect.forever,
+      Effect.forkScoped,
+    );
+    return { units, arrivals };
+  });
+  type Recording = Effect.Success<ReturnType<typeof recordStream>>;
+
+  /**
+   * The number of frames once a frame after the `count`th has come and none for a while after:
+   * frames are sent only as the picture changes, and a few more once it settles.
+   */
+  const framesAfter = (recording: Recording, count: number) =>
+    Effect.gen(function* () {
+      yield* Queue.clear(recording.arrivals);
+      if (recording.units.length <= count) yield* Queue.take(recording.arrivals);
+      let more = yield* Queue.take(recording.arrivals).pipe(Effect.timeoutOption("500 millis"));
+      while (Option.isSome(more)) {
+        more = yield* Queue.take(recording.arrivals).pipe(Effect.timeoutOption("500 millis"));
+      }
+      return recording.units.length;
+    }).pipe(Effect.timeout("30 seconds"));
+
+  const decodeFrames = (units: ReadonlyArray<Uint8Array>) => {
+    const raw = NodeChildProcess.execFileSync(
+      "ffmpeg",
+      [
+        "-loglevel",
+        "error",
+        "-f",
+        "h264",
+        "-i",
+        "pipe:0",
+        "-fps_mode",
+        "passthrough",
+        "-vf",
+        `scale=${SMALL.width}:${SMALL.height}`,
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "pipe:1",
+      ],
+      { input: Buffer.concat(units), maxBuffer: 1 << 30 },
+    );
+    const size = SMALL.width * SMALL.height * 3;
+    return Array.from({ length: raw.length / size }, (_, index) =>
+      raw.subarray(index * size, (index + 1) * size),
+    );
+  };
+  type Rgb = readonly [number, number, number];
+  const pixel = (frame: Uint8Array, x: number, y: number): Rgb => {
+    const at =
+      (Math.min(SMALL.height - 1, Math.floor(y * SMALL.height)) * SMALL.width +
+        Math.min(SMALL.width - 1, Math.floor(x * SMALL.width))) *
+      3;
+    return [frame[at]!, frame[at + 1]!, frame[at + 2]!];
+  };
+  const isMagenta = ([r, g, b]: Rgb) => r > 170 && b > 170 && g < 90;
+  const isGreen = ([r, g, b]: Rgb) => g > 170 && r < 90 && b < 90;
+  /** The fraction of the frame `test` holds for, and the centre of where it holds. */
+  const coverage = (frame: Uint8Array, holds: (rgb: Rgb) => boolean) => {
+    let count = 0;
+    let sumX = 0;
+    let sumY = 0;
+    for (let y = 0; y < SMALL.height; y++) {
+      for (let x = 0; x < SMALL.width; x++) {
+        if (!holds(pixel(frame, (x + 0.5) / SMALL.width, (y + 0.5) / SMALL.height))) continue;
+        count++;
+        sumX += (x + 0.5) / SMALL.width;
+        sumY += (y + 0.5) / SMALL.height;
+      }
+    }
+    const share = count / (SMALL.width * SMALL.height);
+    return { share, x: count ? sumX / count : null, y: count ? sumY / count : null };
+  };
+  /** Whether an access unit carries a sequence parameter set, as every keyframe here does. */
+  const startsSequence = (unit: Uint8Array) =>
+    unit.some(
+      (byte, at) =>
+        byte === 1 && unit[at - 1] === 0 && unit[at - 2] === 0 && (unit[at + 1]! & 0x1f) === 7,
+    );
+  /** Frames at full size by index, where HB_PROOF_DIR names a folder, for a person to look at. */
+  const saveProofs = (
+    units: ReadonlyArray<Uint8Array>,
+    proofs: ReadonlyArray<readonly [index: number, name: string]>,
+  ) => {
+    const dir = hostEnvironment.HB_PROOF_DIR;
+    if (!dir) return;
+    for (const [index, name] of proofs) {
+      // From the keyframe before it, so every frame decoded has its size.
+      let start = index;
+      while (start > 0 && !startsSequence(units[start]!)) start--;
+      NodeChildProcess.execFileSync(
+        "ffmpeg",
+        [
+          "-loglevel",
+          "error",
+          "-f",
+          "h264",
+          "-i",
+          "pipe:0",
+          "-fps_mode",
+          "passthrough",
+          "-update",
+          "1",
+          "-y",
+          NodePath.join(dir, `${name}.png`),
+        ],
+        { input: Buffer.concat(units.slice(start, index + 1)) },
+      );
+    }
+  };
+  /** Blender's main window, painted green, is in none of the frames. */
+  const expectNoMainWindow = (frames: ReadonlyArray<Uint8Array>) =>
+    expect(
+      frames
+        .map((frame, index) => [index, coverage(frame, isGreen).share] as const)
+        .filter(([, share]) => share > 0.005),
+    ).toEqual([]);
+
+  /** A viewer in control, for the keys and clicks a person would send. */
+  const takeControl = Effect.fn(function* (service: HostedBlender.HostedBlender["Service"]) {
+    const operator = yield* attach(service, true);
+    yield* operator.input({ type: "takeControl", takeOver: false });
+    yield* controller(operator).pipe(Effect.repeat({ until: (c) => c === "you" }));
+    const keys = (...codes: ReadonlyArray<number>) =>
+      Effect.gen(function* () {
+        for (const code of codes) yield* operator.input({ type: "key", code, pressed: true });
+        for (const code of codes.toReversed()) {
+          yield* operator.input({ type: "key", code, pressed: false });
+        }
+      });
+    const click = (x: number, y: number) =>
+      Effect.gen(function* () {
+        yield* operator.input({ type: "pointer", x, y });
+        yield* operator.input({ type: "button", button: 272, pressed: true });
+        yield* operator.input({ type: "button", button: 272, pressed: false });
+      });
+    return { operator, keys, click };
+  });
+
+  it.live(
+    "F12's render view floats centred in front of the viewport, Esc closes it, keys reach the viewport again, and Blender's main window is in no frame",
+    () =>
+      Effect.gen(function* () {
+        const { service, command, layoutWhen } = yield* launch("floating-render", undefined, {
+          markMain: true,
+        });
+        const recording = yield* recordStream(service);
+        const { units } = recording;
+        const first = yield* layoutWhen(withStrip);
+        command("flat 200x150");
+        yield* layoutWhen((layout) => layout.render === "BLENDER_WORKBENCH 200x150");
+        const { operator, keys } = yield* takeControl(service);
+        // Over the 3D view, where the render view will float.
+        yield* operator.input({ type: "pointer", x: 640, y: 330 });
+        const viewport = yield* framesAfter(recording, 0);
+
+        yield* keys(KEY_F12);
+        yield* layoutWhen((layout) =>
+          layout.others.some((window) => window.areas.includes("IMAGE_EDITOR")),
+        );
+        const rendered = yield* framesAfter(recording, units.length);
+        // Blender's picture of the 3D view alone isn't what the pane shows now, so there is none:
+        // Screenshot & annotate freezes the pane's own frame instead.
+        const covered = yield* Effect.flip(service.captureView(threadId));
+        expect(covered.reason).toBe("noViewport");
+
+        // Esc reaches the render view under the pointer, as on a desktop.
+        yield* keys(KEY_ESC);
+        yield* layoutWhen(
+          (layout) =>
+            layout.others.length === 0 &&
+            withStrip(layout) &&
+            layout.windows[0]!.pointer === first.windows[0]!.pointer,
+        );
+        const closed = yield* framesAfter(recording, units.length);
+        yield* service.captureView(threadId);
+
+        // The viewport has the keyboard again without a click: N shows its sidebar.
+        yield* keys(KEY_N);
+        yield* layoutWhen((layout) => layout.windows[0]?.areas[0]?.sidebar === true);
+        const sidebar = yield* framesAfter(recording, units.length);
+
+        const frames = decodeFrames(units);
+        expect(frames.length).toBe(units.length);
+        saveProofs(units, [
+          [viewport - 1, "f12-1-viewport"],
+          [rendered - 1, "f12-2-render-view"],
+          [closed - 1, "f12-3-after-esc"],
+          [sidebar - 1, "f12-4-key-reaches-viewport"],
+        ]);
+        expect(coverage(frames[viewport - 1]!, isMagenta).share).toBe(0);
+        const render = coverage(frames[rendered - 1]!, isMagenta);
+        // The render floats in the middle, the viewport and its Timeline strip around it.
+        expect(render.share).toBeGreaterThan(0.01);
+        expect(render.share).toBeLessThan(0.3);
+        expect(render.x).toBeCloseTo(0.5, 1);
+        expect(render.y).toBeCloseTo(0.5, 1);
+        expect(coverage(frames[closed - 1]!, isMagenta).share).toBe(0);
+        expectNoMainWindow(frames);
+        yield* service.quit({ threadId, save: false, discard: true });
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "a render view larger than the pane is fitted inside it, and stays inside as the pane narrows",
+    () =>
+      Effect.gen(function* () {
+        const { service, command, layoutWhen } = yield* launch("floating-large", undefined, {
+          markMain: true,
+        });
+        const recording = yield* recordStream(service);
+        const { units } = recording;
+        yield* layoutWhen(withStrip);
+        command("flat 2400x1600");
+        yield* layoutWhen((layout) => layout.render === "BLENDER_WORKBENCH 2400x1600");
+        const { operator, keys } = yield* takeControl(service);
+        yield* operator.input({ type: "pointer", x: 640, y: 330 });
+        yield* keys(KEY_F12);
+        const shown = yield* layoutWhen((layout) =>
+          layout.others.some((window) => window.areas.includes("IMAGE_EDITOR")),
+        );
+        expect(shown.others[0]!.width).toBeLessThanOrEqual(1280);
+        expect(shown.others[0]!.height).toBeLessThanOrEqual(720 - TITLE_BAR);
+        const fitted = yield* framesAfter(recording, units.length);
+
+        // The person in control narrows the pane, as a phone would.
+        yield* operator.resize(360, 640);
+        const narrowed = yield* layoutWhen(
+          (layout) =>
+            layout.others[0] !== undefined &&
+            layout.windows[0]?.width === 360 &&
+            layout.others[0].width <= 360 &&
+            layout.others[0].height <= 640 - TITLE_BAR,
+        );
+        expect(narrowed.others[0]!.areas).toEqual(["IMAGE_EDITOR"]);
+        const small = yield* framesAfter(recording, units.length);
+
+        const frames = decodeFrames(units);
+        expect(frames.length).toBe(units.length);
+        saveProofs(units, [
+          [fitted - 1, "large-1-fitted"],
+          [small - 1, "large-2-narrow-pane"],
+        ]);
+        // The render fills most of the picture, its title bar and edges inside it.
+        expect(coverage(frames[fitted - 1]!, isMagenta).share).toBeGreaterThan(0.5);
+        expect(coverage(frames[small - 1]!, isMagenta).share).toBeGreaterThan(0.4);
+        expectNoMainWindow(frames);
+        yield* service.quit({ threadId, save: false, discard: true });
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "File > Open's browser floats in front and Esc returns, and Preferences floats and its close button closes it",
+    () =>
+      Effect.gen(function* () {
+        const { service, layoutWhen } = yield* launch("floating-browser", undefined, {
+          markMain: true,
+        });
+        const recording = yield* recordStream(service);
+        const { units } = recording;
+        const first = yield* layoutWhen(withStrip);
+        const { operator, keys, click } = yield* takeControl(service);
+        yield* operator.input({ type: "pointer", x: 640, y: 330 });
+
+        yield* keys(KEY_LEFTCTRL, KEY_O);
+        yield* layoutWhen((layout) =>
+          layout.others.some((window) => window.areas.includes("FILE_BROWSER")),
+        );
+        const browsing = yield* framesAfter(recording, units.length);
+        yield* keys(KEY_ESC);
+        yield* layoutWhen(
+          (layout) =>
+            layout.others.length === 0 &&
+            withStrip(layout) &&
+            layout.windows[0]!.pointer === first.windows[0]!.pointer,
+        );
+        const cancelled = yield* framesAfter(recording, units.length);
+
+        yield* keys(KEY_LEFTCTRL, KEY_COMMA);
+        const preferences = yield* layoutWhen((layout) =>
+          layout.others.some((window) => window.areas.includes("PREFERENCES")),
+        );
+        const shown = yield* framesAfter(recording, units.length);
+        // Centred, so its close button is at the right end of a title bar over it.
+        const { width, height } = preferences.others[0]!;
+        const left = (1280 - width) / 2;
+        const top = (720 - height - TITLE_BAR) / 2;
+        yield* click(left + width - 14, top + TITLE_BAR / 2);
+        yield* layoutWhen((layout) => layout.others.length === 0 && withStrip(layout));
+        const closed = yield* framesAfter(recording, units.length);
+
+        const frames = decodeFrames(units);
+        expect(frames.length).toBe(units.length);
+        saveProofs(units, [
+          [browsing - 1, "browser-1-file-browser"],
+          [cancelled - 1, "browser-2-after-esc"],
+          [shown - 1, "browser-3-preferences"],
+          [closed - 1, "browser-4-after-close"],
+        ]);
+        expectNoMainWindow(frames);
         yield* service.quit({ threadId, save: false, discard: true });
       }).pipe(Effect.scoped),
   );

@@ -544,6 +544,35 @@ fn quits_cleanly_after_a_resize_on_nvenc() {
     assert!(status.success(), "{status}");
 }
 
+/// Blender opens other windows (render view, file browser, Preferences) in front of the one the
+/// stream follows; they reach the stream, and their changes do, though the window under them is
+/// unchanged.
+#[test]
+fn streams_windows_in_front_of_its_window() {
+    if skip_without_labwc_and_x264() {
+        return;
+    }
+    let mut helper = Helper::start("auto");
+    helper.event("windowCaptured");
+    helper.frame_size(640, 480);
+    helper.quiet();
+    helper.mark();
+    // F10: the test client opens a window in front, leaving its own unpainted; F11 repaints
+    // only the window in front.
+    helper.key(68, true);
+    helper.key(68, false);
+    helper.client_logs("key 68 1 F10");
+    helper.quiet();
+    helper.mark();
+    helper.key(87, true);
+    helper.client_logs("repainted");
+    helper.video();
+    helper.key(87, false);
+    helper.send(json!({"type": "quit"}));
+    let status = helper.child.wait().unwrap();
+    assert!(status.success(), "{status}");
+}
+
 /// Blender replaces its windows when it loads a file, and one it restores may map fullscreen
 /// already; the stream goes on, filling the display at every size, with no error.
 fn survive_a_replaced_window(mut helper: Helper) {
