@@ -399,6 +399,10 @@ def control():
         other = os.path.join(os.path.dirname(opened), "other.blend")
         send(connection, dict(first, filepath=other, dirty=True))
     saves = 0
+    discards = [0]
+    if scenario in ("deaf-discard", "answers-second"):
+        # What Blender last autosaved, which a crash keeps.
+        open(os.path.join(tmp, "cube_4242_autosave.blend"), "w").write("autosave")
     view = {"position": [7, -7, 5], "target": [0, 0, 1]}
     outstanding = [0]
     def slow_hits(command):
@@ -541,11 +545,23 @@ def control():
                 send(connection, {"type": "saved", "filepath": opened, "dirty": False, "quit": False})
             send(connection, {"type": "state", "filepath": opened, "dirty": True, "loadedAt": loaded})
             continue
+        if command.get("type") == "quit" and not command.get("save") \
+                and scenario in ("deaf-discard", "answers-second"):
+            # Too busy to answer a discard; "answers-second" answers its second, refusing it.
+            discards[0] += 1
+            if scenario == "answers-second" and discards[0] == 2:
+                send(connection, {"type": "discardRefused"})
+            continue
         held = os.path.join(os.path.dirname(os.environ["STANDIN_SAVES"]), "images-saved")
         if command.get("type") == "quit" and command.get("hold") and scenario == "unsaved-images" \
                 and not os.path.exists(held):
-            # Unsaved image edits, which no copy keeps, hold a quit that asks, as the add-on does.
-            send(connection, {"type": "quitFailed", "reason": "images"})
+            # Unsaved image edits, which no copy keeps, hold a quit that asks, as the add-on does;
+            # a save first saves what it can, and names what it couldn't.
+            if command.get("save"):
+                send(connection, {"type": "saving", "filepath": opened})
+                send(connection, {"type": "quitFailed", "reason": "images", "images": ["paint"]})
+            else:
+                send(connection, {"type": "quitFailed", "reason": "images"})
             open(os.environ["STANDIN_SAVES"] + ".held", "a").write("held\n")
             continue
         if command.get("type") == "quit" and command.get("save") and scenario == "reloads" and revision() != disk[0]:
@@ -2169,6 +2185,40 @@ describe("Endings and recovery", () => {
   );
 
   it.live(
+    "a second unanswered discard stops Blender as a crash, keeping its autosave; an answer between resets it",
+    () =>
+      Effect.gen(function* () {
+        const openFile = { kind: "workspace" as const, relativePath: "cube.blend" };
+        const discard = (service: HostedBlender.HostedBlender["Service"]) =>
+          service
+            .quit({ threadId, save: false, discard: true, openFile })
+            .pipe(Effect.flip, Effect.option);
+        const deaf = Effect.gen(function* () {
+          const { service, openReady, awaitStatus, hostedDir } = yield* standIn(
+            "deaf",
+            "deaf-discard",
+          );
+          yield* openReady;
+          expect(Option.getOrThrow(yield* discard(service)).reason).toBe("discardUnconfirmed");
+          expect((yield* firstState(service)).status).toBe("running");
+          expect(Option.isNone(yield* discard(service))).toBe(true);
+          // Never a discard: the card offers what Blender last autosaved.
+          expect(yield* awaitStatus("crashed")).toMatchObject({ recovery: true });
+          expect(recoveryOf(hostedDir)?.contents).toBe("autosave");
+        });
+        const answered = Effect.gen(function* () {
+          const { service, openReady } = yield* standIn("answered", "answers-second");
+          yield* openReady;
+          expect(Option.getOrThrow(yield* discard(service)).reason).toBe("discardUnconfirmed");
+          expect(Option.getOrThrow(yield* discard(service)).reason).toBe("openFileChanged");
+          expect(Option.getOrThrow(yield* discard(service)).reason).toBe("discardUnconfirmed");
+          expect((yield* firstState(service)).status).toBe("running");
+        });
+        yield* Effect.all([deaf, answered], { concurrency: "unbounded" });
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
     "a quit or a settle leaves a Blender with unsaved image edits open, saying so; Quit without saving still quits",
     () =>
       Effect.gen(function* () {
@@ -2184,9 +2234,9 @@ describe("Endings and recovery", () => {
         expect((yield* service.quit({ threadId, save: false }).pipe(Effect.flip)).reason).toBe(
           "unsavedImages",
         );
-        expect((yield* service.quit({ threadId, save: true }).pipe(Effect.flip)).reason).toBe(
-          "unsavedImages",
-        );
+        const saving = yield* service.quit({ threadId, save: true }).pipe(Effect.flip);
+        expect(saving).toMatchObject({ reason: "unsavedImages", images: ["paint"] });
+        expect(saving.message).toContain("couldn't save paint,");
         expect(saveCommands()).toBe(0);
         // A settle leaves it running as it was.
         yield* service.closeOnSettle({ threadId });
@@ -4233,6 +4283,89 @@ print("T3-RESULT", json.dumps(results))`,
     ]);
   });
 
+  it("Save and quit saves the images it can, holds on one it can't and names it, then saves all once it is packed", () => {
+    // Background Blenders of the test's own, settings and temporary files in its folder.
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-hosted-blender-images-"));
+    const blender = (script: string) =>
+      NodeChildProcess.execFileSync(
+        "blender",
+        ["--background", "--factory-startup", "--python-expr", script],
+        {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+          env: {
+            PATH: hostEnvironment.PATH,
+            HOME: dir,
+            TMPDIR: NodePath.join(dir, "tmp"),
+            BLENDER_USER_RESOURCES: dir,
+          },
+        },
+      );
+    const result = (output: string) => {
+      const line = output.split("\n").find((entry) => entry.startsWith("T3-RESULT "));
+      return JSON.parse(line!.slice("T3-RESULT ".length));
+    };
+    const readOnly = NodePath.join(dir, "read-only");
+    try {
+      NodeFS.mkdirSync(NodePath.join(dir, "tmp"));
+      NodeFS.mkdirSync(readOnly);
+      const blend = JSON.stringify(NodePath.join(dir, "scene.blend"));
+      const fileImage = (name: string, folder: string) => `
+${name} = bpy.data.images.new("${name}", 4, 4)
+${name}.filepath_raw = ${JSON.stringify(NodePath.join(folder, `${name}.png`))}
+${name}.file_format = "PNG"
+${name}.save()
+${name}.source = "FILE"
+${name}.reload()`;
+      const first = blender(`${CONTROL_ADDON_SOURCE}
+assert bpy.app.tempdir.startswith(${JSON.stringify(dir)}), bpy.app.tempdir
+bpy.ops.wm.save_as_mainfile(filepath=${blend})
+${fileImage("paint", dir)}
+${fileImage("locked", readOnly)}
+os.chmod(${JSON.stringify(NodePath.join(readOnly, "locked.png"))}, 0o444)
+os.chmod(${JSON.stringify(readOnly)}, 0o555)
+generated = bpy.data.images.new("generated", 4, 4)
+for image in (paint, locked, generated):
+    # In use, as a material's would be, so the save keeps it.
+    image.use_fake_user = True
+    image.pixels[0] = 0.25
+sent = []
+_send = sent.append
+# A background Blender has no window to save from, and quits only once its script ends.
+_save = lambda: "FINISHED" in bpy.ops.wm.save_mainfile()
+_handle({"type": "quit", "save": True, "hold": True})
+first = list(sent)
+dirty = [image.name for image in bpy.data.images if image.is_dirty]
+locked.pack()
+sent.clear()
+_handle({"type": "quit", "save": True, "hold": True})
+print("T3-RESULT", json.dumps({
+    "first": [message["type"] for message in first],
+    "held": [message.get("images") for message in first if message["type"] == "quitFailed"],
+    "dirty": dirty,
+    "second": [message["type"] for message in sent],
+}))`);
+      expect(result(first)).toEqual({
+        first: ["saving", "quitFailed"],
+        held: [["locked"]],
+        dirty: ["locked"],
+        second: ["saving", "saved"],
+      });
+      const reopened = blender(`import bpy, json
+bpy.ops.wm.open_mainfile(filepath=${blend})
+images = bpy.data.images
+paint = images.load(${JSON.stringify(NodePath.join(dir, "paint.png"))}, check_existing=False)
+print("T3-RESULT", json.dumps({
+    "packed": [images["generated"].packed_file is not None, images["locked"].packed_file is not None],
+    "pixels": [round(image.pixels[0], 2) for image in (paint, images["generated"], images["locked"])],
+}))`);
+      expect(result(reopened)).toEqual({ packed: [true, true], pixels: [0.25, 0.25, 0.25] });
+    } finally {
+      NodeFS.chmodSync(readOnly, 0o755);
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("holds a quit that asks while an image is edited, and finds no hits on a load the screenshot isn't of", () => {
     // A background Blender of the test's own, settings and temporary files in its folder.
     const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-hosted-blender-hold-"));
@@ -4252,7 +4385,6 @@ image = bpy.data.images.new("paint", 4, 4)
 image.pixels[0] = 0.5
 dirty = image.is_dirty
 _handle({"type": "quit", "save": False, "hold": True})
-_handle({"type": "quit", "save": True, "hold": True})
 # Background Blender has no viewport: whether hits looked for one says whether they went ahead.
 looked = []
 _viewport = lambda: looked.append(True)
@@ -4282,10 +4414,7 @@ print("T3-RESULT", json.dumps({
       const line = output.split("\n").find((entry) => entry.startsWith("T3-RESULT "));
       expect(JSON.parse(line!.slice("T3-RESULT ".length))).toEqual({
         dirty: true,
-        sent: [
-          { type: "quitFailed", reason: "images" },
-          { type: "quitFailed", reason: "images" },
-        ],
+        sent: [{ type: "quitFailed", reason: "images" }],
         looked: [0, 1],
       });
     } finally {

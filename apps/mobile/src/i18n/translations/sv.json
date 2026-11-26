@@ -5704,6 +5704,7 @@
   "6116c7ae71bc7d05": "Länkade filer",
   "3286ce5553d9f505": "Storlek",
   "119259d2fa66fadf": "Det gick inte att avsluta Blender",
+  "65c73c884114dcf8": "Blender svarade inte, så det förblir öppet med sina ändringar. Om det fortfarande inte svarar stoppar ett nytt val av ”Avsluta utan att spara” det och behåller det Blender senast sparade automatiskt.",
   "b75a2837e20ac029": "Det gick inte att återställa ändringarna",
   "e2d3b41b3731a6c1": "Spara ändringarna i {name} innan du avslutar?",
   "d07d4c5683786976": "Ändringar som Blender inte har sparat går förlorade om du avslutar utan att spara.",

@@ -216,6 +216,8 @@ const ControlMessage = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("quitFailed"),
     reason: Schema.Literals(["saveFailed", "changedOnDisk", "images", "catalogs"]),
+    /** A save's `images`: the edited images it couldn't save. */
+    images: Schema.optional(Schema.Array(Schema.String)),
   }),
   /** A discard named another file than the one Blender has open, so Blender stays open. */
   Schema.Struct({ type: Schema.Literal("discardRefused") }),
@@ -615,8 +617,10 @@ interface ViewerEntry {
 
 type UnkeepableEdits = "images" | "catalogs";
 
-const unkeepableError = (edits: UnkeepableEdits) =>
-  new HostedBlenderError({ reason: edits === "images" ? "unsavedImages" : "unsavedCatalogs" });
+const unkeepableError = (edits: UnkeepableEdits, images?: ReadonlyArray<string> | null) =>
+  edits === "images"
+    ? new HostedBlenderError({ reason: "unsavedImages", ...(images ? { images } : {}) })
+    : new HostedBlenderError({ reason: "unsavedCatalogs" });
 
 interface Instance {
   /** Its key in `instances`: the thread for a working Blender, `master:<file>` for a master. */
@@ -762,6 +766,10 @@ interface Instance {
   quitHeld: Deferred.Deferred<UnkeepableEdits> | null;
   /** The file a Save and quit Blender began is saving, until it fails. */
   savingFile: string | null;
+  /** The person's last discard went unanswered; another unanswered one stops Blender. */
+  discardUnanswered: boolean;
+  /** The edited images the last Save and quit couldn't save. */
+  heldImages: ReadonlyArray<string> | null;
   /** What holds the reload of a stale file, as the add-on last said. */
   staleBlocked: HostedBlenderReloadBlocker | null;
   /** A disk change seen while a save or restore was under way, checked once it is over. */
@@ -2351,6 +2359,7 @@ const make = Effect.gen(function* () {
         if (message.value.type === "quitFailed") {
           const reason = message.value.reason;
           instance.saveRefusal = reason;
+          instance.heldImages = message.value.images ?? null;
           // Refused because the file changed: that change is still to be caught up with.
           if (reason === "changedOnDisk") instance.diskCheckWaiting = true;
           if ((reason === "images" || reason === "catalogs") && instance.quitHeld !== null) {
@@ -3034,6 +3043,8 @@ const make = Effect.gen(function* () {
       saveRefusal: null,
       quitHeld: null,
       savingFile: null,
+      discardUnanswered: false,
+      heldImages: null,
       staleBlocked: null,
       diskCheckWaiting: false,
       keptReload: null,
@@ -3399,13 +3410,21 @@ const make = Effect.gen(function* () {
       if (discard && !confirmed) {
         instance.quitting = false;
         instance.wordsClosed = false;
-        return yield* new HostedBlenderError({ reason: "discardUnconfirmed" });
+        if (!instance.discardUnanswered) {
+          instance.discardUnanswered = true;
+          return yield* new HostedBlenderError({ reason: "discardUnconfirmed" });
+        }
+        // Asked twice and silent both times: stopped, but ended as a crash is, so what it last
+        // autosaved is kept and only Discard on its card, naming the file, removes it.
+        if (instance.fiber) yield* Fiber.interrupt(instance.fiber);
+        return;
       }
       // It said it is quitting the file the person chose to lose, or this is no discard: past
       // the deadline it is stopped; saves never damage the file.
       return yield* forceQuit(instance);
     }
     if (outcome.value === "refused") {
+      instance.discardUnanswered = false;
       instance.quitting = false;
       return yield* new HostedBlenderError({ reason: "openFileChanged" });
     }
@@ -3681,7 +3700,7 @@ const make = Effect.gen(function* () {
       return yield* refusal === "changedOnDisk"
         ? new HostedBlenderError({ reason: "changedOnDisk" })
         : refusal === "images" || refusal === "catalogs"
-          ? unkeepableError(refusal)
+          ? unkeepableError(refusal, instance.heldImages)
           : saveFailed;
     }
     // Saved, Blender quits: the agent's access ends with it.

@@ -5698,6 +5698,7 @@
   "6116c7ae71bc7d05": "Archivos vinculados",
   "3286ce5553d9f505": "Tamaño",
   "119259d2fa66fadf": "No se pudo cerrar Blender",
+  "65c73c884114dcf8": "Blender no respondió, así que sigue abierto con sus cambios. Si sigue sin responder, volver a elegir «Salir sin guardar» lo detiene y conserva lo último que Blender guardó automáticamente.",
   "b75a2837e20ac029": "No se pudieron restaurar los cambios",
   "e2d3b41b3731a6c1": "¿Guardar los cambios de {name} antes de salir?",
   "d07d4c5683786976": "Los cambios que Blender no haya guardado se pierden si sales sin guardar.",

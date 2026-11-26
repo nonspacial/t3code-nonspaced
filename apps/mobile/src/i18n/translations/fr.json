@@ -5698,6 +5698,7 @@
   "6116c7ae71bc7d05": "Fichiers liés",
   "3286ce5553d9f505": "Taille",
   "119259d2fa66fadf": "Impossible de quitter Blender",
+  "65c73c884114dcf8": "Blender n’a pas répondu ; il reste donc ouvert avec ses modifications. S’il ne répond toujours pas, choisir à nouveau « Quitter sans enregistrer » l’arrête et conserve la dernière sauvegarde automatique de Blender.",
   "b75a2837e20ac029": "Impossible de restaurer les modifications",
   "e2d3b41b3731a6c1": "Enregistrer les modifications de {name} avant de quitter ?",
   "d07d4c5683786976": "Les modifications que Blender n’a pas enregistrées sont perdues si vous quittez sans enregistrer.",

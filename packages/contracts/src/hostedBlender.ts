@@ -435,6 +435,8 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "unsavedCatalogs",
       "discardUnconfirmed",
     ]),
+    /** With `unsavedImages` from a save: the edited images Blender couldn't save. */
+    images: Schema.optionalKey(Schema.Array(Schema.String)),
   },
 ) {
   override get message(): string {
@@ -496,11 +498,16 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       case "unkeepableEdits":
         return "This Blender has unsaved image or asset catalog edits a recovery copy can't keep. Save or discard them first.";
       case "unsavedImages":
+        if (this.images !== undefined && this.images.length > 0) {
+          const names = this.images.slice(0, 3).join(", ");
+          const more = this.images.length > 3 ? ` and ${this.images.length - 3} more` : "";
+          return `Blender saved the images it could, but couldn't save ${names}${more}, so it didn't save the file or quit. Save them somewhere Blender can write, or pack them into the .blend, then Save and quit again.`;
+        }
         return "Blender has unsaved image edits, which quitting would lose: they live outside the .blend, so its recovery copy can't keep them. Save them in Blender's Image Editor (Image > Save All Images) first, or quit without saving to discard them.";
       case "unsavedCatalogs":
         return "Blender has unsaved asset catalog edits, which quitting would lose: they live outside the .blend, so its recovery copy can't keep them. Save them in Blender's asset browser first, or quit without saving to discard them.";
       case "discardUnconfirmed":
-        return "Blender didn't confirm it was quitting the file you chose to discard, so it stays open with its changes. Try again in a moment.";
+        return "Blender didn't answer, so it stays open with its changes. If it still doesn't answer, choosing Quit without saving again stops it and keeps what Blender last autosaved.";
     }
   }
 }

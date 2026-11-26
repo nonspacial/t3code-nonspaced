@@ -35,6 +35,12 @@ export const isRestoreReplacingUnsaved = (cause: Cause.Cause<unknown>) => {
   return isHostedBlenderError(error) && error.reason === "restoreReplacesUnsaved";
 };
 
+/** A discard Blender didn't answer: it stays open, and the same discard again stops it. */
+export const isDiscardUnconfirmed = (cause: Cause.Cause<unknown>) => {
+  const error = Cause.squash(cause);
+  return isHostedBlenderError(error) && error.reason === "discardUnconfirmed";
+};
+
 /** A file's name as the pane shows it; `untitled` for an unsaved scene. */
 export const blendFileName = (file: HostedBlenderKeptFile, untitled: string): string => {
   if (file.kind === "untitled") return untitled;

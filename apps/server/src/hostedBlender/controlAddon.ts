@@ -196,6 +196,26 @@ def _save():
         return False
 
 
+def _save_images():
+    # Edited images saved as Blender's own quit dialog does: to their files, or packed when they
+    # have none. Returns the names of those it couldn't save, such as a read-only file's.
+    if any(image.is_dirty for image in bpy.data.images):
+        try:
+            with bpy.context.temp_override(window=_main_window()):
+                bpy.ops.image.save_all_modified()
+        except Exception as error:  # noqa: BLE001 - one image failing stops the operator
+            print("T3 control add-on: could not save images:", error, file=sys.stderr)
+            for image in [image for image in bpy.data.images if image.is_dirty]:
+                try:
+                    if image.packed_file is not None or not image.filepath_raw:
+                        image.pack()
+                    else:
+                        image.save()
+                except Exception:  # noqa: BLE001 - it stays unsaved, and is named
+                    pass
+    return [image.name for image in bpy.data.images if image.is_dirty]
+
+
 def _push_undo_step():
     # Blender's quit copy (quit.blend, which T3 keeps to reopen) is its newest undo step, so
     # changes made without one, such as by a script (which leaves the file looking clean), are
@@ -495,10 +515,9 @@ def _handle(command):
             _send({"type": "discardRefused"})
             return
         # What T3 keeps is the .blend: edits outside it would be lost, so Blender stays open
-        # until they are saved. A save saves the catalogs; a discard or T3 stopping doesn't ask.
-        held = _unkeepable() if command.get("hold") else None
-        if held == "catalogs" and command.get("save"):
-            held = None
+        # until they are saved. A save saves the catalogs and the images it can, as Blender's own
+        # quit does; a discard or T3 stopping doesn't ask.
+        held = _unkeepable() if command.get("hold") and not command.get("save") else None
         if held is not None:
             _send({"type": "quitFailed", "reason": held})
             return
@@ -520,6 +539,12 @@ def _handle(command):
             # Answered before the save, which blocks Blender for as long as a big file takes. It
             # names the file, which Blender can't change until the save is over.
             _send({"type": "saving", "filepath": bpy.data.filepath})
+            if command.get("hold"):
+                unsaved = _save_images()
+                if unsaved:
+                    # Nowhere to save them (no file, not packed): the person or agent decides.
+                    _send({"type": "quitFailed", "reason": "images", "images": unsaved})
+                    return
             _State.quit_saving = True
             try:
                 saved = _save()

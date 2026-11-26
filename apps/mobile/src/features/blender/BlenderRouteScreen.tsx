@@ -7,6 +7,7 @@ import {
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import {
   blendFileName,
+  isDiscardUnconfirmed,
   isRestoreReplacingUnsaved,
   quitFileOf,
 } from "@t3tools/client-runtime/state/hosted-blender";
@@ -122,7 +123,16 @@ function BlenderScreen(props: {
       },
     }).finally(() => setQuitting(false));
     if (result._tag === "Failure") {
-      Dialog.alert(m(msg("Couldn't quit Blender")), formatEnvironmentQueryError(result.cause));
+      Dialog.alert(
+        m(msg("Couldn't quit Blender")),
+        isDiscardUnconfirmed(result.cause)
+          ? m(
+              msg(
+                "Blender didn't answer, so it stays open with its changes. If it still doesn't answer, choosing Quit without saving again stops it and keeps what Blender last autosaved.",
+              ),
+            )
+          : formatEnvironmentQueryError(result.cause),
+      );
     }
   };
   const askToQuit = () => {

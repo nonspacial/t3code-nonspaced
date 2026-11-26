@@ -5704,6 +5704,7 @@
   "6116c7ae71bc7d05": "Verknüpfte Dateien",
   "3286ce5553d9f505": "Größe",
   "119259d2fa66fadf": "Blender konnte nicht beendet werden",
+  "65c73c884114dcf8": "Blender hat nicht geantwortet und bleibt deshalb mit seinen Änderungen geöffnet. Antwortet es weiterhin nicht, beendet ein erneutes „Ohne Speichern beenden“ Blender und behält, was Blender zuletzt automatisch gespeichert hat.",
   "b75a2837e20ac029": "Die Änderungen konnten nicht wiederhergestellt werden",
   "e2d3b41b3731a6c1": "Änderungen an {name} vor dem Beenden speichern?",
   "d07d4c5683786976": "Nicht gespeicherte Änderungen in Blender gehen verloren, wenn du ohne Speichern beendest.",

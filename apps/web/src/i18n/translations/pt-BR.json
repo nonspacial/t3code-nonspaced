@@ -13248,6 +13248,7 @@
   "907a0f7ed16a709d": "Não foi possível abrir no Hosted Blender",
   "7b0cb06d256e6b28": "Abrir no Hosted Blender",
   "119259d2fa66fadf": "Não foi possível fechar o Blender",
+  "65c73c884114dcf8": "O Blender não respondeu, então continua aberto com suas alterações. Se ele continuar sem responder, escolher “Sair sem salvar” de novo o interrompe e mantém o que o Blender salvou automaticamente por último.",
   "e2d3b41b3731a6c1": "Salvar as alterações em {name} antes de sair?",
   "32504fe5e26d8233": "As alterações que o Blender não salvou serão perdidas se você sair sem salvar.",
   "9ceb68fb844584c9": "Sair sem salvar",
