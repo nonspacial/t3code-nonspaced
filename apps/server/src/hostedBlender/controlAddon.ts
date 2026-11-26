@@ -358,7 +358,7 @@ def _view(command):
     rv3d = space.region_3d
     if not _renders_offscreen(space, window.scene):
         # The camera is still right; only the picture can't be had.
-        return _view_result(rv3d.view_matrix, rv3d.window_matrix, rv3d, None, window.scene)
+        return _view_result(rv3d.view_matrix, rv3d.window_matrix, rv3d, None, window)
     view_matrix = rv3d.view_matrix.copy()
     window_matrix = rv3d.window_matrix.copy()
     width, height = _screenshot_size(region.width, region.height)
@@ -382,12 +382,17 @@ def _view(command):
         offscreen.free()
     _write_png(os.path.join(os.path.dirname(SOCKET_PATH), name), width, height, rgba)
     return _view_result(
-        view_matrix, window_matrix, rv3d, {"width": width, "height": height}, window.scene
+        view_matrix, window_matrix, rv3d, {"width": width, "height": height}, window
     )
 
 
-def _scene_identity(scene):
-    return "%s:%s:%d:%d" % (_State.launch, _State.loaded_at, scene.frame_current, _State.scene_changes)
+def _scene_identity(window):
+    # The person's window: its scene, view layer and frame, and what it hides. A hide (H) reaches
+    # the depsgraph only as a Scene update, as a selection click does, so it is read here.
+    scene, view_layer = window.scene, window.view_layer
+    hidden = hash(tuple(o.name for o in view_layer.objects if not o.visible_get(view_layer=view_layer)))
+    return json.dumps([_State.launch, _State.loaded_at, scene.frame_current, _State.scene_changes,
+                       scene.name, view_layer.name, hidden])
 
 
 @persistent
@@ -396,13 +401,13 @@ def _on_depsgraph_update(_scene, depsgraph):
         _State.scene_changes += 1
 
 
-def _view_result(view_matrix, window_matrix, rv3d, screenshot, scene):
+def _view_result(view_matrix, window_matrix, rv3d, screenshot, window):
     perspective = window_matrix @ view_matrix
     return {
         "screenshot": screenshot,
         # The file the picture is of, which the annotation names, and the scene its hits check.
         "filepath": bpy.data.filepath,
-        "scene": _scene_identity(scene),
+        "scene": _scene_identity(window),
         "cameraView": _camera_view(view_matrix, rv3d.view_distance),
         "projection": {
             "matrix": [value for row in perspective for value in row],
@@ -419,7 +424,7 @@ def _hits(command):
     window, area, view_region, _space = found
     # Cast only in the scene as captured: a load, playback, another viewer or the agent may have
     # changed it since the screenshot, whose marks then name nothing here.
-    if command.get("scene") != _scene_identity(window.scene):
+    if command.get("scene") != _scene_identity(window):
         return "sceneChanged"
     inverse = Matrix([command["matrix"][row * 4:row * 4 + 4] for row in range(4)]).inverted()
     region = command["region"]

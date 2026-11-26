@@ -4559,7 +4559,7 @@ print("T3-RESULT", json.dumps({
     }
   });
 
-  it("holds a quit that asks while an image is edited, and names the scene anew once it changes", () => {
+  it("holds a quit that asks while an image is edited, and names the scene anew once it changes or hides", () => {
     // A background Blender of the test's own, settings and temporary files in its folder.
     const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-hosted-blender-hold-"));
     try {
@@ -4579,20 +4579,29 @@ image.pixels[0] = 0.5
 dirty = image.is_dirty
 _handle({"type": "quit", "save": False, "hold": True})
 scene = bpy.context.scene
+# Background Blender has no window: one showing the scene and its view layer stands in.
+window = type("Window", (), {"scene": scene, "view_layer": scene.view_layers[0]})()
 # The image made above is still to be evaluated.
 scene.view_layers[0].update()
-names = [_scene_identity(scene)]
+names = [_scene_identity(window)]
 scene.view_layers[0].update()
-names.append(_scene_identity(scene))
+names.append(_scene_identity(window))
 bpy.data.objects["Cube"].location.x += 1
 scene.view_layers[0].update()
-names.append(_scene_identity(scene))
+names.append(_scene_identity(window))
 scene.frame_set(scene.frame_current + 1)
-names.append(_scene_identity(scene))
+names.append(_scene_identity(window))
+bpy.data.objects["Camera"].select_set(True)
+scene.view_layers[0].update()
+selected = _scene_identity(window)
+bpy.data.objects["Cube"].hide_set(True)
+scene.view_layers[0].update()
 print("T3-RESULT", json.dumps({
     "dirty": dirty,
     "sent": sent,
     "names": [names[0] == names[1], len(set(names[1:]))],
+    "selection": selected == names[-1],
+    "hide": _scene_identity(window) == selected,
 }))`,
         ],
         {
@@ -4611,8 +4620,11 @@ print("T3-RESULT", json.dumps({
       expect(JSON.parse(line!.slice("T3-RESULT ".length))).toEqual({
         dirty: true,
         sent: [{ type: "quitFailed", reason: "images" }],
-        // An update with nothing changed names the same scene; an edit or another frame doesn't.
+        // An update with nothing changed names the same scene; an edit or another frame doesn't,
+        // nor does a hide. A selection names the same scene.
         names: [true, 3],
+        selection: true,
+        hide: false,
       });
     } finally {
       NodeFS.rmSync(dir, { recursive: true, force: true });
@@ -5281,9 +5293,9 @@ describe.skipIf(!canHostBlender)("B13: a real hosted Blender whose file changes 
 });
 
 // Writes T3's viewport windows to HB_TEST_DIR/layout.json each tick, and runs HB_TEST_DIR/command
-// as a person would, one a tick (";" chains): "strip <type>" switches the strip's editor, "view
-// <type>" the 3D view's, "open <path>" is File > Open, "edit <name>" adds an object through undo,
-// "move <name>" moves one through undo.
+// one a tick (";" chains): "strip|view <type>" switches the strip's or 3D view's editor, "open
+// <path>" is File > Open, "edit|move <name>" adds or moves an object through undo, "hide|unhide
+// <name>" hides one as H does, "scene <name>" shows that scene in T3's viewport window.
 const LAYOUT_STARTUP_SCRIPT = `import json, os
 import bpy
 
@@ -5336,6 +5348,8 @@ def _poll():
             bpy.data.objects[argument].location.x += 1
             with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
                 bpy.ops.ed.undo_push(message="T3 test move")
+        elif verb in ("hide", "unhide"):
+            bpy.data.objects[argument].hide_set(verb == "hide")
         elif windows:
             window = windows[0]
             view = next(area for area in window.screen.areas if area.type == "VIEW_3D")
@@ -5344,6 +5358,8 @@ def _poll():
                 view.type = argument
             elif verb == "strip" and strip is not None:
                 strip.type = argument
+            elif verb == "scene":
+                window.scene = bpy.data.scenes.get(argument) or bpy.data.scenes.new(argument)
     _ticks[0] += 1
     layout = {
         "tick": _ticks[0],
@@ -5352,8 +5368,10 @@ def _poll():
         "frame": bpy.context.scene.frame_current,
         "selected": [o.name for o in bpy.context.view_layer.objects if o.select_get()],
         "moves": bpy.data.objects["Cube"].location.x if "Cube" in bpy.data.objects else None,
+        "hidden": [o.name for o in bpy.context.view_layer.objects if o.hide_get()],
         "windows": [{"pointer": window.as_pointer(), "width": window.width, "height": window.height,
-                     "areas": _areas(window)} for window in _viewport_windows()],
+                     "scene": window.scene.name, "areas": _areas(window)}
+                    for window in _viewport_windows()],
     }
     with open(os.path.join(folder, "layout.json.part"), "w") as out:
         json.dump(layout, out)
@@ -5392,10 +5410,13 @@ interface Layout {
   readonly selected: ReadonlyArray<string>;
   /** Where the cube sits along x, which "move Cube" changes. */
   readonly moves: number | null;
+  /** The objects hidden in the view layer, as H hides them. */
+  readonly hidden: ReadonlyArray<string>;
   readonly windows: ReadonlyArray<{
     readonly pointer: number;
     readonly width: number;
     readonly height: number;
+    readonly scene: string;
     /** Top first. */
     readonly areas: ReadonlyArray<LayoutArea>;
   }>;
@@ -5654,6 +5675,20 @@ scene.frame_set(1)`;
         yield* layoutWhen((layout) => layout.moves !== deselected.moves);
         expect((yield* service.captureView(threadId)).scene).not.toBe(risen.scene);
         expect((yield* centre(risen).pipe(Effect.flip)).reason).toBe("sceneChanged");
+        // Hiding an object, as H does, changes what a mark would hit; so does showing another
+        // scene in the window.
+        const moved = yield* service.captureView(threadId);
+        command("hide Cube");
+        yield* layoutWhen((layout) => layout.hidden.includes("Cube"));
+        const hidden = yield* service.captureView(threadId);
+        expect(hidden.scene).not.toBe(moved.scene);
+        command("scene Other");
+        yield* layoutWhen((layout) => layout.windows[0]?.scene === "Other");
+        expect((yield* service.captureView(threadId)).scene).not.toBe(hidden.scene);
+        command("scene Scene;unhide Cube");
+        yield* layoutWhen(
+          (layout) => layout.windows[0]?.scene === "Scene" && !layout.hidden.includes("Cube"),
+        );
 
         // The wheel over the strip reaches the Timeline: Ctrl+wheel moves its frame range.
         const span = (layout: Layout) => layout.windows[0]!.areas[1]!.frames!;
