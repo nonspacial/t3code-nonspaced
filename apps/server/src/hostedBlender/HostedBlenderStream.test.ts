@@ -53,6 +53,12 @@ const serve = (
       releaseMaster: () => Effect.void,
       moveIntoT3: () => Effect.die("unused"),
       masterState: () => Stream.empty,
+      recordWorkingCopy: () => Effect.void,
+      putBackHeld: () => Effect.succeed(null),
+      heldWorkingCopies: () => Effect.succeed([]),
+      heldCopies: Stream.empty,
+      deleteHeld: () => Effect.void,
+      keepHeld: () => Effect.void,
     });
     const auth = Layer.merge(
       Layer.mock(EnvironmentAuth.EnvironmentAuth, {

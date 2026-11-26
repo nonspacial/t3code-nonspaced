@@ -17,6 +17,7 @@ import {
 } from "@t3tools/client-runtime/state/hosted-blender";
 import {
   EnvironmentId,
+  type HostedBlenderHeldBehind,
   type HostedBlenderKeptCopy,
   type HostedBlenderRunningState,
   type HostedBlenderThreadState,
@@ -245,6 +246,9 @@ function BlenderScreen(props: {
           ) : null}
         </GlassSurface>
       </View>
+      {blender !== null && "heldBehind" in blender && blender.heldBehind !== undefined ? (
+        <HeldCopiesNotice environmentId={props.environmentId} behind={blender.heldBehind} />
+      ) : null}
       {running ? (
         <ReloadNotices
           environmentId={props.environmentId}
@@ -404,6 +408,75 @@ function ReloadNotices(props: {
             </View>
           ) : null}
         </>
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * Asked once the master has changed since other threads' working copies of it were held: they
+ * are of an edition the person has moved past. As on web; Keep stops the question.
+ */
+function HeldCopiesNotice(props: {
+  readonly environmentId: EnvironmentId;
+  readonly behind: HostedBlenderHeldBehind;
+}) {
+  const gt = useGT();
+  const messages = useMessages();
+  const canAnswer = useAtomValue(
+    hostedBlenderEnvironment.deleteHeld.permissionAtom(props.environmentId),
+  );
+  const deleteHeld = useAtomCommand(hostedBlenderEnvironment.deleteHeld, { reportFailure: false });
+  const keepHeld = useAtomCommand(hostedBlenderEnvironment.keepHeld, { reportFailure: false });
+  const [pending, setPending] = useState(false);
+  const answer = async (keep: boolean) => {
+    setPending(true);
+    const input = { environmentId: props.environmentId, input: { ids: props.behind.ids } };
+    const result = await (keep ? keepHeld(input) : deleteHeld(input)).finally(() =>
+      setPending(false),
+    );
+    if (result._tag === "Failure") {
+      Dialog.alert(
+        m(msg("Couldn't change the held working copies")),
+        formatEnvironmentQueryError(result.cause),
+      );
+    }
+  };
+  const threads =
+    props.behind.threadTitles.length > 0
+      ? props.behind.threadTitles.join(", ")
+      : gt("Unknown thread");
+  return (
+    <View className="gap-2 px-3 pt-2">
+      <Notice
+        message={gt(
+          "{count, plural, =1 {{master} has changed since T3 Code held the working copy of it from {threads} ({size}). That copy holds an edition you've moved past. Delete it now, or keep it until {date}.} other {{master} has changed since T3 Code held {count} working copies of it from {threads} ({size}). They hold an edition you've moved past. Delete them now, or keep them until {date}.}}",
+          {
+            count: props.behind.ids.length,
+            master: fileName(props.behind.master),
+            threads,
+            size: formatAttachmentSize(props.behind.bytes, messages),
+            date: new Date(props.behind.expiresAt).toLocaleDateString(undefined, {
+              dateStyle: "medium",
+            }),
+          },
+        )}
+      />
+      {canAnswer ? (
+        <View className="flex-row gap-2">
+          <Button
+            label={gt("Delete", { $context: "deletes held working copies" })}
+            tone="secondary"
+            disabled={pending}
+            onPress={() => void answer(false)}
+          />
+          <Button
+            label={gt("Keep", { $context: "keeps held working copies" })}
+            tone="secondary"
+            disabled={pending}
+            onPress={() => void answer(true)}
+          />
+        </View>
       ) : null}
     </View>
   );

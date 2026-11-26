@@ -36,7 +36,15 @@ Once a file is open, a link to that `.blend` in the chat opens the Blender pane,
 
 With **Allow agents to start hosted Blenders** on, Claude and Codex threads can work in a hosted Blender. Other providers aren't supported yet. A thread picks it up when its agent session next starts, such as in a new thread.
 
-Ask the agent to change a `.blend`, say `models/hero.blend`. It doesn't edit that file: T3 Code copies it to `models/hero.wip-<id>.blend` beside it, where links to other files still work, and opens the copy in the thread's hosted Blender. The agent edits the copy, and posts a link to it when it's done or when you ask to watch; the link opens the Blender pane, and a link with a view moves your viewport window to what it points at. The copy stays in your project after the thread ends. To have the agent work in your own Blender instead, say so.
+Ask the agent to change a `.blend`, say `models/hero.blend`. It doesn't edit that file: T3 Code copies it to `models/hero.wip-<id>.blend` beside it, where links to other files still work, and opens the copy in the thread's hosted Blender. The agent edits the copy, and posts a link to it when it's done or when you ask to watch; the link opens the Blender pane, and a link with a view moves your viewport window to what it points at. To have the agent work in your own Blender instead, say so.
+
+### When the thread finishes
+
+When the thread settles or is archived, T3 Code closes its Blender, then moves the working copy out of your project into its own folder on the server and deletes the copy's `.blend1` backups, so your project only keeps the files you made. It never touches the master or any other file, and leaves a copy alone if it can't be sure it's the one T3 Code made, such as a link to another file. Settings › Blender lists the copies it holds under **Held working copies**, with their thread, master, size and the day they're deleted, and **Delete** removes one at once.
+
+Opening the thread's Blender again (the agent's next start, **Reopen** in the pane, or a link to the copy) puts the copy back where it was, with any unsaved changes Blender kept when it closed. If another file has taken its name in your project meanwhile, T3 Code leaves both alone and says so.
+
+Once the master has changed since a copy was held, such as when another thread copied its work back into it, that copy is of an edition you've moved past. The Blender pane of a thread working on that master then asks once whether to delete those copies or keep them. Whatever you answer, T3 Code deletes a held copy 30 days after it held it, and deleting a thread deletes its copy, held or still in the project. Working copies made by earlier versions of T3 Code, which didn't record them, stay in your project; delete them yourself when you no longer need them.
 
 What the agent may do without asking follows the thread's access mode. In **Full access** it uses every Blender tool freely. In the other modes it reads the scene, takes screenshots and searches the docs freely, and asks before it runs code or writes files. In Plan mode it can only look: it can't start or quit Blender, and embedded scripts stay off. Changing the mode applies from the next turn.
 

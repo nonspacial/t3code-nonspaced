@@ -13282,6 +13282,11 @@
   "3906097eebf88153": "Mostrando toda la pantalla",
   "27ea83219396f796": "Sin GPU: Blender irá lento",
   "156c7543e861dda6": "Sin acceso a la GPU: Blender irá lento",
+  "76351436512c399d": "No se pudieron cambiar las copias de trabajo guardadas",
+  "f924543cf569d79f": "Hilo desconocido",
+  "11b2e4f89a737c8b": "{count, plural, =1 {{master} ha cambiado desde que T3 Code guardó su copia de trabajo de {threads} ({size}). Esa copia tiene una edición que ya dejaste atrás. Elimínala ahora o consérvala hasta el {date}.} other {{master} ha cambiado desde que T3 Code guardó {count} copias de trabajo suyas de {threads} ({size}). Tienen una edición que ya dejaste atrás. Elimínalas ahora o consérvalas hasta el {date}.}}",
+  "8da9cb531d4e4b3f": "Eliminar",
+  "cbe0ad4fb8adfdfa": "Conservar",
   "907a0f7ed16a709d": "No se pudo abrir en Hosted Blender",
   "7b0cb06d256e6b28": "Abrir en Hosted Blender",
   "119259d2fa66fadf": "No se pudo cerrar Blender",
@@ -13396,10 +13401,66 @@
   "29e40a5da4bbbf79": "No se pudo capturar la vista 3D",
   "ce122949162f2073": "Vista previa flotante de Blender",
   "a0f6aecb07b533ff": "Blenders en ejecución ({count})",
+  "73428370de12439f": "Copias de trabajo guardadas ({count})",
+  "3014b7f6587ef7f3": "No se pudo eliminar la copia de trabajo guardada",
   "b04a15f0adaa16b9": "No hay ningún Blender alojado en ejecución",
   "201b5d40d08e74d0": "El Blender alojado de cada hilo aparece aquí mientras se ejecuta.",
   "75daeb1e9b041511": "Hilo desconocido",
   "0eda0be3d24af58c": "Salir",
+  "6d24969032ce53a0": "No hay copias de trabajo guardadas",
+  "3d0a18ffc243356c": "Cuando un hilo se cierra o se archiva, T3 Code saca la copia de trabajo de su agente del proyecto y la guarda aquí hasta 30 días, para que el hilo pueda retomarla.",
+  "e9ca4e90337acd65": [
+    "Se dejó en el proyecto en ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ": T3 Code no pudo asegurarse de que sea su propia copia de trabajo, así que no la movió."
+  ],
+  "72f632768d65286c": [
+    "Copia de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ". El maestro ha cambiado desde entonces. Se elimina el ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
+    "."
+  ],
+  "cb54027f77eb65b0": [
+    "Copia de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ". Se elimina el ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
+    "."
+  ],
+  "77e2ba01461cdf5f": "Eliminar",
   "7660bc93bbd673be": "Deja que T3 Code ejecute su propio Blender en este servidor, en una pantalla oculta, para que puedas verlo y controlarlo en el panel de Blender. Solo Linux. Tu Blender de escritorio nunca se toca.",
   "41dfe036cd2b2975": "Hosted Blender",
   "9cc2228be8a75b39": "Los agentes de los hilos de Claude y Codex pueden iniciar los Hosted Blender de este servidor, a partir de su próxima sesión. Otros proveedores aún no son compatibles.",
@@ -13533,6 +13594,8 @@
   "6ac7d143dd2dd2a5": "blender 3d vista previa archivo blend convertir glb modelo ruta programa instalar",
   "dd6b767f08eff9f7": "Blenders en ejecución",
   "ec2bc06507d0d9af": "alojado blender salir memoria 3d hilo",
+  "a814b94991df8526": "Copias de trabajo guardadas",
+  "9a71eb544988a290": "alojado blender copia de trabajo wip cerrado archivado eliminar caducar maestro",
   "37d76dab21a26b2a": "blender hosted configuración instalar comprobar labwc gstreamer codificador gpu pantalla oculta linux agente comandos",
   "f74fb1f1e951cb67": "blender hosted agentes mcp iniciar permitir",
   "3cf7f8ed35b33c5f": "blender lab mcp servidor ruta programa instalar uv pipx",

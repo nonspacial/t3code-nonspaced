@@ -13301,6 +13301,11 @@
   "3906097eebf88153": "正在显示整个显示器",
   "27ea83219396f796": "没有 GPU：Blender 会很慢",
   "156c7543e861dda6": "无法访问 GPU：Blender 会很慢",
+  "76351436512c399d": "无法更改保留的工作副本",
+  "f924543cf569d79f": "未知线程",
+  "11b2e4f89a737c8b": "{count, plural, =1 {自 T3 Code 保留来自 {threads} 的工作副本以来，{master} 已更改（{size}）。该副本是你已经越过的版本。现在删除它，或保留到 {date}。} other {自 T3 Code 保留来自 {threads} 的 {count} 个工作副本以来，{master} 已更改（{size}）。这些副本是你已经越过的版本。现在删除它们，或保留到 {date}。}}",
+  "8da9cb531d4e4b3f": "删除",
+  "cbe0ad4fb8adfdfa": "保留",
   "907a0f7ed16a709d": "无法在 Hosted Blender 中打开",
   "7b0cb06d256e6b28": "在 Hosted Blender 中打开",
   "119259d2fa66fadf": "无法退出 Blender",
@@ -13415,10 +13420,64 @@
   "29e40a5da4bbbf79": "无法截取 3D 视图",
   "ce122949162f2073": "悬浮 Blender 预览",
   "a0f6aecb07b533ff": "正在运行的 Blender（{count}）",
+  "73428370de12439f": "保留的工作副本（{count}）",
+  "3014b7f6587ef7f3": "无法删除保留的工作副本",
   "b04a15f0adaa16b9": "没有正在运行的托管 Blender",
   "201b5d40d08e74d0": "每个线程的托管 Blender 运行时会显示在这里。",
   "75daeb1e9b041511": "未知线程",
   "0eda0be3d24af58c": "退出",
+  "6d24969032ce53a0": "没有保留的工作副本",
+  "3d0a18ffc243356c": "线程结束或归档时，T3 Code 会把其代理的工作副本移出项目并在此保留最多 30 天，以便线程再次使用。",
+  "e9ca4e90337acd65": [
+    "已留在项目中的 ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "：T3 Code 无法确定它是自己的工作副本，因此没有移动它。"
+  ],
+  "72f632768d65286c": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " 的副本，",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "。主文件此后已更改。将于 ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
+    " 删除。"
+  ],
+  "cb54027f77eb65b0": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " 的副本，",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "。将于 ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
+    " 删除。"
+  ],
+  "77e2ba01461cdf5f": "删除",
   "7660bc93bbd673be": "让 T3 Code 在此服务器的隐藏显示器上运行自己的 Blender，你可以在 Blender 面板中查看和操控它。仅限 Linux。绝不会动你桌面上的 Blender。",
   "41dfe036cd2b2975": "Hosted Blender",
   "9cc2228be8a75b39": "Claude 和 Codex 会话中的智能体可以从下一个会话起启动此服务器的 Hosted Blender。其他提供商暂不支持。",
@@ -13552,6 +13611,8 @@
   "6ac7d143dd2dd2a5": "blender 3d 预览 blend 文件 转换 glb 模型 路径 程序 安装",
   "dd6b767f08eff9f7": "正在运行的 Blender",
   "ec2bc06507d0d9af": "托管 blender 退出 内存 3d 线程",
+  "a814b94991df8526": "保留的工作副本",
+  "9a71eb544988a290": "托管 blender 工作副本 wip 结束 归档 删除 过期 主文件",
   "37d76dab21a26b2a": "blender hosted 设置 安装 检查 labwc gstreamer 编码器 gpu 隐藏显示器 linux 智能体 命令",
   "f74fb1f1e951cb67": "blender hosted 智能体 mcp 启动 允许",
   "3cf7f8ed35b33c5f": "blender lab mcp 服务器 路径 程序 安装 uv pipx",

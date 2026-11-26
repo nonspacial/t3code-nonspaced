@@ -34,7 +34,7 @@ const HostedBlenderToolFailure = Schema.Union([HostedBlenderToolError, Orchestra
 
 const BlenderStartTool = Tool.make("blender_start", {
   description:
-    "Open a working copy of a `.blend` in this thread's hosted Blender, which the user can watch in the Blender pane. Pass the master, the file the user wants changed, as `path` relative to the thread's workspace root or absolute inside it; with only a file name, find it inside the workspace, never across the disk. T3 copies it to `<name>.wip-<id>.blend` beside it, keeping an earlier copy, and starts Blender on the copy. Edit it with the `blender-hosted` MCP tools. Call again to restart after a crash.",
+    "Open a working copy of a `.blend` in this thread's hosted Blender, which the user can watch in the Blender pane. Pass the master, the file the user wants changed, as `path` relative to the thread's workspace root or absolute inside it; with only a file name, find it inside the workspace, never across the disk. T3 copies it to `<name>.wip-<id>.blend` beside it, keeping an earlier copy (held outside the project once the thread finishes, and put back here), and starts Blender on the copy. Edit it with the `blender-hosted` MCP tools. Call again to restart after a crash.",
   parameters: HostedBlenderToolStartInput,
   success: HostedBlenderToolStartResult,
   failure: HostedBlenderToolFailure,
@@ -64,7 +64,7 @@ const BlenderMasterOpenTool = Tool.make("blender_master_open", {
 
 const BlenderStatusTool = Tool.make("blender_status", {
   description:
-    "List this thread's hosted Blenders (working copy and master): the file, its status, any recovery copy, unsaved changes, and whether your MCP entry reaches it.",
+    "List this thread's hosted Blenders (working copy and master): the file, its status, any recovery copy or held working copy, unsaved changes, and whether your MCP entry reaches it.",
   // No `parameters`: an explicit empty struct is not a valid MCP input schema.
   success: HostedBlenderToolStatusResult,
   failure: HostedBlenderToolFailure,

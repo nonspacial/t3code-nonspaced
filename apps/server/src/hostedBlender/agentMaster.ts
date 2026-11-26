@@ -12,7 +12,7 @@ import * as Stream from "effect/Stream";
 import { threadWorkspaceRoot } from "../project/threadWorkspaceRoot.ts";
 import { BLENDER_MASTER_MCP_SERVER } from "../provider/hostedBlenderMcp.ts";
 import { untestedBlenderLabReason } from "./agentGuard.ts";
-import { threadTag } from "./agentWorkingCopy.ts";
+import { threadTag } from "./workingCopies.ts";
 import * as HostedBlender from "./HostedBlender.ts";
 
 /** The user's own MCP entry for their desktop Blender, which T3 never changes. */

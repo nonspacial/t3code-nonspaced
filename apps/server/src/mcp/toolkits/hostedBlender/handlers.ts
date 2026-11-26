@@ -108,10 +108,18 @@ const workingStatus = Effect.fnUntraced(function* (threadId: ThreadId, unavailab
   const root = yield* threadWorkspaceRoot(threadId);
   const inWorkspace = (relativePath: string) =>
     root === undefined ? relativePath : path.join(root, relativePath);
-  // Each working file's waiting copy, under its own file, whether or not a Blender runs.
-  const kept = (yield* hostedBlender.keptCopies(threadId)).map((copy) =>
-    keptEntry("working", copy, inWorkspace),
-  );
+  // Each working file's waiting copy, under its own file, whether or not a Blender runs, and
+  // the working copies held outside the project since the thread finished.
+  const kept = [
+    ...(yield* hostedBlender.keptCopies(threadId)).map((copy) =>
+      keptEntry("working", copy, inWorkspace),
+    ),
+    ...(yield* Effect.forEach(yield* hostedBlender.heldWorkingCopies(threadId), (file) =>
+      underConfiguredRoot(file, root).pipe(
+        Effect.map((shown) => ({ role: "working" as const, status: "held" as const, file: shown })),
+      ),
+    )),
+  ];
   if (state?.status !== "starting" && state?.status !== "running") return kept;
   const listener = yield* hostedBlender.agentListener(threadId, { wait: false });
   const reported = listener?.openFile;

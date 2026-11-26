@@ -124,6 +124,7 @@ import {
   type TakeScroll,
   wheelScroll,
 } from "./blenderInput";
+import { HeldCopiesNotice } from "./HeldCopiesNotice";
 import { reloadKey, useKeptCopySelection } from "./keptCopies";
 import { fileName, useQuitHostedBlender } from "./useQuitHostedBlender";
 
@@ -245,12 +246,27 @@ export function BlenderPanel(props: BlenderPanelProps) {
     ) : (
       <StateCard title={<Spinner />} />
     );
-  if (switcher === null || running) return body;
-  // A card has no toolbar, so the switch sits above it.
+  // Asked above whichever side shows, until it is answered.
+  const heldBehind = working !== null && "heldBehind" in working ? working.heldBehind : undefined;
+  const notice =
+    heldBehind === undefined ? null : (
+      <HeldCopiesNotice threadRef={props.threadRef} behind={heldBehind} />
+    );
+  const content =
+    switcher === null || running ? (
+      body
+    ) : (
+      // A card has no toolbar, so the switch sits above it.
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="flex h-9 shrink-0 items-center border-b border-border px-3">{switcher}</div>
+        <div className="min-h-0 flex-1">{body}</div>
+      </div>
+    );
+  if (notice === null) return content;
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-9 shrink-0 items-center border-b border-border px-3">{switcher}</div>
-      <div className="min-h-0 flex-1">{body}</div>
+      {notice}
+      <div className="min-h-0 flex-1">{content}</div>
     </div>
   );
 }

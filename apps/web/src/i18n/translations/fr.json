@@ -13287,6 +13287,11 @@
   "3906097eebf88153": "Affichage de tout l’écran",
   "27ea83219396f796": "Pas de GPU : Blender sera lent",
   "156c7543e861dda6": "Pas d’accès au GPU : Blender sera lent",
+  "76351436512c399d": "Impossible de modifier les copies de travail conservées",
+  "f924543cf569d79f": "Fil inconnu",
+  "11b2e4f89a737c8b": "{count, plural, =1 {{master} a changé depuis que T3 Code a conservé sa copie de travail issue de {threads} ({size}). Cette copie contient une édition que vous avez dépassée. Supprimez-la maintenant ou gardez-la jusqu’au {date}.} other {{master} a changé depuis que T3 Code a conservé {count} copies de travail issues de {threads} ({size}). Elles contiennent une édition que vous avez dépassée. Supprimez-les maintenant ou gardez-les jusqu’au {date}.}}",
+  "8da9cb531d4e4b3f": "Supprimer",
+  "cbe0ad4fb8adfdfa": "Garder",
   "907a0f7ed16a709d": "Impossible d’ouvrir dans Hosted Blender",
   "7b0cb06d256e6b28": "Ouvrir dans Hosted Blender",
   "119259d2fa66fadf": "Impossible de quitter Blender",
@@ -13401,10 +13406,66 @@
   "29e40a5da4bbbf79": "Impossible de capturer la vue 3D",
   "ce122949162f2073": "Aperçu flottant de Blender",
   "a0f6aecb07b533ff": "Blender en cours d’exécution ({count})",
+  "73428370de12439f": "Copies de travail conservées ({count})",
+  "3014b7f6587ef7f3": "Impossible de supprimer la copie de travail conservée",
   "b04a15f0adaa16b9": "Aucun Blender hébergé n’est en cours d’exécution",
   "201b5d40d08e74d0": "Le Blender hébergé de chaque fil apparaît ici tant qu’il s’exécute.",
   "75daeb1e9b041511": "Fil inconnu",
   "0eda0be3d24af58c": "Quitter",
+  "6d24969032ce53a0": "Aucune copie de travail conservée",
+  "3d0a18ffc243356c": "Quand un fil est clôturé ou archivé, T3 Code sort la copie de travail de son agent du projet et la conserve ici jusqu’à 30 jours, pour que le fil puisse la reprendre.",
+  "e9ca4e90337acd65": [
+    "Laissée dans le projet à ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " : T3 Code n’a pas pu s’assurer que c’est sa propre copie de travail, il ne l’a donc pas déplacée."
+  ],
+  "72f632768d65286c": [
+    "Copie de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ". Le maître a changé depuis. Supprimée le ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
+    "."
+  ],
+  "cb54027f77eb65b0": [
+    "Copie de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ". Supprimée le ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
+    "."
+  ],
+  "77e2ba01461cdf5f": "Supprimer",
   "7660bc93bbd673be": "Laissez T3 Code exécuter son propre Blender sur ce serveur, sur un écran masqué, pour le voir et le piloter dans le panneau Blender. Linux uniquement. Votre Blender de bureau n’est jamais touché.",
   "41dfe036cd2b2975": "Hosted Blender",
   "9cc2228be8a75b39": "Les agents des fils Claude et Codex peuvent démarrer les Hosted Blender de ce serveur, à partir de leur prochaine session. Les autres fournisseurs ne sont pas encore pris en charge.",
@@ -13538,6 +13599,8 @@
   "6ac7d143dd2dd2a5": "blender 3d aperçu fichier blend convertir glb modèle chemin programme installer",
   "dd6b767f08eff9f7": "Blender en cours d’exécution",
   "ec2bc06507d0d9af": "hébergé blender quitter mémoire 3d fil",
+  "a814b94991df8526": "Copies de travail conservées",
+  "9a71eb544988a290": "hébergé blender copie de travail wip clôturé archivé supprimer expiration maître",
   "37d76dab21a26b2a": "blender hosted configuration installer vérifier labwc gstreamer encodeur gpu écran masqué linux agent commandes",
   "f74fb1f1e951cb67": "blender hosted agents mcp démarrer autoriser",
   "3cf7f8ed35b33c5f": "blender lab mcp serveur chemin programme installer uv pipx",

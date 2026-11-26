@@ -20,8 +20,9 @@ import * as Stream from "effect/Stream";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
-import { startAgentWorkingCopy, workingCopyName } from "./agentWorkingCopy.ts";
+import { startAgentWorkingCopy } from "./agentWorkingCopy.ts";
 import * as HostedBlender from "./HostedBlender.ts";
+import { workingCopyName } from "./workingCopies.ts";
 
 const threadId = ThreadId.make("thread-6f1c2a9e-0b7d-4c55-9e1a-1a2b3c4d5e6f");
 
@@ -66,6 +67,8 @@ const layerFor = (input: {
       keptCopies: () => Effect.succeed(input.kept ?? []),
       reopen: (reopen) => Effect.sync(() => void input.reopened?.push(reopen)),
       knowMaster: (master) => Effect.sync(() => void input.known?.push(master)),
+      putBackHeld: () => Effect.succeed(null),
+      recordWorkingCopy: () => Effect.void,
       agentListener: () =>
         Effect.succeed({
           state: input.listener ?? "ready",

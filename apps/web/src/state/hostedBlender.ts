@@ -7,6 +7,7 @@ import { createHostedBlenderEnvironmentAtoms } from "@t3tools/client-runtime/sta
 import {
   type EnvironmentId,
   HOSTED_BLENDER_STREAM_PATH,
+  type HostedBlenderHeldList,
   type HostedBlenderRunningList,
   HostedBlenderError,
   type HostedBlenderMasterState,
@@ -57,6 +58,19 @@ export function useRunningHostedBlenders(
     environmentId === null
       ? null
       : hostedBlenderEnvironment.runningBlenders({ environmentId, input: {} }),
+    resolve,
+  ).data;
+}
+
+/** Every working copy held on the environment, or null until the server answers. */
+export function useHeldWorkingCopies(
+  environmentId: EnvironmentId | null,
+): HostedBlenderHeldList | null {
+  const resolve = useMessages();
+  return useEnvironmentQuery(
+    environmentId === null
+      ? null
+      : hostedBlenderEnvironment.heldCopies({ environmentId, input: {} }),
     resolve,
   ).data;
 }

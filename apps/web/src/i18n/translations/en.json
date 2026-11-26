@@ -13297,6 +13297,11 @@
   "3906097eebf88153": "Showing the whole display",
   "27ea83219396f796": "No GPU: Blender will be slow",
   "156c7543e861dda6": "No GPU access: Blender will be slow",
+  "76351436512c399d": "Couldn't change the held working copies",
+  "f924543cf569d79f": "Unknown thread",
+  "11b2e4f89a737c8b": "{count, plural, =1 {{master} has changed since T3 Code held the working copy of it from {threads} ({size}). That copy holds an edition you've moved past. Delete it now, or keep it until {date}.} other {{master} has changed since T3 Code held {count} working copies of it from {threads} ({size}). They hold an edition you've moved past. Delete them now, or keep them until {date}.}}",
+  "8da9cb531d4e4b3f": "Delete",
+  "cbe0ad4fb8adfdfa": "Keep",
   "907a0f7ed16a709d": "Couldn't open in hosted Blender",
   "7b0cb06d256e6b28": "Open in hosted Blender",
   "119259d2fa66fadf": "Couldn't quit Blender",
@@ -13411,10 +13416,66 @@
   "29e40a5da4bbbf79": "Could not capture the 3D view",
   "ce122949162f2073": "Floating Blender preview",
   "a0f6aecb07b533ff": "Running Blenders ({count})",
+  "73428370de12439f": "Held working copies ({count})",
+  "3014b7f6587ef7f3": "Couldn't delete the held working copy",
   "b04a15f0adaa16b9": "No hosted Blenders are running",
   "201b5d40d08e74d0": "Each thread's hosted Blender shows here while it runs.",
   "75daeb1e9b041511": "Unknown thread",
   "0eda0be3d24af58c": "Quit",
+  "6d24969032ce53a0": "No working copies are held",
+  "3d0a18ffc243356c": "When a thread settles or is archived, T3 Code moves its agent's working copy out of the project and holds it here, so the thread can pick it up again, for up to 30 days.",
+  "e9ca4e90337acd65": [
+    "Left in the project at ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ": T3 Code couldn't be sure it is its own working copy, so it didn't move it."
+  ],
+  "72f632768d65286c": [
+    "Copy of ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ". The master has changed since. Deleted on ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
+    "."
+  ],
+  "cb54027f77eb65b0": [
+    "Copy of ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ". Deleted on ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
+    "."
+  ],
+  "77e2ba01461cdf5f": "Delete",
   "7660bc93bbd673be": "Let T3 Code run its own Blender on this server, on a hidden display, so you can watch and steer it in the Blender pane. Linux only. Your desktop Blender is never touched.",
   "41dfe036cd2b2975": "Hosted Blender",
   "9cc2228be8a75b39": "Agents in Claude and Codex threads may start this server's hosted Blenders, from their next session. Other providers are not supported yet.",
@@ -13548,6 +13609,8 @@
   "6ac7d143dd2dd2a5": "blender 3d preview blend file convert glb model path binary install",
   "dd6b767f08eff9f7": "Running Blenders",
   "ec2bc06507d0d9af": "hosted blender quit memory 3d thread",
+  "a814b94991df8526": "Held working copies",
+  "9a71eb544988a290": "hosted blender working copy wip settled archived delete expire master",
   "37d76dab21a26b2a": "blender hosted setup install check labwc gstreamer encoder gpu hidden display linux agent commands",
   "f74fb1f1e951cb67": "blender hosted agents mcp start allow",
   "3cf7f8ed35b33c5f": "blender lab mcp server path binary install uv pipx",

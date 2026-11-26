@@ -9,11 +9,17 @@ import * as NodeZlib from "node:zlib";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, expect, it } from "@effect/vitest";
-import { type HostedBlenderThreadState, type RuntimeMode, ThreadId } from "@t3tools/contracts";
+import {
+  type HostedBlenderHeldList,
+  type HostedBlenderThreadState,
+  type RuntimeMode,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -34,6 +40,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { HOSTED_STARTUP_GATE_SOURCE } from "./agentGuard.ts";
 import { startAgentWorkingCopy } from "./agentWorkingCopy.ts";
+import { workingCopyName } from "./workingCopies.ts";
 import { CONTROL_ADDON_SOURCE } from "./controlAddon.ts";
 import * as DesktopBlender from "./DesktopBlender.ts";
 import * as HostedBlender from "./HostedBlender.ts";
@@ -87,6 +94,8 @@ interface Host {
   readonly heldWords?: (word: "connected" | "viewportShown") => Effect.Effect<void>;
   /** Whether the thread is settled now; it is unless a test makes it active again. */
   readonly threadSettled?: () => boolean;
+  /** Whether the thread is archived now, rather than settled. */
+  readonly threadArchived?: () => boolean;
 }
 
 const blenderOnPath = (env: NodeJS.ProcessEnv) =>
@@ -151,8 +160,13 @@ const layerFor = (host: Host) =>
                       projectId: "project",
                       runtimeMode: host.runtimeMode ?? "approval-required",
                       interactionMode: host.interactionMode ?? "default",
-                      settledOverride: host.threadSettled?.() === false ? "active" : "settled",
-                      archivedAt: null,
+                      title: id === threadId ? "Hero pass" : "Other pass",
+                      settledOverride:
+                        host.threadSettled?.() === false || host.threadArchived?.() === true
+                          ? "active"
+                          : "settled",
+                      archivedAt: host.threadArchived?.() === true ? DateTime.makeUnsafe(0) : null,
+                      deletedAt: null,
                     } as never)
                   : null,
               ),
@@ -1882,6 +1896,295 @@ describe("Salvaging what a stopped server left", () => {
       expect((yield* firstState(yield* idleService(dir))).status).toBe("closed");
       expect(recoveryOf(hostedDir)?.contents).toBe("left behind");
     }).pipe(Effect.scoped),
+  );
+});
+
+describe("B19: a finished thread's working copy is held", () => {
+  const COPY = workingCopyName("cube.blend", threadId);
+  const OTHER_COPY = workingCopyName("other.blend", threadId);
+  /** A workspace with cube.blend and the copy of it T3 made for the thread, and no Blender. */
+  const heldHost = Effect.fn(function* (
+    prefix: string,
+    host: Pick<Host, "threadSettled" | "threadArchived"> = {},
+  ) {
+    const dir = NodeFS.realpathSync(yield* tempDir(prefix));
+    const bin = fakeTools(dir);
+    NodeFS.writeFileSync(NodePath.join(dir, "cube.blend"), "master");
+    NodeFS.writeFileSync(NodePath.join(dir, COPY), "working copy");
+    const layer = layerFor({
+      env: { PATH: bin },
+      helper: NodePath.join(bin, "helper"),
+      workspaceRoot: dir,
+      baseDir: dir,
+      ...host,
+    });
+    const at = (name: string) => NodePath.join(dir, name);
+    const record = (
+      service: HostedBlender.HostedBlender["Service"],
+      name = COPY,
+      master = "cube.blend",
+      thread: ThreadId = threadId,
+    ) => service.recordWorkingCopy({ threadId: thread, master: at(master), path: at(name) });
+    const heldWhen = (
+      service: HostedBlender.HostedBlender["Service"],
+      done: (list: HostedBlenderHeldList) => boolean,
+    ) =>
+      service.heldCopies.pipe(Stream.filter(done), Stream.runHead, Effect.map(Option.getOrThrow));
+    const heldFile = (id: string) =>
+      NodePath.join(dir, "userdata", "hosted-blender", "working-copies", id, "copy.blend");
+    return { dir, layer, at, record, heldWhen, heldFile, start: serviceFor(layer) };
+  });
+
+  it.live("settling or archiving moves the copy out of the project, and its backups go", () => {
+    let archived = false;
+    return Effect.gen(function* () {
+      const { at, record, heldWhen, heldFile, start } = yield* heldHost("held-settle", {
+        threadArchived: () => archived,
+      });
+      NodeFS.writeFileSync(at(`${COPY}1`), "backup");
+      NodeFS.writeFileSync(at("notes.py"), "script");
+      const service = yield* start;
+      yield* record(service);
+      yield* service.closeOnSettle({ threadId });
+      const [held] = yield* heldWhen(service, (list) => list.length === 1);
+      expect(held).toMatchObject({ threadTitle: "Hero pass", path: at(COPY), bytes: 12 });
+      expect(held!.expiresAt! - held!.heldAt).toBe(Duration.toMillis(Duration.days(30)));
+      expect(NodeFS.readFileSync(heldFile(held!.id), "utf8")).toBe("working copy");
+      // Only the copy and its backups leave; the master and every other file stay.
+      const left = NodeFS.readdirSync(NodePath.dirname(at(COPY)));
+      expect(left).toEqual(expect.arrayContaining(["cube.blend", "notes.py"]));
+      expect(left.filter((name) => name.includes(".wip-"))).toEqual([]);
+      // Back for the next start, then held again when the thread is archived instead.
+      expect(yield* service.putBackHeld({ threadId, path: at(COPY) })).toEqual({
+        masterChanged: false,
+      });
+      expect(NodeFS.readFileSync(at(COPY), "utf8")).toBe("working copy");
+      yield* heldWhen(service, (list) => list.length === 0);
+      archived = true;
+      yield* service.closeOnSettle({ threadId });
+      yield* heldWhen(service, (list) => list.length === 1);
+      expect(NodeFS.existsSync(at(COPY))).toBe(false);
+    }).pipe(Effect.scoped);
+  });
+
+  it.live("Reopen puts the held copy back first, with the unsaved work kept at settle", () =>
+    Effect.gen(function* () {
+      const { service, dir, awaitStatus, awaitDirty, launches, hostedDir } = yield* standIn(
+        "held-reopen",
+        "",
+      );
+      const real = NodeFS.realpathSync(dir);
+      NodeFS.writeFileSync(NodePath.join(real, COPY), "working copy");
+      yield* service.recordWorkingCopy({
+        threadId,
+        master: NodePath.join(real, "cube.blend"),
+        path: NodePath.join(real, COPY),
+      });
+      yield* service.open({ threadId, relativePath: COPY });
+      yield* awaitDirty(true);
+      yield* service.closeOnSettle({ threadId });
+      expect(yield* awaitStatus("closed")).toMatchObject({ relativePath: COPY, recovery: true });
+      yield* service.heldCopies.pipe(
+        Stream.filter((list) => list.length === 1),
+        Stream.runHead,
+      );
+      expect(NodeFS.existsSync(NodePath.join(real, COPY))).toBe(false);
+
+      yield* service.reopen({ threadId, key: `workspace:${COPY}`, restore: true });
+      yield* awaitDirty(true);
+      expect(NodeFS.readFileSync(NodePath.join(real, COPY), "utf8")).toBe("working copy");
+      const reopened = launches().at(-1)!;
+      expect(reopened).toContain(NodePath.join(real, COPY));
+      expect(reopened[reopened.indexOf("--t3-recover") + 1]).toBe(
+        recoveryOf(hostedDir, `workspace:${COPY}`)?.session,
+      );
+      yield* service.quit({ threadId, save: false, discard: true });
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a move a crash interrupted ends with one whole copy, never none", () =>
+    Effect.gen(function* () {
+      const { at, record, heldWhen, heldFile, start } = yield* heldHost("held-crash");
+      const first = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* start;
+          yield* record(service);
+          yield* service.closeOnSettle({ threadId });
+          return (yield* heldWhen(service, (list) => list.length === 1))[0]!;
+        }),
+      );
+      const recordPath = NodePath.join(NodePath.dirname(heldFile(first.id)), "record.json");
+      const holding = () => {
+        const written = JSON.parse(NodeFS.readFileSync(recordPath, "utf8"));
+        NodeFS.writeFileSync(recordPath, JSON.stringify({ ...written, state: "holding" }));
+      };
+      // Copied out but not yet removed: the project's file is still the copy, and held again.
+      NodeFS.copyFileSync(heldFile(first.id), at(COPY));
+      holding();
+      const again = yield* Effect.scoped(
+        start.pipe(Effect.flatMap((service) => heldWhen(service, (list) => list.length === 1))),
+      );
+      expect(again[0]?.id).toBe(first.id);
+      expect(NodeFS.existsSync(at(COPY))).toBe(false);
+      expect(NodeFS.readFileSync(heldFile(first.id), "utf8")).toBe("working copy");
+      // Removed but not yet marked held: the held copy is whole, so it stays held.
+      holding();
+      const held = yield* Effect.scoped(
+        start.pipe(Effect.flatMap((service) => heldWhen(service, (list) => list.length === 1))),
+      );
+      expect(held[0]?.id).toBe(first.id);
+      expect(NodeFS.readFileSync(heldFile(first.id), "utf8")).toBe("working copy");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("leaves a file it can't prove is its own copy, and says so", () =>
+    Effect.gen(function* () {
+      const { at, record, heldWhen, start } = yield* heldHost("held-refuse");
+      // Hard-linked to the master, and a symlink to it: moving either could take the master.
+      NodeFS.rmSync(at(COPY));
+      NodeFS.linkSync(at("cube.blend"), at(COPY));
+      const otherCopy = workingCopyName("cube.blend", otherThreadId);
+      NodeFS.symlinkSync(at("cube.blend"), at(otherCopy));
+      const service = yield* start;
+      yield* record(service);
+      yield* record(service, otherCopy, "cube.blend", otherThreadId);
+      yield* service.closeOnSettle({ threadId });
+      yield* service.closeOnSettle({ threadId: otherThreadId });
+      const left = yield* heldWhen(service, (list) => list.length === 2);
+      expect(left.map((entry) => entry.leftInProject)).toEqual([true, true]);
+      expect(left.every((entry) => entry.expiresAt === undefined)).toBe(true);
+      expect(NodeFS.lstatSync(at(otherCopy)).isSymbolicLink()).toBe(true);
+      expect(NodeFS.statSync(at(COPY)).nlink).toBe(2);
+      expect(NodeFS.readFileSync(at("cube.blend"), "utf8")).toBe("master");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("asks once the master moved on: Delete removes them, Keep isn't asked again", () =>
+    Effect.gen(function* () {
+      const { at, record, heldWhen, heldFile, start } = yield* heldHost("held-ask");
+      NodeFS.writeFileSync(at("other.blend"), "other master");
+      NodeFS.writeFileSync(at(OTHER_COPY), "other copy");
+      const service = yield* start;
+      yield* record(service);
+      yield* record(service, OTHER_COPY, "other.blend");
+      yield* service.closeOnSettle({ threadId });
+      const held = yield* heldWhen(service, (list) => list.length === 2);
+      const idOf = (name: string) => held.find((entry) => entry.path === at(name))!.id;
+      const asked = () =>
+        service.threadState(otherThreadId).pipe(
+          Stream.runHead,
+          Effect.map((state) => {
+            const value = Option.getOrThrow(state);
+            return "heldBehind" in value ? value.heldBehind : undefined;
+          }),
+        );
+      const askedWhen = (done: (behind: unknown) => boolean) =>
+        service.threadState(otherThreadId).pipe(
+          Stream.map((state) => ("heldBehind" in state ? state.heldBehind : undefined)),
+          Stream.filter(done),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+
+      // Another thread works on cube.blend: nothing to ask until the master changes.
+      yield* service.knowMaster({ threadId: otherThreadId, relativePath: "cube.blend" });
+      expect(yield* asked()).toBeUndefined();
+      NodeFS.writeFileSync(at("cube.blend"), "master, copied back into");
+      yield* service.knowMaster({ threadId: otherThreadId, relativePath: "cube.blend" });
+      expect(yield* askedWhen((behind) => behind !== undefined)).toMatchObject({
+        ids: [idOf(COPY)],
+        threadTitles: ["Hero pass"],
+        bytes: 12,
+      });
+      yield* service.deleteHeld([idOf(COPY)]);
+      expect(yield* asked()).toBeUndefined();
+      expect(NodeFS.existsSync(heldFile(idOf(COPY)))).toBe(false);
+
+      // On other.blend, Keep: asked no more, however often the master changes again.
+      yield* service.knowMaster({ threadId: otherThreadId, relativePath: "other.blend" });
+      NodeFS.writeFileSync(at("other.blend"), "other master, copied back into");
+      yield* service.knowMaster({ threadId: otherThreadId, relativePath: "other.blend" });
+      yield* askedWhen((behind) => behind !== undefined);
+      yield* service.keepHeld([idOf(OTHER_COPY)]);
+      expect(yield* asked()).toBeUndefined();
+      NodeFS.writeFileSync(at("other.blend"), "other master, changed again");
+      expect(
+        yield* heldWhen(service, (list) => list[0]?.kept === true && list[0].behind === true),
+      ).toHaveLength(1);
+      expect(yield* asked()).toBeUndefined();
+      expect(NodeFS.readFileSync(heldFile(idOf(OTHER_COPY)), "utf8")).toBe("other copy");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("deletes a held copy 30 days after it was held, kept or not", () =>
+    Effect.gen(function* () {
+      const { record, heldWhen, heldFile, start } = yield* heldHost("held-limit");
+      const service = yield* start;
+      yield* record(service);
+      yield* service.closeOnSettle({ threadId });
+      const [held] = yield* heldWhen(service, (list) => list.length === 1);
+      yield* service.keepHeld([held!.id]);
+      for (let day = 1; day <= 30; day++) {
+        yield* TestClock.adjust(Duration.days(1));
+        // The day's pass holds the copies from the moment it wakes, so this waits for it.
+        yield* service.keepHeld([]);
+        expect(yield* heldWhen(service, () => true), `day ${day}`).toHaveLength(day < 30 ? 1 : 0);
+      }
+      expect(NodeFS.existsSync(heldFile(held!.id))).toBe(false);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("deleting the thread deletes its held copy, and its copy still in the project", () =>
+    Effect.gen(function* () {
+      const { at, record, heldWhen, heldFile, start } = yield* heldHost("held-delete");
+      const service = yield* start;
+      yield* record(service);
+      yield* service.closeOnSettle({ threadId });
+      const [held] = yield* heldWhen(service, (list) => list.length === 1);
+      NodeFS.writeFileSync(at("other.blend"), "other master");
+      NodeFS.writeFileSync(at(OTHER_COPY), "other copy");
+      NodeFS.writeFileSync(at(`${OTHER_COPY}1`), "backup");
+      yield* record(service, OTHER_COPY, "other.blend");
+      yield* service.forgetThread({ threadId });
+      yield* heldWhen(service, (list) => list.length === 0);
+      expect(NodeFS.existsSync(heldFile(held!.id))).toBe(false);
+      expect(NodeFS.existsSync(at(OTHER_COPY))).toBe(false);
+      expect(NodeFS.existsSync(at(`${OTHER_COPY}1`))).toBe(false);
+      expect(NodeFS.readFileSync(at("other.blend"), "utf8")).toBe("other master");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "at start, holds a finished thread's copy, deletes a gone thread's, leaves the rest",
+    () => {
+      let settled = false;
+      return Effect.gen(function* () {
+        const { at, record, heldWhen, start } = yield* heldHost("held-start", {
+          threadSettled: () => settled,
+        });
+        const goneThread = ThreadId.make("thread-long-gone");
+        const goneCopy = workingCopyName("cube.blend", goneThread);
+        const unknownCopy = workingCopyName("cube.blend", "thread-from-before");
+        NodeFS.writeFileSync(at(goneCopy), "gone thread's copy");
+        NodeFS.writeFileSync(at(unknownCopy), "a copy T3 has no record of");
+        // Recorded while T3 ran; the thread finished, and the other was deleted, while it was stopped.
+        yield* Effect.scoped(
+          start.pipe(
+            Effect.tap((service) => record(service)),
+            Effect.tap((service) => record(service, goneCopy, "cube.blend", goneThread)),
+          ),
+        );
+        settled = true;
+        const service = yield* start;
+        const [held] = yield* heldWhen(service, (list) => list.length === 1);
+        // Taken after the pass lets go of the copies, so it has dealt with every one.
+        yield* service.keepHeld([]);
+        expect(held?.path).toBe(at(COPY));
+        expect(NodeFS.existsSync(at(COPY))).toBe(false);
+        expect(NodeFS.existsSync(at(goneCopy))).toBe(false);
+        expect(NodeFS.readFileSync(at(unknownCopy), "utf8")).toBe("a copy T3 has no record of");
+      }).pipe(Effect.scoped);
+    },
   );
 });
 
@@ -6335,6 +6638,168 @@ scene.frame_set(1)`;
         expectNoMainWindow(frames);
         yield* service.quit({ threadId, save: false, discard: true });
       }).pipe(Effect.scoped),
+  );
+});
+
+describe.skipIf(!canHostBlender)("B19: a real hosted Blender's held working copy", () => {
+  /** A workspace with cube.blend, and a Blender of this test's own settings. */
+  const realHeld = Effect.fn(function* (prefix: string) {
+    const dir = NodeFS.realpathSync(yield* tempDir(prefix));
+    const workspace = NodePath.join(dir, "work");
+    NodeFS.mkdirSync(workspace, { recursive: true });
+    const configHome = NodePath.join(dir, "config");
+    const startup = NodePath.join(configHome, "blender", "5.3", "scripts", "startup");
+    NodeFS.mkdirSync(startup, { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(startup, "t3_test_command.py"), COMMAND_STARTUP_SCRIPT);
+    // Its own Blender settings, never the developer's, for the files it writes and reads.
+    const background = (args: ReadonlyArray<string>) =>
+      NodeChildProcess.execFileSync("blender", ["--background", "--factory-startup", ...args], {
+        encoding: "utf8",
+        env: { ...process.env, XDG_CONFIG_HOME: configHome },
+      });
+    background([
+      "--python-expr",
+      `import bpy; bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(NodePath.join(workspace, "cube.blend"))})`,
+    ]);
+    const objects = (file: string) =>
+      background([
+        file,
+        "--python-expr",
+        "import bpy; print('OBJECTS', sorted(o.name for o in bpy.data.objects))",
+      ])
+        .split("\n")
+        .find((line) => line.startsWith("OBJECTS"));
+    const service = yield* serviceFor(
+      layerFor({
+        env: {
+          PATH: hostEnvironment.PATH,
+          XDG_RUNTIME_DIR: hostEnvironment.XDG_RUNTIME_DIR,
+          XDG_CONFIG_HOME: configHome,
+          HB_TEST_DIR: dir,
+        },
+        helper: helperBuild,
+        workspaceRoot: workspace,
+        baseDir: dir,
+      }),
+    );
+    const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+    yield* service.threadState(threadId).pipe(
+      Stream.runForEach((state) => Queue.offer(states, state)),
+      Effect.forkScoped,
+    );
+    const awaitState = (matches: (state: HostedBlenderThreadState) => boolean) =>
+      Queue.take(states).pipe(Effect.repeat({ until: matches }));
+    const command = (text: string) => {
+      NodeFS.writeFileSync(NodePath.join(dir, "command.partial"), text);
+      NodeFS.renameSync(NodePath.join(dir, "command.partial"), NodePath.join(dir, "command"));
+    };
+    // No Blender Lab in these settings, so blender_start says the agent has no access; the
+    // copy is made, recorded and opened all the same.
+    const blenderStart = startAgentWorkingCopy({ threadId, path: "cube.blend" }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.succeed(HostedBlender.HostedBlender, service),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadShell: () =>
+              Effect.succeed({ worktreePath: workspace, projectId: "p" } as never),
+          }),
+          Layer.mock(ProjectService.ProjectService)({}),
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+      Effect.ignore,
+    );
+    const copy = NodePath.join(workspace, workingCopyName("cube.blend", threadId));
+    const heldWhen = (done: (list: HostedBlenderHeldList) => boolean) =>
+      service.heldCopies.pipe(Stream.filter(done), Stream.runHead, Effect.map(Option.getOrThrow));
+    const heldFile = (id: string) =>
+      NodePath.join(dir, "userdata", "hosted-blender", "working-copies", id, "copy.blend");
+    const running = (dirty: boolean) => (state: HostedBlenderThreadState) =>
+      state.status === "running" && state.dirty === dirty;
+    const ended = (state: HostedBlenderThreadState) =>
+      state.status !== "running" && state.status !== "starting";
+    return {
+      service,
+      awaitState,
+      command,
+      blenderStart,
+      copy,
+      heldWhen,
+      heldFile,
+      objects,
+      running,
+      ended,
+    };
+  });
+
+  it.live("a saved working copy leaves the project at settle and comes back with its edit", () =>
+    Effect.gen(function* () {
+      const {
+        service,
+        awaitState,
+        command,
+        blenderStart,
+        copy,
+        heldWhen,
+        heldFile,
+        objects,
+        running,
+        ended,
+      } = yield* realHeld("real-held-saved");
+      yield* blenderStart;
+      yield* awaitState(running(false));
+      command("edit T3Saved;save");
+      yield* awaitState(running(true));
+      yield* awaitState(running(false));
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitState(ended);
+      const [held] = yield* heldWhen((list) => list.length === 1);
+      expect(NodeFS.existsSync(copy)).toBe(false);
+      expect(NodeFS.existsSync(`${copy}1`)).toBe(false);
+      expect(objects(heldFile(held!.id))).toContain("T3Saved");
+
+      yield* blenderStart;
+      expect(NodeFS.existsSync(heldFile(held!.id))).toBe(false);
+      yield* awaitState(running(false));
+      yield* service.quit({ threadId, save: false });
+      yield* awaitState(ended);
+      expect(objects(copy)).toContain("T3Saved");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("an edited working copy comes back from being held with its unsaved changes", () =>
+    Effect.gen(function* () {
+      const {
+        service,
+        awaitState,
+        command,
+        blenderStart,
+        copy,
+        heldWhen,
+        heldFile,
+        objects,
+        running,
+        ended,
+      } = yield* realHeld("real-held-unsaved");
+      yield* blenderStart;
+      yield* awaitState(running(false));
+      command("edit T3Unsaved");
+      yield* awaitState(running(true));
+      yield* service.closeOnSettle({ threadId });
+      expect(yield* awaitState(ended)).toMatchObject({ status: "closed" });
+      const [held] = yield* heldWhen((list) => list.length === 1);
+      expect(NodeFS.existsSync(copy)).toBe(false);
+      // Held as last saved; the unsaved work is the recovery copy, restored over it.
+      expect(objects(heldFile(held!.id))).not.toContain("T3Unsaved");
+
+      yield* blenderStart;
+      expect(NodeFS.existsSync(heldFile(held!.id))).toBe(false);
+      yield* awaitState(running(true));
+      command("save");
+      yield* awaitState(running(false));
+      yield* service.quit({ threadId, save: false });
+      yield* awaitState(ended);
+      expect(objects(copy)).toContain("T3Unsaved");
+    }).pipe(Effect.scoped),
   );
 });
 
