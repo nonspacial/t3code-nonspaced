@@ -13254,6 +13254,7 @@
   "65c73c884114dcf8": "Blender no respondió, así que sigue abierto con sus cambios. Si sigue sin responder, volver a elegir «Salir sin guardar» lo detiene y conserva lo último que Blender guardó automáticamente.",
   "d679c8479ec344e8": "Blender no respondió, así que sigue abierto y la salida no se hará más tarde por sí sola. Vuelve a intentarlo cuando Blender termine lo que está haciendo.",
   "e2d3b41b3731a6c1": "¿Guardar los cambios de {name} antes de salir?",
+  "5e37d1898794cdce": "Blender tiene ahora {name} abierto.",
   "27f4f4a7f0a6bede": "Blender no pudo guardar {images}, así que sus ediciones se descartan si sales sin guardar.",
   "32504fe5e26d8233": "Los cambios que Blender no haya guardado se pierden si sales sin guardar.",
   "97bc5343e76aac1b": "Blender tiene ediciones de catálogos de recursos sin guardar, que se descartan si sales sin guardar.",

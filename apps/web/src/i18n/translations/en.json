@@ -13269,6 +13269,7 @@
   "65c73c884114dcf8": "Blender didn't answer, so it stays open with its changes. If it still doesn't answer, choosing Quit without saving again stops it and keeps what Blender last autosaved.",
   "d679c8479ec344e8": "Blender didn't answer, so it stays open, and the quit won't run later on its own. Try again once Blender has finished what it's doing.",
   "e2d3b41b3731a6c1": "Save changes to {name} before quitting?",
+  "5e37d1898794cdce": "Blender has {name} open now.",
   "27f4f4a7f0a6bede": "Blender couldn't save {images}, so quitting without saving discards their edits.",
   "32504fe5e26d8233": "Changes Blender hasn't saved are lost if you quit without saving.",
   "97bc5343e76aac1b": "Blender has unsaved asset catalog edits, which quitting without saving discards.",

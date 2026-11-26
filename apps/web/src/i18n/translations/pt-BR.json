@@ -13259,6 +13259,7 @@
   "65c73c884114dcf8": "O Blender não respondeu, então continua aberto com suas alterações. Se ele continuar sem responder, escolher “Sair sem salvar” de novo o interrompe e mantém o que o Blender salvou automaticamente por último.",
   "d679c8479ec344e8": "O Blender não respondeu, então continua aberto, e a saída não vai acontecer depois por conta própria. Tente de novo quando o Blender terminar o que está fazendo.",
   "e2d3b41b3731a6c1": "Salvar as alterações em {name} antes de sair?",
+  "5e37d1898794cdce": "O Blender está com {name} aberto agora.",
   "27f4f4a7f0a6bede": "O Blender não conseguiu salvar {images}, então as edições delas são descartadas se você sair sem salvar.",
   "32504fe5e26d8233": "As alterações que o Blender não salvou serão perdidas se você sair sem salvar.",
   "97bc5343e76aac1b": "O Blender tem edições de catálogos de assets não salvas, que são descartadas se você sair sem salvar.",
