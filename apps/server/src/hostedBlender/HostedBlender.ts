@@ -111,9 +111,9 @@ const QUIT_ANSWER_MARGIN = Duration.seconds(1);
 // The desktop app kills the server 5 seconds after asking it to stop. Blenders get this long
 // to finish their quit copies, and the rest is left for stopping or releasing them.
 const SHUTDOWN_QUIT_TIMEOUT = Duration.millis(4000);
-// A Blender released at shutdown, still writing its quit copy, gets this long at the next start
-// to finish before it is stopped.
-const RELEASED_FINISH_TIMEOUT = Duration.seconds(60);
+// A Blender released at shutdown, still writing its quit copy, is watched this long at the next
+// start; one still running after it is left as it is, never signalled.
+const RELEASED_FINISH_TIMEOUT = Duration.hours(2);
 const SHUTDOWN_STOP_TIMEOUT = Duration.millis(400);
 // A helper asked to stop gives Blender 5 seconds before killing it.
 const LEFTOVER_STOP_TIMEOUT = Duration.seconds(7);
@@ -195,6 +195,8 @@ const ControlMessage = Schema.Union([
   Schema.Struct({ type: Schema.Literal("reloaded"), kept: Schema.Boolean }),
   /** The agent called while the file on disk wasn't what Blender read: T3 looks now. */
   Schema.Struct({ type: Schema.Literal("checkDisk") }),
+  /** Blender took a quit without saving, before the slow part of quitting: T3's answer. */
+  Schema.Struct({ type: Schema.Literal("quitAccepted") }),
   /** The file and its unsaved bit as Blender began to quit without saving: the run's last word. */
   Schema.Struct({
     type: Schema.Literal("quitting"),
@@ -218,7 +220,13 @@ const ControlMessage = Schema.Union([
   /** `images` and `catalogs`: unsaved edits outside the .blend held a quit that asked for that. */
   Schema.Struct({
     type: Schema.Literal("quitFailed"),
-    reason: Schema.Literals(["saveFailed", "changedOnDisk", "images", "catalogs"]),
+    reason: Schema.Literals([
+      "saveFailed",
+      "changedOnDisk",
+      "openFileChanged",
+      "images",
+      "catalogs",
+    ]),
     /** A save's `images`: the edited images it couldn't save. */
     images: Schema.optional(Schema.Array(Schema.String)),
   }),
@@ -324,7 +332,7 @@ export interface AgentListenerReport {
   /** The installed Blender Lab extension's version, once the add-on has said. */
   readonly mcpVersion: string | null;
 }
-// `filepath`: a discard of this open file only; the add-on refuses it once another is open.
+// `filepath`: a quit of this open file only; the add-on refuses it once another is open.
 // `hold`: Blender stays open while it has edits outside the .blend, which no copy keeps.
 // `deadline` (epoch ms): T3 has stopped waiting by then, so the add-on refuses it after.
 const encodeControlCommand = Schema.encodeSync(
@@ -768,15 +776,20 @@ interface Instance {
   /** A reload kept the unsaved changes of this file as its copy, which the pane offers. */
   reloadKept: { readonly key: string; readonly at: number } | null;
   /** Why the add-on refused the last Save and quit. */
-  saveRefusal: "saveFailed" | "changedOnDisk" | UnkeepableEdits | null;
-  /** Answered when the add-on holds a settle's quit for edits outside the .blend. */
-  quitHeld: Deferred.Deferred<UnkeepableEdits> | null;
+  saveRefusal: "saveFailed" | "changedOnDisk" | "openFileChanged" | UnkeepableEdits | null;
+  /**
+   * Answered when the add-on holds a settle's quit for edits outside the .blend, or read it only
+   * after its deadline (`expired`).
+   */
+  quitHeld: Deferred.Deferred<UnkeepableEdits | "expired"> | null;
   /** Edits outside the .blend that held a quit, while the add-on says they are unsaved. */
   heldEdits: UnkeepableEdits | null;
   /** The file a Save and quit Blender began is saving, until it fails. */
   savingFile: string | null;
   /** The person's last discard went unanswered; another unanswered one stops Blender. */
   discardUnanswered: boolean;
+  /** A settle, archive or switch-off got no answer: it runs again once Blender answers. */
+  closeOwed: boolean;
   /** The edited images the last Save and quit couldn't save. */
   heldImages: ReadonlyArray<string> | null;
   /** What holds the reload of a stale file, as the add-on last said. */
@@ -985,6 +998,7 @@ const make = Effect.gen(function* () {
           dirty: instance.dirty,
           ...openFileOf(instance),
           memoryBytes: instance.memoryBytes,
+          ...(instance.heldEdits === null ? {} : { quitHeld: instance.heldEdits }),
           // A master may have no thread left, so Quit names it by its own key.
           ...(instance.role === "master" ? { master: instance.key } : {}),
         })),
@@ -1321,24 +1335,20 @@ const make = Effect.gen(function* () {
     return live;
   });
 
+  const leftoverGone = (helperPid: number, launchDir: string, timeout: Duration.Input) =>
+    leftoverProcesses(helperPid, launchDir).pipe(
+      Effect.repeat({
+        while: (left) => left.length > 0,
+        schedule: Schedule.spaced("500 millis"),
+      }),
+      Effect.timeoutOption(timeout),
+    );
+
   // A helper from a server that died stops Blender itself once asked. Whatever of its launch
   // outlasts the grace is killed. True once nothing of it is running, so its files can be
   // collected; a launch still running after that (Blender stuck in the kernel) is left alone.
   const stopLeftover = Effect.fnUntraced(function* (helperPid: number, launchDir: string) {
-    const gone = (timeout: Duration.Input) =>
-      leftoverProcesses(helperPid, launchDir).pipe(
-        Effect.repeat({
-          while: (left) => left.length > 0,
-          schedule: Schedule.spaced("500 millis"),
-        }),
-        Effect.timeoutOption(timeout),
-      );
-    // One released at shutdown is still writing its quit copy: it exits once that is done.
-    const released =
-      (yield* fileSystem
-        .readFileString(path.join(launchDir, "outcome"))
-        .pipe(Effect.orElseSucceed(() => ""))) === "released";
-    if (released && Option.isSome(yield* gone(RELEASED_FINISH_TIMEOUT))) return true;
+    const gone = (timeout: Duration.Input) => leftoverGone(helperPid, launchDir, timeout);
     const running = yield* leftoverProcesses(helperPid, launchDir);
     if (running.length === 0) return true;
     const asked = running.includes(helperPid) ? [helperPid] : running;
@@ -1444,6 +1454,57 @@ const make = Effect.gen(function* () {
     }
   });
 
+  /** Launches released at shutdown, still writing their copies, by the copy each will keep. */
+  const releasedCopies = new Map<string, Deferred.Deferred<void>>();
+
+  /** The copy a leftover launch's salvage keeps: whose, and of which file. */
+  const leftoverCopyId = Effect.fnUntraced(function* (launchDir: string) {
+    const read = (name: string) =>
+      fileSystem.readFileString(path.join(launchDir, name)).pipe(Effect.orElseSucceed(() => ""));
+    const launch = decodeLaunchRecord(yield* read("launch.json"));
+    if (Option.isNone(launch)) return null;
+    const facts = decodeRunFacts(yield* read("run.json"));
+    const file: KeptFile = Option.isSome(facts)
+      ? facts.value.endFile.file
+      : { kind: "workspace", relativePath: launch.value.relativePath };
+    return copyId(launch.value.threadId, fileKeyOf(file));
+  });
+
+  /**
+   * A Blender released at shutdown is never stopped: its salvage waits for it to exit, beside
+   * the service. An open of the file it is keeping waits too; nothing else does.
+   */
+  const awaitReleased = (owner: ThreadId, key: string) =>
+    Effect.suspend(() => {
+      const done = releasedCopies.get(copyId(owner, key));
+      return done === undefined ? Effect.void : Deferred.await(done);
+    });
+
+  const finishReleased = Effect.fnUntraced(function* (helperPid: number, launchDir: string) {
+    const id = yield* leftoverCopyId(launchDir);
+    const done = yield* Deferred.make<void>();
+    if (id !== null) releasedCopies.set(id, done);
+    yield* Effect.gen(function* () {
+      if (Option.isSome(yield* leftoverGone(helperPid, launchDir, RELEASED_FINISH_TIMEOUT))) {
+        yield* salvage(launchDir);
+        yield* publishNow();
+      } else {
+        // Its copy may still be being written; the next start tries again.
+        yield* Effect.logWarning("a hosted Blender released at shutdown is still running", {
+          launchDir,
+        });
+      }
+    }).pipe(
+      Effect.ensuring(
+        Effect.suspend(() => {
+          if (id !== null && releasedCopies.get(id) === done) releasedCopies.delete(id);
+          return Deferred.succeed(done, undefined);
+        }),
+      ),
+      Effect.forkIn(serviceScope),
+    );
+  });
+
   // The launch folders of Blenders a stopped server didn't finish ending. Stopping them can take
   // seconds, so it runs beside the service; whatever reads or changes copies waits for it.
   const salvageLeftovers = Effect.gen(function* () {
@@ -1454,16 +1515,28 @@ const make = Effect.gen(function* () {
     const quiet = yield* Effect.forEach(
       leftovers,
       (launchDir) =>
-        fileSystem.readFileString(path.join(launchDir, "launch.json")).pipe(
-          Effect.map((text) => Option.getOrUndefined(decodeLaunchRecord(text))?.helperPid),
-          Effect.orElseSucceed(() => undefined),
-          Effect.flatMap((helperPid) =>
-            helperPid === undefined ? Effect.succeed(true) : stopLeftover(helperPid, launchDir),
-          ),
-        ),
+        Effect.gen(function* () {
+          const helperPid = yield* fileSystem
+            .readFileString(path.join(launchDir, "launch.json"))
+            .pipe(
+              Effect.map((text) => Option.getOrUndefined(decodeLaunchRecord(text))?.helperPid),
+              Effect.orElseSucceed(() => undefined),
+            );
+          if (helperPid === undefined) return true;
+          const released =
+            (yield* fileSystem
+              .readFileString(path.join(launchDir, "outcome"))
+              .pipe(Effect.orElseSucceed(() => ""))) === "released";
+          if (released && (yield* leftoverProcesses(helperPid, launchDir)).length > 0) {
+            yield* finishReleased(helperPid, launchDir);
+            return "released" as const;
+          }
+          return yield* stopLeftover(helperPid, launchDir);
+        }),
       { concurrency: "unbounded" },
     );
     for (const [index, launchDir] of leftovers.entries()) {
+      if (quiet[index] === "released") continue;
       if (quiet[index]) {
         yield* salvage(launchDir);
       } else {
@@ -2044,12 +2117,10 @@ const make = Effect.gen(function* () {
     instance: Instance,
   ) {
     const control = instance.control;
-    if (control === null || instance.quitting || instance.closeRequested || instance.ending) {
-      return;
-    }
-    // Checked once the save or restore is over: the add-on would only hold it till then, and a
-    // refused save leaves the change to catch up with.
-    if (instance.pendingSave !== null || instance.restore === "pending") {
+    if (control === null) return;
+    // Checked once the close, save or restore is over, if Blender stays open: the add-on would
+    // only hold it till then, and a refused one leaves the change to catch up with.
+    if (closingByT3(instance) || instance.restore === "pending") {
       instance.diskCheckWaiting = true;
       return;
     }
@@ -2297,15 +2368,18 @@ const make = Effect.gen(function* () {
         instance.heldEdits = heldEdits;
         return yield* publishNow();
       }
+      case "quitAccepted":
+        instance.acknowledged = true;
+        instance.quitHeard = true;
+        return;
       case "quitting":
         instance.acknowledged = true;
-        if (!instance.quitHeard) {
-          instance.quitHeard = true;
-          yield* noteFile(instance, message.value.filepath, message.value.dirty);
-        }
+        instance.quitHeard = true;
+        yield* noteFile(instance, message.value.filepath, message.value.dirty);
         // The add-on ended the agent's grant before saying so.
         return yield* revokeAgentListener(instance);
       case "quitExpired":
+        if (instance.quitHeld !== null) yield* Deferred.succeed(instance.quitHeld, "expired");
         return;
       case "quitRefused":
         if (instance.quitRefused !== null && instance.quitRefused.id === message.value.id) {
@@ -2429,9 +2503,12 @@ const make = Effect.gen(function* () {
             }
             const lines = buffer.split("\n");
             buffer = lines.pop() ?? "";
-            return Effect.forEach(lines, (line) => handleControlLine(instance, line), {
-              discard: true,
-            });
+            return Effect.forEach(
+              lines,
+              (line) =>
+                handleControlLine(instance, line).pipe(Effect.andThen(retryOwedClose(instance))),
+              { discard: true },
+            );
           }),
         ),
       );
@@ -2662,7 +2739,7 @@ const make = Effect.gen(function* () {
               ending: endingOf({
                 wasRunning: instance.status === "running",
                 ending: intent.ending || (instance.saveConfirmed && !instance.saved),
-                quitting: intent.quitting,
+                quitting: intent.quitting || instance.quitHeard,
                 blenderExit: instance.blenderExit,
               }),
             }),
@@ -2857,7 +2934,11 @@ const make = Effect.gen(function* () {
         handle.exitCode,
         Deferred.await(gaveUp).pipe(Effect.as("gave up" as const)),
       );
-      instance.exitIntent = { ending: instance.ending, quitting: instance.quitting };
+      // A discard counts once Blender has taken it for the named file; an exit before is a crash.
+      instance.exitIntent = {
+        ending: instance.ending,
+        quitting: instance.quitting && instance.discardRefused === null,
+      };
       if (exitCode !== 0) {
         yield* Effect.logWarning("hosted Blender's hidden display exited", { exitCode });
       }
@@ -3065,6 +3146,7 @@ const make = Effect.gen(function* () {
       heldEdits: null,
       savingFile: null,
       discardUnanswered: false,
+      closeOwed: false,
       heldImages: null,
       staleBlocked: null,
       diskCheckWaiting: false,
@@ -3107,6 +3189,10 @@ const make = Effect.gen(function* () {
     yield* Effect.annotateCurrentSpan({ threadId });
     yield* afterSalvage;
     const file = yield* checkedBlend(threadId, relativePath);
+    yield* awaitReleased(
+      threadId,
+      fileKeyOf({ kind: "workspace", relativePath: file.relativePath }),
+    );
     yield* claimLock.withPermits(1)(
       startWorking(threadId, file, null, false, options?.agentWorkingCopy === true),
     );
@@ -3178,6 +3264,7 @@ const make = Effect.gen(function* () {
   ) {
     yield* Effect.annotateCurrentSpan({ threadId, restore, role });
     yield* afterSalvage;
+    yield* awaitReleased(role === "master" ? MASTER_OWNER : threadId, key);
     // A running Blender restores the copy a reload kept in place; nothing else reopens it.
     const running = instanceFor(threadId, role);
     if (running !== undefined) {
@@ -3427,9 +3514,11 @@ const make = Effect.gen(function* () {
     discard = false,
   ) {
     instance.quitting = true;
-    yield* revokeAgentListener(instance);
+    // The add-on ends the agent's grant as it takes the quit; one that leaves Blender open
+    // leaves the grant too. A Blender T3 stops loses it here.
+    const stop = revokeAgentListener(instance).pipe(Effect.andThen(forceQuit(instance)));
     // Quitting a Blender still starting has nothing of its session to keep.
-    if (instance.control === null) return yield* forceQuit(instance);
+    if (instance.control === null) return yield* stop;
     const deadline = yield* deadlineIn(QUIT_TIMEOUT, false);
     const refused = yield* Deferred.make<void>();
     instance.discardRefused = refused;
@@ -3437,7 +3526,7 @@ const make = Effect.gen(function* () {
       ...(filepath === undefined ? {} : { filepath }),
       expires: discard,
     });
-    if (!sent) return yield* forceQuit(instance);
+    if (!sent) return yield* stop;
     const outcome = yield* within(
       Effect.raceFirst(
         Deferred.await(instance.ended).pipe(Effect.as("ended" as const)),
@@ -3458,20 +3547,23 @@ const make = Effect.gen(function* () {
         instance.wordsClosed = false;
         if (!instance.discardUnanswered) {
           instance.discardUnanswered = true;
+          yield* stayOpen(instance);
           return yield* new HostedBlenderError({ reason: "discardUnconfirmed" });
         }
         // Asked twice and silent both times: stopped, but ended as a crash is, so what it last
         // autosaved is kept and only Discard on its card, naming the file, removes it.
+        yield* revokeAgentListener(instance);
         if (instance.fiber) yield* Fiber.interrupt(instance.fiber);
         return;
       }
       // It said it is quitting the file the person chose to lose, or this is no discard: past
       // the deadline it is stopped; saves never damage the file.
-      return yield* forceQuit(instance);
+      return yield* stop;
     }
     if (outcome.value === "refused") {
       instance.discardUnanswered = false;
       instance.quitting = false;
+      yield* stayOpen(instance);
       return yield* new HostedBlenderError({ reason: "openFileChanged" });
     }
   });
@@ -3529,11 +3621,15 @@ const make = Effect.gen(function* () {
           .writeFileString(path.join(instance.stateDir, "outcome"), "closing")
           .pipe(Effect.ignore);
       }
-      const held = holds ? yield* Deferred.make<UnkeepableEdits>() : null;
+      const held = holds ? yield* Deferred.make<UnkeepableEdits | "expired">() : null;
       instance.quitHeld = held;
       // A Blender still starting has until the deadline to connect, so its session is kept.
+      // One still loading by then is left to load, as a busy one is.
       if (!(yield* sendQuitWithoutSaving(instance, deadline, { hold: held !== null }))) {
         if (instance.quitHeld === held) instance.quitHeld = null;
+        if (held !== null && !(yield* Deferred.isDone(instance.ended))) {
+          return yield* keepOpen(instance, "noReply");
+        }
         return yield* pastDeadline(instance, deadline);
       }
       if (held !== null) {
@@ -3552,6 +3648,7 @@ const make = Effect.gen(function* () {
           return yield* pastDeadline(instance, deadline);
         }
         if (outcome.value === null) return;
+        if (outcome.value === "expired") return yield* keepOpen(instance, "expired");
         // T3 stopping meanwhile can't wait for the edits to be saved.
         if (shuttingDown) {
           yield* sendQuitWithoutSaving(instance, deadline);
@@ -3563,10 +3660,13 @@ const make = Effect.gen(function* () {
     return yield* awaitEnded(instance, deadline, holds);
   });
 
-  /** Blender held its quit, or never answered it, and stays as it was before the close. */
+  /**
+   * Blender held its quit, never answered it, or read it too late (`expired`), and stays as it
+   * was before the close.
+   */
   const keepOpen = Effect.fnUntraced(function* (
     instance: Instance,
-    why: UnkeepableEdits | "noReply",
+    why: UnkeepableEdits | "noReply" | "expired",
   ) {
     instance.ending = false;
     instance.closeRequested = false;
@@ -3580,11 +3680,16 @@ const make = Effect.gen(function* () {
         .remove(path.join(instance.stateDir, "outcome"), { force: true })
         .pipe(Effect.ignore);
     }
-    yield* applyCapture(instance);
-    yield* checkWaitingDisk(instance);
-    yield* publishNow();
+    yield* stayOpen(instance);
     return why;
   });
+
+  /** A quit left Blender open: what it held back while closing catches up. */
+  const stayOpen = (instance: Instance) =>
+    applyCapture(instance).pipe(
+      Effect.andThen(checkWaitingDisk(instance)),
+      Effect.andThen(publishNow()),
+    );
 
   const closeOnSettle: HostedBlender["Service"]["closeOnSettle"] = Effect.fn(
     "HostedBlender.closeOnSettle",
@@ -3628,9 +3733,34 @@ const make = Effect.gen(function* () {
   /** Ends it as a settle does, without waiting: a working Blender or a master. */
   const closeInstance = Effect.fnUntraced(function* (instance: Instance) {
     instance.closeRequested = true;
+    instance.closeOwed = false;
     const deadline = yield* deadlineIn(QUIT_TIMEOUT, false);
-    yield* end(instance, deadline, true).pipe(Effect.forkIn(serviceScope));
+    yield* end(instance, deadline, true).pipe(
+      Effect.flatMap((why) =>
+        Effect.suspend(() => {
+          if (why !== "noReply" && why !== "expired") return Effect.void;
+          instance.closeOwed = true;
+          // It read the close once T3 had stopped waiting, so it is free now.
+          return why === "expired" ? retryOwedClose(instance) : Effect.void;
+        }),
+      ),
+      Effect.forkIn(serviceScope),
+    );
   });
+
+  /**
+   * A background close Blender was too busy to answer runs again once it answers anything, as
+   * the same held close. A pane on screen or the agent acting means it is in use again.
+   */
+  const retryOwedClose = (instance: Instance): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      if (!instance.closeOwed || closingByT3(instance)) return Effect.void;
+      if (paneShown(instance) || instance.agentActing) {
+        instance.closeOwed = false;
+        return Effect.void;
+      }
+      return closeInstance(instance);
+    });
 
   // The Timeline switch reaches every running Blender at once, without a restart.
   const settingsChanges = yield* settings.subscribeChanges;
@@ -3698,34 +3828,41 @@ const make = Effect.gen(function* () {
       if (!cleared) return;
       return yield* publishNow();
     }
-    return yield* quitInstance(instance, save, discard === true ? { openFile } : null);
+    return yield* quitInstance(instance, save, discard === true, openFile);
   });
 
   // Runs inside quit's span.
   const quitInstance = Effect.fnUntraced(function* (
     instance: Instance,
     save: boolean,
-    /** The person's Quit without saving, and the file its dialog named. */
-    discard: { readonly openFile: KeptFile | undefined } | null,
+    /** The person's Quit without saving. */
+    discard: boolean,
+    /** The file the dialog named: either choice is refused once Blender has another open. */
+    openFile: KeptFile | undefined,
   ) {
     const control = instance.control;
     const saveFailed = new HostedBlenderError({ reason: "saveFailed" });
+    // A person's quit owes no retry of a close that got no answer.
+    instance.closeOwed = false;
+    let filepath: string | undefined;
+    if (openFile !== undefined) {
+      const open = openFileOf(instance).openFile;
+      if (open === undefined || fileKeyOf(open) !== fileKeyOf(openFile)) {
+        return yield* new HostedBlenderError({ reason: "openFileChanged" });
+      }
+      filepath = instance.openFile ?? "";
+    }
     // Only the person's choice in the save/discard dialog discards. Any other quit without
     // saving (a file the client believed clean, an agent's) ends as a settle does, so what
     // Blender says as it quits decides what is kept. One still starting has no session yet.
-    if (!save && discard?.openFile !== undefined) {
-      const open = openFileOf(instance).openFile;
-      if (open === undefined || fileKeyOf(open) !== fileKeyOf(discard.openFile)) {
-        return yield* new HostedBlenderError({ reason: "openFileChanged" });
-      }
-      return yield* quitWithoutSaving(instance, instance.openFile ?? "", true);
-    }
-    if (!save && (discard !== null || instance.status === "starting")) {
-      return yield* quitWithoutSaving(instance, undefined, discard !== null);
+    if (!save && (discard || instance.status === "starting")) {
+      return yield* quitWithoutSaving(instance, discard ? filepath : undefined, discard);
     }
     if (!save) {
       const held = yield* end(instance, yield* deadlineIn(QUIT_TIMEOUT, false), true);
-      if (held === "noReply") return yield* new HostedBlenderError({ reason: "noReply" });
+      if (held === "noReply" || held === "expired") {
+        return yield* new HostedBlenderError({ reason: "quitUnanswered" });
+      }
       if (typeof held === "string") return yield* unkeepableError(held);
       return;
     }
@@ -3745,7 +3882,7 @@ const make = Effect.gen(function* () {
         // on disk seen meanwhile, or that refused it, is caught up with.
         return applyCapture(instance).pipe(Effect.andThen(checkWaitingDisk(instance)));
       });
-      yield* saveThenQuit(instance, control).pipe(
+      yield* saveThenQuit(instance, control, filepath).pipe(
         // Only a failure clears it, before answering, so a retry starts a new save.
         Effect.tap((saved) => (saved ? Effect.void : clear)),
         Effect.flatMap((saved) => Deferred.succeed(started, saved)),
@@ -3756,8 +3893,8 @@ const make = Effect.gen(function* () {
     }
     if (!(yield* Deferred.await(pending))) {
       const refusal = instance.saveRefusal;
-      return yield* refusal === "changedOnDisk"
-        ? new HostedBlenderError({ reason: "changedOnDisk" })
+      return yield* refusal === "changedOnDisk" || refusal === "openFileChanged"
+        ? new HostedBlenderError({ reason: refusal })
         : refusal === "images" || refusal === "catalogs"
           ? unkeepableError(refusal, instance.heldImages)
           : saveFailed;
@@ -3770,7 +3907,7 @@ const make = Effect.gen(function* () {
   });
 
   const saveThenQuit = Effect.fn("HostedBlender.saveThenQuit")(
-    function* (instance: Instance, connection: ControlConnection) {
+    function* (instance: Instance, connection: ControlConnection, filepath: string | undefined) {
       const replies = yield* Queue.unbounded<SaveReply>();
       // Until T3 has confirmed a restore, saving could write the copy somewhere else, or write
       // the file as saved over the copy's changes: checked right before the save goes out.
@@ -3781,7 +3918,12 @@ const make = Effect.gen(function* () {
         connection,
         replies,
         ended: Deferred.await(instance.ended),
-        command: `${encodeControlCommand({ type: "quit", save: true, hold: true })}\n`,
+        command: `${encodeControlCommand({
+          type: "quit",
+          save: true,
+          hold: true,
+          ...(filepath === undefined ? {} : { filepath }),
+        })}\n`,
         writeTimeout: CONTROL_REPLY_TIMEOUT,
       });
       // Not saved, Blender stays open.
@@ -4051,14 +4193,14 @@ const make = Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan({ threadId, marks: marks.length, role });
       const instance = instanceFor(threadId, role);
       if (instance === undefined) return yield* new HostedBlenderError({ reason: "notRunning" });
-      return yield* ask(
+      const hits = yield* ask(
         instance,
         { type: "hits", ...projection, scene, marks },
-        HostedBlenderHits,
-        {
-          slot: instance.hitsLock,
-        },
+        Schema.Union([HostedBlenderHits, Schema.Literal("sceneChanged")]),
+        { slot: instance.hitsLock },
       );
+      if (hits === "sceneChanged") return yield* new HostedBlenderError({ reason: "sceneChanged" });
+      return hits;
     },
   );
 
@@ -4229,6 +4371,7 @@ const make = Effect.gen(function* () {
   ) {
     yield* afterSalvage;
     const file = yield* checkedBlend(threadId, relativePath);
+    yield* awaitReleased(MASTER_OWNER, fileKeyOf(masterFileOf(file.blendPath)));
     return yield* inThreadQueue(threadId)(
       Effect.gen(function* () {
         const previous = threadMasters.get(threadId);

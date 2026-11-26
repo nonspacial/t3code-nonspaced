@@ -256,6 +256,8 @@ const quitRefusal = (error: HostedBlenderError) => {
         : `Blender has unsaved image edits, which quitting would lose: they live outside the .blend, so its recovery copy can't keep them. Blender stays open. Save each edited image to a file Blender can write (set its filepath_raw, then image.save()) or pack it (image.pack()), or reload one (image.reload()) to drop its edits, ${again} If the edits are the person's, ask them.`;
     case "unsavedCatalogs":
       return `Blender has unsaved asset catalog edits, which quitting would lose: they live outside the .blend, so its recovery copy can't keep them. Blender stays open. Ask the person to save or discard them in Blender's asset browser, or call blender_quit with save: true, which saves them with the .blend.`;
+    case "quitUnanswered":
+      return "Blender didn't answer in time, most likely because it is busy (a render, a bake, a long load). It stays open, and this quit won't happen later on its own. Call blender_quit again once Blender has finished what it is doing.";
     default:
       return error.message;
   }

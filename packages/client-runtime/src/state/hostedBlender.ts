@@ -41,6 +41,18 @@ export const isDiscardUnconfirmed = (cause: Cause.Cause<unknown>) => {
   return isHostedBlenderError(error) && error.reason === "discardUnconfirmed";
 };
 
+/** A quit Blender didn't answer: it stays open, and the quit won't run later on its own. */
+export const isQuitUnanswered = (cause: Cause.Cause<unknown>) => {
+  const error = Cause.squash(cause);
+  return isHostedBlenderError(error) && error.reason === "quitUnanswered";
+};
+
+/** The scene changed since an annotation's picture, so its marks name no objects. */
+export const isSceneChanged = (cause: Cause.Cause<unknown>) => {
+  const error = Cause.squash(cause);
+  return isHostedBlenderError(error) && error.reason === "sceneChanged";
+};
+
 /** Unsaved edits outside the .blend held a quit; `images` names those a save couldn't write. */
 export interface HeldQuit {
   readonly edits: "images" | "catalogs";
