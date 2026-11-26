@@ -903,7 +903,8 @@ function QuitHeldNotice(props: {
         {props.edits === "images" ? (
           <T>
             Blender stayed open: quitting would lose its unsaved image edits, which a recovery copy
-            can't keep. Save them in Blender (Image › Save All Images), or quit without saving.
+            can't keep. Save or pack them in Blender (Image › Save All Images, or Image › Pack), or
+            quit without saving.
           </T>
         ) : (
           <T>
@@ -957,6 +958,9 @@ function BlenderToolbar(props: {
   );
   // The file Blender has open, which File > Open can have changed since it started.
   const name = blendFileName(quitFileOf(props.state), gt("Untitled scene"));
+  // Narrow, a working copy shows its master's name: the switch beside it says which copy it is.
+  const narrowName =
+    props.switcher != null && !props.master ? name.replace(/\.wip-[^/.]+(?=\.blend$)/i, "") : name;
   const { canOperate, controller } = props.control;
   const quit = props.quit;
   return (
@@ -968,7 +972,14 @@ function BlenderToolbar(props: {
           <TooltipTrigger
             render={<span className="min-w-14 flex-1 truncate font-mono text-xs font-semibold" />}
           >
-            {name}
+            {narrowName === name ? (
+              name
+            ) : (
+              <>
+                <span className="@max-[30rem]/blender-toolbar:hidden">{name}</span>
+                <span className="hidden @max-[30rem]/blender-toolbar:inline">{narrowName}</span>
+              </>
+            )}
           </TooltipTrigger>
           <TooltipPopup side="bottom">{name}</TooltipPopup>
         </Tooltip>

@@ -774,10 +774,12 @@ it("asks with the quit dialog when image edits hold a quit, and says so in the p
   }
   // A settle held meanwhile: the pane says why Blender stayed open, and its Quit asks at once.
   stream.commands = [];
+  const openFile = { kind: "workspace", relativePath: "models/hero.blend" } as const;
   stream.state = {
     status: "running",
     relativePath: "models/hero.blend",
     dirty: false,
+    openFile,
     quitHeld: "images",
   };
   await using screen = await render(ui());
@@ -787,6 +789,13 @@ it("asks with the quit dialog when image edits hold a quit, and says so in the p
   await screen.getByRole("button", { name: "Quit…" }).click();
   await expect.element(screen.getByText(line)).toBeVisible();
   expect(quits()).toEqual([]);
+  // Save and quit names the file the dialog showed, as Quit without saving does.
+  await screen.getByRole("button", { name: "Save and quit" }).click();
+  await vi.waitFor(() => expect(quits()).toHaveLength(1));
+  expect(quits()[0]).toEqual({
+    environmentId: threadRef.environmentId,
+    input: { threadId: threadRef.threadId, save: true, openFile },
+  });
 });
 
 it("fits its toolbar in a 360 px pane with a master, the menu still in reach and the name readable", async () => {
@@ -796,6 +805,7 @@ it("fits its toolbar in a 360 px pane with a master, the menu still in reach and
   using _quit = vi
     .spyOn(hostedBlenderEnvironment.quit, "permissionAtom")
     .mockReturnValue(Atom.make(true) as never);
+  stream.state = { status: "running", relativePath: "models/hero.wip-a1b2.blend", dirty: false };
   stream.master = {
     status: "running",
     relativePath: "models/hero.blend",
@@ -814,8 +824,9 @@ it("fits its toolbar in a 360 px pane with a master, the menu still in reach and
     expect(box.width).toBeGreaterThan(0);
     expect(box.right).toBeLessThanOrEqual(bounds.right);
   }
-  expect(screen.getByText("hero.wip-a1b2.blend", { exact: false }).query()).toBeNull();
-  const name = screen.getByText("hero.blend").element().getBoundingClientRect();
+  // The switch says it is the working copy, so the name drops what would be cut off anyway.
+  await expect.element(screen.getByText("hero.wip-a1b2.blend")).not.toBeVisible();
+  const name = screen.getByText("hero.blend", { exact: true }).element().getBoundingClientRect();
   expect(name.width).toBeGreaterThanOrEqual(56);
 });
 

@@ -5,9 +5,12 @@ import type {
   ProjectId,
   ScopedThreadRef,
 } from "@t3tools/contracts";
+import { isSceneChanged } from "@t3tools/client-runtime/state/hosted-blender";
+import { useGT } from "gt-react";
 import { useRef, useState } from "react";
 
 import type { ComposerThreadTarget } from "~/composerDraftStore";
+import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { randomUUID } from "~/lib/utils";
 import { hostedBlenderEnvironment } from "~/state/hostedBlender";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -95,6 +98,7 @@ export function useBlenderAnnotation(input: {
     reportFailure: false,
   });
   const findHits = useAtomCommand(hostedBlenderEnvironment.findHits, { reportFailure: false });
+  const gt = useGT();
   const { environmentId, threadId } = input.threadRef;
   const role = input.master === true ? ({ role: "master" } as const) : {};
 
@@ -116,7 +120,16 @@ export function useBlenderAnnotation(input: {
       projectId={input.projectId}
       findHits={async (request) => {
         const result = await findHits({ environmentId, input: { threadId, ...role, ...request } });
-        return result._tag === "Success" ? result.value : null;
+        if (result._tag === "Success") return result.value;
+        if (isSceneChanged(result.cause)) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "info",
+              title: gt("The scene changed since the picture, so the marks won't name objects."),
+            }),
+          );
+        }
+        return null;
       }}
       onClose={() => {
         setFrozen(null);
