@@ -81,6 +81,7 @@ vi.mock(import("~/state/hostedBlender"), async (original) => ({
 
 import { BlenderPanel, FloatingBlender } from "./BlenderPanel";
 import { useBlenderRoleStore } from "./blenderRole";
+import { useKeptCopySelection } from "./keptCopies";
 
 const threadRef = {
   environmentId: EnvironmentId.make("environment-1"),
@@ -111,6 +112,7 @@ const startup = (): Disposable => {
   stream.targets = [];
   stream.commands = [];
   useBlenderRoleStore.setState({ roles: {} });
+  useKeptCopySelection.setState({ byThread: {}, dismissedReloads: {} });
   stream.master = { status: "none" };
   stream.state = { status: "running", relativePath: "models/hero.blend", dirty: false };
   return { [Symbol.dispose]: installKeyboardCapture() };
@@ -467,6 +469,37 @@ it("keeps the status strip on one line in a narrow pane, shortening the stats fi
   };
   expect(lines(label)).toBe(1);
   expect(lines(stats)).toBe(1);
+  // The memory figure says whose it is, still on the same line.
+  const memory = screen.getByText(/^Blender memory /).element();
+  expect(lines(memory)).toBe(1);
+});
+
+it("keeps a reload notice dismissed when the pane is shown again", async () => {
+  using _app = startup();
+  stream.state = {
+    status: "running",
+    relativePath: "models/hero.blend",
+    dirty: false,
+    reloadKept: { key: "workspace:models/hero.blend", at: 5 },
+  };
+  const pane = () => (
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>
+  );
+  {
+    await using screen = await render(pane());
+    await screen.getByRole("button", { name: "Dismiss" }).click();
+    await expect
+      .element(screen.getByText("changed on disk, so Blender reloaded it", { exact: false }))
+      .not.toBeInTheDocument();
+  }
+  // The right panel unmounts a hidden surface; showing it again mounts the pane anew.
+  await using again = await render(pane());
+  await expect.element(again.getByText("Watching")).toBeInTheDocument();
+  await expect
+    .element(again.getByText("changed on disk, so Blender reloaded it", { exact: false }))
+    .not.toBeInTheDocument();
 });
 
 it("gives control straight back when it's granted after focus has moved elsewhere in T3", async () => {
@@ -633,6 +666,36 @@ it("shows each kept file's card, naming its own file, and acts on that file", as
   } finally {
     stream.state = running;
   }
+});
+
+it("fits its toolbar in a 380 px pane with a master, the menu still in reach", async () => {
+  using _app = startup();
+  const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
+  const { Atom } = await import("effect/reactivity");
+  using _quit = vi
+    .spyOn(hostedBlenderEnvironment.quit, "permissionAtom")
+    .mockReturnValue(Atom.make(true) as never);
+  stream.master = {
+    status: "running",
+    relativePath: "models/hero.blend",
+    dirty: false,
+  };
+  await using screen = await render(
+    <div style={{ height: 400, width: 380 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>,
+  );
+  await control({ canOperate: true, controller: "unclaimed" });
+  const toolbar = screen.getByRole("button", { name: "Blender menu" }).element().parentElement!;
+  const bounds = toolbar.getBoundingClientRect();
+  for (const name of ["Blender menu", "Take control", "Screenshot & annotate"]) {
+    const box = screen.getByRole("button", { name }).element().getBoundingClientRect();
+    expect(box.width).toBeGreaterThan(0);
+    expect(box.right).toBeLessThanOrEqual(bounds.right);
+  }
+  expect(screen.getByText("hero.wip-a1b2.blend", { exact: false }).query()).toBeNull();
+  const name = screen.getByText("hero.blend").element().getBoundingClientRect();
+  expect(name.width).toBeGreaterThan(20);
 });
 
 it("points a thread with no Blender running at Files, where .blend files open", async () => {

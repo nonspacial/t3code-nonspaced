@@ -31,7 +31,7 @@ import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { blendFileName, quitFileOf } from "@t3tools/client-runtime/state/hosted-blender";
 import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
-import { CameraIcon, MoreVertical } from "lucide-react";
+import { CameraIcon, HandIcon, MaximizeIcon, MoreVertical } from "lucide-react";
 import { msg, T, useGT, useMessages, Var } from "gt-react";
 import {
   type MouseEvent as ReactMouseEvent,
@@ -119,7 +119,7 @@ import {
   type TakeScroll,
   wheelScroll,
 } from "./blenderInput";
-import { useKeptCopySelection } from "./keptCopies";
+import { reloadKey, useKeptCopySelection } from "./keptCopies";
 import { fileName, useQuitHostedBlender } from "./useQuitHostedBlender";
 
 interface StreamStats {
@@ -781,7 +781,9 @@ function RunningBlender(
   });
   const live = props.state.status === "running" && props.visible && stats.frameSize !== null;
   // Hidden until the next reload keeps a copy; the copy itself stays as any kept copy does.
-  const [dismissedReload, setDismissedReload] = useState<number | null>(null);
+  const dismissedReload = useKeptCopySelection(
+    (selection) => selection.dismissedReloads[reloadKey(props.threadRef, master)],
+  );
   const reloadKept = props.state.reloadKept;
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -806,7 +808,9 @@ function RunningBlender(
           threadRef={props.threadRef}
           copyKey={reloadKept.key}
           master={master}
-          onDismiss={() => setDismissedReload(reloadKept.at)}
+          onDismiss={() =>
+            useKeptCopySelection.getState().dismissReload(props.threadRef, master, reloadKept.at)
+          }
         />
       ) : null}
       {props.state.status === "starting" ? (
@@ -888,7 +892,8 @@ function BlenderToolbar(props: {
     props.master ? { role: "master" } : {},
   );
   return (
-    <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
+    // A container, so a narrow pane drops the buttons' words before anything leaves its edge.
+    <div className="@container/blender-toolbar flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
       {props.switcher}
       <span className="min-w-0 flex-1 truncate font-mono text-xs font-semibold">{name}</span>
       <Tooltip>
@@ -911,25 +916,19 @@ function BlenderToolbar(props: {
         <TooltipPopup side="bottom">{gt("Screenshot & annotate")}</TooltipPopup>
       </Tooltip>
       {!canOperate ? null : controller !== "you" ? (
-        <Button
-          variant="outline"
-          size="xs"
-          type="button"
+        <ToolbarAction
+          label={controller === "another-viewer" ? gt("Take over") : gt("Take control")}
+          icon={<HandIcon />}
           onClick={() => props.streamRef.current?.takeControl(controller === "another-viewer")}
-        >
-          {controller === "another-viewer" ? <T>Take over</T> : <T>Take control</T>}
-        </Button>
+        />
       ) : canUseFullscreen() ? (
-        <Button
-          variant="outline"
-          size="xs"
-          type="button"
+        <ToolbarAction
+          label={gt("Fullscreen")}
+          icon={<MaximizeIcon />}
           // Pressing it must not move focus off the stream, which would give control back.
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => props.streamRef.current?.fullscreen()}
-        >
-          <T>Fullscreen</T>
-        </Button>
+        />
       ) : null}
       {canQuit || canOperate || canSetTimeline ? (
         <Menu>
@@ -1018,6 +1017,35 @@ function BlenderToolbar(props: {
       ) : null}
       {quit.dialog}
     </div>
+  );
+}
+
+/** A toolbar button that shows only its icon, its label as a tooltip, in a narrow pane. */
+function ToolbarAction(props: {
+  readonly label: string;
+  readonly icon: ReactNode;
+  readonly onClick: () => void;
+  readonly onMouseDown?: (event: ReactMouseEvent) => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            variant="outline"
+            size="xs"
+            type="button"
+            aria-label={props.label}
+            onMouseDown={props.onMouseDown}
+            onClick={props.onClick}
+          />
+        }
+      >
+        <span className="hidden @max-[30rem]/blender-toolbar:contents">{props.icon}</span>
+        <span className="@max-[30rem]/blender-toolbar:hidden">{props.label}</span>
+      </TooltipTrigger>
+      <TooltipPopup side="bottom">{props.label}</TooltipPopup>
+    </Tooltip>
   );
 }
 
@@ -1403,6 +1431,7 @@ function BlenderStatusStrip(
     readonly environmentId: EnvironmentId;
   },
 ) {
+  const gt = useGT();
   const setup = useHostedBlenderSetupState(props.environmentId)?.result;
   const gpu =
     setup?.status === "checked"
@@ -1450,7 +1479,7 @@ function BlenderStatusStrip(
       ) : null}
       {props.server?.memoryBytes != null ? (
         <span className={`shrink-0 font-mono${parts.length > 0 ? "" : " ml-auto"}`}>
-          {formatBytes(props.server.memoryBytes)}
+          {gt("Blender memory {size}", { size: formatBytes(props.server.memoryBytes) })}
         </span>
       ) : null}
     </div>
