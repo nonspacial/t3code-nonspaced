@@ -3371,6 +3371,8 @@ const make = Effect.gen(function* () {
   const quitWithoutSaving = Effect.fn("HostedBlender.quitWithoutSaving")(function* (
     instance: Instance,
     filepath?: string,
+    /** The person's discard, which stops only a Blender that confirmed it. */
+    discard = false,
   ) {
     instance.quitting = true;
     yield* revokeAgentListener(instance);
@@ -3397,13 +3399,13 @@ const make = Effect.gen(function* () {
       const saving = instance.savingFile;
       const confirmed =
         instance.quitHeard || (saving !== null && (filepath === undefined || saving === filepath));
-      if (!confirmed) {
+      if (discard && !confirmed) {
         instance.quitting = false;
         instance.wordsClosed = false;
         return yield* new HostedBlenderError({ reason: "discardUnconfirmed" });
       }
-      // It said it is quitting the file the person chose to lose: past the deadline it is
-      // stopped; saves never damage the file.
+      // It said it is quitting the file the person chose to lose, or this is no discard: past
+      // the deadline it is stopped; saves never damage the file.
       return yield* forceQuit(instance);
     }
     if (outcome.value === "refused") {
@@ -3642,10 +3644,10 @@ const make = Effect.gen(function* () {
       if (open === undefined || fileKeyOf(open) !== fileKeyOf(discard.openFile)) {
         return yield* new HostedBlenderError({ reason: "openFileChanged" });
       }
-      return yield* quitWithoutSaving(instance, instance.openFile ?? "");
+      return yield* quitWithoutSaving(instance, instance.openFile ?? "", true);
     }
     if (!save && (discard !== null || instance.status === "starting")) {
-      return yield* quitWithoutSaving(instance);
+      return yield* quitWithoutSaving(instance, undefined, discard !== null);
     }
     if (!save) {
       const held = yield* end(instance, yield* deadlineIn(QUIT_TIMEOUT, false), true);
