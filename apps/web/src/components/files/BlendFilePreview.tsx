@@ -3,6 +3,7 @@ import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { blendFactRows } from "@t3tools/client-runtime/model/blend-facts";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import {
+  BLEND_LARGE_FILE_BYTES,
   type BlendConversionStatus,
   type BlendPreview,
   type EnvironmentId,
@@ -32,6 +33,7 @@ import { revisionedQuery } from "~/state/revisionedQuery";
 import { serverEnvironment } from "~/state/server";
 import { usePreparedConnection } from "~/state/session";
 
+import { blendConversionAskKey, useBlendConversionAsks } from "./blendConversionAsks";
 import { filePreviewReadErrorMessage } from "./filePreviewMode";
 import { FileSurfaceFailure, FileSurfaceLoading } from "./fileSurfaceChrome";
 import type { ModelAnnotationTarget, ModelViewRequest } from "./ModelFilePreview";
@@ -63,12 +65,6 @@ interface ConversionRequest {
 }
 
 const INITIAL_REQUEST: ConversionRequest = { keepTrying: false, refresh: false, cancelled: false };
-
-/**
- * Converting loads the whole scene in a headless Blender, so a file larger than this converts
- * only when asked, once, and not again on its own when it changes.
- */
-const LARGE_BLEND_BYTES = 512 * 1024 * 1024;
 
 /**
  * A `.blend`'s saved thumbnail and scene facts, read on its environment without Blender, then
@@ -113,8 +109,19 @@ export function BlendFilePreview(props: {
     useAtomValue(serverEnvironment.configValueAtom(environmentId))?.environment.capabilities
       .blendConversion === true;
   const [request, setRequest] = useState(INITIAL_REQUEST);
-  const large = preview !== null && preview.byteLength > LARGE_BLEND_BYTES;
-  const [asked, setAsked] = useState(false);
+  const askKey =
+    source.kind === "file"
+      ? blendConversionAskKey(environmentId, source.cwd, source.relativePath)
+      : null;
+  const asked = useBlendConversionAsks((state) => askKey !== null && state.asked[askKey] === true);
+  // The server's own look at the file, which can be newer than the facts: saved over since.
+  const [largeOnServer, setLargeOnServer] = useState<{
+    readonly file: string;
+    readonly byteLength: number;
+  } | null>(null);
+  const serverBytes = largeOnServer?.file === askKey ? largeOnServer.byteLength : null;
+  const largeBytes = Math.max(preview?.byteLength ?? 0, serverBytes ?? 0);
+  const large = preview !== null && largeBytes > BLEND_LARGE_FILE_BYTES;
   const converts = source.kind === "file" && supportsConversion && preview !== null;
   const conversion = useEnvironmentQuery(
     source.kind === "file" && converts && !request.cancelled && (!large || asked)
@@ -132,6 +139,9 @@ export function BlendFilePreview(props: {
     messages,
   );
   const status = request.cancelled ? null : conversion.data;
+  if (status?.status === "large" && askKey !== null && serverBytes !== status.byteLength) {
+    setLargeOnServer({ file: askKey, byteLength: status.byteLength });
+  }
   if (
     status?.status === "ready" &&
     (shown === null ||
@@ -182,13 +192,17 @@ export function BlendFilePreview(props: {
   const action =
     preview === null ? null : converts && large && !asked ? (
       <div className="absolute start-2 bottom-2 flex max-w-[calc(100%-14rem)] flex-col items-start gap-1">
-        <Button size="xs" variant="glass" onClick={() => setAsked(true)}>
+        <Button
+          size="xs"
+          variant="glass"
+          onClick={() => askKey !== null && useBlendConversionAsks.getState().ask(askKey)}
+        >
           <T>Show 3D view</T>
         </Button>
         <span className="min-w-0 text-muted-foreground text-xs">
           <T>
-            Converts this <Var>{formatBytes(preview.byteLength)}</Var> file with Blender on the
-            server, which loads the whole scene.
+            Converts this <Var>{formatBytes(largeBytes)}</Var> file with Blender on the server,
+            which loads the whole scene.
           </T>
         </span>
       </div>

@@ -2266,7 +2266,7 @@ const WsHostedBlenderMoveIntoT3Rpc = Rpc.make(WS_METHODS.hostedBlenderMoveIntoT3
   error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
 });
 
-/** The setup check's last result; the first subscriber starts the first check. */
+/** The setup check's last result. Passive: subscribing never runs a check. */
 const WsHostedBlenderSubscribeSetupRpc = Rpc.make(WS_METHODS.hostedBlenderSubscribeSetup, {
   payload: Schema.Struct({}),
   success: HostedBlenderSetupState,

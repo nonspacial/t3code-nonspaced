@@ -31,6 +31,12 @@ export const BlendPreviewScene = Schema.Struct({
 });
 export type BlendPreviewScene = typeof BlendPreviewScene.Type;
 
+/**
+ * Converting loads the whole scene in a headless Blender, so a file larger than this converts
+ * only when asked, once; its preview reads only the start of the file.
+ */
+export const BLEND_LARGE_FILE_BYTES = 512 * 1024 * 1024;
+
 /** What a `.blend` shows without Blender: its saved thumbnail and scene facts. */
 export const BlendPreview = Schema.Struct({
   relativePath: Schema.NonEmptyString,
@@ -46,6 +52,11 @@ export const BlendPreview = Schema.Struct({
   materials: NonNegativeInt,
   /** Linked library paths as saved; `//` starts a path relative to the file. */
   libraries: Schema.Array(Schema.String),
+  /**
+   * Only the start of the file was read, as for a large one: its size, version and thumbnail. The
+   * scene, counts and libraries above weren't read.
+   */
+  partial: Schema.optionalKey(Schema.Boolean),
 });
 export type BlendPreview = typeof BlendPreview.Type;
 
@@ -128,6 +139,8 @@ export const BlendConversionStatus = Schema.Union([
   }),
   /** Stopped at the time limit; `keepTrying` runs it again without one. */
   Schema.Struct({ status: Schema.Literal("slow") }),
+  /** Over `BLEND_LARGE_FILE_BYTES` as the server last read it: a `once` request converts it. */
+  Schema.Struct({ status: Schema.Literal("large"), byteLength: NonNegativeInt }),
   Schema.Struct({ status: Schema.Literal("failed"), log: Schema.String }),
   Schema.Struct({
     status: Schema.Literal("unavailable"),

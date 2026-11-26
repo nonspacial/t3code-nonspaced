@@ -40,6 +40,8 @@ const stream = vi.hoisted(() => ({
   commands: [] as Array<{ readonly label: string; readonly value: unknown }>,
   targets: [] as unknown[],
   setup: null as unknown,
+  /** Unsaved image edits hold any quit that isn't a discard. */
+  imagesHold: false,
   // The annotation tests: the real canvas sink, one grey frame, and Blender's answers.
   annotating: false,
   target: "window" as "window" | "output",
@@ -98,6 +100,15 @@ vi.mock(import("@t3tools/client-runtime/device/frame"), async (original) => {
 vi.mock(import("~/state/use-atom-command"), () => ({
   useAtomCommand: ((command: { readonly label: string }) => async (value: unknown) => {
     stream.commands.push({ label: command.label, value });
+    const input = (value as { readonly input?: { readonly discard?: boolean } }).input;
+    if (stream.imagesHold && command.label.endsWith(":quit") && input?.discard !== true) {
+      const { HostedBlenderError } = await import("@t3tools/contracts");
+      const Cause = await import("effect/Cause");
+      return {
+        _tag: "Failure",
+        cause: Cause.fail(new HostedBlenderError({ reason: "unsavedImages" })),
+      };
+    }
     const answer = command.label.endsWith(":capture-view")
       ? stream.captureView
       : command.label.endsWith(":find-hits")
@@ -157,6 +168,7 @@ const startup = (): Disposable => {
   stream.events = null;
   stream.targets = [];
   stream.commands = [];
+  stream.imagesHold = false;
   useBlenderRoleStore.setState({ roles: {} });
   useKeptCopySelection.setState({ byThread: {}, dismissedReloads: {} });
   stream.master = { status: "none" };
@@ -721,7 +733,63 @@ it("shows each kept file's card, naming its own file, and acts on that file", as
   }
 });
 
-it("fits its toolbar in a 380 px pane with a master, the menu still in reach", async () => {
+it("asks with the quit dialog when image edits hold a quit, and says so in the pane meanwhile", async () => {
+  using _app = startup();
+  stream.imagesHold = true;
+  const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
+  const { Atom } = await import("effect/reactivity");
+  using _quit = vi
+    .spyOn(hostedBlenderEnvironment.quit, "permissionAtom")
+    .mockReturnValue(Atom.make(true) as never);
+  const ui = () => (
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>
+  );
+  const line = "Blender has unsaved image edits, which quitting without saving discards.";
+  const quits = () =>
+    stream.commands.filter((command) => command.label.endsWith(":quit")).map(({ value }) => value);
+  {
+    await using screen = await render(ui());
+    await control({ canOperate: true, controller: "unclaimed" });
+    await screen.getByRole("button", { name: "Blender menu" }).click();
+    await screen.getByRole("menuitem", { name: "Quit Blender" }).click();
+    await expect.element(screen.getByText(line)).toBeVisible();
+    await act(() =>
+      (
+        screen.getByRole("button", { name: "Quit without saving" }).element() as HTMLElement
+      ).click(),
+    );
+    await vi.waitFor(() => expect(quits()).toHaveLength(2));
+    expect(quits()).toEqual([
+      {
+        environmentId: threadRef.environmentId,
+        input: { threadId: threadRef.threadId, save: false },
+      },
+      {
+        environmentId: threadRef.environmentId,
+        input: { threadId: threadRef.threadId, save: false, discard: true },
+      },
+    ]);
+  }
+  // A settle held meanwhile: the pane says why Blender stayed open, and its Quit asks at once.
+  stream.commands = [];
+  stream.state = {
+    status: "running",
+    relativePath: "models/hero.blend",
+    dirty: false,
+    quitHeld: "images",
+  };
+  await using screen = await render(ui());
+  await expect
+    .element(screen.getByText(/Blender stayed open: quitting would lose its unsaved image edits/))
+    .toBeVisible();
+  await screen.getByRole("button", { name: "Quit…" }).click();
+  await expect.element(screen.getByText(line)).toBeVisible();
+  expect(quits()).toEqual([]);
+});
+
+it("fits its toolbar in a 360 px pane with a master, the menu still in reach and the name readable", async () => {
   using _app = startup();
   const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
   const { Atom } = await import("effect/reactivity");
@@ -734,7 +802,7 @@ it("fits its toolbar in a 380 px pane with a master, the menu still in reach", a
     dirty: false,
   };
   await using screen = await render(
-    <div style={{ height: 400, width: 380 }}>
+    <div style={{ height: 400, width: 360 }}>
       <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
     </div>,
   );
@@ -748,7 +816,7 @@ it("fits its toolbar in a 380 px pane with a master, the menu still in reach", a
   }
   expect(screen.getByText("hero.wip-a1b2.blend", { exact: false }).query()).toBeNull();
   const name = screen.getByText("hero.blend").element().getBoundingClientRect();
-  expect(name.width).toBeGreaterThan(20);
+  expect(name.width).toBeGreaterThanOrEqual(56);
 });
 
 it("points a thread with no Blender running at Files, where .blend files open", async () => {
@@ -1486,6 +1554,7 @@ const capture: HostedBlenderViewCapture = {
     matrix: Array.from({ length: 16 }, (_, index) => (index % 5 === 0 ? 1 : 0)),
     region: { x: 0.05, y: 0.1, width: 0.9, height: 0.85 },
   },
+  scene: "launch:1",
 };
 
 function annotationPane() {
@@ -1567,12 +1636,11 @@ it("freezes the pane's frame and attaches the viewport window's camera and what 
   expect(blender.draft()?.images.map((image) => image.id)).toEqual([annotation.id]);
 });
 
-it("links to the file Blender rendered, opened since it started, and asks for hits on that load", async () => {
+it("links to the file Blender rendered, opened since it started", async () => {
   const blender = annotationSetup("thread-blender-other-file", "window");
   annotate.captureView.mockReset().mockResolvedValue({
     ...capture,
     openFile: { kind: "workspace", relativePath: "models/other.blend" },
-    loadedAt: 7,
   });
   await using screen = await render(blender.element, annotationPane());
   await annotateRegion(screen);
@@ -1580,7 +1648,6 @@ it("links to the file Blender rendered, opened since it started, and asks for hi
   const annotation = blender.draft()!.previewAnnotations[0]!;
   expect(annotation.pageTitle).toBe("other.blend · Master");
   expect(annotation.pageUrl.startsWith("models/other.blend#view=")).toBe(true);
-  expect(annotate.findHits.mock.calls[0]?.[0]).toMatchObject({ input: { loadedAt: 7 } });
 });
 
 it("asks Blender what an arrow points at first, from its tip", async () => {

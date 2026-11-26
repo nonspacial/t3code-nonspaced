@@ -89,6 +89,12 @@ class _State:
     catalogs_unsaved = False
     # Save and quit is saving: its own result answers T3, not save_post's.
     quit_saving = False
+    # What held the last quit ("images" or "catalogs"), until those edits are saved or dropped.
+    quit_held = None
+    # Unique to this launch, so another launch's capture never matches one of this.
+    launch = os.urandom(8).hex()
+    # Counts the scene's changes, which a view moved alone doesn't make.
+    scene_changes = 0
     # The open file as Blender last read or saved it; anything else on disk is a change Blender
     # didn't make. Revisions are identity, size and nanosecond times, as T3's previews tell.
     disk_revision = None
@@ -164,6 +170,10 @@ def _snapshot():
     }
     if _State.restore is not None:
         snapshot["restore"] = _State.restore
+    if _State.quit_held is not None:
+        _State.quit_held = _unkeepable()
+        if _State.quit_held is not None:
+            snapshot["quitHeld"] = _State.quit_held
     _loaded(snapshot)
     if _State.stale is not None:
         snapshot["stale"] = True
@@ -341,7 +351,7 @@ def _view(command):
     rv3d = space.region_3d
     if not _renders_offscreen(space, window.scene):
         # The camera is still right; only the picture can't be had.
-        return _view_result(rv3d.view_matrix, rv3d.window_matrix, rv3d, None)
+        return _view_result(rv3d.view_matrix, rv3d.window_matrix, rv3d, None, window.scene)
     view_matrix = rv3d.view_matrix.copy()
     window_matrix = rv3d.window_matrix.copy()
     width, height = _screenshot_size(region.width, region.height)
@@ -364,16 +374,27 @@ def _view(command):
     finally:
         offscreen.free()
     _write_png(os.path.join(os.path.dirname(SOCKET_PATH), name), width, height, rgba)
-    return _view_result(view_matrix, window_matrix, rv3d, {"width": width, "height": height})
+    return _view_result(
+        view_matrix, window_matrix, rv3d, {"width": width, "height": height}, window.scene
+    )
 
 
-def _view_result(view_matrix, window_matrix, rv3d, screenshot):
+def _scene_identity(scene):
+    return "%s:%s:%d:%d" % (_State.launch, _State.loaded_at, scene.frame_current, _State.scene_changes)
+
+
+@persistent
+def _on_depsgraph_update(*_args):
+    _State.scene_changes += 1
+
+
+def _view_result(view_matrix, window_matrix, rv3d, screenshot, scene):
     perspective = window_matrix @ view_matrix
     return {
         "screenshot": screenshot,
-        # The file and load the picture is of, which the annotation names and its hits check.
+        # The file the picture is of, which the annotation names, and the scene its hits check.
         "filepath": bpy.data.filepath,
-        "loadedAt": _State.loaded_at,
+        "scene": _scene_identity(scene),
         "cameraView": _camera_view(view_matrix, rv3d.view_distance),
         "projection": {
             "matrix": [value for row in perspective for value in row],
@@ -384,13 +405,14 @@ def _view_result(view_matrix, window_matrix, rv3d, screenshot):
 
 
 def _hits(command):
-    # Drawn on a screenshot of another load (a reload, File > Open): its marks name nothing here.
-    if "loadedAt" in command and command["loadedAt"] != _State.loaded_at:
-        return None
     found = _viewport()
     if found is None:
         return None
     window, area, view_region, _space = found
+    # Cast only in the scene as captured: a load, playback, another viewer or the agent may have
+    # changed it since the screenshot, whose marks then name nothing here.
+    if command.get("scene") != _scene_identity(window.scene):
+        return None
     inverse = Matrix([command["matrix"][row * 4:row * 4 + 4] for row in range(4)]).inverted()
     region = command["region"]
     # Timers run in the main window's context; the marks are on the person's window, whose
@@ -508,6 +530,11 @@ def _handle(command):
             bpy.ops.wm.quit_blender()
         return
     if kind == "quit":
+        deadline = command.get("deadline")
+        if deadline is not None and time.time() * 1000 > deadline:
+            # T3 stopped waiting for it and told the person Blender stays open: so it does.
+            _send({"type": "quitExpired"})
+            return
         expected = command.get("filepath")
         if not command.get("save") and expected is not None and expected != bpy.data.filepath:
             # The person's discard named the file T3 last heard of; another is open now, whose
@@ -519,9 +546,13 @@ def _handle(command):
         # quit does; a discard or T3 stopping doesn't ask.
         held = _unkeepable() if command.get("hold") and not command.get("save") else None
         if held is not None:
+            _State.quit_held = held
             _send({"type": "quitFailed", "reason": held})
             return
         if not command.get("save"):
+            # A held quit leaves the grant to the agent until here, since Blender may stay open
+            # for it to save the images; this runs on the main thread, so no call slips between.
+            _end_grant()
             # T3 waits on this rather than stopping a Blender still writing its quit copy. It
             # carries the file and its unsaved bit as they are now, before the undo step below
             # (which always reads unsaved), as the run's last word on them.
@@ -543,8 +574,13 @@ def _handle(command):
                 unsaved = _save_images()
                 if unsaved:
                     # Nowhere to save them (no file, not packed): the person or agent decides.
+                    _State.quit_held = "images"
                     _send({"type": "quitFailed", "reason": "images", "images": unsaved})
                     return
+            if _changed_on_disk():
+                # A newer file can land while the images are written.
+                _send({"type": "quitFailed", "reason": "changedOnDisk"})
+                return
             _State.quit_saving = True
             try:
                 saved = _save()
@@ -1460,6 +1496,7 @@ def register():
     bpy.app.handlers.load_post.append(_on_load_post)
     # Save As to another name is another file too, checked before anything else can run.
     bpy.app.handlers.save_post.append(_on_save_post)
+    bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph_update)
     if RECOVER_PATH is not None:
         bpy.app.timers.register(_recover, first_interval=0.1)
     bpy.app.timers.register(_open_viewport_window, first_interval=0.5)

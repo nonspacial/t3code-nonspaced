@@ -42,6 +42,7 @@ import {
   useEffectEvent,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 import {
@@ -127,6 +128,30 @@ interface StreamStats {
   readonly rate: HostedBlenderFrameRate | null;
   readonly server: HostedBlenderStreamStats | null;
 }
+
+type StatsUpdate = (update: (current: StreamStats) => StreamStats) => void;
+
+/** The stream's figures change every second; only the status strip re-renders for them. */
+function createStatsFeed() {
+  let stats: StreamStats = { frameSize: null, rate: null, server: null };
+  const listeners = new Set<() => void>();
+  const update: StatsUpdate = (change) => {
+    stats = change(stats);
+    for (const listener of listeners) listener();
+  };
+  return {
+    update,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    get: () => stats,
+    hasFrame: () => stats.frameSize !== null,
+  };
+}
+type StatsFeed = ReturnType<typeof createStatsFeed>;
 
 // Per device: the keyboard and mouse belong to the device, not the account.
 const KEYBOARD_LAYOUT_KEY = "t3code:hosted-blender:keyboard-layout";
@@ -768,7 +793,8 @@ function RunningBlender(
 ) {
   const gt = useGT();
   const master = props.master === true;
-  const [stats, setStats] = useState<StreamStats>({ frameSize: null, rate: null, server: null });
+  const [statsFeed] = useState(createStatsFeed);
+  const hasFrame = useSyncExternalStore(statsFeed.subscribe, statsFeed.hasFrame);
   const [control, setControl] = useState<HostedBlenderControl>(VIEW_ONLY);
   const streamRef = useRef<BlenderStreamHandle | null>(null);
   const annotation = useBlenderAnnotation({
@@ -779,12 +805,13 @@ function RunningBlender(
     master,
     onClose: () => streamRef.current?.focus(),
   });
-  const live = props.state.status === "running" && props.visible && stats.frameSize !== null;
+  const live = props.state.status === "running" && props.visible && hasFrame;
   // Hidden until the next reload keeps a copy; the copy itself stays as any kept copy does.
   const dismissedReload = useKeptCopySelection(
     (selection) => selection.dismissedReloads[reloadKey(props.threadRef, master)],
   );
   const reloadKept = props.state.reloadKept;
+  const quit = useQuitHostedBlender(props.threadRef, props.state, master ? { role: "master" } : {});
   return (
     <div className="flex h-full min-h-0 flex-col">
       <BlenderToolbar
@@ -795,8 +822,17 @@ function RunningBlender(
         onAnnotate={live ? annotation.start : null}
         switcher={props.switcher}
         master={master}
+        quit={quit}
       />
       {props.notice}
+      {props.state.quitHeld === undefined ? null : (
+        <QuitHeldNotice
+          environmentId={props.threadRef.environmentId}
+          edits={props.state.quitHeld}
+          quitting={quit.quitting}
+          onQuit={() => quit.request(props.state.dirty)}
+        />
+      )}
       {props.state.reloadBlocked === undefined ? null : (
         <ReloadBlockedNotice
           name={blendFileName(quitFileOf(props.state), gt("Untitled scene"))}
@@ -830,7 +866,7 @@ function RunningBlender(
           environmentId={props.threadRef.environmentId}
           threadId={props.threadRef.threadId}
           master={master}
-          onStats={setStats}
+          onStats={statsFeed.update}
           onControl={setControl}
           handleRef={streamRef}
           canvasRef={annotation.canvasRef}
@@ -841,11 +877,46 @@ function RunningBlender(
         <div className="min-h-0 flex-1" />
       )}
       <BlenderStatusStrip
-        {...stats}
+        feed={statsFeed}
         agentActing={props.state.agentActing === true}
         control={control}
         environmentId={props.threadRef.environmentId}
       />
+    </div>
+  );
+}
+
+/**
+ * A quit Blender held for edits a recovery copy can't keep, until they're saved or dropped. A
+ * settle that left it running says nothing else.
+ */
+function QuitHeldNotice(props: {
+  readonly environmentId: EnvironmentId;
+  readonly edits: "images" | "catalogs";
+  readonly quitting: boolean;
+  readonly onQuit: () => void;
+}) {
+  const canQuit = useAtomValue(hostedBlenderEnvironment.quit.permissionAtom(props.environmentId));
+  return (
+    <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border bg-warning/8 px-3 py-1.5 text-warning-foreground text-xs">
+      <span className="min-w-0 flex-1">
+        {props.edits === "images" ? (
+          <T>
+            Blender stayed open: quitting would lose its unsaved image edits, which a recovery copy
+            can't keep. Save them in Blender (Image › Save All Images), or quit without saving.
+          </T>
+        ) : (
+          <T>
+            Blender stayed open: quitting would lose its unsaved asset catalog edits, which a
+            recovery copy can't keep. Save them in Blender's asset browser, or quit without saving.
+          </T>
+        )}
+      </span>
+      {canQuit ? (
+        <Button size="xs" variant="outline" disabled={props.quitting} onClick={props.onQuit}>
+          <T context="opens the dialog to quit Blender">Quit…</T>
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -859,6 +930,7 @@ function BlenderToolbar(props: {
   readonly onAnnotate: (() => void) | null;
   readonly switcher: ReactNode;
   readonly master: boolean;
+  readonly quit: ReturnType<typeof useQuitHostedBlender>;
 }) {
   const gt = useGT();
   const canQuit = useAtomValue(
@@ -886,136 +958,141 @@ function BlenderToolbar(props: {
   // The file Blender has open, which File > Open can have changed since it started.
   const name = blendFileName(quitFileOf(props.state), gt("Untitled scene"));
   const { canOperate, controller } = props.control;
-  const quit = useQuitHostedBlender(
-    props.threadRef,
-    props.state,
-    props.master ? { role: "master" } : {},
-  );
+  const quit = props.quit;
   return (
     // A container, so a narrow pane drops the buttons' words before anything leaves its edge.
-    <div className="@container/blender-toolbar flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
-      {props.switcher}
-      <span className="min-w-0 flex-1 truncate font-mono text-xs font-semibold">{name}</span>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              type="button"
-              aria-label={gt("Screenshot & annotate")}
-              disabled={props.onAnnotate === null}
-              // Pressing it must not move focus off the stream, which would give control back.
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => props.onAnnotate?.()}
-            />
-          }
-        >
-          <CameraIcon />
-        </TooltipTrigger>
-        <TooltipPopup side="bottom">{gt("Screenshot & annotate")}</TooltipPopup>
-      </Tooltip>
-      {!canOperate ? null : controller !== "you" ? (
-        <ToolbarAction
-          label={controller === "another-viewer" ? gt("Take over") : gt("Take control")}
-          icon={<HandIcon />}
-          onClick={() => props.streamRef.current?.takeControl(controller === "another-viewer")}
-        />
-      ) : canUseFullscreen() ? (
-        <ToolbarAction
-          label={gt("Fullscreen")}
-          icon={<MaximizeIcon />}
-          // Pressing it must not move focus off the stream, which would give control back.
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => props.streamRef.current?.fullscreen()}
-        />
-      ) : null}
-      {canQuit || canOperate || canSetTimeline ? (
-        <Menu>
-          <MenuTrigger
+    <div className="@container/blender-toolbar shrink-0 border-b border-border">
+      <div className="flex h-9 items-center gap-2 px-3 @max-[30rem]/blender-toolbar:gap-1.5 @max-[30rem]/blender-toolbar:px-2">
+        {props.switcher}
+        <Tooltip>
+          <TooltipTrigger
+            render={<span className="min-w-14 flex-1 truncate font-mono text-xs font-semibold" />}
+          >
+            {name}
+          </TooltipTrigger>
+          <TooltipPopup side="bottom">{name}</TooltipPopup>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger
             render={
               <Button
                 variant="ghost"
                 size="icon-xs"
                 type="button"
-                aria-label={gt("Blender menu")}
+                aria-label={gt("Screenshot & annotate")}
+                disabled={props.onAnnotate === null}
+                // Pressing it must not move focus off the stream, which would give control back.
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => props.onAnnotate?.()}
               />
             }
           >
-            <MoreVertical />
-          </MenuTrigger>
-          <MenuPopup align="end" sideOffset={6}>
-            {canSetTimeline ? (
-              <MenuCheckboxItem
-                checked={timeline}
-                onCheckedChange={(shown) =>
-                  void setTimeline({
-                    environmentId: props.threadRef.environmentId,
-                    input: { shown },
-                  })
-                }
-              >
-                <T context="Blender's animation editor, shown under the 3D view">Timeline</T>
-              </MenuCheckboxItem>
-            ) : null}
-            {canSetTimeline && canOperate ? <MenuSeparator /> : null}
-            {canOperate ? (
-              <>
-                <MenuSub>
-                  <MenuSubTrigger>
-                    <T>Keyboard layout</T>
-                  </MenuSubTrigger>
-                  <MenuSubPopup>
-                    <MenuRadioGroup
-                      value={keyboardLayout}
-                      onValueChange={(value) => setKeyboardLayout(value as KeyboardLayoutSetting)}
-                    >
-                      <MenuRadioItem value="auto" closeOnClick>
-                        <T context="keyboard layout setting">Automatic</T>
-                      </MenuRadioItem>
-                      {HOSTED_BLENDER_KEYBOARD_LAYOUTS.map((layout) => (
-                        <MenuRadioItem key={layout} value={layout} closeOnClick>
-                          {m(KEYBOARD_LAYOUT_NAMES[layout])}
+            <CameraIcon />
+          </TooltipTrigger>
+          <TooltipPopup side="bottom">{gt("Screenshot & annotate")}</TooltipPopup>
+        </Tooltip>
+        {!canOperate ? null : controller !== "you" ? (
+          <ToolbarAction
+            label={controller === "another-viewer" ? gt("Take over") : gt("Take control")}
+            icon={<HandIcon />}
+            onClick={() => props.streamRef.current?.takeControl(controller === "another-viewer")}
+          />
+        ) : canUseFullscreen() ? (
+          <ToolbarAction
+            label={gt("Fullscreen")}
+            icon={<MaximizeIcon />}
+            // Pressing it must not move focus off the stream, which would give control back.
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => props.streamRef.current?.fullscreen()}
+          />
+        ) : null}
+        {canQuit || canOperate || canSetTimeline ? (
+          <Menu>
+            <MenuTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  type="button"
+                  aria-label={gt("Blender menu")}
+                />
+              }
+            >
+              <MoreVertical />
+            </MenuTrigger>
+            <MenuPopup align="end" sideOffset={6}>
+              {canSetTimeline ? (
+                <MenuCheckboxItem
+                  checked={timeline}
+                  onCheckedChange={(shown) =>
+                    void setTimeline({
+                      environmentId: props.threadRef.environmentId,
+                      input: { shown },
+                    })
+                  }
+                >
+                  <T context="Blender's animation editor, shown under the 3D view">Timeline</T>
+                </MenuCheckboxItem>
+              ) : null}
+              {canSetTimeline && canOperate ? <MenuSeparator /> : null}
+              {canOperate ? (
+                <>
+                  <MenuSub>
+                    <MenuSubTrigger>
+                      <T>Keyboard layout</T>
+                    </MenuSubTrigger>
+                    <MenuSubPopup>
+                      <MenuRadioGroup
+                        value={keyboardLayout}
+                        onValueChange={(value) => setKeyboardLayout(value as KeyboardLayoutSetting)}
+                      >
+                        <MenuRadioItem value="auto" closeOnClick>
+                          <T context="keyboard layout setting">Automatic</T>
                         </MenuRadioItem>
-                      ))}
-                    </MenuRadioGroup>
-                  </MenuSubPopup>
-                </MenuSub>
-                <MenuSub>
-                  <MenuSubTrigger>
-                    <T>Scrolling</T>
-                  </MenuSubTrigger>
-                  <MenuSubPopup>
-                    <MenuRadioGroup
-                      value={scrolling}
-                      onValueChange={(value) =>
-                        setScrolling(value as HostedBlenderScrollPreference)
-                      }
-                    >
-                      <MenuRadioItem value="auto" closeOnClick>
-                        <T context="scrolling setting">Automatic</T>
-                      </MenuRadioItem>
-                      <MenuRadioItem value="wheel" closeOnClick>
-                        <T>Mouse wheel</T>
-                      </MenuRadioItem>
-                      <MenuRadioItem value="trackpad" closeOnClick>
-                        <T>Trackpad</T>
-                      </MenuRadioItem>
-                    </MenuRadioGroup>
-                  </MenuSubPopup>
-                </MenuSub>
-              </>
-            ) : null}
-            {canQuit && (canOperate || canSetTimeline) ? <MenuSeparator /> : null}
-            {canQuit ? (
-              <MenuItem disabled={quit.quitting} onClick={() => quit.request(props.state.dirty)}>
-                <T>Quit Blender</T>
-              </MenuItem>
-            ) : null}
-          </MenuPopup>
-        </Menu>
-      ) : null}
-      {quit.dialog}
+                        {HOSTED_BLENDER_KEYBOARD_LAYOUTS.map((layout) => (
+                          <MenuRadioItem key={layout} value={layout} closeOnClick>
+                            {m(KEYBOARD_LAYOUT_NAMES[layout])}
+                          </MenuRadioItem>
+                        ))}
+                      </MenuRadioGroup>
+                    </MenuSubPopup>
+                  </MenuSub>
+                  <MenuSub>
+                    <MenuSubTrigger>
+                      <T>Scrolling</T>
+                    </MenuSubTrigger>
+                    <MenuSubPopup>
+                      <MenuRadioGroup
+                        value={scrolling}
+                        onValueChange={(value) =>
+                          setScrolling(value as HostedBlenderScrollPreference)
+                        }
+                      >
+                        <MenuRadioItem value="auto" closeOnClick>
+                          <T context="scrolling setting">Automatic</T>
+                        </MenuRadioItem>
+                        <MenuRadioItem value="wheel" closeOnClick>
+                          <T>Mouse wheel</T>
+                        </MenuRadioItem>
+                        <MenuRadioItem value="trackpad" closeOnClick>
+                          <T>Trackpad</T>
+                        </MenuRadioItem>
+                      </MenuRadioGroup>
+                    </MenuSubPopup>
+                  </MenuSub>
+                </>
+              ) : null}
+              {canQuit && (canOperate || canSetTimeline) ? <MenuSeparator /> : null}
+              {canQuit ? (
+                <MenuItem disabled={quit.quitting} onClick={() => quit.request(props.state.dirty)}>
+                  <T>Quit Blender</T>
+                </MenuItem>
+              ) : null}
+            </MenuPopup>
+          </Menu>
+        ) : null}
+        {quit.dialog}
+      </div>
     </div>
   );
 }
@@ -1092,7 +1169,7 @@ function BlenderStream(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: string;
   readonly master?: boolean;
-  readonly onStats: (update: (current: StreamStats) => StreamStats) => void;
+  readonly onStats: StatsUpdate;
   readonly onControl: (control: HostedBlenderControl) => void;
   readonly handleRef: RefObject<BlenderStreamHandle | null>;
   readonly onFrameSize?: (size: { readonly width: number; readonly height: number }) => void;
@@ -1424,24 +1501,24 @@ function StreamStatus(props: { readonly status: Exclude<HostedBlenderStreamStatu
   }
 }
 
-function BlenderStatusStrip(
-  props: StreamStats & {
-    readonly agentActing: boolean;
-    readonly control: HostedBlenderControl;
-    readonly environmentId: EnvironmentId;
-  },
-) {
+function BlenderStatusStrip(props: {
+  readonly feed: StatsFeed;
+  readonly agentActing: boolean;
+  readonly control: HostedBlenderControl;
+  readonly environmentId: EnvironmentId;
+}) {
   const gt = useGT();
+  const stats = useSyncExternalStore(props.feed.subscribe, props.feed.get);
   const setup = useHostedBlenderSetupState(props.environmentId)?.result;
   const gpu =
     setup?.status === "checked"
       ? setup.checks.find((check) => check.item === "gpu")?.status
       : undefined;
   const parts = [
-    props.frameSize ? `${props.frameSize.width}×${props.frameSize.height}` : null,
-    props.rate ? `${props.rate.framesPerSecond} fps` : null,
-    props.rate ? `${(props.rate.bitsPerSecond / 1_000_000).toFixed(1)} Mbps` : null,
-    props.server?.encoder ?? null,
+    stats.frameSize ? `${stats.frameSize.width}×${stats.frameSize.height}` : null,
+    stats.rate ? `${stats.rate.framesPerSecond} fps` : null,
+    stats.rate ? `${(stats.rate.bitsPerSecond / 1_000_000).toFixed(1)} Mbps` : null,
+    stats.server?.encoder ?? null,
   ].filter((part) => part !== null);
   return (
     <div className="flex h-7 shrink-0 items-center gap-3 overflow-hidden border-t border-border bg-muted/40 px-3 text-xs whitespace-nowrap text-muted-foreground">
@@ -1459,7 +1536,7 @@ function BlenderStatusStrip(
           <T context="hosted Blender pane status badge">Agent editing</T>
         </Badge>
       ) : null}
-      {props.server?.target === "output" ? (
+      {stats.server?.target === "output" ? (
         <span className="min-w-0 truncate text-warning-foreground">
           <T>Showing the whole display</T>
         </span>
@@ -1477,9 +1554,9 @@ function BlenderStatusStrip(
       {parts.length > 0 ? (
         <span className="ml-auto min-w-0 truncate font-mono">{parts.join(" · ")}</span>
       ) : null}
-      {props.server?.memoryBytes != null ? (
+      {stats.server?.memoryBytes != null ? (
         <span className={`shrink-0 font-mono${parts.length > 0 ? "" : " ml-auto"}`}>
-          {gt("Blender memory {size}", { size: formatBytes(props.server.memoryBytes) })}
+          {gt("Blender memory {size}", { size: formatBytes(stats.server.memoryBytes) })}
         </span>
       ) : null}
     </div>

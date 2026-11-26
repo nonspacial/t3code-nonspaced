@@ -303,8 +303,8 @@ describe("device tab rename", () => {
 });
 
 describe("the + menu's Blender entry", () => {
-  it("opens the thread's Blender pane where Hosted Blender is on, watching it only while open", async () => {
-    blender.state = { status: "stopped" };
+  it("opens the thread's Blender pane where Hosted Blender is on, before its state answers, watching it only while open", async () => {
+    blender.state = null;
     blender.watched = [];
     const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
     const { Atom } = await import("effect/reactivity");

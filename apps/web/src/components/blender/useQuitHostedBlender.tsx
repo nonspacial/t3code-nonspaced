@@ -1,5 +1,7 @@
 import {
   blendFileName,
+  type HeldQuit,
+  heldQuitOf,
   isDiscardUnconfirmed,
   quitFileOf,
 } from "@t3tools/client-runtime/state/hosted-blender";
@@ -30,6 +32,8 @@ export const fileName = (relativePath: string) =>
 export interface QuitFile {
   readonly relativePath: string;
   readonly openFile?: HostedBlenderKeptFile | undefined;
+  /** An earlier quit was held by these unsaved edits, so this one asks first. */
+  readonly quitHeld?: HeldQuit["edits"] | undefined;
 }
 
 /**
@@ -46,6 +50,10 @@ export function useQuitHostedBlender(
   const m = useMessages();
   const quit = useAtomCommand(hostedBlenderEnvironment.quit, { reportFailure: false });
   const [confirming, setConfirming] = useState(false);
+  // What held the last quit asked here; the running state's word stands in before one.
+  const [held, setHeld] = useState<HeldQuit | null>(null);
+  const shownHeld =
+    held ?? (file.quitHeld === undefined ? null : { edits: file.quitHeld, images: [] });
   const [saving, setSaving] = useState(false);
   const [discarding, setDiscarding] = useState(false);
   // Chosen while a Save and quit waited in a busy Blender, which the discard then ended.
@@ -72,6 +80,9 @@ export function useQuitHostedBlender(
     });
     setSaving(false);
     if (discarded.current) return;
+    // Images it couldn't save: the dialog stays, naming them, with Quit without saving.
+    const heldBy = result._tag === "Failure" ? heldQuitOf(result.cause) : null;
+    if (heldBy !== null) return setHeld(heldBy);
     setConfirming(false);
     if (result._tag === "Failure") report(result.cause);
   };
@@ -98,21 +109,47 @@ export function useQuitHostedBlender(
       discarded.current = false;
       return;
     }
+    // Held for edits a recovery copy can't keep: the dialog says which, one click from discarding.
+    const heldBy = result._tag === "Failure" && !discard ? heldQuitOf(result.cause) : null;
+    if (heldBy !== null) {
+      setHeld(heldBy);
+      return setConfirming(true);
+    }
     setConfirming(false);
     if (result._tag === "Failure") report(result.cause);
   };
+  const changeOpen = (open: boolean) => {
+    setConfirming(open);
+    if (!open) setHeld(null);
+  };
   return {
     quitting: saving || discarding,
-    request: (dirty: boolean) => (dirty ? setConfirming(true) : void quitWithoutSaving(false)),
+    request: (dirty: boolean) =>
+      dirty || file.quitHeld !== undefined ? setConfirming(true) : void quitWithoutSaving(false),
     dialog: (
-      <AlertDialog open={confirming} onOpenChange={setConfirming}>
+      <AlertDialog open={confirming} onOpenChange={changeOpen}>
         <AlertDialogPopup>
           <AlertDialogHeader>
             <AlertDialogTitle>
               {gt("Save changes to {name} before quitting?", { name })}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              <T>Changes Blender hasn't saved are lost if you quit without saving.</T>
+              {shownHeld === null ? (
+                <T>Changes Blender hasn't saved are lost if you quit without saving.</T>
+              ) : shownHeld.edits === "catalogs" ? (
+                <T>
+                  Blender has unsaved asset catalog edits, which quitting without saving discards.
+                </T>
+              ) : shownHeld.images.length > 0 ? (
+                gt(
+                  "Blender couldn't save {images}, so quitting without saving discards their edits.",
+                  {
+                    images: shownHeld.images.join(", "),
+                  },
+                )
+              ) : (
+                <T>Blender has unsaved image edits, which quitting without saving discards.</T>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

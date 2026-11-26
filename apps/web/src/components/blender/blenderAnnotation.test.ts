@@ -12,6 +12,7 @@ const capture: HostedBlenderViewCapture = {
     matrix: Array.from({ length: 16 }, (_, index) => index),
     region: { x: 0.05, y: 0.1, width: 0.9, height: 0.85 },
   },
+  scene: "launch:1",
 };
 const size = { width: 400, height: 300 };
 const region = { id: "region_1", rect: { x: 180, y: 130, width: 40, height: 40 } };
@@ -53,6 +54,7 @@ describe("blenderAnnotationPayload", () => {
 
     expect(findHits).toHaveBeenCalledWith({
       projection: capture.projection,
+      scene: capture.scene,
       marks: [markSamples(region.rect, size), markSamples(stroke.bounds, size, stroke.points)],
     });
     expect(payload).toMatchObject({
@@ -85,17 +87,17 @@ describe("blenderAnnotationPayload", () => {
     expect(payload.screenshot?.dataUrl).toBe(base.screenshot.dataUrl);
   });
 
-  it("names the file the frame is of, and asks for hits on that load only", async () => {
+  it("names the file the frame is of, and asks for hits in its scene only", async () => {
     const findHits = vi.fn(async () => [null, null]);
     const outside = await blenderAnnotationPayload({
       ...base,
       file: { kind: "outside", path: "/elsewhere/other.blend" },
-      capture: { ...capture, loadedAt: 7 },
+      capture: { ...capture, scene: "launch:7" },
       findHits,
     });
     expect(outside.pageUrl.startsWith("/elsewhere/other.blend#view=")).toBe(true);
     expect(outside.pageTitle).toBe("other.blend · Master");
-    expect(findHits).toHaveBeenCalledWith(expect.objectContaining({ loadedAt: 7 }));
+    expect(findHits).toHaveBeenCalledWith(expect.objectContaining({ scene: "launch:7" }));
     const untitled = await blenderAnnotationPayload({
       ...base,
       file: { kind: "untitled" },

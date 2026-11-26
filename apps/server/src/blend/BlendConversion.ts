@@ -1,4 +1,8 @@
-import type { BlendConversionInput, BlendConversionStatus } from "@t3tools/contracts";
+import {
+  BLEND_LARGE_FILE_BYTES,
+  type BlendConversionInput,
+  type BlendConversionStatus,
+} from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -60,8 +64,8 @@ export class BlendConversion extends Context.Service<
     ) => Effect.Effect<void, ConversionError>;
     /**
      * Converts like `convert`, then again each time the file or a library it links changes,
-     * until interrupted. It ends only when the file cannot be converted at all, or after the one
-     * conversion `once` asks for.
+     * until interrupted. It ends only when the file cannot be converted at all, is over
+     * `BLEND_LARGE_FILE_BYTES` (`large`), or after the one conversion `once` asks for.
      */
     readonly watch: (
       input: BlendConversionInput,
@@ -392,8 +396,14 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
           resolvedPath: target.realPath,
         });
       }
+      // Judged on the file as it is now: one saved over with a large scene since the client
+      // looked converts only when asked again.
+      const byteLength = Number(info.value.size);
+      if (watching && byteLength > BLEND_LARGE_FILE_BYTES) {
+        return { status: "large" as const, byteLength };
+      }
       const facts = yield* Effect.tryPromise({
-        try: (signal) => readBlendFileFacts(target.realPath, revision, signal),
+        try: (signal) => readBlendFileFacts(target.realPath, revision, signal, true),
         catch: (cause) =>
           isBlendFileFormatError(cause)
             ? cause

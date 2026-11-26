@@ -18,6 +18,19 @@ export function blendFactRows(
   resolve: MFunctionType = mFallback,
 ): ReadonlyArray<BlendFactRow> {
   const row = (label: string, ...values: string[]) => ({ label, values });
+  const size = row(
+    resolve(msg("Size", { $context: "file size" })),
+    formatAttachmentSize(preview.byteLength, resolve),
+  );
+  if (preview.partial === true) {
+    return [
+      row(
+        resolve(msg("Contents", { $context: "what a Blender file holds" })),
+        resolve(msg("Not read for a file this large")),
+      ),
+      size,
+    ];
+  }
   const rows: BlendFactRow[] = [];
   if (preview.scene) {
     rows.push(row(resolve(msg("Scene", { $context: "a Blender scene" })), preview.scene.name));
@@ -43,11 +56,6 @@ export function blendFactRows(
       values: preview.libraries,
       paths: true,
     });
-  rows.push(
-    row(
-      resolve(msg("Size", { $context: "file size" })),
-      formatAttachmentSize(preview.byteLength, resolve),
-    ),
-  );
+  rows.push(size);
   return rows;
 }

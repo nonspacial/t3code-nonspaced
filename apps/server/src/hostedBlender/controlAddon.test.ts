@@ -677,6 +677,15 @@ if _scenario.get("diskChanges") is not None:
         recover_auto_save=_recover_auto_save,
         quit_blender=lambda: _addons.log("quit_blender"),
     )
+    _write_on_image_save = [False]
+    def _save_all_modified():
+        for image in bpy.data.images:
+            image.is_dirty = False
+        if _write_on_image_save[0]:
+            # Another program writes the file while Blender writes the images.
+            _write()
+        return {"FINISHED"}
+    bpy.ops.image = types.SimpleNamespace(save_all_modified=_save_all_modified)
     bpy.context.temp_override = lambda **_kwargs: contextlib.nullcontext()
     _t3.setblocking(False)
     def _heard():
@@ -726,8 +735,9 @@ if _scenario.get("diskChanges") is not None:
             _t3.sendall(b'{"type": "panesHidden"}\n')
         elif _step == "edit":
             bpy.data.is_dirty = True
-        elif _step == "editImage":
+        elif _step in ("editImage", "editImageWrittenOnSave"):
             bpy.data.images.append(types.SimpleNamespace(name="paint", is_dirty=True))
+            _write_on_image_save[0] = _step == "editImageWrittenOnSave"
         elif _step == "saveImage":
             bpy.data.images[-1].is_dirty = False
         elif _step == "agentWork":
@@ -740,7 +750,7 @@ if _scenario.get("diskChanges") is not None:
             _Guard.deferred.clear()
             sys.modules["${MCP}.deferred_tool"]._deferred_clients.clear()
         elif _step == "saveAndQuit":
-            _t3.sendall(b'{"type": "quit", "save": true}\n')
+            _t3.sendall(b'{"type": "quit", "save": true, "hold": true}\n')
         elif _step == "discard":
             _t3.sendall((_j.dumps({"type": "quit", "save": False, "filepath": _path}) + "\n").encode())
         elif _step.startswith("restore"):
@@ -901,6 +911,7 @@ if _t3 is not None:
 print(_j.dumps({
     "received": [message["type"] for message in _received],
     "quitFailed": [message["reason"] for message in _received if message["type"] == "quitFailed"],
+    "quitHeld": _snapshot().get("quitHeld"),
     "call": _called,
     "mcpVersion": _snapshot()["mcpVersion"],
     "steps": _steps,
@@ -939,7 +950,12 @@ const runAddon = (input: {
     | "stopAgentListener"
     | "quitIfClean"
     | "cancelQuit"
-    | { readonly type: "quit"; readonly save: boolean; readonly hold?: boolean }
+    | {
+        readonly type: "quit";
+        readonly save: boolean;
+        readonly hold?: boolean;
+        readonly deadline?: number;
+      }
   >;
   /** Asset catalogs edited and not saved, which only Blender's catalog poll can tell. */
   readonly unsavedCatalogs?: boolean;
@@ -1060,6 +1076,7 @@ const runAddon = (input: {
     | "panesHidden"
     | "edit"
     | "editImage"
+    | "editImageWrittenOnSave"
     | "saveImage"
     | "agentWork"
     | "agentWorkDone"
@@ -1331,6 +1348,13 @@ describe("B13: a file changed on disk", () => {
     ]);
     const saved = runAddon({ ...granted, diskChanges: ["ownSave", "saveAndQuit"] });
     expect(names(saved)).toEqual(expect.arrayContaining(["save_mainfile", "quit_blender"]));
+    // Nor over a newer file that lands while the images are saved first.
+    const during = runAddon({ ...granted, diskChanges: ["editImageWrittenOnSave", "saveAndQuit"] });
+    expect(changes(during, 1)[0]!.heard).toContainEqual({
+      type: "quitFailed",
+      reason: "changedOnDisk",
+    });
+    expect(names(during)).not.toContain("save_mainfile");
     // A discard writes nothing, so an out-of-date Blender still quits.
     const discarded = runAddon({ ...granted, diskChanges: ["outsideChange", "discard"] });
     expect(names(discarded)).toContain("quit_blender");
@@ -1457,6 +1481,8 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     });
     expect(heardOf(quit)).toEqual([["quitting", "/work/hero.wip-1a2b3c4d.blend", false]]);
     expect(quit.calls).toContainEqual(["undo_push", "T3 recovery copy"]);
+    // The agent's access ended before it said so, as a held quit leaves it until then.
+    expect(quit.calls).toContainEqual(["quit", "off", false]);
   });
 
   it("N1: refuses a discard of a file it no longer has open, and stays open", () => {
@@ -1716,6 +1742,7 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     const quit = (input: {
       readonly save: boolean;
       readonly hold?: boolean;
+      readonly deadline?: number;
       readonly dirtyImages?: ReadonlyArray<string>;
       readonly unsavedCatalogs?: boolean;
     }) => {
@@ -1723,7 +1750,14 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
         installed: [],
         enabled: [],
         listen: false,
-        send: [{ type: "quit", save: input.save, ...(input.hold ? { hold: true } : {}) }],
+        send: [
+          {
+            type: "quit",
+            save: input.save,
+            ...(input.hold ? { hold: true } : {}),
+            ...(input.deadline === undefined ? {} : { deadline: input.deadline }),
+          },
+        ],
         ...(input.dirtyImages ? { dirtyImages: input.dirtyImages } : {}),
         ...(input.unsavedCatalogs ? { unsavedCatalogs: true, assetBrowser: "shown" as const } : {}),
       });
@@ -1736,6 +1770,26 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       quits: false,
       held: ["images"],
     });
+    // Until saved, Blender says what held it.
+    const held = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      send: ["grantAgentListener", { type: "quit", save: false, hold: true }],
+      dirtyImages: ["paint"],
+    });
+    expect(held.quitHeld).toBe("images");
+    // Blender stays open for the agent to save the image: its access stays too.
+    expect(after(held)).toEqual({ listener: "ready", listening: held.port, enabled: true });
+    // A quit read after T3 stopped waiting for it is refused, so Blender stays open as T3 said.
+    const late = runAddon({
+      installed: [],
+      enabled: [],
+      listen: false,
+      send: [{ type: "quit", save: false, deadline: 1 }],
+    });
+    expect(late.received).toContain("quitExpired");
+    expect(late.calls.some((call: Array<unknown>) => call[0] === "quit_blender")).toBe(false);
     // Saving the .blend leaves the image behind too, so nothing is saved.
     expect(quit({ save: true, hold: true, dirtyImages: ["paint"] })).toEqual({
       quits: false,

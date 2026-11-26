@@ -41,6 +41,20 @@ export const isDiscardUnconfirmed = (cause: Cause.Cause<unknown>) => {
   return isHostedBlenderError(error) && error.reason === "discardUnconfirmed";
 };
 
+/** Unsaved edits outside the .blend held a quit; `images` names those a save couldn't write. */
+export interface HeldQuit {
+  readonly edits: "images" | "catalogs";
+  readonly images: ReadonlyArray<string>;
+}
+
+export const heldQuitOf = (cause: Cause.Cause<unknown>): HeldQuit | null => {
+  const error = Cause.squash(cause);
+  if (!isHostedBlenderError(error)) return null;
+  if (error.reason === "unsavedImages") return { edits: "images", images: error.images ?? [] };
+  if (error.reason === "unsavedCatalogs") return { edits: "catalogs", images: [] };
+  return null;
+};
+
 /** A file's name as the pane shows it; `untitled` for an unsaved scene. */
 export const blendFileName = (file: HostedBlenderKeptFile, untitled: string): string => {
   if (file.kind === "untitled") return untitled;

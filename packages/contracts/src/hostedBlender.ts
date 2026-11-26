@@ -167,6 +167,8 @@ export const HostedBlenderRunningState = Schema.Struct({
   reloadKept: Schema.optionalKey(Schema.Struct({ key: Schema.String, at: Schema.Number })),
   /** The file changed on disk and Blender hasn't reloaded it, because of this. */
   reloadBlocked: Schema.optionalKey(HostedBlenderReloadBlocker),
+  /** A quit was held by these unsaved edits outside the .blend, which are still unsaved. */
+  quitHeld: Schema.optionalKey(Schema.Literals(["images", "catalogs"])),
 });
 export type HostedBlenderRunningState = typeof HostedBlenderRunningState.Type;
 
@@ -357,8 +359,8 @@ export const HostedBlenderViewCapture = Schema.Struct({
   projection: HostedBlenderViewProjection,
   /** The file Blender had open as it rendered: after File > Open, not the launch file. */
   openFile: Schema.optionalKey(HostedBlenderKeptFile),
-  /** When Blender had last loaded it, null before any load since it started; hits name it. */
-  loadedAt: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  /** The scene as Blender rendered it, which its hits are cast in; opaque to clients. */
+  scene: Schema.String,
 });
 export type HostedBlenderViewCapture = typeof HostedBlenderViewCapture.Type;
 
@@ -369,8 +371,8 @@ export const HostedBlenderFindHitsInput = Schema.Struct({
   threadId: ThreadId,
   role: Schema.optionalKey(HostedBlenderRole),
   projection: HostedBlenderViewProjection,
-  /** The capture's load: Blender answers no hits once it has loaded something else since. */
-  loadedAt: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  /** The capture's scene: Blender answers no hits once the scene has changed since. */
+  scene: Schema.String,
   /** Each mark's samples, tried in order until one meets a surface. */
   marks: Schema.Array(Schema.Array(WindowSample).check(Schema.isMaxLength(256))).check(
     Schema.isMaxLength(64),

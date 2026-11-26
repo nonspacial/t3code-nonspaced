@@ -137,7 +137,7 @@ describe("readBlendFile", () => {
     );
   });
 
-  it("stops at its limits on total size, kept bytes and block count", async () => {
+  it("stops at its limits on total size, kept bytes and block count, with what it found", async () => {
     // A tiny zstd file that inflates to a 64 MB block: a decompression bomb.
     const header = new TextEncoder().encode("BLENDER-v405");
     const blockHeader = new Uint8Array(24);
@@ -148,13 +148,17 @@ describe("readBlendFile", () => {
     );
     expect(bomb.byteLength).toBeLessThan(64 * 1024);
     await withTempFile(bomb, async (path) => {
-      await expect(readBlendFile(path, { maxScannedBytes: 1024 * 1024 })).rejects.toThrow(
-        "too large",
-      );
+      await expect(readBlendFile(path, { maxScannedBytes: 1024 * 1024 })).resolves.toMatchObject({
+        blenderVersion: "4.5",
+        partial: true,
+      });
     });
     const limits = [{ maxScannedBytes: 64 * 1024 }, { maxKeptBytes: 64 * 1024 }, { maxBlocks: 50 }];
     for (const limit of limits) {
-      await expect(readBlendFile(fixture("bracket-5.blend"), limit)).rejects.toThrow("too large");
+      await expect(readBlendFile(fixture("bracket-5.blend"), limit)).resolves.toMatchObject({
+        objects: 0,
+        partial: true,
+      });
     }
     // Skipping costs nothing in an uncompressed file, so only its kept bytes and blocks count.
     await withTempFile(await uncompressed("bracket-5.blend"), async (path) => {
@@ -162,6 +166,23 @@ describe("readBlendFile", () => {
         objects: 4,
       });
     });
+  });
+
+  it("reads a file past its whole-file limit only as far as its thumbnail", async () => {
+    for (const facts of [
+      await readBlendFile(fixture("bracket-5.blend"), { wholeUpTo: 0 }),
+      await withTempFile(await uncompressed("bracket-5.blend"), (path) =>
+        readBlendFile(path, { wholeUpTo: 0 }),
+      ),
+    ]) {
+      expect(facts).toMatchObject({
+        blenderVersion: "5.3",
+        thumbnail: { width: 128, height: 128 },
+        scene: null,
+        objects: 0,
+        partial: true,
+      });
+    }
   });
 
   it("refuses struct layouts whose counts or indices do not fit the block", async () => {
@@ -198,7 +219,9 @@ describe("readBlendFile", () => {
     end.set(new TextEncoder().encode("ENDB"));
     const bytes = Buffer.concat([header, ...Array.from({ length: 1000 }, () => empty), end]);
     await withTempFile(bytes, async (path) => {
-      await expect(readBlendFile(path, { maxKeptBytes: 10_000 })).rejects.toThrow("too large");
+      await expect(readBlendFile(path, { maxKeptBytes: 10_000 })).resolves.toMatchObject({
+        partial: true,
+      });
     });
   });
 

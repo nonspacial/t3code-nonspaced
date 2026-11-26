@@ -136,6 +136,7 @@ const layerFor = (host: Host) =>
               Stream.succeed(readinessFor(host)),
               host.readinessChanges ?? Stream.never,
             ),
+            progress: Stream.never,
           }),
         ),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -615,7 +616,7 @@ def control():
             def slow_view(command):
                 time.sleep(0.3)
                 shot = view_reply(command)
-                reply = {"screenshot": shot, "cameraView": {**view, "upAxis": "z"},
+                reply = {"screenshot": shot, "scene": "launch:7", "cameraView": {**view, "upAxis": "z"},
                          "projection": {"matrix": [1] * 16,
                                         "region": {"x": 0, "y": 0, "width": 1, "height": 1}}}
                 connection.sendall((json.dumps({"type": "reply", "id": command["id"], "result": reply}) + "\n").encode())
@@ -623,8 +624,8 @@ def control():
             continue
         elif kind == "view":
             result = {"screenshot": view_reply(command),
-                      # The file it has open, by its path as given, and when it loaded it.
-                      "filepath": opened, "loadedAt": 7.0,
+                      # The file it has open, by its path as given, and the scene it drew.
+                      "filepath": opened, "scene": "launch:7",
                       "cameraView": {**view, "upAxis": "z"},
                       "projection": {"matrix": [2] + [0] * 15,
                                      "region": {"x": 0.1, "y": 0.05, "width": 0.8, "height": 0.9}}}
@@ -2172,34 +2173,48 @@ describe("Endings and recovery", () => {
   );
 
   it.live(
-    "R3: a settle ends a Blender whose Save and quit never began, by its deadline, holding up no other thread",
+    "a quit or a settle Blender never answers leaves it running, past a Save and quit that never began, holding up no other thread",
     () =>
       Effect.gen(function* () {
-        const { dir, service, openReady } = yield* standIn("busy-settle", "busy-save");
-        NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
-        yield* openReady;
-        yield* service.open({ threadId: otherThreadId, relativePath: "other.blend" });
-        const ended = (id: ThreadId) =>
-          service.threadState(id).pipe(
+        const running = (service: HostedBlender.HostedBlender["Service"]) =>
+          Stream.runHead(service.threadState(threadId)).pipe(
+            Effect.map((state) => Option.getOrThrow(state).status),
+          );
+        const busySave = Effect.gen(function* () {
+          const { dir, service, openReady } = yield* standIn("busy-settle", "busy-save");
+          NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+          yield* openReady;
+          yield* service.open({ threadId: otherThreadId, relativePath: "other.blend" });
+          const saving = yield* service
+            .quit({ threadId, save: true })
+            .pipe(Effect.flip, Effect.forkChild);
+          yield* fileAppears(dir, NodePath.join(dir, "saves.log"));
+          yield* service.closeOnSettle({ threadId });
+          // Settled meanwhile, the other thread's Blender closes with its copy at once.
+          yield* service.closeOnSettle({ threadId: otherThreadId });
+          const other = yield* service.threadState(otherThreadId).pipe(
             Stream.filter((state) => state.status !== "running" && state.status !== "starting"),
             Stream.runHead,
             Effect.map(Option.getOrThrow),
           );
-        const saving = yield* service
-          .quit({ threadId, save: true })
-          .pipe(Effect.flip, Effect.forkChild);
-        yield* fileAppears(dir, NodePath.join(dir, "saves.log"));
-        yield* service.closeOnSettle({ threadId });
-        // Settled meanwhile, the other thread's Blender closes with its copy at once.
-        yield* service.closeOnSettle({ threadId: otherThreadId });
-        expect(card(yield* ended(otherThreadId))).toMatchObject({
-          status: "closed",
-          relativePath: "other.blend",
+          expect(card(other)).toMatchObject({ status: "closed", relativePath: "other.blend" });
+          // The pane's quit, asked as the settle was, gives up at the same deadline.
+          expect((yield* service.quit({ threadId, save: false }).pipe(Effect.flip)).reason).toBe(
+            "noReply",
+          );
+          expect(yield* running(service)).toBe("running");
+          yield* Fiber.interrupt(saving);
         });
-        const stuck = yield* Stream.runHead(service.threadState(threadId));
-        expect(Option.getOrThrow(stuck).status).toBe("running");
-        yield* ended(threadId);
-        expect((yield* Fiber.join(saving)).reason).toBe("saveFailed");
+        const deaf = Effect.gen(function* () {
+          const { service, openReady } = yield* standIn("deaf-quit", "ignores-quit");
+          yield* openReady;
+          yield* service.closeOnSettle({ threadId });
+          expect((yield* service.quit({ threadId, save: false }).pipe(Effect.flip)).reason).toBe(
+            "noReply",
+          );
+          expect(yield* running(service)).toBe("running");
+        });
+        yield* Effect.all([busySave, deaf], { concurrency: "unbounded" });
       }).pipe(Effect.scoped),
   );
 
@@ -2327,26 +2342,30 @@ describe("Endings and recovery", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("never resumes capture for a Blender that is ending", () =>
-    Effect.gen(function* () {
-      const { service, openReady, awaitStatus, helperCommands } = yield* standIn(
-        "ending-capture",
-        "slow-quit",
-      );
-      yield* openReady;
-      const attached = yield* service.attachViewer(threadId, { canOperate: false });
-      assert.strictEqual(attached._tag, "attached");
-      if (attached._tag !== "attached") return;
-      yield* attached.viewer.setVisible(false);
-      // The settle waits on a quit Blender acknowledged; a pane shown meanwhile stays dark.
-      yield* service.closeOnSettle({ threadId });
-      yield* attached.viewer.setVisible(true);
-      yield* awaitStatus("closed");
-      const capture = helperCommands().filter(
-        (command) => command.type === "pause" || command.type === "resume",
-      );
-      expect(capture.at(-1)?.type).toBe("pause");
-    }).pipe(Effect.scoped),
+  it.live(
+    "never resumes capture for a Blender that is ending, and pauses it once nobody watches",
+    () =>
+      Effect.gen(function* () {
+        const { service, openReady, awaitStatus, helperCommands } = yield* standIn(
+          "ending-capture",
+          "slow-quit",
+        );
+        yield* openReady;
+        const attached = yield* service.attachViewer(threadId, { canOperate: false });
+        assert.strictEqual(attached._tag, "attached");
+        if (attached._tag !== "attached") return;
+        yield* attached.viewer.setVisible(true);
+        // The settle waits on a quit Blender acknowledged; the last pane leaving meanwhile pauses
+        // capture, and one shown again stays dark.
+        yield* service.closeOnSettle({ threadId });
+        yield* attached.viewer.setVisible(false);
+        yield* attached.viewer.setVisible(true);
+        yield* awaitStatus("closed");
+        const capture = helperCommands().filter(
+          (command) => command.type === "pause" || command.type === "resume",
+        );
+        expect(capture.at(-1)?.type).toBe("pause");
+      }).pipe(Effect.scoped),
   );
 
   it.live("a file can't start again while a settle that keeps its copy finishes", () =>
@@ -2740,13 +2759,13 @@ describe("The viewport window", () => {
           region: { x: 0.1, y: 0.05, width: 0.8, height: 0.9 },
         },
         // What the picture is of, which the annotation links to and its hits are checked against.
-        loadedAt: 7,
+        scene: "launch:7",
         openFile: { kind: "workspace", relativePath: "cube.blend" },
       });
       const hits = yield* service.findHits({
         threadId,
         projection: capture.projection,
-        loadedAt: 7,
+        scene: capture.scene,
         marks: [[{ x: 0.5, y: 0.25 }], []],
       });
       assert.deepStrictEqual(hits, [{ object: "m2", point: [0.5, 0.25, 2] }, null]);
@@ -2755,7 +2774,7 @@ describe("The viewport window", () => {
         .filter(Boolean)
         .map((line) => JSON.parse(line))
         .find((command) => command.type === "hits");
-      expect(asked).toMatchObject({ loadedAt: 7 });
+      expect(asked).toMatchObject({ scene: "launch:7" });
       expect(
         NodeFS.readdirSync(runtime, { recursive: true }).filter((name) =>
           String(name).endsWith(".png"),
@@ -2856,7 +2875,7 @@ describe("The viewport window", () => {
       };
       const results = yield* Effect.all(
         Array.from({ length: 3 }, () =>
-          service.findHits({ threadId, projection, marks: [[{ x: 0.5, y: 0.5 }]] }),
+          service.findHits({ threadId, projection, scene: "s", marks: [[{ x: 0.5, y: 0.5 }]] }),
         ),
         { concurrency: "unbounded" },
       );
@@ -2878,6 +2897,7 @@ describe("The viewport window", () => {
           matrix: Array.from({ length: 16 }, () => 0),
           region: { x: 0, y: 0, width: 1, height: 1 },
         },
+        scene: "s",
         marks: [[{ x: 0.5, y: 0.5 }]],
       };
       // The stand-in answers after 0.3 s; this caller stops waiting long before that.
@@ -4262,7 +4282,7 @@ print("T3-RESULT", json.dumps({
     }
   });
 
-  it("holds a quit that asks while an image is edited, and finds no hits on a load the screenshot isn't of", () => {
+  it("holds a quit that asks while an image is edited, and names the scene anew once it changes", () => {
     // A background Blender of the test's own, settings and temporary files in its folder.
     const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-hosted-blender-hold-"));
     try {
@@ -4281,18 +4301,21 @@ image = bpy.data.images.new("paint", 4, 4)
 image.pixels[0] = 0.5
 dirty = image.is_dirty
 _handle({"type": "quit", "save": False, "hold": True})
-# Background Blender has no viewport: whether hits looked for one says whether they went ahead.
-looked = []
-_viewport = lambda: looked.append(True)
-_State.loaded_at = 2.0
-hits = {"matrix": [0] * 16, "region": {}, "marks": [[]]}
-_hits({**hits, "loadedAt": 1.0})
-other_load = len(looked)
-_hits({**hits, "loadedAt": 2.0})
+scene = bpy.context.scene
+# The image made above is still to be evaluated.
+scene.view_layers[0].update()
+names = [_scene_identity(scene)]
+scene.view_layers[0].update()
+names.append(_scene_identity(scene))
+bpy.data.objects["Cube"].location.x += 1
+scene.view_layers[0].update()
+names.append(_scene_identity(scene))
+scene.frame_set(scene.frame_current + 1)
+names.append(_scene_identity(scene))
 print("T3-RESULT", json.dumps({
     "dirty": dirty,
     "sent": sent,
-    "looked": [other_load, len(looked)],
+    "names": [names[0] == names[1], len(set(names[1:]))],
 }))`,
         ],
         {
@@ -4311,7 +4334,8 @@ print("T3-RESULT", json.dumps({
       expect(JSON.parse(line!.slice("T3-RESULT ".length))).toEqual({
         dirty: true,
         sent: [{ type: "quitFailed", reason: "images" }],
-        looked: [0, 1],
+        // An update with nothing changed names the same scene; an edit or another frame doesn't.
+        names: [true, 3],
       });
     } finally {
       NodeFS.rmSync(dir, { recursive: true, force: true });
@@ -4585,12 +4609,16 @@ print("T3-RESULT", json.dumps({
         expect(value).toBeCloseTo([6, -6, 5][index]!, 3),
       );
       capture.cameraView.target.forEach((value) => expect(value).toBeCloseTo(0, 3));
+      // The orbit and the view link moved only the view, which leaves the scene the hits are
+      // cast in as it was captured.
+      expect(capture.scene).toBe(throughCamera.scene);
       const { region } = capture.projection;
       // The factory scene's cube sits at the origin, in the middle of the 3D view; a corner of
       // the view looks past it at nothing.
       const hits = yield* service.findHits({
         threadId,
         projection: capture.projection,
+        scene: capture.scene,
         marks: [
           [{ x: region.x + region.width / 2, y: region.y + region.height / 2 }],
           [{ x: region.x + region.width * 0.02, y: region.y + region.height * 0.02 }],
@@ -5290,12 +5318,8 @@ scene.frame_set(1)`;
           view.region!.width,
           view.region!.height,
         ]);
-        const centre = (projection: typeof capture.projection) =>
-          service.findHits({
-            threadId,
-            projection,
-            marks: [[{ x: 0.5, y: 0.5 }]],
-          });
+        const centre = ({ projection, scene }: typeof capture) =>
+          service.findHits({ threadId, projection, scene, marks: [[{ x: 0.5, y: 0.5 }]] });
         // A link's view frames the 3D view, and a mark in its middle finds the cube.
         yield* service.setView({
           threadId,
@@ -5306,7 +5330,7 @@ scene.frame_set(1)`;
         framed.cameraView.position.forEach((value, index) =>
           expect(value).toBeCloseTo([0, -12, 1][index]!, 3),
         );
-        expect((yield* centre(framed.projection))[0]?.object).toBe("Cube");
+        expect((yield* centre(framed))[0]?.object).toBe("Cube");
 
         // In control, a drag along the strip scrubs, and the 3D view follows: the cube rises
         // out of the middle of the view.
@@ -5325,7 +5349,7 @@ scene.frame_set(1)`;
         const scrubbed = yield* layoutWhen((layout) => layout.frame > 10);
         expect(scrubbed.frame).toBeLessThanOrEqual(100);
         const risen = yield* service.captureView(threadId);
-        expect((yield* centre(risen.projection))[0]?.object ?? null).toBeNull();
+        expect((yield* centre(risen))[0]?.object ?? null).toBeNull();
 
         // The wheel over the strip reaches the Timeline: Ctrl+wheel moves its frame range.
         const span = (layout: Layout) => layout.windows[0]!.areas[1]!.frames!;
@@ -6258,10 +6282,21 @@ def control():
         if kind == "quitIfClean" and os.environ.get("STANDIN_QUIT_SILENT") == "1":
             # Busy: the quit waits in Blender, unanswered, until T3 cancels it.
             continue
+        if kind == "quit" and not command.get("save") and command.get("hold") and after == "holdsQuit":
+            # Unsaved image edits hold it, as the add-on does, and it says so until they're saved.
+            connection.sendall(b'{"type": "quitFailed", "reason": "images"}\n')
+            state(blend, quitHeld="images")
+            continue
         if kind == "quit" and not command.get("save"):
             # As the add-on does: its last word on the file, then Blender's quit copy.
             connection.sendall((json.dumps({"type": "quitting", "filepath": blend,
                                             "dirty": os.environ.get("STANDIN_DIRTY") == "1"}) + "\n").encode())
+            if after == "holdOnStop":
+                # Its connection drops at once, but it is gone only once the test says.
+                connection.shutdown(socket.SHUT_RDWR)
+                import time
+                while not os.path.exists(os.environ["STANDIN_ARGS"] + ".hold"):
+                    time.sleep(0.02)
             state_dir = sys.argv[sys.argv.index("--state-dir") + 1]
             os.makedirs(os.path.join(state_dir, "tmp"), exist_ok=True)
             open(os.path.join(state_dir, "tmp", "quit.blend"), "w").write("quit copy %d" % os.getpid())
@@ -6522,6 +6557,7 @@ describe("Agent access at launch", () => {
       | "otherFile"
       | "otherFileFirst"
       | "holdOnStop"
+      | "holdsQuit"
       | "offAfterSaved"
       | "untested"
       | "acting"
@@ -6734,17 +6770,21 @@ describe("Agent access at launch", () => {
 
   it.live("ends the agent's access when T3 closes its Blender, never as a lost connection", () =>
     Effect.gen(function* () {
-      const { service, controlLog, release, argsLog } = yield* launch(
-        { agentPort: 41234 },
+      const accessEnded = yield* Queue.unbounded<{
+        readonly threadId: ThreadId;
+        readonly role: HostedBlenderAgents.HostedBlenderRole;
+        readonly grant: string;
+      }>();
+      const { service, release } = yield* launch(
+        { agentPort: 41234, accessEnded },
         { agentWorkingCopy: true, edited: true },
         "holdOnStop",
       );
       expect((yield* service.agentListener(threadId))?.state).toBe("ready");
       yield* service.closeOnSettle({ threadId });
-      // The stop goes out first; Blender's connection drops as it closes, and T3, which has
-      // seen that by the time it asks the helper to stop Blender, still calls it revoked.
-      yield* fileAppears(NodePath.dirname(argsLog), `${argsLog}.stopping`);
-      expect(controlLog()).toContain("stopAgentListener");
+      // Blender says it is quitting, which ends the agent's access, and its connection drops as
+      // it closes: still revoked, never lost.
+      yield* Queue.take(accessEnded);
       expect((yield* service.agentListener(threadId, { wait: false }))?.ended).toBe("revoked");
       release();
       yield* service.threadState(threadId).pipe(
@@ -6752,6 +6792,31 @@ describe("Agent access at launch", () => {
         Stream.runHead,
       );
     }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "a held quit leaves the agent its access to save what holds it, and the pane says why",
+    () =>
+      Effect.gen(function* () {
+        const { service, controlLog } = yield* launch(
+          { agentPort: 41234 },
+          { agentWorkingCopy: true },
+          "holdsQuit",
+        );
+        expect((yield* service.agentListener(threadId))?.state).toBe("ready");
+        const held = yield* service.quit({ threadId, save: false }).pipe(Effect.flip);
+        expect(held.reason).toBe("unsavedImages");
+        expect(
+          (yield* service.agentGrant({ threadId, role: "working", session: "any" }))._tag,
+        ).toBe("granted");
+        expect(controlLog()).not.toContain("stopAgentListener");
+        const notice = yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status === "running" && state.quitHeld !== undefined),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        expect(notice).toMatchObject({ status: "running", quitHeld: "images" });
+      }).pipe(Effect.scoped),
   );
 
   it.live("Save and quit of the agent's Blender ends while Blender quits without waiting", () =>

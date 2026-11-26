@@ -3,6 +3,7 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeZlib from "node:zlib";
 
+import { BLEND_LARGE_FILE_BYTES } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 /**
@@ -30,6 +31,8 @@ export interface BlendFileFacts {
   readonly meshes: number;
   readonly materials: number;
   readonly libraries: ReadonlyArray<string>;
+  /** Only the start was read: a large file's, or one past a limit. Scene facts are empty. */
+  readonly partial?: true;
 }
 
 interface ByteSource {
@@ -53,6 +56,8 @@ export interface BlendReadLimits {
   readonly maxBlocks: number;
   /** Names, types, structs and fields in the struct layouts together. */
   readonly maxSdnaEntries: number;
+  /** A larger file is read only as far as its thumbnail, which Blender writes first. */
+  readonly wholeUpTo: number;
 }
 
 // Large production scenes run to a few GB and some hundred thousand blocks.
@@ -62,7 +67,10 @@ const DEFAULT_LIMITS: BlendReadLimits = {
   maxBlocks: 4_000_000,
   // Blender 5's layouts hold about 35 thousand.
   maxSdnaEntries: 500_000,
+  wholeUpTo: BLEND_LARGE_FILE_BYTES,
 };
+// How far a large file is read for its thumbnail, which comes after a few small blocks.
+const HEAD_MAX_BYTES = 4 * 1024 * 1024;
 // Blender saves 128 px thumbnails; anything much larger is not one, and would bloat the RPC.
 const MAX_THUMBNAIL_SIDE = 256;
 const KEPT_CODES = new Set(["TEST", "GLOB", "SC", "LI", "ID", "DNA1"]);
@@ -442,21 +450,26 @@ async function readBlocks(
   const headerSize = header.largeBlocks ? 32 : header.pointerSize === 8 ? 24 : 20;
   const kept: Block[] = [];
   const counts = new Map<string, number>();
+  const headOnly = source.byteLength > limits.wholeUpTo;
   let blocks = 0;
   let scanned = 0;
   let keptBytes = 0;
-  const tooLarge = () => new BlendFileFormatError({ problem: "too_large" });
+  // At a limit the walk ends with what it found so far.
+  const partial = () => ({ kept, counts, partial: true as const });
   for (;;) {
     // A closed preview or a newer request stops the walk; the source closes on the way out.
     signal?.throwIfAborted();
+    if (headOnly && (scanned > HEAD_MAX_BYTES || kept.some((block) => block.code === "TEST"))) {
+      return partial();
+    }
     blocks += 1;
-    if (blocks > limits.maxBlocks) throw tooLarge();
+    if (blocks > limits.maxBlocks) return partial();
     const bytes = await source.read(headerSize);
     if (bytes.byteLength < headerSize) throw new BlendFileFormatError({ problem: "ends_early" });
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const le = header.littleEndian;
     const code = ascii(bytes.subarray(0, 4));
-    if (code === "ENDB") return { kept, counts };
+    if (code === "ENDB") return { kept, counts, partial: false as const };
     // Blender 5.0's large block header puts the struct index before the pointer and the length after.
     const length = header.largeBlocks ? Number(view.getBigInt64(16, le)) : view.getInt32(4, le);
     const sdnaIndex = header.largeBlocks
@@ -468,7 +481,7 @@ async function readBlocks(
       throw new BlendFileFormatError({ problem: "damaged" });
     // Checked before the payload is read or inflated, so a block claiming terabytes costs nothing.
     scanned += headerSize + length;
-    if (source.compressed && scanned > limits.maxScannedBytes) throw tooLarge();
+    if (source.compressed && scanned > limits.maxScannedBytes) return partial();
     counts.set(code, (counts.get(code) ?? 0) + 1);
     if (!KEPT_CODES.has(code)) {
       if (!(await source.skip(length))) throw new BlendFileFormatError({ problem: "ends_early" });
@@ -476,7 +489,7 @@ async function readBlocks(
     }
     if (length > MAX_KEPT_BLOCK_BYTES) throw new BlendFileFormatError({ problem: "damaged" });
     keptBytes += length + KEPT_BLOCK_OVERHEAD_BYTES;
-    if (keptBytes > limits.maxKeptBytes) throw tooLarge();
+    if (keptBytes > limits.maxKeptBytes) return partial();
     const data = await source.read(length);
     if (data.byteLength < length) throw new BlendFileFormatError({ problem: "ends_early" });
     kept.push({ code, sdnaIndex, oldPointer, data });
@@ -522,7 +535,25 @@ export async function readBlendFile(
   try {
     const header = await readHeader(source);
     const resolved = { ...DEFAULT_LIMITS, ...limits };
-    const { kept, counts } = await readBlocks(source, header, resolved, signal);
+    const { kept, counts, partial } = await readBlocks(source, header, resolved, signal);
+    const thumbnail = readThumbnail(
+      kept.find((block) => block.code === "TEST"),
+      header,
+    );
+    if (partial) {
+      return {
+        byteLength: source.byteLength,
+        blenderVersion: header.version,
+        thumbnail,
+        scene: null,
+        scenes: 0,
+        objects: 0,
+        meshes: 0,
+        materials: 0,
+        libraries: [],
+        partial: true,
+      };
+    }
     const dna = kept.find((block) => block.code === "DNA1");
     if (!dna) throw new BlendFileFormatError({ problem: "damaged" });
     const sdna = parseSdna(dna.data, header, resolved.maxSdnaEntries);
@@ -571,10 +602,7 @@ export async function readBlendFile(
     return {
       byteLength: source.byteLength,
       blenderVersion: header.version,
-      thumbnail: readThumbnail(
-        kept.find((block) => block.code === "TEST"),
-        header,
-      ),
+      thumbnail,
       scene:
         sceneBlock && frameStart !== null && frameEnd !== null
           ? { name: idName(sceneBlock).slice(2), frameStart, frameEnd }
@@ -605,20 +633,24 @@ export async function readBlendFile(
 const FACTS_CACHE_ENTRIES = 16;
 const factsCache = new Map<string, BlendFileFacts>();
 
-/** `readBlendFile` of a file by its real path, reused while its revision stays the same. */
+/**
+ * `readBlendFile` of a file by its real path, reused while its revision stays the same. `whole`
+ * reads a large file to its end too, as a conversion needs its libraries.
+ */
 export async function readBlendFileFacts(
   realPath: string,
   revision: string | null,
   signal?: AbortSignal,
+  whole = false,
 ): Promise<BlendFileFacts> {
-  const key = revision === null ? null : `${realPath}\n${revision}`;
+  const key = revision === null ? null : `${realPath}\n${revision}\n${whole}`;
   const hit = key === null ? undefined : factsCache.get(key);
   if (key !== null && hit !== undefined) {
     factsCache.delete(key);
     factsCache.set(key, hit);
     return hit;
   }
-  const facts = await readBlendFile(realPath, {}, signal);
+  const facts = await readBlendFile(realPath, whole ? { wholeUpTo: Infinity } : {}, signal);
   if (key !== null) {
     factsCache.set(key, facts);
     if (factsCache.size > FACTS_CACHE_ENTRIES) factsCache.delete(factsCache.keys().next().value!);
