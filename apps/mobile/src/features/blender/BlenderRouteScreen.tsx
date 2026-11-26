@@ -474,8 +474,8 @@ function BlenderStateCard(props: {
 }
 
 /**
- * What a closed or crashed Blender left, newest first, with the Blender pane's choices on web
- * and desktop for the newest copy.
+ * What a closed or crashed Blender left, newest first, with the Blender pane's choices for the
+ * copy shown: the newest, until another listed under it is picked.
  */
 function KeptCopyCard(props: {
   readonly environmentId: EnvironmentId;
@@ -489,7 +489,9 @@ function KeptCopyCard(props: {
   const reopen = useAtomCommand(hostedBlenderEnvironment.reopen, { reportFailure: false });
   const dismiss = useAtomCommand(hostedBlenderEnvironment.dismiss, { reportFailure: false });
   const [pending, setPending] = useState(false);
-  const [copy, ...others] = props.copies;
+  const [selected, setSelected] = useState<string | null>(null);
+  const copy = props.copies.find((kept) => kept.key === selected) ?? props.copies[0];
+  const others = props.copies.filter((kept) => kept !== copy);
   const untitled = gt("Untitled scene");
   const name = keptName(copy, untitled);
   const crashed = copy.kind === "crashed";
@@ -608,12 +610,23 @@ function KeptCopyCard(props: {
         {crashed ? gt("Blender crashed") : gt("Blender was closed")}
       </AppText>
       <AppText selectable className="text-center text-sm text-foreground-muted">
-        {others.length === 0
-          ? detail
-          : `${detail} ${gt("Also kept: {names}", {
-              names: others.map((other) => keptName(other, untitled)).join(", "),
-            })}`}
+        {detail}
       </AppText>
+      {others.length === 0 ? null : (
+        <View className="flex-row flex-wrap items-center justify-center gap-x-1">
+          <AppText className="text-sm text-foreground-muted">{gt("Also kept:")}</AppText>
+          {others.map((other) => (
+            <Button
+              key={other.key}
+              label={keptName(other, untitled)}
+              tone="text"
+              size="compact"
+              disabled={pending}
+              onPress={() => setSelected(other.key)}
+            />
+          ))}
+        </View>
+      )}
       {canOperate ? (
         <View className="flex-row flex-wrap justify-center gap-2">
           {actions.map((action, index) => (
