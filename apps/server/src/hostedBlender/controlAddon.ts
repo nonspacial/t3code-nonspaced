@@ -89,6 +89,8 @@ class _State:
     catalogs_unsaved = False
     # Save and quit is saving: its own result answers T3, not save_post's.
     quit_saving = False
+    # What held the last quit ("images" or "catalogs"), until those edits are saved or dropped.
+    quit_held = None
     # The open file as Blender last read or saved it; anything else on disk is a change Blender
     # didn't make. Revisions are identity, size and nanosecond times, as T3's previews tell.
     disk_revision = None
@@ -164,6 +166,10 @@ def _snapshot():
     }
     if _State.restore is not None:
         snapshot["restore"] = _State.restore
+    if _State.quit_held is not None:
+        _State.quit_held = _unkeepable()
+        if _State.quit_held is not None:
+            snapshot["quitHeld"] = _State.quit_held
     _loaded(snapshot)
     if _State.stale is not None:
         snapshot["stale"] = True
@@ -508,6 +514,11 @@ def _handle(command):
             bpy.ops.wm.quit_blender()
         return
     if kind == "quit":
+        deadline = command.get("deadline")
+        if deadline is not None and time.time() * 1000 > deadline:
+            # T3 stopped waiting for it and told the person Blender stays open: so it does.
+            _send({"type": "quitExpired"})
+            return
         expected = command.get("filepath")
         if not command.get("save") and expected is not None and expected != bpy.data.filepath:
             # The person's discard named the file T3 last heard of; another is open now, whose
@@ -519,9 +530,13 @@ def _handle(command):
         # quit does; a discard or T3 stopping doesn't ask.
         held = _unkeepable() if command.get("hold") and not command.get("save") else None
         if held is not None:
+            _State.quit_held = held
             _send({"type": "quitFailed", "reason": held})
             return
         if not command.get("save"):
+            # A held quit leaves the grant to the agent until here, since Blender may stay open
+            # for it to save the images; this runs on the main thread, so no call slips between.
+            _end_grant()
             # T3 waits on this rather than stopping a Blender still writing its quit copy. It
             # carries the file and its unsaved bit as they are now, before the undo step below
             # (which always reads unsaved), as the run's last word on them.
@@ -543,8 +558,13 @@ def _handle(command):
                 unsaved = _save_images()
                 if unsaved:
                     # Nowhere to save them (no file, not packed): the person or agent decides.
+                    _State.quit_held = "images"
                     _send({"type": "quitFailed", "reason": "images", "images": unsaved})
                     return
+            if _changed_on_disk():
+                # A newer file can land while the images are written.
+                _send({"type": "quitFailed", "reason": "changedOnDisk"})
+                return
             _State.quit_saving = True
             try:
                 saved = _save()

@@ -2254,34 +2254,48 @@ describe("Endings and recovery", () => {
   );
 
   it.live(
-    "R3: a settle ends a Blender whose Save and quit never began, by its deadline, holding up no other thread",
+    "a quit or a settle Blender never answers leaves it running, past a Save and quit that never began, holding up no other thread",
     () =>
       Effect.gen(function* () {
-        const { dir, service, openReady } = yield* standIn("busy-settle", "busy-save");
-        NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
-        yield* openReady;
-        yield* service.open({ threadId: otherThreadId, relativePath: "other.blend" });
-        const ended = (id: ThreadId) =>
-          service.threadState(id).pipe(
+        const running = (service: HostedBlender.HostedBlender["Service"]) =>
+          Stream.runHead(service.threadState(threadId)).pipe(
+            Effect.map((state) => Option.getOrThrow(state).status),
+          );
+        const busySave = Effect.gen(function* () {
+          const { dir, service, openReady } = yield* standIn("busy-settle", "busy-save");
+          NodeFS.writeFileSync(NodePath.join(dir, "other.blend"), "");
+          yield* openReady;
+          yield* service.open({ threadId: otherThreadId, relativePath: "other.blend" });
+          const saving = yield* service
+            .quit({ threadId, save: true })
+            .pipe(Effect.flip, Effect.forkChild);
+          yield* fileAppears(dir, NodePath.join(dir, "saves.log"));
+          yield* service.closeOnSettle({ threadId });
+          // Settled meanwhile, the other thread's Blender closes with its copy at once.
+          yield* service.closeOnSettle({ threadId: otherThreadId });
+          const other = yield* service.threadState(otherThreadId).pipe(
             Stream.filter((state) => state.status !== "running" && state.status !== "starting"),
             Stream.runHead,
             Effect.map(Option.getOrThrow),
           );
-        const saving = yield* service
-          .quit({ threadId, save: true })
-          .pipe(Effect.flip, Effect.forkChild);
-        yield* fileAppears(dir, NodePath.join(dir, "saves.log"));
-        yield* service.closeOnSettle({ threadId });
-        // Settled meanwhile, the other thread's Blender closes with its copy at once.
-        yield* service.closeOnSettle({ threadId: otherThreadId });
-        expect(card(yield* ended(otherThreadId))).toMatchObject({
-          status: "closed",
-          relativePath: "other.blend",
+          expect(card(other)).toMatchObject({ status: "closed", relativePath: "other.blend" });
+          // The pane's quit, asked as the settle was, gives up at the same deadline.
+          expect((yield* service.quit({ threadId, save: false }).pipe(Effect.flip)).reason).toBe(
+            "noReply",
+          );
+          expect(yield* running(service)).toBe("running");
+          yield* Fiber.interrupt(saving);
         });
-        const stuck = yield* Stream.runHead(service.threadState(threadId));
-        expect(Option.getOrThrow(stuck).status).toBe("running");
-        yield* ended(threadId);
-        expect((yield* Fiber.join(saving)).reason).toBe("saveFailed");
+        const deaf = Effect.gen(function* () {
+          const { service, openReady } = yield* standIn("deaf-quit", "ignores-quit");
+          yield* openReady;
+          yield* service.closeOnSettle({ threadId });
+          expect((yield* service.quit({ threadId, save: false }).pipe(Effect.flip)).reason).toBe(
+            "noReply",
+          );
+          expect(yield* running(service)).toBe("running");
+        });
+        yield* Effect.all([busySave, deaf], { concurrency: "unbounded" });
       }).pipe(Effect.scoped),
   );
 
@@ -6473,10 +6487,21 @@ def control():
         if kind == "quitIfClean" and os.environ.get("STANDIN_QUIT_SILENT") == "1":
             # Busy: the quit waits in Blender, unanswered, until T3 cancels it.
             continue
+        if kind == "quit" and not command.get("save") and command.get("hold") and after == "holdsQuit":
+            # Unsaved image edits hold it, as the add-on does, and it says so until they're saved.
+            connection.sendall(b'{"type": "quitFailed", "reason": "images"}\n')
+            state(blend, quitHeld="images")
+            continue
         if kind == "quit" and not command.get("save"):
             # As the add-on does: its last word on the file, then Blender's quit copy.
             connection.sendall((json.dumps({"type": "quitting", "filepath": blend,
                                             "dirty": os.environ.get("STANDIN_DIRTY") == "1"}) + "\n").encode())
+            if after == "holdOnStop":
+                # Its connection drops at once, but it is gone only once the test says.
+                connection.shutdown(socket.SHUT_RDWR)
+                import time
+                while not os.path.exists(os.environ["STANDIN_ARGS"] + ".hold"):
+                    time.sleep(0.02)
             state_dir = sys.argv[sys.argv.index("--state-dir") + 1]
             os.makedirs(os.path.join(state_dir, "tmp"), exist_ok=True)
             open(os.path.join(state_dir, "tmp", "quit.blend"), "w").write("quit copy %d" % os.getpid())
@@ -6737,6 +6762,7 @@ describe("Agent access at launch", () => {
       | "otherFile"
       | "otherFileFirst"
       | "holdOnStop"
+      | "holdsQuit"
       | "offAfterSaved"
       | "untested"
       | "acting"
@@ -6949,17 +6975,21 @@ describe("Agent access at launch", () => {
 
   it.live("ends the agent's access when T3 closes its Blender, never as a lost connection", () =>
     Effect.gen(function* () {
-      const { service, controlLog, release, argsLog } = yield* launch(
-        { agentPort: 41234 },
+      const accessEnded = yield* Queue.unbounded<{
+        readonly threadId: ThreadId;
+        readonly role: HostedBlenderAgents.HostedBlenderRole;
+        readonly grant: string;
+      }>();
+      const { service, release } = yield* launch(
+        { agentPort: 41234, accessEnded },
         { agentWorkingCopy: true, edited: true },
         "holdOnStop",
       );
       expect((yield* service.agentListener(threadId))?.state).toBe("ready");
       yield* service.closeOnSettle({ threadId });
-      // The stop goes out first; Blender's connection drops as it closes, and T3, which has
-      // seen that by the time it asks the helper to stop Blender, still calls it revoked.
-      yield* fileAppears(NodePath.dirname(argsLog), `${argsLog}.stopping`);
-      expect(controlLog()).toContain("stopAgentListener");
+      // Blender says it is quitting, which ends the agent's access, and its connection drops as
+      // it closes: still revoked, never lost.
+      yield* Queue.take(accessEnded);
       expect((yield* service.agentListener(threadId, { wait: false }))?.ended).toBe("revoked");
       release();
       yield* service.threadState(threadId).pipe(
@@ -6967,6 +6997,31 @@ describe("Agent access at launch", () => {
         Stream.runHead,
       );
     }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "a held quit leaves the agent its access to save what holds it, and the pane says why",
+    () =>
+      Effect.gen(function* () {
+        const { service, controlLog } = yield* launch(
+          { agentPort: 41234 },
+          { agentWorkingCopy: true },
+          "holdsQuit",
+        );
+        expect((yield* service.agentListener(threadId))?.state).toBe("ready");
+        const held = yield* service.quit({ threadId, save: false }).pipe(Effect.flip);
+        expect(held.reason).toBe("unsavedImages");
+        expect(
+          (yield* service.agentGrant({ threadId, role: "working", session: "any" }))._tag,
+        ).toBe("granted");
+        expect(controlLog()).not.toContain("stopAgentListener");
+        const notice = yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status === "running" && state.quitHeld !== undefined),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        expect(notice).toMatchObject({ status: "running", quitHeld: "images" });
+      }).pipe(Effect.scoped),
   );
 
   it.live("Save and quit of the agent's Blender ends while Blender quits without waiting", () =>

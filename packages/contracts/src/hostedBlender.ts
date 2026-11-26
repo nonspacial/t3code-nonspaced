@@ -167,6 +167,8 @@ export const HostedBlenderRunningState = Schema.Struct({
   reloadKept: Schema.optionalKey(Schema.Struct({ key: Schema.String, at: Schema.Number })),
   /** The file changed on disk and Blender hasn't reloaded it, because of this. */
   reloadBlocked: Schema.optionalKey(HostedBlenderReloadBlocker),
+  /** A quit was held by these unsaved edits outside the .blend, which are still unsaved. */
+  quitHeld: Schema.optionalKey(Schema.Literals(["images", "catalogs"])),
 });
 export type HostedBlenderRunningState = typeof HostedBlenderRunningState.Type;
 

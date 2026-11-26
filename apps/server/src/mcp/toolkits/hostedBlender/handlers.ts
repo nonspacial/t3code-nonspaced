@@ -1,4 +1,5 @@
 import {
+  type HostedBlenderError,
   HostedBlenderToolError,
   type HostedBlenderKeptCopy,
   type HostedBlenderToolStatusResult,
@@ -235,20 +236,29 @@ const handlers = {
       const threadId = yield* requireHostedBlender;
       yield* refuseInPlanMode(threadId, "blender_quit");
       const hostedBlender = yield* HostedBlender.HostedBlender;
-      yield* hostedBlender.quit({ threadId, save: input.save }).pipe(
-        Effect.mapError(
-          (error) =>
-            new HostedBlenderToolError({
-              reason:
-                error.reason === "unsavedImages" && error.images !== undefined
-                  ? `${error.message} You can do that yourself: save each image to a file Blender can write (set its filepath_raw, then image.save()) or pack it (image.pack()), then call blender_quit with save: true again.`
-                  : error.message,
-            }),
-        ),
-      );
+      yield* hostedBlender
+        .quit({ threadId, save: input.save })
+        .pipe(
+          Effect.mapError((error) => new HostedBlenderToolError({ reason: quitRefusal(error) })),
+        );
       return {};
     }),
   ),
 } satisfies McpToolAccess.Handlers<typeof HostedBlenderToolkit.tools>;
+
+// Only the person can discard, so the agent is told what it can do instead.
+const quitRefusal = (error: HostedBlenderError) => {
+  const again = "then call blender_quit again.";
+  switch (error.reason) {
+    case "unsavedImages":
+      return error.images !== undefined
+        ? `${error.message} You can do that yourself: save each image to a file Blender can write (set its filepath_raw, then image.save()) or pack it (image.pack()), ${again}`
+        : `Blender has unsaved image edits, which quitting would lose: they live outside the .blend, so its recovery copy can't keep them. Blender stays open. Save each edited image to a file Blender can write (set its filepath_raw, then image.save()) or pack it (image.pack()), or reload one (image.reload()) to drop its edits, ${again} If the edits are the person's, ask them.`;
+    case "unsavedCatalogs":
+      return `Blender has unsaved asset catalog edits, which quitting would lose: they live outside the .blend, so its recovery copy can't keep them. Blender stays open. Ask the person to save or discard them in Blender's asset browser, or call blender_quit with save: true, which saves them with the .blend.`;
+    default:
+      return error.message;
+  }
+};
 
 export const layer = McpToolAccess.toLayer(HostedBlenderToolkit, handlers);
