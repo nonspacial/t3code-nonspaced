@@ -65,13 +65,16 @@ class _State:
     # Whether that window has Blender's Timeline in a strip under its 3D view.
     timeline = TIMELINE
     # Each viewport window this session opens is numbered; T3 says once the hidden display has
-    # captured that one, and the output's size it must fill (None: the whole output is streamed).
+    # captured that one, and the output's size it must fill, or "output" when the whole output
+    # is streamed. Until T3 has said which, the window waits whole.
     viewport_generation = 0
     viewport_shown = 0
     display = None
-    # The number announced for the next window, until T3 answers that it expects it.
+    # The number announced for the next window, until T3, if connected, answers that it expects it.
     viewport_wanted = None
     viewport_expected = 0
+    # The window opened while T3 wasn't connected, so T3 never expected it.
+    viewport_alone = False
     # The window is up and whole, waiting for T3's word before the strip.
     viewport_waiting = False
     # When Blender last loaded a file (open, revert, recover), epoch ms; T3 ignores autosaves
@@ -157,6 +160,7 @@ def _snapshot():
         "mcpVersion": _State.mcp_version,
         "viewport": _State.viewport_generation,
         "viewportWaiting": _State.viewport_waiting,
+        "viewportAlone": _State.viewport_alone,
     }
     if _State.restore is not None:
         snapshot["restore"] = _State.restore
@@ -443,7 +447,7 @@ def _handle(command):
             _State.viewport_shown = command.get("generation", 0)
         else:
             width, height = command.get("width"), command.get("height")
-            _State.display = (width, height) if width and height else None
+            _State.display = (width, height) if width and height else "output"
         # Applied on the viewport window's own pass, never in the pass that opens it.
         if not bpy.app.timers.is_registered(_open_viewport_window):
             bpy.app.timers.register(_open_viewport_window, first_interval=TICK)
@@ -943,13 +947,14 @@ def _open_viewport_window():
         _show_timeline(own[0], _State.timeline)
         return None
     _State.viewport_waiting = False
-    # Opened only once T3 expects it, so the capture T3 hears next is this window's.
     if _State.viewport_wanted is None:
         _State.viewport_generation += 1
         _State.viewport_wanted = _State.viewport_generation
         _publish_state()
-    if _State.viewport_expected != _State.viewport_wanted:
+    # With T3 connected, opened once it expects it, so the capture T3 hears next is this window's.
+    if _State.client is not None and _State.viewport_expected != _State.viewport_wanted:
         return TICK
+    _State.viewport_alone = _State.client is None
     _State.viewport_wanted = None
     areas = [area for area in window.screen.areas if area.type == "VIEW_3D"]
     if not areas:
@@ -974,9 +979,9 @@ def _open_viewport_window():
 def _viewport_settled(window):
     # The hidden display captured this window (T3 says so by its number) and made it fill the
     # output, which Blender sees as the window's own size.
-    if _State.viewport_shown != _State.viewport_generation:
+    if _State.viewport_shown != _State.viewport_generation or _State.display is None:
         return False
-    return _State.display is None or (window.width, window.height) == _State.display
+    return _State.display == "output" or (window.width, window.height) == _State.display
 
 
 def _show_timeline(window, shown):

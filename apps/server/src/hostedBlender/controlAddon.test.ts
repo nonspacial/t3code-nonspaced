@@ -356,7 +356,23 @@ if _scenario.get("connect", True):
     _tick()
     _steps.append(_report())
 _then = _scenario.get("then")
-if _then == "revoke":
+if _then == "settledWords":
+    # Whether the strip may go in, as T3's words arrive: the capture's word, then sizes.
+    import types as _types
+    _win = _types.SimpleNamespace(width=1280, height=720)
+    _State.viewport_generation = 1
+    _seen = [_viewport_settled(_win)]
+    for _word in (
+        {"type": "viewportShown", "generation": 1},
+        {"type": "display", "width": 800, "height": 600},
+        {"type": "display", "width": 1280, "height": 720},
+        {"type": "display", "width": None, "height": None},
+    ):
+        _handle(_word)
+        _seen.append(_viewport_settled(_win))
+    _steps.append(dict(settled=_seen))
+    _then = None
+elif _then == "revoke":
     _t3.sendall(b'{"type": "stopAgentListener"}\n')
     _tick()
 elif _then == "drop":
@@ -503,8 +519,8 @@ elif _then in (
     if RECOVER_PATH is not None:
         _recover()
     def _t3_pass():
-        # As T3 answers a window the add-on announced: it expects it.
-        if _State.viewport_wanted is not None:
+        # As a connected T3 answers a window the add-on announced: it expects it.
+        if _t3 is not None and _State.viewport_wanted is not None:
             _State.viewport_expected = _State.viewport_wanted
         return _open_viewport_window()
     # The timer runs until it returns None; a stuck close must not keep it going.
@@ -1559,6 +1575,27 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       viewports: 1,
       fresh: 1,
     });
+  });
+
+  it("S1: adds the strip only once T3 has said the capture's mode: a size the window fills, or the whole output", () => {
+    const result = runAddon({ installed: [], enabled: [], listen: false, then: "settledWords" });
+    expect(result.steps.find((step: object) => "settled" in step)).toEqual({
+      // Unknown, then captured but with no size yet, then a size it doesn't fill.
+      settled: [false, false, false, true, true],
+    });
+  });
+
+  it("S1: opens its viewport window without T3 connected", () => {
+    const result = runAddon({
+      installed: [],
+      enabled: [],
+      listen: false,
+      connect: false,
+      then: "replaceViewport",
+    });
+    expect(result.steps.find((step: object) => "fresh" in step && "windows" in step)).toMatchObject(
+      { fresh: 1 },
+    );
   });
 
   it("replaces its viewport window when the person closes it", () => {

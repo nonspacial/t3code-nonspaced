@@ -81,8 +81,10 @@ interface Host {
   readonly desktop?: DesktopBlender.DesktopBlender["Service"];
   /** The TCP tables a master's relay reads its clients' accounts from; the kernel's by default. */
   readonly tcpTables?: ReadonlyArray<string>;
-  /** Holds back telling Blender the hidden display has its viewport window. */
-  readonly viewportGate?: Effect.Effect<void>;
+  /** Runs after each settings read; a test holds one there. */
+  readonly afterSettingsRead?: Effect.Effect<void>;
+  /** Holds back T3's words to the add-on. */
+  readonly heldWords?: (word: "connected" | "viewportShown") => Effect.Effect<void>;
 }
 
 const blenderOnPath = (env: NodeJS.ProcessEnv) =>
@@ -101,19 +103,22 @@ const readinessFor = (host: Host): HostedBlenderSetup.HostedBlenderReadiness => 
 };
 
 /** Test settings whose writes reach `subscribeChanges`, which `layerTest` never streams. */
-const changingSettings = Layer.effect(
-  ServerSettings.ServerSettingsService,
-  Effect.gen(function* () {
-    const base = yield* ServerSettings.ServerSettingsService;
-    const changes = yield* PubSub.unbounded<Effect.Success<typeof base.getSettings>>();
-    return {
-      ...base,
-      updateSettings: (patch) =>
-        base.updateSettings(patch).pipe(Effect.tap((next) => PubSub.publish(changes, next))),
-      subscribeChanges: Effect.map(PubSub.subscribe(changes), Stream.fromSubscription),
-    };
-  }),
-).pipe(Layer.provide(ServerSettings.ServerSettingsService.layerTest()));
+const changingSettings = (afterRead: Effect.Effect<void> = Effect.void) =>
+  Layer.effect(
+    ServerSettings.ServerSettingsService,
+    Effect.gen(function* () {
+      const base = yield* ServerSettings.ServerSettingsService;
+      const changes = yield* PubSub.unbounded<Effect.Success<typeof base.getSettings>>();
+      return {
+        ...base,
+        // A read can be held after it has read, so what it read goes stale meanwhile.
+        getSettings: base.getSettings.pipe(Effect.tap(() => afterRead)),
+        updateSettings: (patch) =>
+          base.updateSettings(patch).pipe(Effect.tap((next) => PubSub.publish(changes, next))),
+        subscribeChanges: Effect.map(PubSub.subscribe(changes), Stream.fromSubscription),
+      };
+    }),
+  ).pipe(Layer.provide(ServerSettings.ServerSettingsService.layerTest()));
 
 const layerFor = (host: Host) =>
   HostedBlender.layer.pipe(
@@ -178,16 +183,16 @@ const layerFor = (host: Host) =>
       ),
     ),
     // Kept in the built context, so a test can switch settings as Settings would.
-    Layer.provideMerge(changingSettings),
+    Layer.provideMerge(changingSettings(host.afterSettingsRead)),
     Layer.provide(
       Layer.mergeAll(
         Layer.succeed(HostProcess.Platform, "linux"),
         host.tcpTables === undefined
           ? Layer.empty
           : Layer.succeed(LoopbackPeer.LoopbackTcpTables, host.tcpTables),
-        host.viewportGate === undefined
+        host.heldWords === undefined
           ? Layer.empty
-          : Layer.succeed(HostedBlender.ViewportShownGate, host.viewportGate),
+          : Layer.succeed(HostedBlender.HeldWords, host.heldWords),
         Layer.succeed(HostProcess.Environment, host.env),
         Layer.succeed(HostProcess.HomeDirectory, host.baseDir),
       ),
@@ -481,8 +486,23 @@ def control():
                     time.sleep(0.05)
                     open(os.path.join(folder, "poked"), "w").close()
         threading.Thread(target=ctrl_s, daemon=True).start()
-    for line in connection.makefile():
+    lines = connection.makefile()
+    for line in lines:
+        with open(os.environ["STANDIN_SAVES"] + ".control", "a") as log:
+            log.write(line)
         command = json.loads(line)
+        if command.get("type") == "quit" and not command.get("save") and os.environ.get("STANDIN_LINGER"):
+            # Read, then still reading a moment before answering: anything T3 sends after its
+            # quit lands here.
+            open(os.environ["STANDIN_SAVES"] + ".quitRead", "w").close()
+            connection.settimeout(0.5)
+            try:
+                for late in lines:
+                    with open(os.environ["STANDIN_SAVES"] + ".control", "a") as log:
+                        log.write(late)
+            except (socket.timeout, OSError):
+                pass
+            connection.settimeout(None)
         if command.get("type") == "panesHidden" and scenario == "reloads":
             with open(os.environ["STANDIN_SAVES"] + ".disk", "a") as log:
                 log.write(line)
@@ -718,7 +738,8 @@ const standIn = Effect.fn(function* (
   prefix: string,
   scenario: string,
   beforeThreadLookup?: () => Effect.Effect<void>,
-  host: Pick<Host, "readinessChanges" | "agentPort"> = {},
+  host: Pick<Host, "readinessChanges" | "agentPort" | "heldWords"> = {},
+  extraEnv: Readonly<Record<string, string>> = {},
 ) {
   const dir = yield* tempDir(prefix);
   const bin = fakeTools(dir);
@@ -747,6 +768,7 @@ const standIn = Effect.fn(function* (
       STANDIN_PID: pidFile,
       STANDIN_BIND: NodePath.join(dir, "bind"),
       STANDIN_MATRIX: NodePath.join(dir, "matrix.json"),
+      ...extraEnv,
     },
     helper: NodePath.join(bin, "helper"),
     workspaceRoot: dir,
@@ -1767,6 +1789,41 @@ describe("Endings and recovery", () => {
       });
       expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
     }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "S7: T3 sends Blender none of its window words once a quit is queued, so its last report is read",
+    () =>
+      Effect.gen(function* () {
+        // The words T3 sends on connecting are held until Blender has read the quit.
+        const folder = { path: "" };
+        const saves = () => NodePath.join(folder.path, "saves.log");
+        const { service, awaitStatus, hostedDir, dir } = yield* standIn(
+          "late-words",
+          "quit-dirty",
+          undefined,
+          {
+            heldWords: (word) =>
+              word === "connected" ? fileAppears(folder.path, `${saves()}.quitRead`) : Effect.void,
+          },
+          { STANDIN_LINGER: "1" },
+        );
+        folder.path = dir;
+        yield* service.open({ threadId, relativePath: "cube.blend" });
+        yield* awaitStatus("running");
+        yield* service.quit({ threadId, save: false });
+        expect(yield* firstState(service)).toEqual({
+          status: "closed",
+          relativePath: "cube.blend",
+          recovery: true,
+        });
+        expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
+        const sent = NodeFS.readFileSync(`${saves()}.control`, "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line).type);
+        expect(sent.slice(sent.indexOf("quit"))).toEqual(["quit"]);
+      }).pipe(Effect.scoped),
   );
 
   it.live("B1: a quit without saving that isn't the person's discard keeps their edits", () =>
@@ -4882,7 +4939,12 @@ scene.frame_set(1)`;
         helper: helperBuild,
         workspaceRoot: workspace,
         baseDir: dir,
-        ...(viewportGate === undefined ? {} : { viewportGate }),
+        ...(viewportGate === undefined
+          ? {}
+          : {
+              heldWords: (word: "connected" | "viewportShown") =>
+                word === "viewportShown" ? viewportGate : Effect.void,
+            }),
       }),
     );
     const service = Context.get(context, HostedBlender.HostedBlender);
@@ -5969,6 +6031,9 @@ def control():
         connection.sendall((json.dumps({"type": "state", "filepath": filepath, "dirty": dirty,
                                         "agentListener": listener[0], **extra}) + "\n").encode())
     after = os.environ.get("STANDIN_AFTER")
+    if after == "echoTimeline":
+        # As the add-on greets T3, which sends its words on connecting once it reads this.
+        connection.sendall((json.dumps({"type": "hello", "pid": os.getpid()}) + "\n").encode())
     # Another file already open by the time T3 hears, claiming its listener is ready.
     if after == "otherFileFirst":
         listener[0] = "ready"
@@ -6197,6 +6262,88 @@ describe("The Timeline switch", () => {
       );
       expect(args()).not.toContain("--t3-timeline");
       expect((yield* settings.getSettings).hostedBlenderTimeline).toBe(false);
+    }).pipe(Effect.scoped),
+  );
+});
+
+describe("The Timeline switch, one word at a time", () => {
+  it.live("S6: a read overtaken by a newer switch never leaves Blender on the older one", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("timeline-order");
+      const bin = fakeTools(dir);
+      NodeFS.writeFileSync(NodePath.join(bin, "helper"), `#!${python}\n${ARGS_HELPER}`, {
+        mode: 0o755,
+      });
+      const runtime = NodePath.join(dir, "run");
+      NodeFS.mkdirSync(runtime);
+      NodeFS.writeFileSync(NodePath.join(dir, "cube.blend"), "");
+      const argsLog = NodePath.join(dir, "args.log");
+      const gate = NodePath.join(dir, "control-gate");
+      // Reads pass until armed; armed, the next one waits after reading until released.
+      const armed = {
+        hold: null as Deferred.Deferred<void> | null,
+        reached: yield* Deferred.make<void>(),
+      };
+      const afterSettingsRead = Effect.suspend(() => {
+        const hold = armed.hold;
+        if (hold === null) return Effect.void;
+        armed.hold = null;
+        return Deferred.succeed(armed.reached, undefined).pipe(
+          Effect.andThen(Deferred.await(hold)),
+        );
+      });
+      const context = yield* Layer.build(
+        layerFor({
+          env: {
+            PATH: bin,
+            XDG_RUNTIME_DIR: runtime,
+            STANDIN_ARGS: argsLog,
+            STANDIN_AFTER: "echoTimeline",
+            STANDIN_CONTROL_GATE: gate,
+          },
+          helper: NodePath.join(bin, "helper"),
+          workspaceRoot: dir,
+          baseDir: dir,
+          afterSettingsRead,
+        }),
+      );
+      const service = Context.get(context, HostedBlender.HostedBlender);
+      const settings = Context.get(context, ServerSettings.ServerSettingsService);
+      const words = () =>
+        (NodeFS.existsSync(`${argsLog}.control`)
+          ? NodeFS.readFileSync(`${argsLog}.control`, "utf8")
+          : ""
+        )
+          .split("\n")
+          .filter((line) => line.includes('"timeline"'))
+          .map((line) => JSON.parse(line).shown);
+
+      // Launched on; switched off before T3 reaches Blender.
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* fileAppears(dir, argsLog);
+      expect(NodeFS.readFileSync(argsLog, "utf8")).toContain("--t3-timeline");
+      yield* settings.updateSettings({ hostedBlenderTimeline: false });
+      // T3's read on connecting sees off, and is held there.
+      const hold = yield* Deferred.make<void>();
+      armed.hold = hold;
+      NodeFS.writeFileSync(gate, "");
+      yield* Deferred.await(armed.reached);
+      // A newer switch on arrives meanwhile; then the held read goes on.
+      yield* settings.updateSettings({ hostedBlenderTimeline: true });
+      // A path that writes it at once does so now, ahead of the held one; one ordered path holds
+      // it behind, so this wait runs out.
+      yield* fileAppears(dir, `${argsLog}.control`, () => words().includes(true)).pipe(
+        Effect.timeoutOption("1 second"),
+      );
+      yield* Deferred.succeed(hold, undefined);
+      // Blender answers each word with its state; its last answer is the setting's.
+      yield* fileAppears(dir, `${argsLog}.control`, () => words().at(-1) === true);
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "running" && !state.dirty),
+        Stream.runHead,
+      );
+      expect(words().at(-1)).toBe(true);
+      expect((yield* settings.getSettings).hostedBlenderTimeline).toBe(true);
     }).pipe(Effect.scoped),
   );
 });

@@ -131,10 +131,10 @@ export const LeftoverSignal = Context.Reference<(pid: number, signal: NodeJS.Sig
   },
 );
 /** What the add-on waits for before splitting a viewport window; tests hold it back. */
-export const ViewportShownGate = Context.Reference<Effect.Effect<void>>(
-  "t3/hostedBlender/ViewportShownGate",
-  { defaultValue: () => Effect.void },
-);
+/** Holds back T3's words to the add-on, on connecting or when a viewport shows; tests use it. */
+export const HeldWords = Context.Reference<
+  (word: "connected" | "viewportShown") => Effect.Effect<void>
+>("t3/hostedBlender/HeldWords", { defaultValue: () => () => Effect.void });
 // A desktop Blender that doesn't answer by then counts as one T3 couldn't ask.
 const DESKTOP_PROBE_DEADLINE = Duration.seconds(8);
 // A start that shows no viewport window by then has failed (a broken file, no encoder).
@@ -172,6 +172,8 @@ const ControlMessage = Schema.Union([
     viewport: Schema.optional(Schema.Int),
     /** That window is up and whole, waiting for T3's word that the hidden display has it. */
     viewportWaiting: Schema.optional(Schema.Boolean),
+    /** It opened while T3 wasn't connected, so T3 never expected it. */
+    viewportAlone: Schema.optional(Schema.Boolean),
     /** The file on disk changed since Blender read or saved it. */
     stale: Schema.optional(Schema.Boolean),
     /** What holds the reload of a stale file. */
@@ -641,8 +643,13 @@ interface Instance {
    * since T3 told the add-on to open it, and whether the add-on has been told so.
    */
   shownViewport: { readonly generation: number; captured: boolean; shown: boolean } | null;
-  /** The Timeline switch as this launch passed it to Blender. */
-  launchTimeline: boolean;
+  /** The Timeline switch as Blender last heard it, from its launch or T3's last word. */
+  sentTimeline: boolean;
+  /** Words that shape Blender's window go out one at a time, and none once a quit is queued. */
+  readonly words: Semaphore.Semaphore;
+  wordsClosed: boolean;
+  /** The hidden display holds a window: captured, and not closed since. */
+  captureLive: boolean;
   lastKeyframeRequest: number;
   /** A keyframe request is waiting out the throttle. */
   keyframeDeferred: boolean;
@@ -820,7 +827,7 @@ const make = Effect.gen(function* () {
   >();
   const serviceScope = yield* Effect.scope;
   const signalProcess = yield* LeftoverSignal;
-  const viewportShownGate = yield* ViewportShownGate;
+  const heldWords = yield* HeldWords;
   // Runs live here, so on shutdown they are ended with recovery copies before it closes.
   const runScope = yield* Scope.fork(serviceScope);
   let screenshots = 0;
@@ -1640,6 +1647,7 @@ const make = Effect.gen(function* () {
         return;
       }
       case "windowCaptured":
+        instance.captureLive = true;
         if (instance.shownViewport !== null) instance.shownViewport.captured = true;
         yield* viewportShown(instance);
         return yield* markRunning(instance);
@@ -1667,25 +1675,77 @@ const make = Effect.gen(function* () {
         return yield* broadcast(instance, { type: "cursor", captured });
       }
       case "windowClosed":
+        instance.captureLive = false;
         if (instance.shownViewport?.shown === false) instance.shownViewport.captured = false;
         return;
     }
   });
 
-  // Running once Blender shows its viewport window and any restore asked for has succeeded.
-  // The add-on opens a viewport window only once T3 expects it (it closes every other one first),
-  // so the capture T3 hears after that is this window's; it splits the window once T3 says so and
-  // the window fills the output, which it checks itself. Both words are safe to send again.
-  const expectViewport = Effect.fnUntraced(function* (instance: Instance, generation: number) {
+  /**
+   * A word that shapes Blender's window (Timeline, display, viewport), made when it is written.
+   * One at a time, so a stale one can't follow a newer one; never once a quit is queued, which a
+   * Blender that closes with it unread answers by dropping its last report.
+   */
+  const sendWord = (
+    instance: Instance,
+    make: Effect.Effect<string | null>,
+    onSent: () => void = () => undefined,
+  ) =>
+    instance.words.withPermits(1)(
+      Effect.gen(function* () {
+        const line = yield* make;
+        const control = instance.control;
+        if (line === null || control === null || instance.wordsClosed) return false;
+        yield* control.write(line);
+        onSent();
+        return true;
+      }),
+    );
+
+  // The setting as it is when written, only if Blender last heard otherwise on this connection.
+  const sendTimeline = (instance: Instance) => {
+    let shown = instance.sentTimeline;
+    return sendWord(
+      instance,
+      Effect.map(timelineShown, (current) => {
+        shown = current;
+        return current === instance.sentTimeline ? null : timelineCommand(current);
+      }),
+      () => {
+        instance.sentTimeline = shown;
+      },
+    );
+  };
+
+  const sendDisplay = (instance: Instance) =>
+    sendWord(
+      instance,
+      Effect.sync(() => {
+        if (instance.stats === null) return null;
+        const output = instance.stats.target === "window" ? instance.output : null;
+        return `${encodeDisplay({ type: "display", width: output?.width ?? null, height: output?.height ?? null })}\n`;
+      }),
+    );
+
+  // While connected, the add-on opens a viewport window only once T3 expects it, so the capture
+  // T3 hears next is that window's: every window with its title is made fullscreen, so the
+  // window's size alone can't say which one the helper selected.
+  const expectViewport = Effect.fnUntraced(function* (
+    instance: Instance,
+    generation: number,
+    opened: boolean,
+  ) {
     instance.shownViewport = {
       generation,
-      // Streaming the whole output, there's no capture to wait for.
-      captured: instance.stats?.target === "output",
+      // Streaming the whole output, there's no capture to wait for; a window opened before T3
+      // could expect it is the one a capture live now holds.
+      captured: instance.stats?.target === "output" || (opened && instance.captureLive),
       shown: false,
     };
-    if (instance.control) {
-      yield* instance.control.write(
-        `${encodeViewportWord({ type: "viewportExpected", generation })}\n`,
+    if (!opened) {
+      yield* sendWord(
+        instance,
+        Effect.succeed(`${encodeViewportWord({ type: "viewportExpected", generation })}\n`),
       );
     }
     yield* viewportShown(instance);
@@ -1693,28 +1753,22 @@ const make = Effect.gen(function* () {
 
   const viewportShown = Effect.fnUntraced(function* (instance: Instance, again = false) {
     const shown = instance.shownViewport;
-    const control = instance.control;
-    if (shown === null || !shown.captured || (shown.shown && !again) || control === null) return;
-    yield* viewportShownGate.pipe(
+    if (shown === null || !shown.captured || (shown.shown && !again)) return;
+    yield* heldWords("viewportShown").pipe(
       Effect.andThen(
-        control.write(
-          `${encodeViewportWord({ type: "viewportShown", generation: shown.generation })}\n`,
+        sendWord(
+          instance,
+          Effect.succeed(
+            `${encodeViewportWord({ type: "viewportShown", generation: shown.generation })}\n`,
+          ),
         ),
       ),
-      Effect.andThen(
+      Effect.tap((sent) =>
         Effect.sync(() => {
-          shown.shown = true;
+          if (sent) shown.shown = true;
         }),
       ),
       Effect.forkIn(serviceScope),
-    );
-  });
-
-  const sendDisplay = Effect.fnUntraced(function* (instance: Instance) {
-    if (!instance.control || instance.stats === null) return;
-    const output = instance.stats.target === "window" ? instance.output : null;
-    yield* instance.control.write(
-      `${encodeDisplay({ type: "display", width: output?.width ?? null, height: output?.height ?? null })}\n`,
     );
   });
 
@@ -2098,14 +2152,17 @@ const make = Effect.gen(function* () {
         if (control === null) return;
         // Beside the reader, which a write to a Blender already gone must not hold up.
         return yield* Effect.gen(function* () {
-          // Switched since the launch passed it.
-          const shown = yield* timelineShown;
-          if (shown !== instance.launchTimeline) yield* control.write(timelineCommand(shown));
+          yield* heldWords("connected");
+          yield* sendTimeline(instance);
           yield* sendDisplay(instance);
           // Words a connection before this one may not have carried.
-          if (instance.shownViewport !== null) {
-            yield* control.write(
-              `${encodeViewportWord({ type: "viewportExpected", generation: instance.shownViewport.generation })}\n`,
+          const viewport = instance.shownViewport;
+          if (viewport !== null) {
+            yield* sendWord(
+              instance,
+              Effect.succeed(
+                `${encodeViewportWord({ type: "viewportExpected", generation: viewport.generation })}\n`,
+              ),
             );
             yield* viewportShown(instance, true);
           }
@@ -2114,7 +2171,7 @@ const make = Effect.gen(function* () {
       case "state": {
         const generation = message.value.viewport ?? 0;
         if (generation > 0 && instance.shownViewport?.generation !== generation) {
-          yield* expectViewport(instance, generation);
+          yield* expectViewport(instance, generation, message.value.viewportAlone === true);
         } else if (message.value.viewportWaiting === true) {
           // Still whole and waiting: T3's word may not have reached it.
           yield* viewportShown(instance, true);
@@ -2249,6 +2306,7 @@ const make = Effect.gen(function* () {
         return yield* publishNow();
       }
       case "discardRefused":
+        instance.wordsClosed = false;
         if (instance.discardRefused) yield* Deferred.succeed(instance.discardRefused, undefined);
         return;
       case "saving":
@@ -2612,7 +2670,7 @@ const make = Effect.gen(function* () {
               recover: instance.recover,
               revision,
               mcpListen: agentPort !== null,
-              timeline: (instance.launchTimeline = yield* timelineShown),
+              timeline: (instance.sentTimeline = yield* timelineShown),
               ...(mcpSnapshot === null ? {} : { mcpSnapshot }),
               // Plan mode is read-only, whatever the runtime mode. A master serves threads of
               // any mode, so its embedded scripts never run.
@@ -2875,7 +2933,10 @@ const make = Effect.gen(function* () {
       viewport: null,
       output: null,
       shownViewport: null,
-      launchTimeline: true,
+      sentTimeline: true,
+      words: yield* Semaphore.make(1),
+      wordsClosed: false,
+      captureLive: false,
       lastKeyframeRequest: Number.NEGATIVE_INFINITY,
       keyframeDeferred: false,
       controlDir: null,
@@ -3229,6 +3290,7 @@ const make = Effect.gen(function* () {
     );
     const control = instance.control;
     if (Option.isNone(connected) || control === null) return false;
+    instance.wordsClosed = true;
     yield* control
       .write(
         `${encodeControlCommand({ type: "quit", save: false, ...(filepath === undefined ? {} : { filepath }) })}\n`,
@@ -3373,12 +3435,8 @@ const make = Effect.gen(function* () {
   yield* settingsChanges.pipe(
     Stream.map((value) => value.hostedBlenderTimeline),
     Stream.changes,
-    Stream.runForEach((shown) =>
-      Effect.forEach(
-        [...instances.values()],
-        (instance) => instance.control?.write(timelineCommand(shown)) ?? Effect.void,
-        { discard: true },
-      ),
+    Stream.runForEach(() =>
+      Effect.forEach([...instances.values()], sendTimeline, { discard: true }),
     ),
     Effect.forkIn(serviceScope),
   );
@@ -3507,13 +3565,17 @@ const make = Effect.gen(function* () {
       // the file as saved over the copy's changes: checked right before the save goes out.
       if (instance.restore === "pending" || instance.restore === "failed") return false;
       instance.saveReplies = replies;
-      return yield* requestSave({
+      instance.wordsClosed = true;
+      const saved = yield* requestSave({
         connection,
         replies,
         ended: Deferred.await(instance.ended),
         command: `${encodeControlCommand({ type: "quit", save: true })}\n`,
         writeTimeout: CONTROL_REPLY_TIMEOUT,
       });
+      // Not saved, Blender stays open.
+      if (!saved) instance.wordsClosed = false;
+      return saved;
     },
     (effect, instance) =>
       effect.pipe(
@@ -4090,6 +4152,7 @@ const make = Effect.gen(function* () {
     const refused = yield* Deferred.make<void>();
     instance.quitRefused = { id, done: refused };
     instance.quitting = true;
+    instance.wordsClosed = true;
     const ended = Deferred.await(instance.ended).pipe(Effect.as<QuitOutcome>("quit"));
     // The write is part of the attempt: a stalled socket counts against its deadline.
     const outcome = yield* control
@@ -4102,7 +4165,10 @@ const make = Effect.gen(function* () {
       );
     instance.quitRefused = null;
     if (Option.isSome(outcome)) {
-      if (outcome.value !== "quit") instance.quitting = false;
+      if (outcome.value !== "quit") {
+        instance.quitting = false;
+        instance.wordsClosed = false;
+      }
       return outcome.value;
     }
     // No answer in time: the request may still be waiting in a busy Blender. The leave ends
