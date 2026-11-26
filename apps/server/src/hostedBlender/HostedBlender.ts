@@ -2096,18 +2096,20 @@ const make = Effect.gen(function* () {
         // lose a quick quit's answer.
         const control = instance.control;
         if (control === null) return;
-        // Switched since the launch passed it.
-        const shown = yield* timelineShown;
-        if (shown !== instance.launchTimeline) yield* control.write(timelineCommand(shown));
-        yield* sendDisplay(instance);
-        // Words a connection before this one may not have carried.
-        if (instance.shownViewport !== null) {
-          yield* control.write(
-            `${encodeViewportWord({ type: "viewportExpected", generation: instance.shownViewport.generation })}\n`,
-          );
-          yield* viewportShown(instance, true);
-        }
-        return;
+        // Beside the reader, which a write to a Blender already gone must not hold up.
+        return yield* Effect.gen(function* () {
+          // Switched since the launch passed it.
+          const shown = yield* timelineShown;
+          if (shown !== instance.launchTimeline) yield* control.write(timelineCommand(shown));
+          yield* sendDisplay(instance);
+          // Words a connection before this one may not have carried.
+          if (instance.shownViewport !== null) {
+            yield* control.write(
+              `${encodeViewportWord({ type: "viewportExpected", generation: instance.shownViewport.generation })}\n`,
+            );
+            yield* viewportShown(instance, true);
+          }
+        }).pipe(Effect.forkIn(serviceScope), Effect.asVoid);
       }
       case "state": {
         const generation = message.value.viewport ?? 0;
