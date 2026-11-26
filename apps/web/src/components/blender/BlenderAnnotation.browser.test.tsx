@@ -122,6 +122,7 @@ const capture: HostedBlenderViewCapture = {
     matrix: Array.from({ length: 16 }, (_, index) => (index % 5 === 0 ? 1 : 0)),
     region: { x: 0.05, y: 0.1, width: 0.9, height: 0.85 },
   },
+  scene: "launch:1",
 };
 
 function pane() {
@@ -197,12 +198,11 @@ it("freezes the pane's frame and attaches the viewport window's camera and what 
   expect(blender.draft()?.images.map((image) => image.id)).toEqual([annotation.id]);
 });
 
-it("links to the file Blender rendered, opened since it started, and asks for hits on that load", async () => {
+it("links to the file Blender rendered, opened since it started", async () => {
   const blender = setup("thread-blender-other-file", "window");
   commands.captureView.mockReset().mockResolvedValue({
     ...capture,
     openFile: { kind: "workspace", relativePath: "models/other.blend" },
-    loadedAt: 7,
   });
   await using screen = await render(blender.element, pane());
   await annotateRegion(screen);
@@ -210,7 +210,6 @@ it("links to the file Blender rendered, opened since it started, and asks for hi
   const annotation = blender.draft()!.previewAnnotations[0]!;
   expect(annotation.pageTitle).toBe("other.blend · Master");
   expect(annotation.pageUrl.startsWith("models/other.blend#view=")).toBe(true);
-  expect(commands.findHits.mock.calls[0]?.[0]).toMatchObject({ input: { loadedAt: 7 } });
 });
 
 it("asks Blender what an arrow points at first, from its tip", async () => {

@@ -12,10 +12,7 @@ import { markSamples, modelAnnotationPayload } from "../files/modelAnnotation";
 
 const WORKING_COPY = /\.wip-[^/.]+\.blend$/i;
 
-export type BlenderHitsRequest = Pick<
-  HostedBlenderFindHitsInput,
-  "projection" | "marks" | "loadedAt"
->;
+export type BlenderHitsRequest = Pick<HostedBlenderFindHitsInput, "projection" | "marks" | "scene">;
 
 /**
  * "hero.wip-a1b2.blend · Working copy", or "· Master" for any other file. Working copies are
@@ -59,7 +56,7 @@ export async function blenderAnnotationPayload(input: {
       ? await input.findHits({
           projection: capture.projection,
           marks,
-          ...(capture.loadedAt === undefined ? {} : { loadedAt: capture.loadedAt }),
+          scene: capture.scene,
         })
       : null;
   const linkPath =

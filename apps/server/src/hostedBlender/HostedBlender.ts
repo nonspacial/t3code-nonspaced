@@ -413,7 +413,7 @@ const ControlRequest = Schema.Union([
     type: Schema.Literal("hits"),
     id: Schema.Int,
     ...HostedBlenderViewProjection.fields,
-    loadedAt: HostedBlenderFindHitsInput.fields.loadedAt,
+    scene: HostedBlenderFindHitsInput.fields.scene,
     marks: HostedBlenderFindHitsInput.fields.marks,
   }),
   Schema.Struct({
@@ -4047,14 +4047,13 @@ const make = Effect.gen(function* () {
   });
 
   const findHits: HostedBlender["Service"]["findHits"] = Effect.fn("HostedBlender.findHits")(
-    function* ({ threadId, projection, marks, role, loadedAt }) {
+    function* ({ threadId, projection, marks, role, scene }) {
       yield* Effect.annotateCurrentSpan({ threadId, marks: marks.length, role });
       const instance = instanceFor(threadId, role);
       if (instance === undefined) return yield* new HostedBlenderError({ reason: "notRunning" });
-      const load = loadedAt === undefined ? {} : { loadedAt };
       return yield* ask(
         instance,
-        { type: "hits", ...projection, ...load, marks },
+        { type: "hits", ...projection, scene, marks },
         HostedBlenderHits,
         {
           slot: instance.hitsLock,

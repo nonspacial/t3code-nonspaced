@@ -615,7 +615,7 @@ def control():
             def slow_view(command):
                 time.sleep(0.3)
                 shot = view_reply(command)
-                reply = {"screenshot": shot, "cameraView": {**view, "upAxis": "z"},
+                reply = {"screenshot": shot, "scene": "launch:7", "cameraView": {**view, "upAxis": "z"},
                          "projection": {"matrix": [1] * 16,
                                         "region": {"x": 0, "y": 0, "width": 1, "height": 1}}}
                 connection.sendall((json.dumps({"type": "reply", "id": command["id"], "result": reply}) + "\n").encode())
@@ -623,8 +623,8 @@ def control():
             continue
         elif kind == "view":
             result = {"screenshot": view_reply(command),
-                      # The file it has open, by its path as given, and when it loaded it.
-                      "filepath": opened, "loadedAt": 7.0,
+                      # The file it has open, by its path as given, and the scene it drew.
+                      "filepath": opened, "scene": "launch:7",
                       "cameraView": {**view, "upAxis": "z"},
                       "projection": {"matrix": [2] + [0] * 15,
                                      "region": {"x": 0.1, "y": 0.05, "width": 0.8, "height": 0.9}}}
@@ -2840,13 +2840,13 @@ describe("The viewport window", () => {
           region: { x: 0.1, y: 0.05, width: 0.8, height: 0.9 },
         },
         // What the picture is of, which the annotation links to and its hits are checked against.
-        loadedAt: 7,
+        scene: "launch:7",
         openFile: { kind: "workspace", relativePath: "cube.blend" },
       });
       const hits = yield* service.findHits({
         threadId,
         projection: capture.projection,
-        loadedAt: 7,
+        scene: capture.scene,
         marks: [[{ x: 0.5, y: 0.25 }], []],
       });
       assert.deepStrictEqual(hits, [{ object: "m2", point: [0.5, 0.25, 2] }, null]);
@@ -2855,7 +2855,7 @@ describe("The viewport window", () => {
         .filter(Boolean)
         .map((line) => JSON.parse(line))
         .find((command) => command.type === "hits");
-      expect(asked).toMatchObject({ loadedAt: 7 });
+      expect(asked).toMatchObject({ scene: "launch:7" });
       expect(
         NodeFS.readdirSync(runtime, { recursive: true }).filter((name) =>
           String(name).endsWith(".png"),
@@ -2956,7 +2956,7 @@ describe("The viewport window", () => {
       };
       const results = yield* Effect.all(
         Array.from({ length: 3 }, () =>
-          service.findHits({ threadId, projection, marks: [[{ x: 0.5, y: 0.5 }]] }),
+          service.findHits({ threadId, projection, scene: "s", marks: [[{ x: 0.5, y: 0.5 }]] }),
         ),
         { concurrency: "unbounded" },
       );
@@ -2978,6 +2978,7 @@ describe("The viewport window", () => {
           matrix: Array.from({ length: 16 }, () => 0),
           region: { x: 0, y: 0, width: 1, height: 1 },
         },
+        scene: "s",
         marks: [[{ x: 0.5, y: 0.5 }]],
       };
       // The stand-in answers after 0.3 s; this caller stops waiting long before that.
@@ -4384,7 +4385,7 @@ print("T3-RESULT", json.dumps({
     }
   });
 
-  it("holds a quit that asks while an image is edited, and finds no hits on a load the screenshot isn't of", () => {
+  it("holds a quit that asks while an image is edited, and names the scene anew once it changes", () => {
     // A background Blender of the test's own, settings and temporary files in its folder.
     const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-hosted-blender-hold-"));
     try {
@@ -4403,18 +4404,21 @@ image = bpy.data.images.new("paint", 4, 4)
 image.pixels[0] = 0.5
 dirty = image.is_dirty
 _handle({"type": "quit", "save": False, "hold": True})
-# Background Blender has no viewport: whether hits looked for one says whether they went ahead.
-looked = []
-_viewport = lambda: looked.append(True)
-_State.loaded_at = 2.0
-hits = {"matrix": [0] * 16, "region": {}, "marks": [[]]}
-_hits({**hits, "loadedAt": 1.0})
-other_load = len(looked)
-_hits({**hits, "loadedAt": 2.0})
+scene = bpy.context.scene
+# The image made above is still to be evaluated.
+scene.view_layers[0].update()
+names = [_scene_identity(scene)]
+scene.view_layers[0].update()
+names.append(_scene_identity(scene))
+bpy.data.objects["Cube"].location.x += 1
+scene.view_layers[0].update()
+names.append(_scene_identity(scene))
+scene.frame_set(scene.frame_current + 1)
+names.append(_scene_identity(scene))
 print("T3-RESULT", json.dumps({
     "dirty": dirty,
     "sent": sent,
-    "looked": [other_load, len(looked)],
+    "names": [names[0] == names[1], len(set(names[1:]))],
 }))`,
         ],
         {
@@ -4433,7 +4437,8 @@ print("T3-RESULT", json.dumps({
       expect(JSON.parse(line!.slice("T3-RESULT ".length))).toEqual({
         dirty: true,
         sent: [{ type: "quitFailed", reason: "images" }],
-        looked: [0, 1],
+        // An update with nothing changed names the same scene; an edit or another frame doesn't.
+        names: [true, 3],
       });
     } finally {
       NodeFS.rmSync(dir, { recursive: true, force: true });
@@ -4707,12 +4712,16 @@ print("T3-RESULT", json.dumps({
         expect(value).toBeCloseTo([6, -6, 5][index]!, 3),
       );
       capture.cameraView.target.forEach((value) => expect(value).toBeCloseTo(0, 3));
+      // The orbit and the view link moved only the view, which leaves the scene the hits are
+      // cast in as it was captured.
+      expect(capture.scene).toBe(throughCamera.scene);
       const { region } = capture.projection;
       // The factory scene's cube sits at the origin, in the middle of the 3D view; a corner of
       // the view looks past it at nothing.
       const hits = yield* service.findHits({
         threadId,
         projection: capture.projection,
+        scene: capture.scene,
         marks: [
           [{ x: region.x + region.width / 2, y: region.y + region.height / 2 }],
           [{ x: region.x + region.width * 0.02, y: region.y + region.height * 0.02 }],
@@ -5450,12 +5459,8 @@ scene.frame_set(1)`;
           view.region!.width,
           view.region!.height,
         ]);
-        const centre = (projection: typeof capture.projection) =>
-          service.findHits({
-            threadId,
-            projection,
-            marks: [[{ x: 0.5, y: 0.5 }]],
-          });
+        const centre = ({ projection, scene }: typeof capture) =>
+          service.findHits({ threadId, projection, scene, marks: [[{ x: 0.5, y: 0.5 }]] });
         // A link's view frames the 3D view, and a mark in its middle finds the cube.
         yield* service.setView({
           threadId,
@@ -5466,7 +5471,7 @@ scene.frame_set(1)`;
         framed.cameraView.position.forEach((value, index) =>
           expect(value).toBeCloseTo([0, -12, 1][index]!, 3),
         );
-        expect((yield* centre(framed.projection))[0]?.object).toBe("Cube");
+        expect((yield* centre(framed))[0]?.object).toBe("Cube");
 
         // In control, a drag along the strip scrubs, and the 3D view follows: the cube rises
         // out of the middle of the view.
@@ -5485,7 +5490,7 @@ scene.frame_set(1)`;
         const scrubbed = yield* layoutWhen((layout) => layout.frame > 10);
         expect(scrubbed.frame).toBeLessThanOrEqual(100);
         const risen = yield* service.captureView(threadId);
-        expect((yield* centre(risen.projection))[0]?.object ?? null).toBeNull();
+        expect((yield* centre(risen))[0]?.object ?? null).toBeNull();
 
         // The wheel over the strip reaches the Timeline: Ctrl+wheel moves its frame range.
         const span = (layout: Layout) => layout.windows[0]!.areas[1]!.frames!;
