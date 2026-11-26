@@ -488,6 +488,14 @@ def _handle(command):
             # changes they never chose to lose.
             _send({"type": "discardRefused"})
             return
+        # What T3 keeps is the .blend: edits outside it would be lost, so Blender stays open
+        # until they are saved. A save saves the catalogs; a discard or T3 stopping doesn't ask.
+        held = _unkeepable() if command.get("hold") else None
+        if held == "catalogs" and command.get("save"):
+            held = None
+        if held is not None:
+            _send({"type": "quitFailed", "reason": held})
+            return
         if not command.get("save"):
             # T3 waits on this rather than stopping a Blender still writing its quit copy. It
             # carries the file and its unsaved bit as they are now, before the undo step below
@@ -503,8 +511,9 @@ def _handle(command):
                 # What Blender read would be written over the newer file; nothing is saved.
                 _send({"type": "quitFailed", "reason": "changedOnDisk"})
                 return
-            # Answered before the save, which blocks Blender for as long as a big file takes.
-            _send({"type": "saving"})
+            # Answered before the save, which blocks Blender for as long as a big file takes. It
+            # names the file, which Blender can't change until the save is over.
+            _send({"type": "saving", "filepath": bpy.data.filepath})
             _State.quit_saving = True
             try:
                 saved = _save()
@@ -1222,6 +1231,15 @@ def _unstage(name):
             pass
 
 
+def _unkeepable():
+    # Edited images and asset catalogs live outside the .blend, where no copy could keep them.
+    if any(image.is_dirty for image in bpy.data.images):
+        return "images"
+    if _State.catalogs_unsaved:
+        return "catalogs"
+    return None
+
+
 def _reload_if_stale():
     # Jumps to the file on disk once T3 saw it settle and it hasn't moved since. Returns None once
     # current, "changing" while it is being written again, or what holds the reload.
@@ -1237,12 +1255,9 @@ def _reload_if_stale():
     if any(record["writes"] for record in _Guard.deferred):
         _State.blocked = "agentWork"
         return _State.blocked
-    # Edited images and asset catalogs live outside the .blend, where no copy could keep them.
-    if any(image.is_dirty for image in bpy.data.images):
-        _State.blocked = "images"
-        return _State.blocked
-    if _State.catalogs_unsaved:
-        _State.blocked = "catalogs"
+    unkeepable = _unkeepable()
+    if unkeepable is not None:
+        _State.blocked = unkeepable
         return _State.blocked
     copy = None
     if bpy.data.is_dirty or _State.restored:
@@ -1319,9 +1334,8 @@ def _restore_copy(command):
     # over unsaved work unasked; asked, that work is kept first as the file's copy.
     if bpy.data.filepath != command.get("filepath"):
         return {"outcome": "otherFile"}
-    # Edited images and asset catalogs live outside the .blend: no copy keeps them, and the load
-    # drops them.
-    if _State.catalogs_unsaved or any(image.is_dirty for image in bpy.data.images):
+    # The load would drop them.
+    if _unkeepable() is not None:
         return {"outcome": "unkeepable"}
     unsaved = bpy.data.is_dirty or _State.restored
     if unsaved and not command.get("replace"):

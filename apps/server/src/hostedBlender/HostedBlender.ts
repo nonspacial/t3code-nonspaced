@@ -198,7 +198,8 @@ const ControlMessage = Schema.Union([
     filepath: Schema.String,
     dirty: Schema.Boolean,
   }),
-  Schema.Struct({ type: Schema.Literal("saving") }),
+  /** Save and quit began saving this file, which Blender can't change until the save is over. */
+  Schema.Struct({ type: Schema.Literal("saving"), filepath: Schema.optional(Schema.String) }),
   /**
    * The file saved, and whether it was unsaved again once the agent's access ended. `quit`
    * false is a save made in Blender (Ctrl+S) that it stays open after; otherwise Save and quit's.
@@ -211,9 +212,10 @@ const ControlMessage = Schema.Union([
     /** The load it was saved from, which a state report may not have named yet. */
     loadedAt: Schema.optional(Schema.Number),
   }),
+  /** `images` and `catalogs`: unsaved edits outside the .blend held a quit that asked for that. */
   Schema.Struct({
     type: Schema.Literal("quitFailed"),
-    reason: Schema.Literals(["saveFailed", "changedOnDisk"]),
+    reason: Schema.Literals(["saveFailed", "changedOnDisk", "images", "catalogs"]),
   }),
   /** A discard named another file than the one Blender has open, so Blender stays open. */
   Schema.Struct({ type: Schema.Literal("discardRefused") }),
@@ -316,12 +318,14 @@ export interface AgentListenerReport {
   readonly mcpVersion: string | null;
 }
 // `filepath`: a discard of this open file only; the add-on refuses it once another is open.
+// `hold`: Blender stays open while it has edits outside the .blend, which no copy keeps.
 const encodeControlCommand = Schema.encodeSync(
   Schema.fromJsonString(
     Schema.Struct({
       type: Schema.Literal("quit"),
       save: Schema.Boolean,
       filepath: Schema.optionalKey(Schema.String),
+      hold: Schema.optionalKey(Schema.Boolean),
     }),
   ),
 );
@@ -604,6 +608,11 @@ interface ViewerEntry {
   shownAt: number;
 }
 
+type UnkeepableEdits = "images" | "catalogs";
+
+const unkeepableError = (edits: UnkeepableEdits) =>
+  new HostedBlenderError({ reason: edits === "images" ? "unsavedImages" : "unsavedCatalogs" });
+
 interface Instance {
   /** Its key in `instances`: the thread for a working Blender, `master:<file>` for a master. */
   readonly key: string;
@@ -743,7 +752,11 @@ interface Instance {
   /** A reload kept the unsaved changes of this file as its copy, which the pane offers. */
   reloadKept: { readonly key: string; readonly at: number } | null;
   /** Why the add-on refused the last Save and quit. */
-  saveRefusal: "saveFailed" | "changedOnDisk" | null;
+  saveRefusal: "saveFailed" | "changedOnDisk" | UnkeepableEdits | null;
+  /** Answered when the add-on holds a settle's quit for edits outside the .blend. */
+  quitHeld: Deferred.Deferred<UnkeepableEdits> | null;
+  /** The file a Save and quit Blender began is saving, until it fails. */
+  savingFile: string | null;
   /** What holds the reload of a stale file, as the add-on last said. */
   staleBlocked: HostedBlenderReloadBlocker | null;
   /** A disk change seen while a save or restore was under way, checked once it is over. */
@@ -841,6 +854,8 @@ const make = Effect.gen(function* () {
   const instances = new Map<string, Instance>();
   // Hosted Blender was switched off in Settings; see the readiness subscription below.
   let switchedOff = false;
+  // T3 is stopping: no quit waits on edits to be saved.
+  let shuttingDown = false;
   const states = yield* SubscriptionRef.make<ReadonlyMap<string, PublishedState>>(new Map());
   const running = yield* SubscriptionRef.make<HostedBlenderRunningList>([]);
   // Threads whose last start failed, until they open a file again.
@@ -2324,11 +2339,17 @@ const make = Effect.gen(function* () {
       case "saving":
       case "quitFailed":
         if (message.value.type === "quitFailed") {
-          instance.saveRefusal = message.value.reason;
+          const reason = message.value.reason;
+          instance.saveRefusal = reason;
           // Refused because the file changed: that change is still to be caught up with.
-          if (message.value.reason === "changedOnDisk") instance.diskCheckWaiting = true;
+          if (reason === "changedOnDisk") instance.diskCheckWaiting = true;
+          if ((reason === "images" || reason === "catalogs") && instance.quitHeld !== null) {
+            yield* Deferred.succeed(instance.quitHeld, reason);
+          }
         }
         instance.acknowledged = message.value.type === "saving";
+        instance.savingFile =
+          message.value.type === "saving" ? (message.value.filepath ?? null) : null;
         if (instance.saveReplies) yield* Queue.offer(instance.saveReplies, message.value.type);
         return;
       case "reply": {
@@ -3001,6 +3022,8 @@ const make = Effect.gen(function* () {
       stale: false,
       reloadKept: null,
       saveRefusal: null,
+      quitHeld: null,
+      savingFile: null,
       staleBlocked: null,
       diskCheckWaiting: false,
       keptReload: null,
@@ -3311,6 +3334,8 @@ const make = Effect.gen(function* () {
     deadline: Deadline,
     /** A discard of this open file only. */
     filepath?: string,
+    /** Kept open while it has edits outside the .blend. */
+    hold = false,
   ) {
     const connected = yield* within(Deferred.await(instance.controlReady), deadline).pipe(
       Effect.raceFirst(Deferred.await(instance.ended).pipe(Effect.as(Option.none()))),
@@ -3320,7 +3345,7 @@ const make = Effect.gen(function* () {
     instance.wordsClosed = true;
     yield* control
       .write(
-        `${encodeControlCommand({ type: "quit", save: false, ...(filepath === undefined ? {} : { filepath }) })}\n`,
+        `${encodeControlCommand({ type: "quit", save: false, ...(filepath === undefined ? {} : { filepath }), ...(hold ? { hold } : {}) })}\n`,
       )
       .pipe(Effect.raceFirst(Deferred.await(control.closed)));
     return true;
@@ -3352,17 +3377,37 @@ const make = Effect.gen(function* () {
       deadline,
     );
     if (instance.discardRefused === refused) instance.discardRefused = null;
-    // What it would keep is what the person chose to lose, so a Blender busy past the deadline
-    // (a Save and quit stuck in it included) is stopped; saves never damage the file.
-    if (Option.isNone(outcome)) return yield* forceQuit(instance);
+    if (Option.isNone(outcome)) {
+      // Unheard, the discard may still be waiting in a busy Blender that has another file open
+      // by now, so nothing is stopped as a discard; it ends as a crash would if it quits later.
+      // A Save and quit stuck saving the named file is that file's, and Blender can't open another.
+      const saving = instance.savingFile;
+      const confirmed =
+        instance.quitHeard || (saving !== null && (filepath === undefined || saving === filepath));
+      if (!confirmed) {
+        instance.quitting = false;
+        instance.wordsClosed = false;
+        return yield* new HostedBlenderError({ reason: "discardUnconfirmed" });
+      }
+      // It said it is quitting the file the person chose to lose: past the deadline it is
+      // stopped; saves never damage the file.
+      return yield* forceQuit(instance);
+    }
     if (outcome.value === "refused") {
       instance.quitting = false;
       return yield* new HostedBlenderError({ reason: "openFileChanged" });
     }
   });
 
-  /** Quits without saving, so Blender writes its quit copy, which the run keeps to reopen. */
-  const end = Effect.fn("HostedBlender.end")(function* (instance: Instance, given: Deadline) {
+  /**
+   * Quits without saving, so Blender writes its quit copy, which the run keeps to reopen. With
+   * `hold`, a Blender with edits outside the .blend stays open, and this returns which.
+   */
+  const end = Effect.fn("HostedBlender.end")(function* (
+    instance: Instance,
+    given: Deadline,
+    hold = false,
+  ) {
     yield* Effect.annotateCurrentSpan({ threadId: instance.threadId, shutdown: given.shutdown });
     // Gone already: how it ended was settled when the helper exited.
     if (instance.exitIntent !== null) return yield* Deferred.await(instance.ended);
@@ -3403,12 +3448,53 @@ const make = Effect.gen(function* () {
           .writeFileString(path.join(instance.stateDir, "outcome"), "closing")
           .pipe(Effect.ignore);
       }
+      const held = hold && !shuttingDown ? yield* Deferred.make<UnkeepableEdits>() : null;
+      instance.quitHeld = held;
       // A Blender still starting has until the deadline to connect, so its session is kept.
-      if (!(yield* sendQuitWithoutSaving(instance, deadline))) {
+      if (!(yield* sendQuitWithoutSaving(instance, deadline, undefined, held !== null))) {
+        if (instance.quitHeld === held) instance.quitHeld = null;
         return yield* pastDeadline(instance, deadline);
+      }
+      if (held !== null) {
+        const outcome = yield* within(
+          Effect.raceFirst(
+            Deferred.await(instance.ended).pipe(Effect.as(null)),
+            Deferred.await(held),
+          ),
+          deadline,
+        );
+        if (instance.quitHeld === held) instance.quitHeld = null;
+        if (Option.isNone(outcome)) return yield* pastDeadline(instance, deadline);
+        if (outcome.value === null) return;
+        // T3 stopping meanwhile can't wait for the edits to be saved.
+        if (shuttingDown) {
+          yield* sendQuitWithoutSaving(instance, deadline);
+          return yield* awaitEnded(instance, deadline);
+        }
+        return yield* keepOpen(instance, outcome.value);
       }
     }
     yield* awaitEnded(instance, deadline);
+  });
+
+  /** Blender held its quit for edits outside the .blend, and stays as it was before the close. */
+  const keepOpen = Effect.fnUntraced(function* (instance: Instance, edits: UnkeepableEdits) {
+    instance.ending = false;
+    instance.closeRequested = false;
+    // A discard or a Save and quit asked meanwhile still stands.
+    if (instance.discardRefused === null && instance.pendingSave === null) {
+      instance.quitting = false;
+      instance.wordsClosed = false;
+    }
+    if (instance.stateDir !== null) {
+      yield* fileSystem
+        .remove(path.join(instance.stateDir, "outcome"), { force: true })
+        .pipe(Effect.ignore);
+    }
+    yield* applyCapture(instance);
+    yield* checkWaitingDisk(instance);
+    yield* publishNow();
+    return edits;
   });
 
   const closeOnSettle: HostedBlender["Service"]["closeOnSettle"] = Effect.fn(
@@ -3454,7 +3540,7 @@ const make = Effect.gen(function* () {
   const closeInstance = Effect.fnUntraced(function* (instance: Instance) {
     instance.closeRequested = true;
     const deadline = yield* deadlineIn(QUIT_TIMEOUT, false);
-    yield* end(instance, deadline).pipe(Effect.forkIn(serviceScope));
+    yield* end(instance, deadline, true).pipe(Effect.forkIn(serviceScope));
   });
 
   // The Timeline switch reaches every running Blender at once, without a restart.
@@ -3492,6 +3578,7 @@ const make = Effect.gen(function* () {
   // within one deadline.
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
+      shuttingDown = true;
       const deadline = yield* deadlineIn(SHUTDOWN_QUIT_TIMEOUT, true);
       yield* Effect.forEach(instances.values(), (instance) => end(instance, deadline), {
         concurrency: "unbounded",
@@ -3547,7 +3634,11 @@ const make = Effect.gen(function* () {
     if (!save && (discard !== null || instance.status === "starting")) {
       return yield* quitWithoutSaving(instance);
     }
-    if (!save) return yield* end(instance, yield* deadlineIn(QUIT_TIMEOUT, false));
+    if (!save) {
+      const held = yield* end(instance, yield* deadlineIn(QUIT_TIMEOUT, false), true);
+      if (typeof held === "string") return yield* unkeepableError(held);
+      return;
+    }
     // Save and quit never stops Blender before the add-on says the file is saved. A save
     // already asked for answers every caller, until Blender exits or it fails.
     let pending = instance.pendingSave;
@@ -3574,9 +3665,12 @@ const make = Effect.gen(function* () {
       );
     }
     if (!(yield* Deferred.await(pending))) {
-      return yield* instance.saveRefusal === "changedOnDisk"
+      const refusal = instance.saveRefusal;
+      return yield* refusal === "changedOnDisk"
         ? new HostedBlenderError({ reason: "changedOnDisk" })
-        : saveFailed;
+        : refusal === "images" || refusal === "catalogs"
+          ? unkeepableError(refusal)
+          : saveFailed;
     }
     // Saved, Blender quits: the agent's access ends with it.
     yield* revokeAgentListener(instance);
@@ -3597,7 +3691,7 @@ const make = Effect.gen(function* () {
         connection,
         replies,
         ended: Deferred.await(instance.ended),
-        command: `${encodeControlCommand({ type: "quit", save: true })}\n`,
+        command: `${encodeControlCommand({ type: "quit", save: true, hold: true })}\n`,
         writeTimeout: CONTROL_REPLY_TIMEOUT,
       });
       // Not saved, Blender stays open.

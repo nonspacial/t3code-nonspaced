@@ -540,6 +540,13 @@ def control():
                 send(connection, {"type": "saved", "filepath": opened, "dirty": False, "quit": False})
             send(connection, {"type": "state", "filepath": opened, "dirty": True, "loadedAt": loaded})
             continue
+        held = os.path.join(os.path.dirname(os.environ["STANDIN_SAVES"]), "images-saved")
+        if command.get("type") == "quit" and command.get("hold") and scenario == "unsaved-images" \
+                and not os.path.exists(held):
+            # Unsaved image edits, which no copy keeps, hold a quit that asks, as the add-on does.
+            send(connection, {"type": "quitFailed", "reason": "images"})
+            open(os.environ["STANDIN_SAVES"] + ".held", "a").write("held\n")
+            continue
         if command.get("type") == "quit" and command.get("save") and scenario == "reloads" and revision() != disk[0]:
             send(connection, {"type": "quitFailed", "reason": "changedOnDisk"})
             continue
@@ -629,7 +636,7 @@ def control():
             # Blender's main thread never frees up: the save is never begun, and nothing after
             # it is read.
             threading.Event().wait()
-        connection.sendall(b'{"type": "saving"}\n')
+        send(connection, {"type": "saving", "filepath": opened})
         if scenario == "stuck-saving":
             # Begun, and stuck in the write: nothing after it is read.
             threading.Event().wait()
@@ -2088,23 +2095,70 @@ describe("Endings and recovery", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("R3: Quit without saving ends a Blender stuck in a Save and quit, begun or not", () =>
-    Effect.gen(function* () {
-      const discardStuck = Effect.fnUntraced(function* (scenario: string) {
-        const { dir, service, openReady, awaitStatus } = yield* standIn(scenario, scenario);
+  it.live(
+    "R3: Quit without saving ends a Blender stuck saving the file it names, and stops nothing it can't confirm",
+    () =>
+      Effect.gen(function* () {
+        const discardStuck = Effect.fnUntraced(function* (scenario: string) {
+          const { dir, service, openReady, awaitStatus } = yield* standIn(scenario, scenario);
+          yield* openReady;
+          const saving = yield* service
+            .quit({ threadId, save: true })
+            .pipe(Effect.flip, Effect.forkChild);
+          yield* fileAppears(dir, NodePath.join(dir, "saves.log"));
+          const openFile = { kind: "workspace" as const, relativePath: "cube.blend" };
+          const discard = yield* service
+            .quit({ threadId, save: false, discard: true, openFile })
+            .pipe(Effect.flip, Effect.option);
+          return { saving, discard, state: yield* firstState(service), awaitStatus };
+        });
+        const [busy, stuck] = yield* Effect.all(
+          [discardStuck("busy-save"), discardStuck("stuck-saving")],
+          { concurrency: "unbounded" },
+        );
+        // Begun, the save is of the file the dialog named, which Blender can't change mid-save.
+        expect(Option.isNone(stuck.discard)).toBe(true);
+        expect(yield* stuck.awaitStatus("stopped")).toEqual({ status: "stopped" });
+        expect((yield* Fiber.join(stuck.saving)).reason).toBe("saveFailed");
+        // Never begun, Blender never said which file it has: nothing is stopped as a discard.
+        expect(Option.getOrThrow(busy.discard).reason).toBe("discardUnconfirmed");
+        expect(busy.state.status).toBe("running");
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "a quit or a settle leaves a Blender with unsaved image edits open, saying so; Quit without saving still quits",
+    () =>
+      Effect.gen(function* () {
+        const { dir, service, openReady, awaitStatus, saveCommands } = yield* standIn(
+          "images",
+          "unsaved-images",
+        );
         yield* openReady;
-        const saving = yield* service
-          .quit({ threadId, save: true })
-          .pipe(Effect.flip, Effect.forkChild);
-        yield* fileAppears(dir, NodePath.join(dir, "saves.log"));
-        yield* service.quit({ threadId, save: false, discard: true });
+        const held = NodePath.join(dir, "saves.log.held");
+        const heldCount = () =>
+          NodeFS.existsSync(held) ? NodeFS.readFileSync(held, "utf8").split("\n").length - 1 : 0;
+        // The pane's one-click quit, an agent's blender_quit and Save and quit all say what to save.
+        expect((yield* service.quit({ threadId, save: false }).pipe(Effect.flip)).reason).toBe(
+          "unsavedImages",
+        );
+        expect((yield* service.quit({ threadId, save: true }).pipe(Effect.flip)).reason).toBe(
+          "unsavedImages",
+        );
+        expect(saveCommands()).toBe(0);
+        // A settle leaves it running as it was.
+        yield* service.closeOnSettle({ threadId });
+        yield* fileAppears(dir, held, () => heldCount() === 3);
+        expect((yield* firstState(service)).status).toBe("running");
+        // The person's discard doesn't ask.
+        yield* service.quit({
+          threadId,
+          save: false,
+          discard: true,
+          openFile: { kind: "workspace", relativePath: "cube.blend" },
+        });
         expect(yield* awaitStatus("stopped")).toEqual({ status: "stopped" });
-        expect((yield* Fiber.join(saving)).reason).toBe("saveFailed");
-      });
-      yield* Effect.all([discardStuck("busy-save"), discardStuck("stuck-saving")], {
-        concurrency: "unbounded",
-      });
-    }).pipe(Effect.scoped),
+      }).pipe(Effect.scoped),
   );
 
   it.live(

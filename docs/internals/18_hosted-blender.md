@@ -17,12 +17,16 @@ under the master file's real path, that any thread whose master is that file reo
 Only the person's own Quit without saving, which the quit request marks as a discard, ends a run
 without keeping its unsaved work; every other quit without saving (an agent's, or a one-click quit
 of a file the client last saw clean) ends as a settle does, so what Blender reports as it quits
-decides what is kept. No agent tool can reopen or discard a copy, so the agent's next
+decides what is kept. What is kept is the .blend alone, so those quits, and Save and quit, are held
+while Blender has unsaved image or asset catalog edits (a save writes the catalogs): Blender stays
+open and the quit says which. Only the discard, a deleted thread and T3 stopping don't ask. No agent tool can reopen or discard a copy, so the agent's next
 `blender_start` of a working copy with a waiting copy restores it rather than refusing. A discard
 carries the file its dialog named, and the add-on refuses it if Blender has another open by then,
 so a file opened from Blender's own menu is never discarded under another's name. It runs beside
-the client's per-thread command lane, so a Save and quit stuck in a busy Blender can't hold it,
-and it stops Blender at its deadline even mid-save. A settle waits on a Save and quit only once
+the client's per-thread command lane, so a Save and quit stuck in a busy Blender can't hold it.
+At its deadline it stops Blender only once Blender has said it is quitting that file, or is saving
+it; unheard, the discard may still wait in a Blender that has another file open by then, so
+Blender stays open and the discard is reported unconfirmed. A settle waits on a Save and quit only once
 Blender has begun it; one still queued by the deadline is stopped like any unanswered quit.
 At shutdown, a Blender that has said it is saving or quitting is released, never killed while
 it writes what may be the only copy of its latest work: the helper is told to `detach` (Blender

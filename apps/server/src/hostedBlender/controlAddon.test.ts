@@ -352,7 +352,7 @@ if _scenario.get("connect", True):
     if _scenario.get("manifestBeforeGrant") is not None:
         with open(os.path.join(os.environ["PYTHONPATH"], "bl_ext/t3_blender_lab/mcp/blender_manifest.toml"), "w") as _m:
             _m.write(_scenario["manifestBeforeGrant"])
-    _t3.sendall("".join(json.dumps({"type": kind}) + "\n" for kind in _scenario.get("send", ["grantAgentListener"])).encode())
+    _t3.sendall("".join(json.dumps(kind if isinstance(kind, dict) else {"type": kind}) + "\n" for kind in _scenario.get("send", ["grantAgentListener"])).encode())
     _tick()
     _steps.append(_report())
 _then = _scenario.get("then")
@@ -900,6 +900,7 @@ if _t3 is not None:
         pass
 print(_j.dumps({
     "received": [message["type"] for message in _received],
+    "quitFailed": [message["reason"] for message in _received if message["type"] == "quitFailed"],
     "call": _called,
     "mcpVersion": _snapshot()["mcpVersion"],
     "steps": _steps,
@@ -934,7 +935,11 @@ const runAddon = (input: {
   readonly connect?: boolean;
   /** What T3 sends once connected; a grant by default. */
   readonly send?: ReadonlyArray<
-    "grantAgentListener" | "stopAgentListener" | "quitIfClean" | "cancelQuit"
+    | "grantAgentListener"
+    | "stopAgentListener"
+    | "quitIfClean"
+    | "cancelQuit"
+    | { readonly type: "quit"; readonly save: boolean; readonly hold?: boolean }
   >;
   /** Asset catalogs edited and not saved, which only Blender's catalog poll can tell. */
   readonly unsavedCatalogs?: boolean;
@@ -1711,6 +1716,46 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     });
     expect(after(result)).toEqual(off);
     expect(bound(result)).toBe(false);
+  });
+
+  it("holds a quit that asks while edits outside the .blend are unsaved, and only then", () => {
+    const quit = (input: {
+      readonly save: boolean;
+      readonly hold?: boolean;
+      readonly dirtyImages?: ReadonlyArray<string>;
+      readonly unsavedCatalogs?: boolean;
+    }) => {
+      const result = runAddon({
+        installed: [],
+        enabled: [],
+        listen: false,
+        send: [{ type: "quit", save: input.save, ...(input.hold ? { hold: true } : {}) }],
+        ...(input.dirtyImages ? { dirtyImages: input.dirtyImages } : {}),
+        ...(input.unsavedCatalogs ? { unsavedCatalogs: true, assetBrowser: "shown" as const } : {}),
+      });
+      return {
+        quits: result.calls.some((call: Array<unknown>) => call[0] === "quit_blender"),
+        held: result.quitFailed,
+      };
+    };
+    expect(quit({ save: false, hold: true, dirtyImages: ["paint"] })).toEqual({
+      quits: false,
+      held: ["images"],
+    });
+    // Saving the .blend leaves the image behind too, so nothing is saved.
+    expect(quit({ save: true, hold: true, dirtyImages: ["paint"] })).toEqual({
+      quits: false,
+      held: ["images"],
+    });
+    expect(quit({ save: false, hold: true, unsavedCatalogs: true })).toEqual({
+      quits: false,
+      held: ["catalogs"],
+    });
+    // A save writes the catalogs with the .blend, so it goes on to save, which this stub can't.
+    expect(quit({ save: true, hold: true, unsavedCatalogs: true }).held).toEqual(["saveFailed"]);
+    // The person's discard, or T3 stopping, doesn't ask.
+    expect(quit({ save: false, dirtyImages: ["paint"] })).toEqual({ quits: true, held: [] });
+    expect(quit({ save: false, hold: true })).toEqual({ quits: true, held: [] });
   });
 
   it("quits on quitIfClean only without unsaved changes, and says so when it won't", () => {

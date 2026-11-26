@@ -425,6 +425,9 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "restoreFailed",
       "restoreReplacesUnsaved",
       "unkeepableEdits",
+      "unsavedImages",
+      "unsavedCatalogs",
+      "discardUnconfirmed",
     ]),
   },
 ) {
@@ -486,6 +489,12 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "This Blender has unsaved changes the restore would replace.";
       case "unkeepableEdits":
         return "This Blender has unsaved image or asset catalog edits a recovery copy can't keep. Save or discard them first.";
+      case "unsavedImages":
+        return "Blender has unsaved image edits, which quitting would lose: they live outside the .blend, so its recovery copy can't keep them. Save them in Blender's Image Editor (Image > Save All Images) first, or quit without saving to discard them.";
+      case "unsavedCatalogs":
+        return "Blender has unsaved asset catalog edits, which quitting would lose: they live outside the .blend, so its recovery copy can't keep them. Save them in Blender's asset browser first, or quit without saving to discard them.";
+      case "discardUnconfirmed":
+        return "Blender didn't confirm it was quitting the file you chose to discard, so it stays open with its changes. Try again in a moment.";
     }
   }
 }
