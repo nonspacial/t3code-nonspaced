@@ -1737,6 +1737,40 @@ describe("Salvaging what a stopped server left", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect(
+    "finishes a run's copy whose record was written before T3 stopped, with or without an older copy there",
+    () =>
+      Effect.gen(function* () {
+        for (const older of [true, false]) {
+          const dir = yield* tempDir("salvage-record-first");
+          const { hostedDir, launchDir } = leftover(dir, {
+            facts: { restore: "none", saved: false, changed: true },
+            waiting: "older copy",
+          });
+          // The record went first, as of the quit copy's capture; T3 stopped before the move.
+          const recordPath = recoveryOf(hostedDir)!.session.replace(
+            /session\.blend$/,
+            "record.json",
+          );
+          const captured = Math.floor(
+            NodeFS.statSync(NodePath.join(launchDir, "tmp", "quit.blend")).mtimeMs,
+          );
+          NodeFS.writeFileSync(
+            recordPath,
+            JSON.stringify({
+              ...JSON.parse(NodeFS.readFileSync(recordPath, "utf8")),
+              keptAt: captured,
+            }),
+          );
+          if (!older) NodeFS.rmSync(recordPath.replace(/record\.json$/, "session.blend"));
+          const service = yield* idleService(dir);
+          expect((yield* firstState(service)).status).toBe("closed");
+          expect(recoveryOf(hostedDir)?.contents).toBe("left behind");
+          expect(NodeFS.existsSync(launchDir)).toBe(false);
+        }
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("replaces the waiting copy with a changed run's", () =>
     Effect.gen(function* () {
       const dir = yield* tempDir("salvage-changed");

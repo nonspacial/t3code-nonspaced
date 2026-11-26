@@ -1165,28 +1165,25 @@ const make = Effect.gen(function* () {
     // staged before a reload.
     const captured = files.find((entry) => entry.name === snapshot)?.mtimeMs ?? 0;
     if (existing?.recovery === true && existing.keptAt > captured) return;
-    yield* fileSystem.makeDirectory(copyDir(input.threadId, key), { recursive: true });
-    if (snapshot === undefined) {
-      yield* fileSystem.remove(sessionPath(input.threadId, key), { force: true });
-    } else {
-      // On the same disk a rename, which costs nothing however large the file is.
-      const from = path.join(input.tmpDir, snapshot);
-      yield* fileSystem
-        .rename(from, sessionPath(input.threadId, key))
-        .pipe(
-          Effect.catch(() =>
-            writeAtomically(sessionPath(input.threadId, key), (to) =>
-              fileSystem.copyFile(from, to),
-            ),
-          ),
-        );
-      failedRestores.delete(copyId(input.threadId, key));
+    if (snapshot !== undefined) {
+      // Record, move, as a staged copy is: a crash at either step leaves salvage the snapshot to
+      // finish with, and a record without its copy is never offered. Kept as of its capture,
+      // so salvage's second try isn't taken for an older copy.
+      yield* moveStaged(
+        input.threadId,
+        key,
+        { threadId: input.threadId, file, kind: input.kind, recovery: true, keptAt: captured },
+        path.join(input.tmpDir, snapshot),
+      );
+      return;
     }
+    yield* fileSystem.makeDirectory(copyDir(input.threadId, key), { recursive: true });
+    yield* fileSystem.remove(sessionPath(input.threadId, key), { force: true });
     yield* writeRecord({
       threadId: input.threadId,
       file,
       kind: input.kind,
-      recovery: snapshot !== undefined,
+      recovery: false,
       keptAt: yield* Clock.currentTimeMillis,
     });
   });
