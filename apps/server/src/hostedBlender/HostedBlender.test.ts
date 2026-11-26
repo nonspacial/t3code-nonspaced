@@ -578,6 +578,7 @@ def control():
             quiet = os.path.join(os.path.dirname(os.environ["STANDIN_SAVES"]), "staged-quietly")
             if scenario != "no-quit-copy" and not os.path.exists(quiet):
                 open(os.path.join(tmp, "quit.blend"), "w").write("quit copy %d" % os.getpid())
+                open(os.environ["STANDIN_SAVES"] + ".quitInode", "w").write(str(os.stat(os.path.join(tmp, "quit.blend")).st_ino))
             event({"type": "exited", "process": "blender", "code": 0, "signal": None})
             connection.close()
             state["finishing"].set()
@@ -1762,6 +1763,10 @@ describe("Endings and recovery", () => {
       expect(saveCommands()).toBe(0);
       const recovery = recoveryOf(hostedDir);
       expect(recovery?.contents).toMatch(/^quit copy /);
+      // Moved, not copied: a large file costs no read or write.
+      expect(String(NodeFS.statSync(recovery!.session).ino)).toBe(
+        NodeFS.readFileSync(NodePath.join(hostedDir, "../../saves.log.quitInode"), "utf8"),
+      );
       expect(NodeFS.readdirSync(NodePath.join(hostedDir, "launches"))).toEqual([]);
 
       yield* service.reopen({ threadId, key: CUBE, restore: true });

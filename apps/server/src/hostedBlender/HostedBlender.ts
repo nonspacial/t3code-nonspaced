@@ -1164,9 +1164,17 @@ const make = Effect.gen(function* () {
     if (snapshot === undefined) {
       yield* fileSystem.remove(sessionPath(input.threadId, key), { force: true });
     } else {
-      yield* writeAtomically(sessionPath(input.threadId, key), (to) =>
-        fileSystem.copyFile(path.join(input.tmpDir, snapshot), to),
-      );
+      // On the same disk a rename, which costs nothing however large the file is.
+      const from = path.join(input.tmpDir, snapshot);
+      yield* fileSystem
+        .rename(from, sessionPath(input.threadId, key))
+        .pipe(
+          Effect.catch(() =>
+            writeAtomically(sessionPath(input.threadId, key), (to) =>
+              fileSystem.copyFile(from, to),
+            ),
+          ),
+        );
       failedRestores.delete(copyId(input.threadId, key));
     }
     yield* writeRecord({
