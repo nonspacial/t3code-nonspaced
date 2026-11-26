@@ -1,13 +1,27 @@
 import "~/index.css";
 
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { EnvironmentId, ThreadId, type AssetResource } from "@t3tools/contracts";
+import {
+  type AssetResource,
+  type BlendPreview,
+  EnvironmentId,
+  HostedBlenderError,
+  type HostedBlenderMasterState,
+  type HostedBlenderThreadState,
+  ThreadId,
+} from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import { AsyncResult, Atom } from "effect/reactivity";
 import type { ReactNode } from "react";
 import { expect, it, vi } from "vite-plus/test";
-import { userEvent } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 
 import { useComposerDraftStore } from "~/composerDraftStore";
+import { useRightPanelStore } from "~/rightPanelStore";
 import { render } from "../../../test/render";
+import { blenderRoleFor, useBlenderRoleStore } from "../blender/blenderRole";
+import { OpenInHostedBlender } from "../blender/OpenInHostedBlender";
+import { BlendFilePreview } from "./BlendFilePreview";
 import { MODEL_CONFIRM_BYTES, ModelFilePreview } from "./ModelFilePreview";
 
 const { mint } = vi.hoisted(() => ({
@@ -24,6 +38,87 @@ vi.mock("~/speech/useTextFieldSpeech", () => ({
   SpeechTextField: (props: { children: (speech: undefined) => ReactNode }) =>
     props.children(undefined),
   TextFieldSpeechControls: () => null,
+}));
+
+// A .blend's preview: its facts as read, and the conversion queries it makes.
+const state = vi.hoisted(() => ({
+  preview: null as unknown,
+  queries: [] as unknown[],
+  atoms: null as Map<unknown, unknown> | null,
+  config: null as unknown,
+  /** What every conversion the preview subscribes to says. */
+  status: null as unknown,
+}));
+
+vi.mock(import("~/state/projects"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    projectEnvironment: {
+      ...actual.projectEnvironment,
+      // One atom per preview: a new one each render would never settle.
+      readBlendPreview: (() => {
+        const atoms = (state.atoms ??= new Map<unknown, unknown>());
+        if (!atoms.has(state.preview)) {
+          atoms.set(state.preview, Atom.make(AsyncResult.success(state.preview)));
+        }
+        return atoms.get(state.preview);
+      }) as never,
+      convertBlend: ((request: unknown) => ({ convertBlend: request })) as never,
+    },
+  };
+});
+vi.mock(import("~/state/revisionedQuery"), async (original) => ({
+  ...(await original()),
+  revisionedQuery: ((atom: unknown) => atom) as never,
+}));
+vi.mock(import("~/state/query"), async (original) => ({
+  ...(await original()),
+  useEnvironmentQuery: ((query: unknown) => {
+    state.queries.push(query);
+    return { data: query === null ? null : state.status, error: null, refresh: () => undefined };
+  }) as never,
+}));
+vi.mock(import("~/state/server"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    serverEnvironment: {
+      ...actual.serverEnvironment,
+      configValueAtom: (() =>
+        (state.config ??= Atom.make({
+          environment: { capabilities: { blendConversion: true } },
+        }))) as never,
+    },
+  };
+});
+
+// Open in hosted Blender, in the same file preview: the thread's Blenders, and the open it runs.
+const hosted = vi.hoisted(() => ({
+  thread: null as HostedBlenderThreadState | null,
+  master: { status: "none" } as HostedBlenderMasterState | null,
+  open: vi.fn(async (): Promise<unknown> => ({ _tag: "Success", value: undefined })),
+}));
+
+vi.mock(import("~/state/hostedBlender"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    useHostedBlenderState: (() => hosted.thread) as never,
+    useHostedBlenderMasterState: (() => hosted.master) as never,
+    hostedBlenderEnvironment: {
+      ...actual.hostedBlenderEnvironment,
+      open: { ...actual.hostedBlenderEnvironment.open, permissionAtom: () => Atom.make(true) },
+      openMaster: {
+        ...actual.hostedBlenderEnvironment.openMaster,
+        permissionAtom: () => Atom.make(true),
+      },
+    } as never,
+  };
+});
+vi.mock(import("~/state/use-atom-command"), async (original) => ({
+  ...(await original()),
+  useAtomCommand: (() => hosted.open) as never,
 }));
 
 function setup(files: Record<string, BlobPart> = {}) {
@@ -486,4 +581,186 @@ it("opens at the camera a view link carries, in the file's own coordinates", asy
   const camera = model.draft()!.previewAnnotations[0]!.cameraView!;
   camera.position.forEach((value, index) => expect(value).toBeCloseTo([30, 40, 50][index]!, 3));
   camera.target.forEach((value, index) => expect(value).toBeCloseTo([5, 10, 2.5][index]!, 3));
+});
+
+const previewOf = (byteLength: number): BlendPreview => ({
+  relativePath: "scene.blend",
+  byteLength,
+  blenderVersion: "5.0",
+  thumbnail: null,
+  scene: null,
+  scenes: 1,
+  objects: 1,
+  meshes: 1,
+  materials: 0,
+  libraries: [],
+});
+
+const preview = (relativePath = "scene.blend") => (
+  <div className="flex h-100 w-150 flex-col">
+    <BlendFilePreview
+      environmentId={EnvironmentId.make("environment-1")}
+      name={relativePath}
+      source={{
+        kind: "file",
+        cwd: "/work",
+        relativePath,
+        workspaceMutationId: null,
+        refreshRevision: 0,
+      }}
+    />
+  </div>
+);
+
+const conversions = () => state.queries.filter((query) => query !== null);
+
+it("converts a large .blend only when asked, once, saying it runs Blender, and remembers it", async () => {
+  state.preview = previewOf(6 * 1024 * 1024 * 1024);
+  state.queries = [];
+  state.status = null;
+  {
+    await using screen = await render(preview());
+    await expect
+      .element(screen.getByText("with Blender on the server", { exact: false }))
+      .toBeInTheDocument();
+    expect(conversions()).toEqual([]);
+    await screen.getByRole("button", { name: "Show 3D view" }).click();
+    expect(conversions().at(-1)).toMatchObject({
+      convertBlend: { input: { relativePath: "scene.blend", once: true } },
+    });
+  }
+  // Shown again this session, it converts without being asked twice.
+  state.queries = [];
+  await using again = await render(preview());
+  await expect.element(again.getByText("Scene details")).toBeInTheDocument();
+  expect(conversions()[0]).toMatchObject({
+    convertBlend: { input: { relativePath: "scene.blend", once: true } },
+  });
+});
+
+it("asks first when the server finds a .blend large since its facts were read", async () => {
+  state.preview = previewOf(20 * 1024 * 1024);
+  state.queries = [];
+  state.status = { status: "large", byteLength: 6 * 1024 * 1024 * 1024 };
+  await using screen = await render(preview("saved-over.blend"));
+  await expect.element(screen.getByRole("button", { name: "Show 3D view" })).toBeInTheDocument();
+  expect(conversions().at(-1)).not.toMatchObject({ convertBlend: { input: { once: true } } });
+});
+
+it("converts a smaller .blend as soon as its preview opens, watching it for changes", async () => {
+  state.preview = previewOf(20 * 1024 * 1024);
+  state.queries = [];
+  state.status = null;
+  await using screen = await render(preview());
+  await expect.element(screen.getByText("Scene details")).toBeInTheDocument();
+  expect(conversions().at(-1)).toEqual({
+    convertBlend: {
+      environmentId: "environment-1",
+      input: { cwd: "/work", relativePath: "scene.blend" },
+    },
+  });
+  await expect
+    .element(screen.getByRole("button", { name: "Show 3D view" }))
+    .not.toBeInTheDocument();
+});
+
+const threadRef = {
+  environmentId: EnvironmentId.make("environment-1"),
+  threadId: ThreadId.make("thread-1"),
+};
+
+it("opens the file on a server nobody has checked, so the open runs the first check", async () => {
+  hosted.thread = { status: "notSetUp", missing: ["check"] };
+  await using _screen = await render(
+    <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
+  );
+  await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
+  expect(hosted.open).toHaveBeenCalledWith({
+    environmentId: threadRef.environmentId,
+    input: { threadId: threadRef.threadId, relativePath: "models/hero.blend" },
+  });
+});
+
+it("opens the file on a server whose check wasn't ready, so the open checks it again", async () => {
+  hosted.open.mockClear();
+  hosted.thread = { status: "notSetUp", missing: ["encoder"] };
+  await using _screen = await render(
+    <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
+  );
+  await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
+  expect(hosted.open).toHaveBeenCalledTimes(1);
+});
+
+it("only shows the pane while Hosted Blender is switched off", async () => {
+  hosted.open.mockClear();
+  hosted.thread = { status: "notSetUp", missing: ["enabled"] };
+  await using _screen = await render(
+    <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
+  );
+  await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
+  expect(hosted.open).not.toHaveBeenCalled();
+});
+
+it("shows the pane with the fresh result when opening finds setup incomplete", async () => {
+  hosted.thread = { status: "notSetUp", missing: ["check"] };
+  hosted.open.mockImplementationOnce(async () => ({
+    _tag: "Failure",
+    cause: Cause.fail(new HostedBlenderError({ reason: "notSetUp" })),
+  }));
+  const showPane = vi.spyOn(useRightPanelStore.getState(), "open");
+  await using _screen = await render(
+    <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
+  );
+  await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
+  await vi.waitFor(() => expect(showPane).toHaveBeenCalledWith(threadRef, "blender"));
+  showPane.mockRestore();
+});
+
+const workingOnCopy: HostedBlenderThreadState = {
+  status: "running",
+  relativePath: "models/hero.wip-1a2b3c4d.blend",
+  dirty: false,
+};
+
+it("shows the master's own Blender for the thread's running master, opening nothing", async () => {
+  hosted.open.mockClear();
+  hosted.thread = workingOnCopy;
+  hosted.master = { status: "running", relativePath: "models/hero.blend", dirty: false };
+  useBlenderRoleStore.getState().setRole(threadRef, "working");
+  const showPane = vi.spyOn(useRightPanelStore.getState(), "open");
+  await using _screen = await render(
+    <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
+  );
+  await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
+  await vi.waitFor(() => expect(showPane).toHaveBeenCalledWith(threadRef, "blender"));
+  expect(blenderRoleFor(threadRef)).toBe("master");
+  expect(hosted.open).not.toHaveBeenCalled();
+  showPane.mockRestore();
+  hosted.master = { status: "none" };
+});
+
+it("opens the thread's known master in its master Blender when none has it open", async () => {
+  hosted.open.mockClear();
+  hosted.thread = workingOnCopy;
+  hosted.master = {
+    status: "notOpen",
+    relativePath: "models/hero.blend",
+    desktop: null,
+    desktopDirty: false,
+  };
+  useBlenderRoleStore.getState().setRole(threadRef, "working");
+  const showPane = vi.spyOn(useRightPanelStore.getState(), "open");
+  await using _screen = await render(
+    <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
+  );
+  await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
+  await vi.waitFor(() => expect(showPane).toHaveBeenCalledWith(threadRef, "blender"));
+  // As the Master side's Open in T3 Code: the thread's master, not a working open of it.
+  expect(hosted.open).toHaveBeenCalledWith({
+    environmentId: threadRef.environmentId,
+    input: { threadId: threadRef.threadId },
+  });
+  expect(blenderRoleFor(threadRef)).toBe("master");
+  showPane.mockRestore();
+  hosted.master = { status: "none" };
 });

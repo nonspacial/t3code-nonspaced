@@ -7,15 +7,22 @@ import type {
 } from "@t3tools/client-runtime/hosted-blender/stream";
 import {
   EnvironmentId,
+  type HostedBlenderInputMessage,
+  type HostedBlenderRunningState,
+  type HostedBlenderViewCapture,
   type HostedBlenderViewerMessage,
   type ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { modelViewFromHref } from "@t3tools/shared/modelView";
+import type { ReactNode } from "react";
 import { expect, it, vi } from "vite-plus/test";
-import { commands } from "vite-plus/test/browser";
+import { commands, userEvent } from "vite-plus/test/browser";
 
+import { useComposerDraftStore } from "~/composerDraftStore";
 import { toastManager } from "~/components/ui/toast";
-import { installKeyboardCapture } from "~/lib/keyboardCapture";
+import { captureKeyboard, installKeyboardCapture } from "~/lib/keyboardCapture";
 
 import { HiddenThreadContext } from "../chat/backgroundThread";
 
@@ -35,19 +42,35 @@ const stream = vi.hoisted(() => ({
   setup: null as unknown,
   /** Unsaved image edits hold any quit that isn't a discard. */
   imagesHold: false,
+  // The annotation tests: the real canvas sink, one grey frame, and Blender's answers.
+  annotating: false,
+  target: "window" as "window" | "output",
+  sink: null as null | { present: (source: CanvasImageSource, w: number, h: number) => boolean },
+  captureView: null as unknown as (value: unknown) => Promise<unknown>,
+  findHits: null as unknown as (value: unknown) => Promise<unknown>,
 }));
 
 vi.mock(import("@t3tools/client-runtime/hosted-blender/stream"), async (original) => ({
   ...(await original()),
   createHostedBlenderStreamClient: ((
     target: unknown,
-    _sink: unknown,
+    sink: unknown,
     events: HostedBlenderStreamEvents,
   ) => {
     stream.targets.push(target);
     stream.events = events;
     stream.clients += 1;
     events.onStatus("live");
+    if (stream.annotating) {
+      events.onStats({
+        type: "stats",
+        encoder: "x264enc",
+        target: stream.target,
+        memoryBytes: null,
+      });
+      stream.sink = sink as NonNullable<typeof stream.sink>;
+      stream.sink.present(frameOf("#3d3d3d"), 320, 180);
+    }
     return {
       resize: (width: number, height: number) => stream.sizes.push([width, height]),
       // Like the real client, a repeat says nothing.
@@ -60,13 +83,20 @@ vi.mock(import("@t3tools/client-runtime/hosted-blender/stream"), async (original
   }) as never,
 }));
 // Decoded frames report the stream's size; this one is a tall pane on a HiDPI screen.
-vi.mock(import("@t3tools/client-runtime/device/frame"), async (original) => ({
-  ...(await original()),
-  createCanvasFrameSink: ((_canvas: unknown, onSize?: (width: number, height: number) => void) => {
-    onSize?.(1046, 1336);
-    return { present: () => true };
-  }) as never,
-}));
+vi.mock(import("@t3tools/client-runtime/device/frame"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    createCanvasFrameSink: ((
+      canvas: HTMLCanvasElement,
+      onSize?: (width: number, height: number) => void,
+    ) => {
+      if (stream.annotating) return actual.createCanvasFrameSink(canvas, onSize);
+      onSize?.(1046, 1336);
+      return { present: () => true };
+    }) as never,
+  };
+});
 vi.mock(import("~/state/use-atom-command"), () => ({
   useAtomCommand: ((command: { readonly label: string }) => async (value: unknown) => {
     stream.commands.push({ label: command.label, value });
@@ -79,8 +109,23 @@ vi.mock(import("~/state/use-atom-command"), () => ({
         cause: Cause.fail(new HostedBlenderError({ reason: "unsavedImages" })),
       };
     }
-    return { _tag: "Success", value: undefined };
+    const answer = command.label.endsWith(":capture-view")
+      ? stream.captureView
+      : command.label.endsWith(":find-hits")
+        ? stream.findHits
+        : null;
+    if (answer === null) return { _tag: "Success", value: undefined };
+    const result = await answer(value);
+    return result === FAILED
+      ? { _tag: "Failure", cause: new Error("failed") }
+      : { _tag: "Success", value: result };
   }) as never,
+}));
+// Dictation needs a connected environment; the annotation tests type the comment.
+vi.mock("~/speech/useTextFieldSpeech", () => ({
+  SpeechTextField: (props: { children: (speech: undefined) => ReactNode }) =>
+    props.children(undefined),
+  TextFieldSpeechControls: () => null,
 }));
 vi.mock(import("~/state/hostedBlender"), async (original) => ({
   ...(await original()),
@@ -90,6 +135,7 @@ vi.mock(import("~/state/hostedBlender"), async (original) => ({
   useHostedBlenderStreamAccess: (() => stream.access) as never,
 }));
 
+import { attachBlenderInput, type TakeScroll } from "./blenderInput";
 import { BlenderPanel, FloatingBlender } from "./BlenderPanel";
 import { useBlenderRoleStore } from "./blenderRole";
 import { useKeptCopySelection } from "./keptCopies";
@@ -127,6 +173,13 @@ const startup = (): Disposable => {
   useKeptCopySelection.setState({ byThread: {}, dismissedReloads: {} });
   stream.master = { status: "none" };
   stream.state = { status: "running", relativePath: "models/hero.blend", dirty: false };
+  stream.annotating = false;
+  stream.access = {
+    httpBase: "https://t3",
+    wsBase: "wss://t3/blender",
+    credentials: false,
+    query: {},
+  };
   return { [Symbol.dispose]: installKeyboardCapture() };
 };
 
@@ -1183,4 +1236,560 @@ it("B16: Timeline in the pane's menu shows or hides the strip for everyone, for 
     label: "environment-data:hosted-blender:set-timeline",
     value: { environmentId: threadRef.environmentId, input: { shown: false } },
   });
+});
+
+// The pane's input, below the component: keyboard capture, then pointer, key and wheel mapping.
+
+const disposable = (cleanup: () => void): Disposable => ({ [Symbol.dispose]: cleanup });
+const element = () => {
+  const node = document.body.appendChild(document.createElement("div"));
+  return Object.assign(node, { [Symbol.dispose]: () => node.remove() });
+};
+
+const press = (target: EventTarget, init: KeyboardEventInit, type = "keydown") => {
+  const event = new KeyboardEvent(type, { bubbles: true, cancelable: true, ...init });
+  target.dispatchEvent(event);
+  return event;
+};
+
+it("hands keys inside the owner to it ahead of the app's own window shortcuts", () => {
+  using _capture = disposable(installKeyboardCapture());
+  const appShortcut = vi.fn();
+  // Registered after the capture listener, as every app shortcut is.
+  window.addEventListener("keydown", appShortcut, true);
+  using _shortcut = disposable(() => window.removeEventListener("keydown", appShortcut, true));
+  using surface = element();
+  using outside = element();
+  const owned: string[] = [];
+  using _owner = disposable(
+    captureKeyboard(surface, {
+      onKey: (event) => owned.push(`${event.type}:${event.code}`),
+      passThrough: (event) => event.code === "F6" && !event.shiftKey,
+    }),
+  );
+
+  const typed = press(surface, { code: "KeyB", ctrlKey: true });
+  press(surface, { code: "KeyB", ctrlKey: true }, "keyup");
+  expect(owned).toEqual(["keydown:KeyB", "keyup:KeyB"]);
+  expect(typed.defaultPrevented).toBe(true);
+  expect(appShortcut).not.toHaveBeenCalled();
+
+  // T3's focus shortcut still leaves; Shift+F6 goes to the owner.
+  press(surface, { code: "F6" });
+  press(surface, { code: "F6", shiftKey: true });
+  press(outside, { code: "KeyB" });
+  expect(owned).toEqual(["keydown:KeyB", "keyup:KeyB", "keydown:F6"]);
+  expect(appShortcut).toHaveBeenCalledTimes(2);
+});
+
+it("lets the app have the keyboard again once the owner lets go", () => {
+  using _capture = disposable(installKeyboardCapture());
+  using surface = element();
+  const onKey = vi.fn();
+  const release = captureKeyboard(surface, { onKey, passThrough: () => false });
+  release();
+  expect(press(surface, { code: "KeyA" }).defaultPrevented).toBe(false);
+  expect(onKey).not.toHaveBeenCalled();
+});
+
+/** A 200×100 CSS-pixel stream of 400×200 stream pixels, in control. */
+const setup = (
+  keymap = { layout: "us", variant: "" },
+  takeScrolls: ReadonlyArray<TakeScroll> = [],
+) => {
+  const cleanups = [installKeyboardCapture()];
+  const surface = document.body.appendChild(document.createElement("div"));
+  surface.tabIndex = 0;
+  const canvas = surface.appendChild(document.createElement("canvas"));
+  canvas.width = 400;
+  canvas.height = 200;
+  Object.assign(canvas.style, {
+    position: "fixed",
+    left: "10px",
+    top: "20px",
+    width: "200px",
+    height: "100px",
+  });
+  surface.focus();
+  const sent: HostedBlenderInputMessage[] = [];
+  const input = attachBlenderInput({
+    surface,
+    canvas,
+    send: (message) => sent.push(message),
+    keymap: () => keymap,
+    scrollPreference: () => "auto",
+    passThrough: (event) => event.code === "F6" && !event.shiftKey,
+    takeScrolls,
+  });
+  cleanups.push(
+    () => input.dispose(),
+    () => surface.remove(),
+  );
+  return {
+    surface,
+    canvas,
+    sent,
+    input,
+    cleanups,
+    [Symbol.dispose]: () => {
+      for (const cleanup of cleanups.reverse()) cleanup();
+    },
+  };
+};
+
+const key = (target: EventTarget, type: string, init: KeyboardEventInit) =>
+  target.dispatchEvent(new KeyboardEvent(type, { bubbles: true, cancelable: true, ...init }));
+const pointer = (target: EventTarget, type: string, init: PointerEventInit) => {
+  const event = new PointerEvent(type, { bubbles: true, cancelable: true, ...init });
+  target.dispatchEvent(event);
+  return event;
+};
+
+it("sends absolute positions in stream pixels and buttons as evdev", async () => {
+  using stream = setup();
+  const { canvas, sent } = stream;
+  pointer(canvas, "pointermove", { clientX: 60, clientY: 45 });
+  pointer(canvas, "pointermove", { clientX: 110, clientY: 70 });
+  // Moves within a frame merge into the newest position.
+  await vi.waitFor(() => expect(sent).toEqual([{ type: "pointer", x: 200, y: 100 }]));
+
+  pointer(canvas, "pointerdown", { button: 1, buttons: 4, clientX: 110, clientY: 70 });
+  pointer(canvas, "pointerup", { button: 1, buttons: 0, clientX: 110, clientY: 70 });
+  expect(sent.slice(1)).toEqual([
+    { type: "button", button: 274, pressed: true },
+    { type: "button", button: 274, pressed: false },
+  ]);
+});
+
+it("B6: opens no context menu where a right drag from the pane ends", () => {
+  using stream = setup();
+  pointer(stream.canvas, "pointerdown", { button: 2, buttons: 2, clientX: 20, clientY: 30 });
+  pointer(document.body, "pointerup", { button: 2, buttons: 0, clientX: 500, clientY: 500 });
+  // As Windows does, on the release, wherever it is.
+  const menu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 });
+  document.body.dispatchEvent(menu);
+  expect(menu.defaultPrevented).toBe(true);
+  // Only that one: a later right click elsewhere in T3 has its menu.
+  const later = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 });
+  document.body.dispatchEvent(later);
+  expect(later.defaultPrevented).toBe(false);
+});
+
+it("sends physical keys once each, with the keymap first, and leaves T3's focus keys alone", () => {
+  using stream = setup({ layout: "de", variant: "" });
+  const { surface, sent } = stream;
+  key(surface, "keydown", { code: "KeyA", key: "a" });
+  key(surface, "keydown", { code: "KeyA", key: "a", repeat: true });
+  key(surface, "keyup", { code: "KeyA", key: "a" });
+  key(surface, "keydown", { code: "ShiftLeft", key: "Shift", shiftKey: true });
+  key(surface, "keydown", { code: "F6", key: "F6", shiftKey: true });
+  key(surface, "keydown", { code: "F6", key: "F6" });
+  expect(sent).toEqual([
+    { type: "keymap", layout: "de", variant: "" },
+    { type: "key", code: 30, pressed: true },
+    { type: "key", code: 30, pressed: false },
+    { type: "key", code: 42, pressed: true },
+    { type: "key", code: 64, pressed: true },
+  ]);
+});
+
+it("releases every held key and button when it lets go", () => {
+  using stream = setup();
+  const { surface, canvas, sent, input } = stream;
+  key(surface, "keydown", { code: "ControlLeft", key: "Control" });
+  pointer(canvas, "pointerdown", { button: 0, buttons: 1, clientX: 20, clientY: 30 });
+  sent.length = 0;
+  input.releaseAll();
+  input.releaseAll();
+  expect(sent).toEqual([
+    { type: "key", code: 29, pressed: false },
+    { type: "button", button: 272, pressed: false },
+  ]);
+});
+
+it("locks the pointer and sends relative motion while Blender holds the mouse", async () => {
+  using stream = setup();
+  const { canvas, sent, input, cleanups } = stream;
+  let locked: Element | null = null;
+  Object.defineProperty(document, "pointerLockElement", { configurable: true, get: () => locked });
+  cleanups.push(() => Reflect.deleteProperty(document, "pointerLockElement"));
+  const changeLock = (element: Element | null) => {
+    locked = element;
+    document.dispatchEvent(new Event("pointerlockchange"));
+  };
+  canvas.requestPointerLock = vi.fn(async () => changeLock(canvas));
+  document.exitPointerLock = vi.fn(() => changeLock(null));
+
+  input.setCaptured(true);
+  expect(canvas.requestPointerLock).toHaveBeenCalledOnce();
+  pointer(canvas, "pointermove", { movementX: 3, movementY: -1 } as PointerEventInit);
+  pointer(canvas, "pointermove", { movementX: 2, movementY: 0 } as PointerEventInit);
+  await vi.waitFor(() => expect(sent).toEqual([{ type: "pointerMotion", dx: 10, dy: -2 }]));
+
+  // Blender let go: T3 ends the lock itself, which is no Esc.
+  input.setCaptured(false);
+  expect(document.exitPointerLock).toHaveBeenCalledOnce();
+  input.setCaptured(true);
+  sent.length = 0;
+  // The browser ended the lock on its own: it swallowed an Esc meant for Blender.
+  changeLock(null);
+  expect(sent).toEqual([
+    { type: "key", code: 1, pressed: true },
+    { type: "key", code: 1, pressed: false },
+  ]);
+});
+
+it("sends a mouse wheel as notches", () => {
+  using stream = setup();
+  const { canvas, sent } = stream;
+  const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 100 });
+  Object.defineProperty(wheel, "wheelDeltaY", { value: -120 });
+  canvas.dispatchEvent(wheel);
+  expect(wheel.defaultPrevented).toBe(true);
+  expect(sent).toEqual([
+    { type: "scroll", axis: "vertical", source: "wheel", value: 15, steps: 1 },
+  ]);
+});
+
+it("B15: sends the scrolls that took control in order, each where it was made", () => {
+  const notch = { deltaMode: 0, deltaX: 0, deltaY: 100, wheelDeltaY: -120 };
+  using stream = setup(undefined, [
+    { scroll: notch, clientX: 60, clientY: 45 },
+    { scroll: notch, clientX: 60, clientY: 45 },
+    { scroll: { ...notch, deltaY: -100, wheelDeltaY: 120 }, clientX: 110, clientY: 70 },
+  ]);
+  expect(stream.sent).toEqual([
+    { type: "pointer", x: 100, y: 50 },
+    { type: "scroll", axis: "vertical", source: "wheel", value: 15, steps: 1 },
+    { type: "scroll", axis: "vertical", source: "wheel", value: 15, steps: 1 },
+    { type: "pointer", x: 200, y: 100 },
+    { type: "scroll", axis: "vertical", source: "wheel", value: -15, steps: -1 },
+  ]);
+});
+
+it("follows chorded buttons from the buttons held, so none is left down in Blender", () => {
+  using stream = setup();
+  const { canvas, sent } = stream;
+  const at = { clientX: 60, clientY: 45 };
+  // Only the first press and the last release are pointerdown and pointerup.
+  pointer(canvas, "pointerdown", { ...at, button: 1, buttons: 4 });
+  pointer(canvas, "pointermove", { ...at, button: 2, buttons: 6 });
+  pointer(canvas, "pointermove", { ...at, button: 1, buttons: 2 });
+  pointer(canvas, "pointerup", { ...at, button: 2, buttons: 0 });
+  pointer(canvas, "pointerdown", { ...at, button: 0, buttons: 1 });
+  pointer(canvas, "pointercancel", { ...at, button: -1, buttons: 0 });
+  expect(sent.filter((message) => message.type === "button")).toEqual([
+    { type: "button", button: 274, pressed: true },
+    { type: "button", button: 273, pressed: true },
+    { type: "button", button: 274, pressed: false },
+    { type: "button", button: 273, pressed: false },
+    { type: "button", button: 272, pressed: true },
+    { type: "button", button: 272, pressed: false },
+  ]);
+});
+
+it("sends the motion queued for the next frame before a button changes", () => {
+  using stream = setup();
+  const { canvas, sent } = stream;
+  pointer(canvas, "pointerdown", { button: 0, buttons: 1, clientX: 20, clientY: 30 });
+  pointer(canvas, "pointermove", { button: -1, buttons: 1, clientX: 110, clientY: 70 });
+  pointer(canvas, "pointerup", { button: 0, buttons: 0, clientX: 110, clientY: 70 });
+  expect(sent).toEqual([
+    { type: "pointer", x: 20, y: 20 },
+    { type: "button", button: 272, pressed: true },
+    { type: "pointer", x: 200, y: 100 },
+    { type: "button", button: 272, pressed: false },
+  ]);
+});
+
+it("never presses for the click that took control, still held when control arrives", () => {
+  using stream = setup();
+  const { canvas, sent } = stream;
+  const at = { clientX: 60, clientY: 45 };
+  pointer(canvas, "pointermove", { ...at, button: -1, buttons: 1 });
+  pointer(canvas, "pointerup", { ...at, button: 0, buttons: 0 });
+  expect(sent.filter((message) => message.type === "button")).toEqual([]);
+  // The next click is the user's, in Blender.
+  pointer(canvas, "pointerdown", { ...at, button: 0, buttons: 1 });
+  expect(sent.filter((message) => message.type === "button")).toEqual([
+    { type: "button", button: 272, pressed: true },
+  ]);
+});
+
+// Annotating the pane: Blender's own render of its viewport window, and what each mark covers.
+
+const annotate = {
+  captureView: vi.fn<(value: unknown) => Promise<unknown>>(),
+  findHits: vi.fn<(value: unknown) => Promise<unknown>>(),
+};
+
+/** What a command answers when it fails. */
+const FAILED = Symbol("failed");
+
+/** A canvas of one flat colour, the size of the stream. */
+function canvasOf(color: string) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 320;
+  canvas.height = 180;
+  const context = canvas.getContext("2d")!;
+  context.fillStyle = color;
+  context.fillRect(0, 0, 320, 180);
+  return canvas;
+}
+
+/** A decoded stream frame of Blender in one flat colour. */
+const frameOf = (color: string) => new VideoFrame(canvasOf(color), { timestamp: 0 });
+
+const annotatedCopy: HostedBlenderRunningState = {
+  status: "running",
+  relativePath: "models/hero.wip-a1b2.blend",
+  dirty: false,
+};
+
+// Blender's own render of the viewport, which differs from the grey stream frame.
+const capture: HostedBlenderViewCapture = {
+  screenshot: { dataUrl: canvasOf("#ff0000").toDataURL("image/png"), width: 320, height: 180 },
+  cameraView: { position: [6, -6, 5], target: [0, 0, 0], upAxis: "z" },
+  projection: {
+    matrix: Array.from({ length: 16 }, (_, index) => (index % 5 === 0 ? 1 : 0)),
+    region: { x: 0.05, y: 0.1, width: 0.9, height: 0.85 },
+  },
+  scene: "launch:1",
+};
+
+function annotationPane() {
+  const container = document.createElement("div");
+  container.className = "flex h-96 w-[32rem] flex-col";
+  return { container };
+}
+
+function dragOn(target: Element, from: [number, number], to: [number, number]) {
+  const box = target.getBoundingClientRect();
+  const at = ([x, y]: [number, number]) => ({
+    clientX: box.left + box.width * x,
+    clientY: box.top + box.height * y,
+    pointerId: 1,
+    button: 0,
+    bubbles: true,
+  });
+  target.dispatchEvent(new PointerEvent("pointerdown", at(from)));
+  target.dispatchEvent(new PointerEvent("pointermove", at(to)));
+  target.dispatchEvent(new PointerEvent("pointerup", at(to)));
+}
+
+function annotationSetup(threadId: string, target: "window" | "output") {
+  stream.annotating = true;
+  stream.target = target;
+  stream.sent = [];
+  stream.state = annotatedCopy;
+  stream.master = { status: "none" };
+  stream.access = {} as typeof stream.access;
+  stream.captureView = annotate.captureView;
+  stream.findHits = annotate.findHits;
+  annotate.captureView.mockReset().mockResolvedValue(capture);
+  annotate.findHits
+    .mockReset()
+    .mockResolvedValue([{ object: "Cube", point: [0.2, -1, 0.4] as const }]);
+  const threadRef = scopeThreadRef(EnvironmentId.make("environment-1"), ThreadId.make(threadId));
+  return {
+    element: <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+    draft: () => useComposerDraftStore.getState().getComposerDraft(threadRef),
+  };
+}
+
+async function annotateRegion(screen: Awaited<ReturnType<typeof render>>) {
+  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
+  const surface = screen.getByRole("img", { name: "Frozen 3D view to annotate" });
+  await expect.element(surface).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Mark a region" }));
+  dragOn(surface.element(), [0.4, 0.4], [0.6, 0.6]);
+  await userEvent.fill(screen.getByRole("textbox", { name: "Annotation comment" }), "Bevel");
+  await userEvent.click(screen.getByRole("button", { name: "Add to chat" }));
+  await expect.element(surface).not.toBeInTheDocument();
+}
+
+it("freezes the pane's frame and attaches the viewport window's camera and what each mark covers", async () => {
+  const blender = annotationSetup("thread-blender-annotate", "window");
+  await using screen = await render(blender.element, annotationPane());
+  await annotateRegion(screen);
+
+  await vi.waitFor(() => expect(blender.draft()?.previewAnnotations).toHaveLength(1));
+  const annotation = blender.draft()!.previewAnnotations[0]!;
+  expect(annotation).toMatchObject({
+    pageTitle: "hero.wip-a1b2.blend · Working copy",
+    comment: "Bevel",
+    cameraView: capture.cameraView,
+  });
+  expect(annotation.regions[0]?.hit).toEqual({ object: "Cube", point: [0.2, -1, 0.4] });
+  expect(modelViewFromHref(annotation.pageUrl)).toEqual({
+    position: [6, -6, 5],
+    target: [0, 0, 0],
+  });
+  expect(annotate.captureView).toHaveBeenCalledTimes(1);
+  const request = annotate.findHits.mock.calls[0]?.[0] as {
+    input: { threadId: string; projection: unknown; marks: Array<Array<{ x: number }>> };
+  };
+  expect(request.input.projection).toEqual(capture.projection);
+  // The region's middle, as a fraction of the frozen frame, is tried first.
+  expect(request.input.marks).toHaveLength(1);
+  expect(request.input.marks[0]![0]!.x).toBeCloseTo(0.5, 2);
+  expect(blender.draft()?.images.map((image) => image.id)).toEqual([annotation.id]);
+});
+
+it("links to the file Blender rendered, opened since it started", async () => {
+  const blender = annotationSetup("thread-blender-other-file", "window");
+  annotate.captureView.mockReset().mockResolvedValue({
+    ...capture,
+    openFile: { kind: "workspace", relativePath: "models/other.blend" },
+  });
+  await using screen = await render(blender.element, annotationPane());
+  await annotateRegion(screen);
+  await vi.waitFor(() => expect(blender.draft()?.previewAnnotations).toHaveLength(1));
+  const annotation = blender.draft()!.previewAnnotations[0]!;
+  expect(annotation.pageTitle).toBe("other.blend · Master");
+  expect(annotation.pageUrl.startsWith("models/other.blend#view=")).toBe(true);
+});
+
+it("asks Blender what an arrow points at first, from its tip", async () => {
+  const blender = annotationSetup("thread-blender-arrow", "window");
+  await using screen = await render(blender.element, annotationPane());
+  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
+  const surface = screen.getByRole("img", { name: "Frozen 3D view to annotate" });
+  await expect.element(surface).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Arrow", exact: true }));
+  // The tip is at the middle, which is the frozen frame's middle however it is letterboxed.
+  dragOn(surface.element(), [0.1, 0.9], [0.5, 0.5]);
+  await userEvent.click(screen.getByRole("button", { name: "Add to chat" }));
+
+  await vi.waitFor(() => expect(blender.draft()?.previewAnnotations).toHaveLength(1));
+  const request = annotate.findHits.mock.calls[0]?.[0] as {
+    input: { marks: Array<Array<{ x: number; y: number }>> };
+  };
+  expect(request.input.marks[0]![0]!.x).toBeCloseTo(0.5, 2);
+  expect(request.input.marks[0]![0]!.y).toBeCloseTo(0.5, 2);
+  const annotation = blender.draft()!.previewAnnotations[0]!;
+  expect(annotation.strokes[0]?.hit).toEqual({ object: "Cube", point: [0.2, -1, 0.4] });
+});
+
+it("places marks even when the stream shows the whole display, since Blender rendered the view", async () => {
+  const blender = annotationSetup("thread-blender-display", "output");
+  await using screen = await render(blender.element, annotationPane());
+  await annotateRegion(screen);
+
+  await vi.waitFor(() => expect(blender.draft()?.previewAnnotations).toHaveLength(1));
+  const annotation = blender.draft()!.previewAnnotations[0]!;
+  expect(annotation.cameraView).toEqual(capture.cameraView);
+  expect(annotation.regions[0]?.hit).toEqual({ object: "Cube", point: [0.2, -1, 0.4] });
+});
+
+/** The colour in the middle of the frozen frame the editor shows. */
+async function frozenColor(screen: Awaited<ReturnType<typeof render>>) {
+  const surface = screen.getByRole("img", { name: "Frozen 3D view to annotate" });
+  await expect.element(surface).toBeVisible();
+  const href = surface.element().querySelector("image")!.getAttribute("href")!;
+  const image = new Image();
+  image.src = href;
+  await image.decode();
+  const canvas = document.createElement("canvas");
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const context = canvas.getContext("2d")!;
+  context.drawImage(image, 0, 0);
+  return Array.from(context.getImageData(160, 90, 1, 1).data.slice(0, 3));
+}
+
+it("freezes Blender's own render of the view, not the stream frame showing", async () => {
+  const blender = annotationSetup("thread-blender-render", "window");
+  await using screen = await render(blender.element, annotationPane());
+  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
+  expect(await frozenColor(screen)).toEqual([255, 0, 0]);
+});
+
+it("freezes the stream frame, without camera or marks, when Blender can't render the view", async () => {
+  const blender = annotationSetup("thread-blender-no-render", "window");
+  annotate.captureView.mockReset().mockResolvedValue(FAILED);
+  await using screen = await render(blender.element, annotationPane());
+  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
+  expect(await frozenColor(screen)).toEqual([0x3d, 0x3d, 0x3d]);
+  const surface = screen.getByRole("img", { name: "Frozen 3D view to annotate" });
+  await userEvent.click(screen.getByRole("button", { name: "Mark a region" }));
+  dragOn(surface.element(), [0.4, 0.4], [0.6, 0.6]);
+  await userEvent.click(screen.getByRole("button", { name: "Add to chat" }));
+  await vi.waitFor(() => expect(blender.draft()?.previewAnnotations).toHaveLength(1));
+  const annotation = blender.draft()!.previewAnnotations[0]!;
+  expect(annotation).not.toHaveProperty("cameraView");
+  expect(annotation.regions[0]).not.toHaveProperty("hit");
+  expect(annotate.findHits).not.toHaveBeenCalled();
+});
+
+it("hands the keyboard to the annotation editor while in control, and control back when it closes", async () => {
+  using _app = { [Symbol.dispose]: installKeyboardCapture() };
+  const blender = annotationSetup("thread-blender-in-control", "window");
+  await using screen = await render(blender.element, annotationPane());
+  await control({ canOperate: true, controller: "unclaimed" });
+  const viewport = screen.getByLabelText("Blender viewport");
+  await viewport.click();
+  await control({ canOperate: true, controller: "you" });
+  await expect.element(screen.getByText("You're in control")).toBeInTheDocument();
+  const pressA = () => {
+    for (const type of ["keydown", "keyup"])
+      viewport
+        .element()
+        .dispatchEvent(new KeyboardEvent(type, { code: "KeyA", key: "a", bubbles: true }));
+  };
+  pressA();
+  expect(stream.sent.filter((message) => message.type === "key")).toHaveLength(2);
+
+  stream.sent = [];
+  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
+  const comment = screen.getByRole("textbox", { name: "Annotation comment" });
+  await expect.element(comment).toHaveFocus();
+  await userEvent.keyboard("Bevel");
+  await expect.element(comment).toHaveValue("Bevel");
+  // The editor has the keyboard: nothing reaches Blender, and this device keeps control.
+  expect(stream.sent.filter((message) => message.type === "key")).toEqual([]);
+  expect(stream.sent).not.toContainEqual({ type: "releaseControl" });
+  await expect.element(screen.getByText("You're in control")).toBeInTheDocument();
+
+  await userEvent.keyboard("{Escape}");
+  await expect.element(comment).not.toBeInTheDocument();
+  await expect.element(viewport).toHaveFocus();
+  pressA();
+  expect(stream.sent.filter((message) => message.type === "key")).toHaveLength(2);
+  expect(stream.sent).not.toContainEqual({ type: "releaseControl" });
+});
+
+it("gives control back when focus leaves the annotation editor for elsewhere in T3", async () => {
+  using _app = { [Symbol.dispose]: installKeyboardCapture() };
+  const blender = annotationSetup("thread-blender-editor-leave", "window");
+  await using screen = await render(
+    <div className="flex flex-col">
+      <button type="button">Composer</button>
+      <div className="flex h-96 w-[32rem] flex-col">{blender.element}</div>
+    </div>,
+  );
+  await control({ canOperate: true, controller: "unclaimed" });
+  await screen.getByLabelText("Blender viewport").click();
+  await control({ canOperate: true, controller: "you" });
+  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
+  await expect.element(screen.getByRole("textbox", { name: "Annotation comment" })).toHaveFocus();
+  expect(stream.sent).not.toContainEqual({ type: "releaseControl" });
+
+  await userEvent.click(screen.getByRole("button", { name: "Composer" }));
+  expect(stream.sent).toContainEqual({ type: "releaseControl" });
+});
+
+it("keeps a grant that lands while the annotation editor has focus", async () => {
+  using _app = { [Symbol.dispose]: installKeyboardCapture() };
+  const blender = annotationSetup("thread-blender-late-grant", "window");
+  await using screen = await render(blender.element, annotationPane());
+  await control({ canOperate: true, controller: "unclaimed" });
+  await screen.getByLabelText("Blender viewport").click();
+  expect(stream.sent).toEqual([{ type: "takeControl", takeOver: false }]);
+  // The take is still on its way when the person opens the editor.
+  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
+  await expect.element(screen.getByRole("textbox", { name: "Annotation comment" })).toHaveFocus();
+  await control({ canOperate: true, controller: "you" });
+  await expect.element(screen.getByText("You're in control")).toBeInTheDocument();
+  expect(stream.sent).not.toContainEqual({ type: "releaseControl" });
 });

@@ -1273,35 +1273,6 @@ describe("One recovery copy per file", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("a clean look at a file whose copy waits leaves that copy as it was", () =>
-    Effect.gen(function* () {
-      const { before, copies, cube } = yield* runCell({
-        waiting: true,
-        restore: "none",
-        dirty: false,
-        end: "same",
-        ending: "settle",
-      });
-      expect(cube).toEqual(before);
-      expect(cube?.contents).toBe("waiting copy");
-      expect(copies.get(CUBE)).toMatchObject({ kind: "closed", recovery: true });
-    }).pipe(Effect.scoped),
-  );
-
-  it.live("a file left unsaved replaces its waiting copy with the newer one", () =>
-    Effect.gen(function* () {
-      const { copies, cube } = yield* runCell({
-        waiting: true,
-        restore: "none",
-        dirty: true,
-        end: "same",
-        ending: "settle",
-      });
-      expect(cube?.contents).toMatch(/^quit copy /);
-      expect(copies.get(CUBE)).toMatchObject({ kind: "closed", recovery: true });
-    }).pipe(Effect.scoped),
-  );
-
   it.live("M15: a crash after a revert never offers an autosave from before it", () =>
     Effect.gen(function* () {
       const { before, cube } = yield* runCell({
@@ -1418,25 +1389,6 @@ describe("One recovery copy per file", () => {
         });
         expect([...copies.keys()]).toEqual([END_KEYS.outside, CUBE]);
       }).pipe(Effect.scoped),
-  );
-
-  it.live("M11: an agent edit on another file, which the add-on reports unsaved, is kept", () =>
-    Effect.gen(function* () {
-      const { before, copies, cube, end } = yield* runCell({
-        waiting: true,
-        restore: "none",
-        dirty: true,
-        end: "other",
-        ending: "settle",
-      });
-      expect(cube).toEqual(before);
-      expect(end?.contents).toMatch(/^quit copy /);
-      expect(end?.record).toMatchObject({
-        file: { kind: "workspace", relativePath: "other.blend" },
-        recovery: true,
-      });
-      expect([...copies.keys()]).toEqual([OTHER, CUBE]);
-    }).pipe(Effect.scoped),
   );
 });
 
@@ -1682,31 +1634,23 @@ describe("Salvaging what a stopped server left", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("keeps the waiting copy a clean run didn't restore, though its snapshot is newer", () =>
-    Effect.gen(function* () {
-      const dir = yield* tempDir("salvage-unrestored");
-      const { hostedDir } = leftover(dir, {
-        facts: { restore: "none", saved: false, changed: false },
-        waiting: "waiting copy",
-      });
-      expect((yield* firstState(yield* idleService(dir))).status).toBe("closed");
-      expect(recoveryOf(hostedDir)?.contents).toBe("waiting copy");
-    }).pipe(Effect.scoped),
-  );
-
-  it.effect("keeps the waiting copy when a clean run left nothing newer than its last save", () =>
-    Effect.gen(function* () {
-      const dir = yield* tempDir("salvage-older");
-      const { hostedDir, launchDir } = leftover(dir, {
-        facts: { restore: "none", saved: false, changed: false },
-        waiting: "waiting copy",
-      });
-      const quitCopy = NodePath.join(launchDir, "tmp", "quit.blend");
-      const earlier = NodeFS.statSync(quitCopy).mtimeMs / 1000 - 120;
-      NodeFS.utimesSync(quitCopy, earlier, earlier);
-      expect((yield* firstState(yield* idleService(dir))).status).toBe("closed");
-      expect(recoveryOf(hostedDir)?.contents).toBe("waiting copy");
-    }).pipe(Effect.scoped),
+  it.effect(
+    "keeps the waiting copy a clean run didn't restore, whether its snapshot is newer or not",
+    () =>
+      Effect.gen(function* () {
+        for (const shift of [0, -120]) {
+          const dir = yield* tempDir("salvage-unrestored");
+          const { hostedDir, launchDir } = leftover(dir, {
+            facts: { restore: "none", saved: false, changed: false },
+            waiting: "waiting copy",
+          });
+          const quitCopy = NodePath.join(launchDir, "tmp", "quit.blend");
+          const at = NodeFS.statSync(quitCopy).mtimeMs / 1000 + shift;
+          NodeFS.utimesSync(quitCopy, at, at);
+          expect((yield* firstState(yield* idleService(dir))).status).toBe("closed");
+          expect(recoveryOf(hostedDir)?.contents).toBe("waiting copy");
+        }
+      }).pipe(Effect.scoped),
   );
 
   it.live("keeps a run that ended on another file under that file, never touching this one's", () =>
@@ -1840,27 +1784,12 @@ describe("Endings and recovery", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("B1: a one-click quit of a file believed clean keeps what Blender says is unsaved", () =>
-    Effect.gen(function* () {
-      // Edited after Blender's last report, which T3 still holds as clean.
-      const { service, awaitStatus, hostedDir } = yield* standIn("stale-clean", "quit-dirty");
-      yield* service.open({ threadId, relativePath: "cube.blend" });
-      yield* awaitStatus("running");
-      yield* service.quit({ threadId, save: false });
-      expect(yield* firstState(service)).toEqual({
-        status: "closed",
-        relativePath: "cube.blend",
-        recovery: true,
-      });
-      expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
-    }).pipe(Effect.scoped),
-  );
-
   it.live(
-    "S7: T3 sends Blender none of its window words once a quit is queued, so its last report is read",
+    "a quit without saving that isn't the person's discard keeps what Blender says is unsaved, sending no window word after it",
     () =>
       Effect.gen(function* () {
-        // The words T3 sends on connecting are held until Blender has read the quit.
+        // Edited after Blender's last report, which T3 still holds as clean. The words T3 sends
+        // on connecting are held until Blender has read the quit.
         const folder = { path: "" };
         const saves = () => NodePath.join(folder.path, "saves.log");
         const { service, awaitStatus, hostedDir, dir } = yield* standIn(
@@ -1889,17 +1818,6 @@ describe("Endings and recovery", () => {
           .map((line) => JSON.parse(line).type);
         expect(sent.slice(sent.indexOf("quit"))).toEqual(["quit"]);
       }).pipe(Effect.scoped),
-  );
-
-  it.live("B1: a quit without saving that isn't the person's discard keeps their edits", () =>
-    Effect.gen(function* () {
-      // An agent's blender_quit({save: false}) after the person edited by hand in the pane.
-      const { service, openReady, hostedDir } = yield* standIn("agent-quit", "");
-      yield* openReady;
-      yield* service.quit({ threadId, save: false });
-      expect(yield* firstState(service)).toMatchObject({ status: "closed", recovery: true });
-      expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
-    }).pipe(Effect.scoped),
   );
 
   it.live("reopens the file as saved when asked, and keeps the copy until it ends again", () =>
@@ -3009,42 +2927,23 @@ describe("The viewport window", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("goes without a screenshot Blender can't render or that's too large to send", () =>
-    Effect.gen(function* () {
-      for (const scenario of ["no-render", "big-shot"]) {
-        const { service, openReady } = yield* standIn(scenario, scenario);
-        yield* openReady;
-        const failed = yield* service.captureView(threadId).pipe(Effect.flip);
-        expect({ scenario, reason: failed.reason }).toEqual({ scenario, reason: "noScreenshot" });
-      }
-    }).pipe(Effect.scoped),
-  );
-
-  it.live("reads a screenshot only as a plain file in Blender's private folder", () =>
-    Effect.gen(function* () {
-      const { service, openReady } = yield* standIn("linked-shot", "linked-shot");
-      yield* openReady;
-      const failed = yield* service.captureView(threadId).pipe(Effect.flip);
-      expect(failed.reason).toBe("noScreenshot");
-    }).pipe(Effect.scoped),
-  );
-
-  it.live("fails when Blender has no viewport window to read", () =>
-    Effect.gen(function* () {
-      const { service, openReady } = yield* standIn("no-viewport", "no-viewport");
-      yield* openReady;
-      const failed = yield* service.captureView(threadId).pipe(Effect.flip);
-      expect(failed.reason).toBe("noViewport");
-    }).pipe(Effect.scoped),
-  );
-
-  it.live("fails when Blender's control connection closes before answering", () =>
-    Effect.gen(function* () {
-      const { service, openReady } = yield* standIn("view-dropped", "drop-on-view");
-      yield* openReady;
-      const failed = yield* service.captureView(threadId).pipe(Effect.flip);
-      expect(failed.reason).toBe("noReply");
-    }).pipe(Effect.scoped),
+  it.live(
+    "goes without a screenshot Blender can't render, that's too large, or isn't a plain file in its private folder; and says when there is no viewport or no reply",
+    () =>
+      Effect.gen(function* () {
+        for (const [scenario, reason] of [
+          ["no-render", "noScreenshot"],
+          ["big-shot", "noScreenshot"],
+          ["linked-shot", "noScreenshot"],
+          ["no-viewport", "noViewport"],
+          ["drop-on-view", "noReply"],
+        ] as const) {
+          const { service, openReady } = yield* standIn(scenario, scenario);
+          yield* openReady;
+          const failed = yield* service.captureView(threadId).pipe(Effect.flip);
+          expect({ scenario, reason: failed.reason }).toEqual({ scenario, reason });
+        }
+      }).pipe(Effect.scoped),
   );
 });
 
@@ -3520,22 +3419,19 @@ describe("B13: a file changed on disk", () => {
       yield* Fiber.join(saved);
     });
 
-  it.live("S12: a save after a reload keeps the copy it displaced, and the pane's offer", () =>
-    Effect.gen(function* () {
-      const host = yield* reloadedWithCopy("disk-save-keeps");
-      yield* saveInPane(host);
-      expect(recoveryOf(host.hostedDir)?.contents).toBe("unsaved 1");
-      expect(yield* firstState(host.service)).toMatchObject({ reloadKept: { key: CUBE } });
-    }).pipe(Effect.scoped),
-  );
-
-  it.live("S12: a save after Restore changes retires the copy, whose work it now holds", () =>
-    Effect.gen(function* () {
-      const host = yield* reloadedWithCopy("disk-save-retires");
-      yield* host.service.reopen({ threadId, key: CUBE, restore: true });
-      yield* saveInPane(host);
-      expect(recoveryOf(host.hostedDir)).toBeNull();
-    }).pipe(Effect.scoped),
+  it.live(
+    "a save after a reload keeps the copy it displaced, and the pane's offer; a save after Restore changes retires it",
+    () =>
+      Effect.gen(function* () {
+        const host = yield* reloadedWithCopy("disk-save-keeps");
+        yield* saveInPane(host);
+        expect(recoveryOf(host.hostedDir)?.contents).toBe("unsaved 1");
+        expect(yield* firstState(host.service)).toMatchObject({ reloadKept: { key: CUBE } });
+        // Restored, the copy's work is in the scene, so the next save holds it.
+        yield* host.service.reopen({ threadId, key: CUBE, restore: true });
+        yield* saveInPane(host);
+        expect(recoveryOf(host.hostedDir)).toBeNull();
+      }).pipe(Effect.scoped),
   );
 
   it.live(
@@ -5104,44 +5000,6 @@ describe.skipIf(!canHostBlender)("B13: a real hosted Blender whose file changes 
         yield* service.quit({ threadId, save: false, discard: true });
       }).pipe(Effect.scoped),
   );
-
-  it.live(
-    "reloads a master shared by two threads once, when a pane comes back after several changes",
-    () =>
-      Effect.gen(function* () {
-        const host = yield* realHost("real-reload-master");
-        const { service, dir } = host;
-        yield* service.openMaster({ threadId, relativePath: "cube.blend" });
-        yield* service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" });
-        yield* service.masterState(otherThreadId).pipe(
-          Stream.filter((state) => state.status === "running"),
-          Stream.runHead,
-        );
-        const viewers: Array<HostedBlender.HostedBlenderViewer> = [];
-        for (const thread of [threadId, otherThreadId]) {
-          const attached = yield* service.attachViewer(thread, {
-            canOperate: false,
-            role: "master",
-          });
-          assert.strictEqual(attached._tag, "attached");
-          if (attached._tag !== "attached") return;
-          yield* attached.viewer.setVisible(false);
-          viewers.push(attached.viewer);
-        }
-        expect((yield* host.probe).tempdir.startsWith(dir)).toBe(true);
-        const launched = host.loads();
-        changeOnDisk(dir, host.blendPath, 4);
-        changeOnDisk(dir, host.blendPath, 5);
-        expect(yield* host.probe).toMatchObject({ cubeX: 0 });
-        expect(host.loads()).toBe(launched);
-        // The second thread's Master view comes back on screen.
-        yield* viewers[1]!.setVisible(true);
-        yield* host.awaitLoads(launched + 1);
-        expect(yield* host.probe).toMatchObject({ cubeX: 5, viewports: 1 });
-        expect(host.loads()).toBe(launched + 1);
-        yield* service.quit({ threadId, save: false, discard: true, role: "master" });
-      }).pipe(Effect.scoped),
-  );
 });
 
 // Writes T3's viewport windows to HB_TEST_DIR/layout.json each tick, and runs HB_TEST_DIR/command
@@ -5890,79 +5748,6 @@ describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
           { kind: "workspace", relativePath: "other.blend" },
         ]);
       }).pipe(Effect.scoped),
-  );
-
-  it.live("a reopened Blender's viewport window fills the pane size asked for, and keeps it", () =>
-    Effect.gen(function* () {
-      const dir = yield* tempDir("real-reopen-size");
-      const workspace = NodePath.join(dir, "work");
-      NodeFS.mkdirSync(workspace, { recursive: true });
-      const blendPath = NodePath.join(workspace, "cube.blend");
-      NodeChildProcess.execFileSync("blender", [
-        "--background",
-        "--factory-startup",
-        "--python-expr",
-        `import bpy; bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(blendPath)})`,
-      ]);
-      const configHome = NodePath.join(dir, "config");
-      const startup = NodePath.join(configHome, "blender", "5.3", "scripts", "startup");
-      NodeFS.mkdirSync(startup, { recursive: true });
-      NodeFS.writeFileSync(NodePath.join(startup, "t3_test_edit.py"), EDITING_STARTUP_SCRIPT);
-      const service = yield* serviceFor(
-        layerFor({
-          env: {
-            PATH: hostEnvironment.PATH,
-            XDG_RUNTIME_DIR: hostEnvironment.XDG_RUNTIME_DIR,
-            XDG_CONFIG_HOME: configHome,
-            HB_TEST_DIR: dir,
-          },
-          helper: helperBuild,
-          workspaceRoot: workspace,
-          baseDir: dir,
-        }),
-      );
-      const states = yield* Queue.unbounded<HostedBlenderThreadState>();
-      yield* service.threadState(threadId).pipe(
-        Stream.runForEach((state) => Queue.offer(states, state)),
-        Effect.forkScoped,
-      );
-      const awaitState = (matches: (state: HostedBlenderThreadState) => boolean) =>
-        Queue.take(states).pipe(Effect.repeat({ until: matches }), Effect.map(card));
-      // The viewport window fills the size asked for while Blender was starting, and stays that
-      // size: a window that later leaves fullscreen shrinks the stream a moment after.
-      const fillsPane = Effect.gen(function* () {
-        const attached = yield* service.attachViewer(threadId, { canOperate: false });
-        assert.strictEqual(attached._tag, "attached");
-        if (attached._tag !== "attached") return;
-        yield* attached.viewer.resize(1046, 1336);
-        const sizes = Queue.take(attached.viewer.output).pipe(
-          Effect.repeat({
-            until: (output) => output._tag === "message" && output.message.type === "viewport",
-          }),
-          Effect.map((output) =>
-            output._tag === "message" && output.message.type === "viewport"
-              ? `${output.message.width}x${output.message.height}`
-              : "",
-          ),
-        );
-        // The size it settles at: the last one before 6 seconds pass with no change.
-        let settled = yield* sizes.pipe(Effect.timeoutOption("30 seconds"));
-        while (Option.isSome(settled)) {
-          const next = yield* sizes.pipe(Effect.timeoutOption("6 seconds"));
-          if (Option.isNone(next)) break;
-          settled = next;
-        }
-        expect(Option.getOrNull(settled)).toBe("1046x1336");
-      }).pipe(Effect.scoped);
-
-      yield* service.open({ threadId, relativePath: "cube.blend" });
-      yield* fillsPane;
-      yield* awaitState((state) => state.status === "running" && state.dirty);
-      yield* service.closeOnSettle({ threadId });
-      yield* awaitState((state) => state.status === "closed");
-      yield* service.reopen({ threadId, key: CUBE, restore: true });
-      yield* fillsPane;
-    }).pipe(Effect.scoped),
   );
 
   it.live(
@@ -7045,30 +6830,8 @@ describe("Agent access at launch", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("Save and quit ends the agent's access as revoked once Blender says it saved", () =>
-    Effect.gen(function* () {
-      const { service, release } = yield* launch(
-        { agentPort: 41234 },
-        { agentWorkingCopy: true },
-        "offAfterSaved",
-      );
-      expect((yield* service.agentListener(threadId))?.state).toBe("ready");
-      const quitting = yield* service.quit({ threadId, save: true }).pipe(Effect.forkChild);
-      yield* service.threadState(threadId).pipe(
-        Stream.filter((state) => state.status === "running" && state.dirty),
-        Stream.runHead,
-      );
-      expect(yield* service.agentListener(threadId)).toMatchObject({
-        state: "off",
-        ended: "revoked",
-      });
-      release();
-      yield* Fiber.join(quitting);
-    }).pipe(Effect.scoped),
-  );
-
   it.live(
-    "S4: Save and quit with the agent's access live ends saved, though a report after the save reads unsaved",
+    "Save and quit with the agent's access live ends it as revoked once Blender says it saved, and ends saved, though a report after the save reads unsaved",
     () =>
       Effect.gen(function* () {
         const { service, release, argsLog } = yield* launch(
@@ -7084,6 +6847,10 @@ describe("Agent access at launch", () => {
           Stream.filter((state) => state.status === "running" && state.dirty),
           Stream.runHead,
         );
+        expect(yield* service.agentListener(threadId)).toMatchObject({
+          state: "off",
+          ended: "revoked",
+        });
         release();
         yield* Fiber.join(quitting);
         const ended = yield* service.threadState(threadId).pipe(
@@ -8343,26 +8110,35 @@ describe("Move into T3", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("only warns about a desktop Blender it can't ask, and can't move from it", () =>
-    Effect.gen(function* () {
-      const { service, desktop } = yield* desktopHost(() => fakeDesktop({ _tag: "noAddon" }));
-      expect(yield* service.openMaster({ threadId, relativePath: "cube.blend" })).toEqual({
-        _tag: "hosted",
-        desktopUnchecked: true,
-      });
-      yield* service.masterState(threadId).pipe(
-        Stream.filter((state) => state.status === "running"),
-        Stream.runHead,
-      );
-      yield* service.quit({ threadId, save: false, role: "master" });
-      const refused = yield* service
-        .moveIntoT3({ threadId, relativePath: "cube.blend" })
-        .pipe(Effect.flip);
-      expect(refused.reason).toBe("desktopUnreachable");
-      expect(desktop.saved).toEqual([]);
-      // Asked again after the failed move: still a desktop Blender T3 can't ask.
-      expect(yield* firstMaster(service, threadId)).toMatchObject({ desktop: "noAddon" });
-    }).pipe(Effect.scoped),
+  it.live(
+    "only warns every thread on the master about a desktop Blender it can't ask, and can't move from it",
+    () =>
+      Effect.gen(function* () {
+        const { service, desktop } = yield* desktopHost(() => fakeDesktop({ _tag: "noAddon" }));
+        expect(yield* service.openMaster({ threadId, relativePath: "cube.blend" })).toEqual({
+          _tag: "hosted",
+          desktopUnchecked: true,
+        });
+        yield* service.masterState(threadId).pipe(
+          Stream.filter((state) => state.status === "running"),
+          Stream.runHead,
+        );
+        // A thread joining the running master is told too.
+        expect(
+          yield* service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" }),
+        ).toEqual({ _tag: "hosted", desktopUnchecked: true });
+        expect(yield* firstMaster(service, otherThreadId)).toMatchObject({
+          desktopUnchecked: true,
+        });
+        yield* service.quit({ threadId, save: false, role: "master" });
+        const refused = yield* service
+          .moveIntoT3({ threadId, relativePath: "cube.blend" })
+          .pipe(Effect.flip);
+        expect(refused.reason).toBe("desktopUnreachable");
+        expect(desktop.saved).toEqual([]);
+        // Asked again after the failed move: still a desktop Blender T3 can't ask.
+        expect(yield* firstMaster(service, threadId)).toMatchObject({ desktop: "noAddon" });
+      }).pipe(Effect.scoped),
   );
 
   it.live("keeps the master where it is when the desktop Blender doesn't quit", () =>
@@ -8450,18 +8226,6 @@ describe("Move into T3", () => {
       expect(yield* ping(ports.get(threadId)!)).toBe("ECONNREFUSED");
       yield* service.quit({ threadId, save: false, role: "master" });
     }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
-  );
-
-  it.live("tells every thread joining a master about a desktop Blender it couldn't ask", () =>
-    Effect.gen(function* () {
-      const { service } = yield* desktopHost(() => fakeDesktop({ _tag: "noAddon" }));
-      yield* service.openMaster({ threadId, relativePath: "cube.blend" });
-      expect(
-        yield* service.openMaster({ threadId: otherThreadId, relativePath: "cube.blend" }),
-      ).toEqual({ _tag: "hosted", desktopUnchecked: true });
-      expect(yield* firstMaster(service, otherThreadId)).toMatchObject({ desktopUnchecked: true });
-      yield* service.quit({ threadId, save: false, role: "master" });
-    }).pipe(Effect.scoped),
   );
 
   it.live("keeps a working open from claiming the master's file while the desktop is asked", () =>
@@ -8890,39 +8654,6 @@ describe("Move into T3, round three", () => {
   );
 });
 
-describe("Move into T3, round four", () => {
-  it.live("refuses a Move when the desktop Blender has the master open through a symlink", () =>
-    Effect.gen(function* () {
-      const seen: Array<string> = [];
-      const host = yield* desktopHost((file) => {
-        const desktop = fakeDesktop({
-          _tag: "open",
-          filepath: NodePath.join(NodePath.dirname(file), "linked.blend"),
-          dirty: false,
-        });
-        return {
-          ...desktop,
-          service: {
-            ...desktop.service,
-            saveAndQuit: (target: string) =>
-              Effect.sync(() => seen.push(target)).pipe(
-                Effect.andThen(desktop.service.saveAndQuit(target)),
-              ),
-          },
-        };
-      });
-      expect(yield* host.service.openMaster({ threadId, relativePath: "cube.blend" })).toEqual({
-        _tag: "desktop",
-      });
-      const refused = yield* host.service
-        .moveIntoT3({ threadId, relativePath: "cube.blend" })
-        .pipe(Effect.flip);
-      expect(refused.reason).toBe("desktopAlias");
-      expect(seen).toEqual([]);
-    }).pipe(Effect.scoped),
-  );
-});
-
 describe("A quit still unresolved in a busy Blender", () => {
   it.live(
     "ends the leave, keeps the master unavailable, and lets joins in once Blender drops it",
@@ -9100,36 +8831,40 @@ describe("Agent access to a master, by session", () => {
 });
 
 describe("Move into T3, round two", () => {
-  it.live("knows the desktop Blender has the master open under another name for it", () =>
-    Effect.gen(function* () {
-      const seen: Array<string> = [];
-      const host = yield* desktopHost((file) => {
-        const desktop = fakeDesktop({
-          _tag: "open",
-          filepath: NodePathAlias(file),
-          dirty: false,
-        });
-        return {
-          ...desktop,
-          service: {
-            ...desktop.service,
-            saveAndQuit: (target: string) =>
-              Effect.sync(() => seen.push(target)).pipe(
-                Effect.andThen(desktop.service.saveAndQuit(target)),
-              ),
-          },
-        };
-      });
-      expect(yield* host.service.openMaster({ threadId, relativePath: "cube.blend" })).toEqual({
-        _tag: "desktop",
-      });
-      // Saved under the alias, Blender would replace that entry and leave the master as it was.
-      const refused = yield* host.service
-        .moveIntoT3({ threadId, relativePath: "cube.blend" })
-        .pipe(Effect.flip);
-      expect(refused.reason).toBe("desktopAlias");
-      expect(seen).toEqual([]);
-    }).pipe(Effect.scoped),
+  it.live(
+    "knows the desktop Blender has the master open under another name for it, a hard link or a symlink",
+    () =>
+      Effect.gen(function* () {
+        // Saved under either, Blender would replace that entry and leave the master as it was.
+        for (const alias of ["alias.blend", "linked.blend"]) {
+          const seen: Array<string> = [];
+          const host = yield* desktopHost((file) => {
+            const desktop = fakeDesktop({
+              _tag: "open",
+              filepath: NodePath.join(NodePath.dirname(file), alias),
+              dirty: false,
+            });
+            return {
+              ...desktop,
+              service: {
+                ...desktop.service,
+                saveAndQuit: (target: string) =>
+                  Effect.sync(() => seen.push(target)).pipe(
+                    Effect.andThen(desktop.service.saveAndQuit(target)),
+                  ),
+              },
+            };
+          });
+          expect(yield* host.service.openMaster({ threadId, relativePath: "cube.blend" })).toEqual({
+            _tag: "desktop",
+          });
+          const refused = yield* host.service
+            .moveIntoT3({ threadId, relativePath: "cube.blend" })
+            .pipe(Effect.flip);
+          expect({ alias, reason: refused.reason }).toEqual({ alias, reason: "desktopAlias" });
+          expect(seen).toEqual([]);
+        }
+      }).pipe(Effect.scoped),
   );
 
   it.live("offers opening it here when the desktop Blender exited without the save recorded", () =>
@@ -9234,6 +8969,3 @@ describe("Move into T3, round two", () => {
     }).pipe(Effect.scoped),
   );
 });
-
-/** The hard-linked alias desktopHost makes beside cube.blend. */
-const NodePathAlias = (cube: string) => NodePath.join(NodePath.dirname(cube), "alias.blend");

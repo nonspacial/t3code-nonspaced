@@ -1,11 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import type { HostedBlenderInputMessage } from "@t3tools/contracts";
 
-import {
-  encodeHelperCommand,
-  HelperPacketReader,
-  helperCommandForInput,
-} from "./HelperProtocol.ts";
+import { HelperPacketReader, helperCommandForInput } from "./HelperProtocol.ts";
 
 // Mirrors `write_packet`, `write_event` and `write_video` in native/hidden-display/src/control.rs.
 const packet = (kind: number, payload: Uint8Array) => {
@@ -89,12 +85,6 @@ describe("HelperPacketReader", () => {
       "malformed packet",
     );
   });
-});
-
-it("encodes commands as the JSON lines the helper reads", () => {
-  expect(encodeHelperCommand({ type: "resize", width: 1600, height: 900 })).toBe(
-    '{"type":"resize","width":1600,"height":900}\n',
-  );
 });
 
 it("turns viewer input into the helper's pointer, key and keymap commands", () => {

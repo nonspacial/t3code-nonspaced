@@ -1242,6 +1242,7 @@ describe("B13: a file changed on disk", () => {
       call: agentCall,
     });
     expect(names(moved)).not.toContain("agent code");
+    expect(opens(moved)).toEqual([]);
     expect(moved.call.reply.message).toMatch(/still being written/);
     expect(moved.received).toContain("checkDisk");
     // Nothing on disk to load: the agent works on what Blender has.
@@ -1295,13 +1296,6 @@ describe("B13: a file changed on disk", () => {
       diskChanges: ["outsideChange", "changeUnheard", "shown"],
     });
     expect(opens(moving)).toHaveLength(1);
-    const unsettled = runAddon({
-      ...granted,
-      diskChanges: ["outsideChange", "changeUnheard"],
-      call: agentCall,
-    });
-    expect(opens(unsettled)).toEqual([]);
-    expect(unsettled.call.reply.message).toMatch(/still being written/);
     // Written while Blender kept its work: the work is kept, the newer file waits for T3.
     const duringCopy = runAddon({
       ...granted,
