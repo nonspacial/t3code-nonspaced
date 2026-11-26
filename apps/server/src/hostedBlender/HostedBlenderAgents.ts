@@ -12,8 +12,10 @@ import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import type * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
+import * as Duration from "effect/Duration";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -59,6 +61,9 @@ export type HostedBlenderRouteEnded =
   | HostedBlenderRouteEnd
   | { readonly staleBuild: BlenderMcpBuild }
   | null;
+
+// A session starting while setup's check runs (the first after a restart) waits this long for it.
+const CHECK_WAIT = Duration.seconds(15);
 
 /** The providers T3 adds the hosted Blender MCP to, the same two that get agentcast upstream. */
 const SUPPORTED_DRIVERS: ReadonlySet<string> = new Set(["claudeAgent", "codex"]);
@@ -125,7 +130,7 @@ export class HostedBlenderAgents extends Context.Service<
      * agent starts a thread), so it is followed here rather than depended on.
      */
     readonly followSetup: (
-      readiness: Stream.Stream<HostedBlenderSetup.HostedBlenderReadiness>,
+      progress: Stream.Stream<HostedBlenderSetup.HostedBlenderSetupProgress>,
     ) => Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/hostedBlender/HostedBlenderAgents") {}
@@ -144,6 +149,8 @@ const make = Effect.gen(function* () {
   const revoked = yield* PubSub.unbounded<HostedBlenderRevocation | null>();
   const routeEnded = yield* PubSub.unbounded<HostedBlenderRouteEnded>();
   let readiness: HostedBlenderSetup.HostedBlenderReadiness | null = null;
+  // Set after `readiness`, so a session that sees a check end reads that check's answer.
+  const checking = yield* SubscriptionRef.make(false);
   const portLock = yield* Semaphore.make(1);
   const tmpDir = path.join(config.stateDir, "hosted-blender", "mcp-tmp");
 
@@ -178,7 +185,15 @@ const make = Effect.gen(function* () {
   )(
     function* ({ threadId, driver }) {
       if (!SUPPORTED_DRIVERS.has(driver) || !(yield* agentsAllowed)) return undefined;
-      // Passive: a session start never runs the setup check.
+      // Passive: a session start never runs the setup check, but waits a moment for one under
+      // way, or a session started just after a restart would go without Blender for its life.
+      if (readiness?.status !== "ok" && (yield* SubscriptionRef.get(checking))) {
+        yield* SubscriptionRef.changes(checking).pipe(
+          Stream.filter((running) => !running),
+          Stream.runHead,
+          Effect.timeoutOption(CHECK_WAIT),
+        );
+      }
       const ready = readiness;
       if (ready?.status !== "ok" || ready.blenderMcp === null) return undefined;
       const masterPort = yield* portsFor(threadId);
@@ -230,10 +245,12 @@ const make = Effect.gen(function* () {
     function* (stream) {
       const first = yield* Deferred.make<void>();
       yield* stream.pipe(
-        Stream.runForEach((next) =>
+        Stream.runForEach((progress) =>
           Effect.gen(function* () {
+            const next = progress.readiness;
             const before = captureOf(readiness);
             readiness = next;
+            yield* SubscriptionRef.set(checking, progress.checking);
             const after = captureOf(next);
             // A server a session runs must be the build whose tools it was shown.
             if (
@@ -312,7 +329,7 @@ export const layerFollowSetup = Layer.effectDiscard(
   Effect.gen(function* () {
     const agents = yield* HostedBlenderAgents;
     const setup = yield* HostedBlenderSetup.HostedBlenderSetup;
-    yield* agents.followSetup(setup.readiness);
+    yield* agents.followSetup(setup.progress);
     if (yield* agents.agentsAllowed) yield* setup.ensureChecked.pipe(Effect.forkScoped);
   }),
 );

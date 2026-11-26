@@ -136,6 +136,7 @@ const layerFor = (host: Host) =>
               Stream.succeed(readinessFor(host)),
               host.readinessChanges ?? Stream.never,
             ),
+            progress: Stream.never,
           }),
         ),
         Layer.mock(ThreadManagementService.ThreadManagementService)({

@@ -84,6 +84,11 @@ export type HostedBlenderReadiness =
     }
   | Extract<HostedBlenderThreadState, { status: "unavailable" | "notSetUp" }>;
 
+export interface HostedBlenderSetupProgress {
+  readonly readiness: HostedBlenderReadiness;
+  readonly checking: boolean;
+}
+
 /**
  * Hosted Blender's setup: the check of what the host has (remembered until "Check again"),
  * the Hosted Blender switch, and "Install with an agent". T3 never installs system packages.
@@ -106,6 +111,8 @@ export class HostedBlenderSetup extends Context.Service<
     readonly installWithAgent: Effect.Effect<HostedBlenderInstallResult, HostedBlenderSetupError>;
     /** Follows the switch and the last check; passive, like `state`. */
     readonly readiness: Stream.Stream<HostedBlenderReadiness>;
+    /** `readiness` and whether a check that may change it is running, read together. */
+    readonly progress: Stream.Stream<HostedBlenderSetupProgress>;
   }
 >()("t3/hostedBlender/HostedBlenderSetup") {}
 
@@ -553,20 +560,31 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
     }),
   ).pipe(Stream.changes);
 
-  const readiness: HostedBlenderSetup["Service"]["readiness"] =
+  const progress: HostedBlenderSetup["Service"]["progress"] = (
     platform !== "linux"
       ? Stream.concat(
-          Stream.succeed<HostedBlenderReadiness>({ status: "unavailable", reason: "platform" }),
+          Stream.succeed<HostedBlenderSetupProgress>({
+            readiness: { status: "unavailable", reason: "platform" },
+            checking: false,
+          }),
           Stream.never,
         )
       : enabledChanges.pipe(
           Stream.switchMap((enabled) =>
             SubscriptionRef.changes(ref).pipe(
-              Stream.map((internal) => readinessOf(enabled, internal)),
+              Stream.map((internal): HostedBlenderSetupProgress => ({
+                readiness: readinessOf(enabled, internal),
+                checking: internal.state.checking,
+              })),
             ),
           ),
-          Stream.changesWith((a, b) => JSON.stringify(a) === JSON.stringify(b)),
-        );
+        )
+  ).pipe(Stream.changesWith((a, b) => JSON.stringify(a) === JSON.stringify(b)));
+
+  const readiness: HostedBlenderSetup["Service"]["readiness"] = progress.pipe(
+    Stream.map((next) => next.readiness),
+    Stream.changesWith((a, b) => JSON.stringify(a) === JSON.stringify(b)),
+  );
 
   // Switching Hosted Blender on (settings write access) checks the server; its starting value doesn't.
   if (platform === "linux") {
@@ -699,6 +717,7 @@ export const makeWith = Effect.fn("HostedBlenderSetup.make")(function* (options:
     ensureCheckedForOpen,
     installWithAgent,
     readiness,
+    progress,
   });
 });
 

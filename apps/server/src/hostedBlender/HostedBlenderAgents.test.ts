@@ -16,6 +16,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -65,6 +66,9 @@ const layerFor = (input: {
   readonly readiness?: HostedBlenderSetup.HostedBlenderReadiness;
   /** What setup reports after its first readiness, as checks run. */
   readonly readinessChanges?: Queue.Queue<HostedBlenderSetup.HostedBlenderReadiness>;
+  /** A check is running as the layer starts; `progressChanges` says what follows. */
+  readonly checking?: boolean;
+  readonly progressChanges?: Queue.Queue<HostedBlenderSetup.HostedBlenderSetupProgress>;
   readonly checks?: Array<"check">;
   /** What the loopback probe answers, in turn, instead of real free ports. */
   readonly probes?: Array<number>;
@@ -87,11 +91,19 @@ const layerFor = (input: {
             }),
             ensureCheckedForOpen: Effect.void,
             installWithAgent: Effect.die("not used"),
-            readiness: Stream.concat(
-              Stream.succeed(input.readiness ?? READY),
-              input.readinessChanges === undefined
-                ? Stream.never
-                : Stream.fromQueue(input.readinessChanges),
+            readiness: Stream.never,
+            progress: Stream.concat(
+              Stream.succeed({
+                readiness: input.readiness ?? READY,
+                checking: input.checking ?? false,
+              }),
+              input.progressChanges !== undefined
+                ? Stream.fromQueue(input.progressChanges)
+                : input.readinessChanges === undefined
+                  ? Stream.never
+                  : Stream.fromQueue(input.readinessChanges).pipe(
+                      Stream.map((readiness) => ({ readiness, checking: false })),
+                    ),
             ),
           }),
         ),
@@ -172,6 +184,51 @@ describe("HostedBlenderAgents.sessionLaunch", () => {
         }),
       ),
     ),
+  );
+
+  it.effect(
+    "waits briefly for a setup check under way at its start, then decides on its answer",
+    () => {
+      const unchecked: HostedBlenderSetup.HostedBlenderReadiness = {
+        status: "notSetUp",
+        missing: ["check"],
+      };
+      const missing: HostedBlenderSetup.HostedBlenderReadiness = {
+        status: "notSetUp",
+        missing: ["blender"],
+      };
+      return Effect.gen(function* () {
+        const changes = yield* Queue.unbounded<HostedBlenderSetup.HostedBlenderSetupProgress>();
+        yield* Effect.gen(function* () {
+          const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
+          const launch = (id: string) =>
+            agents
+              .sessionLaunch({ threadId: ThreadId.make(id), driver: claude })
+              .pipe(Effect.forkChild);
+          // The check finds Blender missing: nothing, once it says so.
+          const notReady = yield* launch("thread-not-ready");
+          yield* TestClock.adjust("1 second");
+          assert.isUndefined(notReady.pollUnsafe());
+          yield* Queue.offer(changes, { readiness: missing, checking: false });
+          assert.isUndefined(yield* Fiber.join(notReady));
+          // A check that outlasts the wait: decided as it stands.
+          yield* Queue.offer(changes, { readiness: unchecked, checking: true });
+          const outlasted = yield* launch("thread-outlasted");
+          yield* TestClock.adjust("15 seconds");
+          assert.isUndefined(yield* Fiber.join(outlasted));
+          // The check finds it ready: the session gets Blender.
+          const ready = yield* launch("thread-ready");
+          yield* TestClock.adjust("1 second");
+          assert.isUndefined(ready.pollUnsafe());
+          yield* Queue.offer(changes, { readiness: READY, checking: false });
+          assert.strictEqual((yield* Fiber.join(ready))?.command, READY.blenderMcp);
+        }).pipe(
+          Effect.provide(
+            layerFor({ readiness: unchecked, checking: true, progressChanges: changes }),
+          ),
+        );
+      });
+    },
   );
 });
 
