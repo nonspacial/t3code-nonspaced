@@ -194,7 +194,8 @@ export function BlendFilePreview(props: {
     );
   const action =
     preview === null ? null : converts && large && !asked ? (
-      <div className="absolute start-2 bottom-2 flex max-w-[calc(100%-14rem)] flex-col items-start gap-1">
+      // Beside the details card where both fit, above it in a narrow preview.
+      <div className="absolute start-2 bottom-2 flex max-w-[calc(100%-14rem)] flex-col items-start gap-1 @max-md:bottom-24 @max-md:max-w-[calc(100%-1rem)]">
         <Button
           size="xs"
           variant="glass"
@@ -203,10 +204,17 @@ export function BlendFilePreview(props: {
           <T>Show 3D view</T>
         </Button>
         <span className="min-w-0 text-muted-foreground text-xs">
-          <T>
-            Converts this <Var>{formatBytes(largeBytes)}</Var> file with Blender on the server,
-            which loads the whole scene.
-          </T>
+          {largeBytes > BLEND_LARGE_FILE_BYTES ? (
+            <T>
+              Converts this <Var>{formatBytes(largeBytes)}</Var> file with Blender on the server,
+              which loads the whole scene.
+            </T>
+          ) : (
+            <T>
+              This compressed file is over <Var>{formatBytes(BLEND_LARGE_FILE_BYTES)}</Var> once
+              opened. Converting it with Blender on the server loads the whole scene.
+            </T>
+          )}
         </span>
       </div>
     ) : (
@@ -253,7 +261,7 @@ export function BlendFilePreview(props: {
   }
 
   return (
-    <div className="relative min-h-0 flex-1 overflow-hidden bg-radial from-background to-muted to-90%">
+    <div className="@container relative min-h-0 flex-1 overflow-hidden bg-radial from-background to-muted to-90%">
       {preview ? (
         <div className="absolute inset-0 flex items-center justify-center p-10">
           {preview.thumbnail ? (

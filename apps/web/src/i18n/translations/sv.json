@@ -13103,6 +13103,30 @@
   "3f25b97ec987231e": "Blender kunde inte öppna filen på den dolda skärmen. Kontrollera att Blender kan öppna den och att GStreamer har en H.264-kodare, och öppna den sedan i Hosted Blender igen.",
   "c9d23ccb15073177": "Blender kraschade",
   "9f406050b6efb934": "Blender stängdes",
+  "5bb5a35408a98d44": [
+    "Blender hade ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " öppen i stället för huvudfilen, så T3 Code kan inte öppna den igen här. Dess osparade ändringar finns i ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "30c3fba6cec25d84": [
+    "Blender hade ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " öppen i stället för huvudfilen, så T3 Code kan inte öppna den igen här."
+  ],
   "0693a88b1530f8eb": [
     {
       "i": 1,
@@ -13304,6 +13328,15 @@
       "v": "v"
     },
     " med Blender på servern, som läser in hela scenen."
+  ],
+  "757bc09b09dce86a": [
+    "Den här komprimerade filen är större än ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " när den öppnas. Att konvertera den med Blender på servern läser in hela scenen."
   ],
   "71f9aa2ee31aac46": "Ingen miniatyr sparad i den här filen",
   "27088355449cdd28": "Scendetaljer",

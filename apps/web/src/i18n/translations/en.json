@@ -13106,6 +13106,30 @@
   "3f25b97ec987231e": "Blender couldn't open the file on the hidden display. Check that Blender opens it and that GStreamer has an H.264 encoder, then open it in hosted Blender again.",
   "c9d23ccb15073177": "Blender crashed",
   "9f406050b6efb934": "Blender was closed",
+  "5bb5a35408a98d44": [
+    "Blender had ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " open instead of the master file, so T3 Code can't reopen it here. Its unsaved changes are kept at ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "30c3fba6cec25d84": [
+    "Blender had ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " open instead of the master file, so T3 Code can't reopen it here."
+  ],
   "0693a88b1530f8eb": [
     {
       "i": 1,
@@ -13307,6 +13331,15 @@
       "v": "v"
     },
     " file with Blender on the server, which loads the whole scene."
+  ],
+  "757bc09b09dce86a": [
+    "This compressed file is over ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " once opened. Converting it with Blender on the server loads the whole scene."
   ],
   "71f9aa2ee31aac46": "No thumbnail saved in this file",
   "27088355449cdd28": "Scene details",

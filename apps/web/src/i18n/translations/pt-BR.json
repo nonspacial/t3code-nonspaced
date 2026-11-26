@@ -13096,6 +13096,30 @@
   "3f25b97ec987231e": "O Blender não conseguiu abrir o arquivo na tela oculta. Verifique se o Blender o abre e se o GStreamer tem um codificador H.264 e abra-o de novo no Hosted Blender.",
   "c9d23ccb15073177": "O Blender travou",
   "9f406050b6efb934": "O Blender foi fechado",
+  "5bb5a35408a98d44": [
+    "O Blender estava com ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " aberto em vez do arquivo mestre, então o T3 Code não pode reabri-lo aqui. As alterações não salvas estão em ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "30c3fba6cec25d84": [
+    "O Blender estava com ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " aberto em vez do arquivo mestre, então o T3 Code não pode reabri-lo aqui."
+  ],
   "0693a88b1530f8eb": [
     {
       "i": 1,
@@ -13297,6 +13321,15 @@
       "v": "v"
     },
     " com o Blender no servidor, que carrega a cena inteira."
+  ],
+  "757bc09b09dce86a": [
+    "Este arquivo compactado passa de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " quando aberto. Convertê-lo com o Blender no servidor carrega a cena inteira."
   ],
   "71f9aa2ee31aac46": "Nenhuma miniatura salva neste arquivo",
   "27088355449cdd28": "Detalhes da cena",

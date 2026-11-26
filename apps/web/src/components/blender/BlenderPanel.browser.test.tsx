@@ -1214,6 +1214,45 @@ it("shows the master's one copy on the Master side, and the working side's own c
     .toBeInTheDocument();
 });
 
+it("shows a master's copy of another file it had open, with where it is and a way to open the master", async () => {
+  using _app = startup();
+  const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
+  const { Atom } = await import("effect/reactivity");
+  vi.spyOn(hostedBlenderEnvironment.openMaster, "permissionAtom").mockReturnValue(
+    Atom.make(true) as never,
+  );
+  await canReopen();
+  stream.state = { status: "none" };
+  stream.master = {
+    status: "closed",
+    relativePath: "models/hero.blend",
+    copies: [
+      {
+        key: "outside:/real/models/other.blend",
+        kind: "closed",
+        file: { kind: "outside", path: "/real/models/other.blend" },
+        copyPath: "/state/recovery/master/abc/session.blend",
+        recovery: true,
+        keptAt: 1,
+      },
+    ],
+  };
+  await using screen = await render(
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>,
+  );
+  await screen.getByRole("button", { name: "Master" }).click();
+  await expect
+    .element(
+      screen.getByText("Blender had other.blend open instead of the master file", { exact: false }),
+    )
+    .toBeInTheDocument();
+  await expect.element(screen.getByRole("button", { name: "Copy path" })).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Open hero.blend" })).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Reopen" })).not.toBeInTheDocument();
+});
+
 it("offers Move into T3 Code for a master open in the desktop Blender, and warns without its add-on", async () => {
   using _app = startup();
   stream.state = { status: "stopped" };

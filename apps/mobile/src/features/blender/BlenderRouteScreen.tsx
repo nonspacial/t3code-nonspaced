@@ -506,7 +506,11 @@ function KeptCopyCard(props: {
     const input = { threadId: props.threadId, key: copy.key };
     const result = await (
       action === "dismiss"
-        ? dismiss({ environmentId: props.environmentId, input })
+        ? // `copy` is the one the confirmation showed: a copy kept since is left alone.
+          dismiss({
+            environmentId: props.environmentId,
+            input: { ...input, ...(copy.keptAt === undefined ? {} : { keptAt: copy.keptAt }) },
+          })
         : reopen({
             environmentId: props.environmentId,
             input: { ...input, restore: action === "restore" },

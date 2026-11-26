@@ -381,6 +381,11 @@ const RecoveryRecord = Schema.Struct({
   keptAt: Schema.Number,
   /** Kept as Blender reloaded the file from disk, so the file there is newer than this. */
   reloaded: Schema.optional(Schema.Boolean),
+  /**
+   * Kept by a master Blender that had another file open: the master file's real path, whose
+   * Master side offers this copy.
+   */
+  master: Schema.optional(Schema.String),
 });
 type RecoveryRecord = typeof RecoveryRecord.Type;
 const RecoveryRecordJson = Schema.fromJsonString(RecoveryRecord);
@@ -429,6 +434,8 @@ const RunFacts = Schema.fromJsonString(
     retires: Schema.optional(Schema.NullOr(Schema.Number)),
     /** Blender last reported that file clean. */
     clean: Schema.Boolean,
+    /** Released at shutdown after taking the person's discard, which `retires` names the copy of. */
+    discarded: Schema.optional(Schema.Boolean),
   }),
 );
 const decodeRunFacts = Schema.decodeUnknownOption(RunFacts);
@@ -560,7 +567,7 @@ export class HostedBlender extends Context.Service<
      * Discards one kept copy, or clears a failed start. Nothing changes while the thread's
      * Blender runs.
      */
-    readonly dismiss: (input: HostedBlenderDismissInput) => Effect.Effect<void>;
+    readonly dismiss: (input: HostedBlenderDismissInput) => Effect.Effect<void, HostedBlenderError>;
     /** Every copy the thread keeps, newest first, running Blender or not. */
     readonly keptCopies: (
       threadId: ThreadId,
@@ -1014,6 +1021,7 @@ const make = Effect.gen(function* () {
           kind: record.kind,
           file: record.file,
           recovery: record.recovery,
+          keptAt: record.keptAt,
           ...(record.reloaded === true ? { reloaded: true } : {}),
           ...(failedRestores.has(copyId(threadId, key)) ? { restoreFailed: true } : {}),
           ...(missingOriginals.has(copyId(threadId, key)) ? { missing: true } : {}),
@@ -1065,6 +1073,22 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  /**
+   * The master copy a thread's Master side shows, while none runs: the newest of its master
+   * file's and those kept of another file its master Blender had open. `own` is the former.
+   */
+  const masterCopyOf = (threadId: ThreadId) => {
+    const known = threadMasters.get(threadId);
+    if (known === undefined) return undefined;
+    const ownKey = fileKeyOf(masterFileOf(known.blendPath));
+    const [newest] = Array.from(records.get(MASTER_OWNER) ?? [])
+      .filter(([key, record]) => key === ownKey || record.master === known.blendPath)
+      .toSorted(([, a], [, b]) => b.keptAt - a.keptAt);
+    return newest === undefined
+      ? undefined
+      : { known, key: newest[0], record: newest[1], own: newest[0] === ownKey };
+  };
+
   // A running Blender outranks what an earlier one left to reopen, and that outranks a failed
   // start, so a restore that fails to start still offers its recovery copy.
   const masterStateOf = (threadId: ThreadId): HostedBlenderMasterState => {
@@ -1083,10 +1107,11 @@ const make = Effect.gen(function* () {
         ...(instance.desktopUnchecked ? { desktopUnchecked: true } : {}),
       };
     }
-    // The master's one copy, shown to each thread under its own name for the file.
-    const key = fileKeyOf(masterFileOf(known.blendPath));
-    const record = records.get(MASTER_OWNER)?.get(key);
-    if (record !== undefined) {
+    // The master's one copy, shown to each thread under its own name for the file. One of
+    // another file its master Blender had open is shown by that file's path, with where it is.
+    const copy = masterCopyOf(threadId);
+    if (copy !== undefined) {
+      const { key, record, own } = copy;
       return {
         status: record.kind,
         relativePath: known.relativePath,
@@ -1094,8 +1119,10 @@ const make = Effect.gen(function* () {
           {
             key,
             kind: record.kind,
-            file: { kind: "workspace", relativePath: known.relativePath },
+            file: own ? { kind: "workspace", relativePath: known.relativePath } : record.file,
+            ...(!own && record.recovery ? { copyPath: sessionPath(MASTER_OWNER, key) } : {}),
             recovery: record.recovery,
+            keptAt: record.keptAt,
             ...(record.reloaded === true ? { reloaded: true } : {}),
             ...(failedRestores.has(copyId(MASTER_OWNER, key)) ? { restoreFailed: true } : {}),
             ...(missingOriginals.has(copyId(MASTER_OWNER, key))
@@ -1218,6 +1245,7 @@ const make = Effect.gen(function* () {
     readonly endFile: EndFile;
     readonly kind: RecoveryRecord["kind"];
     readonly tmpDir: string;
+    readonly master?: string | undefined;
   }) {
     yield* recordLock.withPermits(1)(keepSnapshot(input));
   });
@@ -1226,9 +1254,15 @@ const make = Effect.gen(function* () {
     readonly endFile: EndFile;
     readonly kind: RecoveryRecord["kind"];
     readonly tmpDir: string;
+    /** The master file of the master Blender that kept it. */
+    readonly master?: string | undefined;
   }) {
     const { file, since } = input.endFile;
     const key = fileKeyOf(file);
+    const master =
+      input.master !== undefined && key !== fileKeyOf(masterFileOf(input.master))
+        ? { master: input.master }
+        : {};
     const names = yield* fileSystem
       .readDirectory(input.tmpDir)
       .pipe(Effect.orElseSucceed(() => []));
@@ -1264,7 +1298,14 @@ const make = Effect.gen(function* () {
       yield* moveStaged(
         input.threadId,
         key,
-        { threadId: input.threadId, file, kind: input.kind, recovery: true, keptAt: captured },
+        {
+          threadId: input.threadId,
+          file,
+          kind: input.kind,
+          recovery: true,
+          keptAt: captured,
+          ...master,
+        },
         path.join(input.tmpDir, snapshot),
       );
       return;
@@ -1277,6 +1318,7 @@ const make = Effect.gen(function* () {
       kind: input.kind,
       recovery: false,
       keptAt: yield* Clock.currentTimeMillis,
+      ...master,
     });
   });
 
@@ -1308,20 +1350,24 @@ const make = Effect.gen(function* () {
 
   /** Saved beside the launch as they change, so salvage can apply the same cleanup. */
   const writeRunFacts = (instance: Instance) =>
-    instance.stateDir === null
-      ? Effect.void
-      : writeAtomically(path.join(instance.stateDir, "run.json"), (to) =>
-          fileSystem.writeFileString(
-            to,
-            encodeRunFacts({
-              restore: instance.restore,
-              endFile: instance.endFile,
-              saved: instance.saved,
-              retires: instance.retires,
-              clean: instance.clean,
-            }),
-          ),
-        ).pipe(Effect.ignore);
+    Effect.suspend(() => {
+      if (instance.stateDir === null) return Effect.void;
+      // A released discard ends as its live end would: the copy whose work it discarded goes.
+      const discarded = instance.released && quitEndingOf(instance).discarded;
+      return writeAtomically(path.join(instance.stateDir, "run.json"), (to) =>
+        fileSystem.writeFileString(
+          to,
+          encodeRunFacts({
+            restore: instance.restore,
+            endFile: instance.endFile,
+            saved: instance.saved,
+            retires: discarded ? copyHeld(instance) : instance.retires,
+            clean: instance.clean,
+            ...(discarded ? { discarded: true } : {}),
+          }),
+        ),
+      ).pipe(Effect.ignore);
+    });
 
   /** Applies a run's cleanup, its end or salvaged; a failure leaves the launch for later. */
   const applyCleanup = Effect.fnUntraced(function* (
@@ -1334,6 +1380,7 @@ const make = Effect.gen(function* () {
        * facts from before saves named one.
        */
       readonly retires: number | null | "any";
+      readonly master?: string | undefined;
     },
     cleanup: ReturnType<typeof cleanupOf>,
   ) {
@@ -1477,7 +1524,12 @@ const make = Effect.gen(function* () {
         );
         // T3 was closing it, or it stopped with the server: a crash, for all T3 knows.
         const outcome = yield* read("outcome");
-        const ending = outcome === "closing" || outcome === "released" ? "closed" : "crashed";
+        const discarded = outcome === "released" && facts.discarded === true;
+        const ending = discarded
+          ? "stopped"
+          : outcome === "closing" || outcome === "released"
+            ? "closed"
+            : "crashed";
         // A launch from before reloads staged nothing.
         const { role, workspaceRoot } = launch.value;
         if (role !== undefined && workspaceRoot !== undefined) {
@@ -1488,14 +1540,21 @@ const make = Effect.gen(function* () {
             tmpDir: path.join(launchDir, "tmp"),
           });
         }
+        const master =
+          role === "master" && workspaceRoot !== undefined
+            ? yield* fileSystem
+                .realPath(path.join(workspaceRoot, relativePath))
+                .pipe(Effect.orElseSucceed(() => path.join(workspaceRoot, relativePath)))
+            : undefined;
         yield* applyCleanup(
           {
             threadId,
             endFile: facts.endFile,
             tmpDir: path.join(launchDir, "tmp"),
             retires: facts.retires === undefined ? "any" : facts.retires,
+            master,
           },
-          cleanupOf({ ...facts, ending }),
+          cleanupOf({ ...facts, discarded, ending }),
         );
       }
       yield* fileSystem.remove(launchDir, { recursive: true, force: true });
@@ -2290,8 +2349,7 @@ const make = Effect.gen(function* () {
       ({ quit, phase }) =>
         quit.heard._tag === "accepted" ||
         (quit.kind === "discard" && phase === "stopping") ||
-        (quit.kind === "stop" && quitLive({ ...quit, phase })) ||
-        (quit.kind === "ifClean" && (phase === "asking" || phase === "cancelling")),
+        (quit.kind === "stop" && quitLive({ ...quit, phase })),
     );
     const discarded = exits.some(
       ({ quit, phase }) =>
@@ -3001,6 +3059,7 @@ const make = Effect.gen(function* () {
               endFile: instance.endFile,
               tmpDir: path.join(stateDir, "tmp"),
               retires: intent.discarded ? held : instance.retires,
+              ...(instance.role === "master" ? { master: instance.blendPath } : {}),
             },
             cleanupOf({
               restore: instance.restore,
@@ -3517,15 +3576,6 @@ const make = Effect.gen(function* () {
     );
   });
 
-  /** The master copy a thread's Master side shows: its master file's, while none runs. */
-  const masterCopyOf = (threadId: ThreadId) => {
-    const known = threadMasters.get(threadId);
-    if (known === undefined) return undefined;
-    const key = fileKeyOf(masterFileOf(known.blendPath));
-    const record = records.get(MASTER_OWNER)?.get(key);
-    return record === undefined ? undefined : { known, key, record };
-  };
-
   const reopen: HostedBlender["Service"]["reopen"] = Effect.fn("HostedBlender.reopen")(function* (
     { threadId, key, restore, role, replaceUnsaved },
     options,
@@ -3546,6 +3596,8 @@ const make = Effect.gen(function* () {
       if (copy === undefined || copy.key !== key) {
         return yield* new HostedBlenderError({ reason: "nothingToReopen" });
       }
+      // Another file's copy can't be restored as this master; the card says where it is.
+      if (!copy.own) return yield* new HostedBlenderError({ reason: "notInWorkspace" });
       failedRestores.delete(copyId(MASTER_OWNER, key));
       // Restored in the master Blender, which this thread joins; others then join it as usual.
       return yield* openMasterFile(
@@ -3659,19 +3711,26 @@ const make = Effect.gen(function* () {
   });
 
   const dismiss: HostedBlender["Service"]["dismiss"] = Effect.fn("HostedBlender.dismiss")(
-    function* ({ threadId, key, role }) {
+    function* ({ threadId, key, role, keptAt }) {
       yield* Effect.annotateCurrentSpan({ threadId, role });
       yield* afterSalvage;
+      // A Blender released at shutdown is still writing that copy, which would come back.
+      if (key !== undefined && releasedHolds(role === "master" ? MASTER_OWNER : threadId, key)) {
+        return yield* new HostedBlenderError({ reason: "stillSaving" });
+      }
       if (role === "master") {
         const copy = masterCopyOf(threadId);
         if (copy === undefined || copy.key !== key) return;
         if (instances.has(masterKey(copy.known.blendPath))) return;
-        if (yield* forgetCopy(MASTER_OWNER, copy.key)) yield* publishNow();
+        // A copy kept since the person chose to discard is one they never saw: it stays.
+        if (yield* forgetCopy(MASTER_OWNER, copy.key, keptAt)) yield* publishNow();
         return;
       }
       if (instances.has(threadId)) return;
       const changed =
-        key === undefined ? failedStarts.delete(threadId) : yield* forgetCopy(threadId, key);
+        key === undefined
+          ? failedStarts.delete(threadId)
+          : yield* forgetCopy(threadId, key, keptAt);
       if (changed) yield* publishNow();
     },
   );
@@ -3719,6 +3778,8 @@ const make = Effect.gen(function* () {
     // the only copy of its latest work: it is left to finish, never stopped mid-write.
     if (deadline.shutdown && acknowledged(instance)) {
       instance.released = true;
+      // Before the outcome, so a salvage that reads `released` reads the discard with it.
+      yield* writeRunFacts(instance);
       if (instance.stateDir !== null) {
         yield* fileSystem
           .writeFileString(path.join(instance.stateDir, "outcome"), "released")
@@ -3879,6 +3940,19 @@ const make = Effect.gen(function* () {
     const live = instance.quit;
     if (live?.kind === "close" && quitLive(live)) {
       if (live.by === "person" && (by === "settle" || by === "switchOff")) live.by = by;
+      // Blender's answer to that close answers this one: the edits that hold it, or too late.
+      const answered = holds
+        ? yield* within(
+            Effect.raceFirst(
+              Deferred.await(instance.ended).pipe(Effect.as(false)),
+              Deferred.await(live.settled).pipe(Effect.as(true)),
+            ),
+            given,
+          )
+        : Option.none();
+      if (Option.isSome(answered) && answered.value) {
+        return live.heard._tag === "held" ? live.heard.edits : ("expired" as const);
+      }
       return yield* awaitEnded(instance, given, live, holds);
     }
     // Marked first, so a connection dropping during the stop reads as this close, not a loss.
@@ -4214,9 +4288,9 @@ const make = Effect.gen(function* () {
         if (instance.pendingSave !== started) return Effect.void;
         instance.pendingSave = null;
         request.phase = "gaveUp";
-        // Blender stays open after a failed save: capture follows the panes again, and a change
-        // on disk seen meanwhile, or that refused it, is caught up with.
-        return applyCapture(instance).pipe(Effect.andThen(checkWaitingDisk(instance)));
+        // Blender stays open after a failed save: capture follows the panes again, a change on
+        // disk seen meanwhile, or that refused it, is caught up with, and held words go again.
+        return stayOpen(instance);
       });
       yield* saveThenQuit(instance, control, request).pipe(
         // Only a failure clears it, before answering, so a retry starts a new save.
