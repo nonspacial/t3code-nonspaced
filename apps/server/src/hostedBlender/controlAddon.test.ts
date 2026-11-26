@@ -960,6 +960,7 @@ const runAddon = (input: {
   readonly recover?: boolean;
   readonly then?:
     | "stuckViewport"
+    | "settledWords"
     | "ownChanged"
     | "lateMarked"
     | "loadInSession"

@@ -57,8 +57,7 @@ that capture, and the add-on splits only once T3 has also said the capture's mod
 `display`: an output size its window fills, or the whole output. Unknown, it waits; a window
 that never fills the output stays whole and capturable. T3's words that shape the window go out
 one at a time, the Timeline's read as it is written, and none once a quit is queued: a Blender
-that closes with a command unread can make T3's end of the socket drop its last report. With
-the whole output streamed there is nothing to wait for. Once captured, the helper keeps the
+that closes with a command unread can make T3's end of the socket drop its last report. Once captured, the helper keeps the
 window whatever its title becomes. Screenshots, marks, view capture and view links read the 3D
 view's own area and region, never the strip's; the stream and the pane's size follow the whole
 window.
