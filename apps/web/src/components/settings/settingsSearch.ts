@@ -1155,6 +1155,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("hosted blender quit memory 3d thread")],
   },
   {
+    id: "held-working-copies",
+    title: msg("Held working copies"),
+    to: "/settings/blender",
+    targetId: "held-working-copies",
+    searchTerms: [msg("hosted blender working copy wip settled archived delete expire master")],
+  },
+  {
     id: "hosted-blender",
     title: msg("Hosted Blender"),
     to: "/settings/blender",

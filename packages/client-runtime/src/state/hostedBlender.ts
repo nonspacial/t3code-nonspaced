@@ -157,6 +157,19 @@ export function createHostedBlenderEnvironmentAtoms<R, E>(
       idleTtlMs: STATE_IDLE_TTL_MS,
       tag: WS_METHODS.hostedBlenderSubscribeRunning,
     }),
+    heldCopies: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:hosted-blender:held",
+      idleTtlMs: STATE_IDLE_TTL_MS,
+      tag: WS_METHODS.hostedBlenderSubscribeHeld,
+    }),
+    deleteHeld: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:hosted-blender:delete-held",
+      tag: WS_METHODS.hostedBlenderDeleteHeld,
+    }),
+    keepHeld: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:hosted-blender:keep-held",
+      tag: WS_METHODS.hostedBlenderKeepHeld,
+    }),
     masterState: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:hosted-blender:master-state",
       idleTtlMs: STATE_IDLE_TTL_MS,

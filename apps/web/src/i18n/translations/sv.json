@@ -13234,6 +13234,15 @@
     },
     " när den här tråden avslutades eller T3 Code stoppades, och behöll de osparade ändringarna. Öppna igen återställer dem."
   ],
+  "5065123e0dd81fe3": [
+    "T3 Code flyttade ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ut ur projektet när tråden avslutades och sparar den i upp till 30 dagar. Öppna igen lägger tillbaka den och öppnar den."
+  ],
   "891e3d7d231af485": [
     "T3 Code stängde ",
     {
@@ -13294,6 +13303,11 @@
   "3906097eebf88153": "Visar hela skärmen",
   "27ea83219396f796": "Ingen GPU: Blender blir långsam",
   "156c7543e861dda6": "Ingen GPU-åtkomst: Blender blir långsam",
+  "76351436512c399d": "Det gick inte att ändra de sparade arbetskopiorna",
+  "f924543cf569d79f": "Okänd tråd",
+  "11b2e4f89a737c8b": "{count, plural, =1 {{master} har ändrats sedan T3 Code sparade arbetskopian av den från {threads} ({size}). Kopian innehåller en version du har lämnat bakom dig. Radera den nu eller behåll den till {date}.} other {{master} har ändrats sedan T3 Code sparade {count} arbetskopior av den från {threads} ({size}). De innehåller en version du har lämnat bakom dig. Radera dem nu eller behåll dem till {date}.}}",
+  "8da9cb531d4e4b3f": "Radera",
+  "cbe0ad4fb8adfdfa": "Behåll",
   "907a0f7ed16a709d": "Det gick inte att öppna i Hosted Blender",
   "7b0cb06d256e6b28": "Öppna i Hosted Blender",
   "119259d2fa66fadf": "Det gick inte att avsluta Blender",
@@ -13408,10 +13422,66 @@
   "29e40a5da4bbbf79": "Det gick inte att fånga 3D-vyn",
   "ce122949162f2073": "Svävande Blender-förhandsvisning",
   "a0f6aecb07b533ff": "Blender som körs ({count})",
+  "73428370de12439f": "Sparade arbetskopior ({count})",
+  "3014b7f6587ef7f3": "Det gick inte att radera den sparade arbetskopian",
   "b04a15f0adaa16b9": "Inga värdbaserade Blender körs",
   "201b5d40d08e74d0": "Varje tråds värdbaserade Blender visas här medan den körs.",
   "75daeb1e9b041511": "Okänd tråd",
   "0eda0be3d24af58c": "Avsluta",
+  "6d24969032ce53a0": "Inga arbetskopior sparas",
+  "3d0a18ffc243356c": "När en tråd avslutas eller arkiveras flyttar T3 Code agentens arbetskopia ut ur projektet och sparar den här i upp till 30 dagar, så att tråden kan ta upp den igen.",
+  "e9ca4e90337acd65": [
+    "Lämnad i projektet på ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ": T3 Code kunde inte vara säkert på att det är dess egen arbetskopia, så den flyttades inte."
+  ],
+  "72f632768d65286c": [
+    "Kopia av ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ". Huvudfilen har ändrats sedan dess. Raderas ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
+    "."
+  ],
+  "cb54027f77eb65b0": [
+    "Kopia av ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ". Raderas ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
+    "."
+  ],
+  "77e2ba01461cdf5f": "Radera",
   "7660bc93bbd673be": "Låt T3 Code köra en egen Blender på den här servern, på en dold skärm, så att du kan se och styra den i Blender-panelen. Endast Linux. Din Blender på datorn rörs aldrig.",
   "41dfe036cd2b2975": "Hosted Blender",
   "9cc2228be8a75b39": "Agenter i Claude- och Codex-trådar får starta den här serverns Hosted Blender, från nästa session. Andra leverantörer stöds inte än.",
@@ -13545,6 +13615,8 @@
   "6ac7d143dd2dd2a5": "blender 3d förhandsvisning blend fil konvertera glb modell sökväg program installera",
   "dd6b767f08eff9f7": "Blender som körs",
   "ec2bc06507d0d9af": "värdbaserad blender avsluta minne 3d tråd",
+  "a814b94991df8526": "Sparade arbetskopior",
+  "9a71eb544988a290": "värdbaserad blender arbetskopia wip avslutad arkiverad radera förfalla huvudfil",
   "37d76dab21a26b2a": "blender hosted konfiguration installera kontrollera labwc gstreamer kodare gpu dold skärm linux agent kommandon",
   "f74fb1f1e951cb67": "blender hosted agenter mcp starta tillåt",
   "3cf7f8ed35b33c5f": "blender lab mcp server sökväg program installera uv pipx",

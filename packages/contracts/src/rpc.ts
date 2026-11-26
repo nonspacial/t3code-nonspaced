@@ -372,6 +372,8 @@ import {
   HostedBlenderDismissInput,
   HostedBlenderError,
   HostedBlenderFindHitsInput,
+  HostedBlenderHeldInput,
+  HostedBlenderHeldList,
   HostedBlenderMasterState,
   HostedBlenderHits,
   HostedBlenderOpenInput,
@@ -624,6 +626,9 @@ export const WS_METHODS = {
   hostedBlenderReopen: "hostedBlender.reopen",
   hostedBlenderDismiss: "hostedBlender.dismiss",
   hostedBlenderSubscribeRunning: "hostedBlender.subscribeRunning",
+  hostedBlenderSubscribeHeld: "hostedBlender.subscribeHeld",
+  hostedBlenderDeleteHeld: "hostedBlender.deleteHeld",
+  hostedBlenderKeepHeld: "hostedBlender.keepHeld",
   hostedBlenderCaptureView: "hostedBlender.captureView",
   hostedBlenderFindHits: "hostedBlender.findHits",
   hostedBlenderSetView: "hostedBlender.setView",
@@ -2245,6 +2250,26 @@ const WsHostedBlenderSubscribeRunningRpc = Rpc.make(WS_METHODS.hostedBlenderSubs
   stream: true,
 });
 
+/** Every held working copy on this server, for Settings; subscribing checks their masters. */
+const WsHostedBlenderSubscribeHeldRpc = Rpc.make(WS_METHODS.hostedBlenderSubscribeHeld, {
+  payload: Schema.Struct({}),
+  success: HostedBlenderHeldList,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+/** Deletes held working copies now. */
+const WsHostedBlenderDeleteHeldRpc = Rpc.make(WS_METHODS.hostedBlenderDeleteHeld, {
+  payload: HostedBlenderHeldInput,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+/** Keeps held working copies the master has moved past, until they expire, without asking again. */
+const WsHostedBlenderKeepHeldRpc = Rpc.make(WS_METHODS.hostedBlenderKeepHeld, {
+  payload: HostedBlenderHeldInput,
+  error: EnvironmentAuthorizationError,
+});
+
 /** The thread's master file, and whether a master Blender or the desktop Blender has it open. */
 const WsHostedBlenderSubscribeMasterRpc = Rpc.make(WS_METHODS.hostedBlenderSubscribeMaster, {
   payload: HostedBlenderSubscribeInput,
@@ -2899,6 +2924,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsHostedBlenderReopenRpc,
   WsHostedBlenderDismissRpc,
   WsHostedBlenderSubscribeRunningRpc,
+  WsHostedBlenderSubscribeHeldRpc,
+  WsHostedBlenderDeleteHeldRpc,
+  WsHostedBlenderKeepHeldRpc,
   WsHostedBlenderCaptureViewRpc,
   WsHostedBlenderFindHitsRpc,
   WsHostedBlenderSetViewRpc,

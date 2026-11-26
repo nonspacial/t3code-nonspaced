@@ -13227,6 +13227,15 @@
     },
     " quando esta conversa foi concluída ou o T3 Code parou, e manteve as alterações não salvas. Reabrir as restaura."
   ],
+  "5065123e0dd81fe3": [
+    "O T3 Code tirou ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " deste projeto quando a conversa terminou e o guarda por até 30 dias. Reabrir o coloca de volta e o abre."
+  ],
   "891e3d7d231af485": [
     "O T3 Code fechou ",
     {
@@ -13287,6 +13296,11 @@
   "3906097eebf88153": "Mostrando a tela inteira",
   "27ea83219396f796": "Sem GPU: o Blender ficará lento",
   "156c7543e861dda6": "Sem acesso à GPU: o Blender ficará lento",
+  "76351436512c399d": "Não foi possível alterar as cópias de trabalho guardadas",
+  "f924543cf569d79f": "Conversa desconhecida",
+  "11b2e4f89a737c8b": "{count, plural, =1 {{master} mudou desde que o T3 Code guardou a cópia de trabalho dele de {threads} ({size}). Essa cópia tem uma edição que você já deixou para trás. Exclua agora ou guarde até {date}.} other {{master} mudou desde que o T3 Code guardou {count} cópias de trabalho dele de {threads} ({size}). Elas têm uma edição que você já deixou para trás. Exclua agora ou guarde até {date}.}}",
+  "8da9cb531d4e4b3f": "Excluir",
+  "cbe0ad4fb8adfdfa": "Manter",
   "907a0f7ed16a709d": "Não foi possível abrir no Hosted Blender",
   "7b0cb06d256e6b28": "Abrir no Hosted Blender",
   "119259d2fa66fadf": "Não foi possível fechar o Blender",
@@ -13401,10 +13415,66 @@
   "29e40a5da4bbbf79": "Não foi possível capturar a visualização 3D",
   "ce122949162f2073": "Pré-visualização flutuante do Blender",
   "a0f6aecb07b533ff": "Blenders em execução ({count})",
+  "73428370de12439f": "Cópias de trabalho guardadas ({count})",
+  "3014b7f6587ef7f3": "Não foi possível excluir a cópia de trabalho guardada",
   "b04a15f0adaa16b9": "Nenhum Blender hospedado em execução",
   "201b5d40d08e74d0": "O Blender hospedado de cada conversa aparece aqui enquanto estiver em execução.",
   "75daeb1e9b041511": "Conversa desconhecida",
   "0eda0be3d24af58c": "Sair",
+  "6d24969032ce53a0": "Nenhuma cópia de trabalho guardada",
+  "3d0a18ffc243356c": "Quando uma conversa é concluída ou arquivada, o T3 Code tira a cópia de trabalho do agente dela do projeto e a guarda aqui por até 30 dias, para que a conversa possa retomá-la.",
+  "e9ca4e90337acd65": [
+    "Deixada no projeto em ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ": o T3 Code não teve certeza de que é a própria cópia de trabalho dele, então não a moveu."
+  ],
+  "72f632768d65286c": [
+    "Cópia de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ". O mestre mudou desde então. Excluída em ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
+    "."
+  ],
+  "cb54027f77eb65b0": [
+    "Cópia de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ". Excluída em ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
+    "."
+  ],
+  "77e2ba01461cdf5f": "Excluir",
   "7660bc93bbd673be": "Deixe o T3 Code executar o próprio Blender neste servidor, em uma tela oculta, para você ver e controlá-lo no painel do Blender. Somente Linux. O Blender do seu desktop nunca é afetado.",
   "41dfe036cd2b2975": "Hosted Blender",
   "9cc2228be8a75b39": "Agentes em threads do Claude e do Codex podem iniciar os Hosted Blender deste servidor, a partir da próxima sessão. Outros provedores ainda não são compatíveis.",
@@ -13538,6 +13608,8 @@
   "6ac7d143dd2dd2a5": "blender 3d pré-visualização arquivo blend converter glb modelo caminho binário instalar",
   "dd6b767f08eff9f7": "Blenders em execução",
   "ec2bc06507d0d9af": "hospedado blender sair memória 3d conversa",
+  "a814b94991df8526": "Cópias de trabalho guardadas",
+  "9a71eb544988a290": "hospedado blender cópia de trabalho wip concluída arquivada excluir expirar mestre",
   "37d76dab21a26b2a": "blender hosted configuração instalar verificar labwc gstreamer codificador gpu tela oculta linux agente comandos",
   "f74fb1f1e951cb67": "blender hosted agentes mcp iniciar permitir",
   "3cf7f8ed35b33c5f": "blender lab mcp servidor caminho binário instalar uv pipx",

@@ -14,17 +14,7 @@ import { BLENDER_HOSTED_MCP_SERVER } from "../provider/hostedBlenderMcp.ts";
 import { isWithinRoot } from "../workspace/KnownWorkspaces.ts";
 import * as HostedBlender from "./HostedBlender.ts";
 import { untestedBlenderLabReason } from "./agentGuard.ts";
-
-// The end of the thread id: fixed prefixes such as `thread-` would make every tag alike.
-export const threadTag = (threadId: string) =>
-  threadId
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "")
-    .slice(-8);
-
-/** `<master name>.wip-<thread>.blend`, beside the master so its relative links still resolve. */
-export const workingCopyName = (masterName: string, threadId: string) =>
-  `${masterName.replace(/\.blend$/i, "")}.wip-${threadTag(threadId)}.blend`;
+import { threadTag, workingCopyName } from "./workingCopies.ts";
 
 /**
  * A working copy is opened only as a regular file that isn't its master, so neither a symlink nor
@@ -154,11 +144,29 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
         reason: "Only .blend files can be opened in a hosted Blender.",
       });
     }
+    // A copy T3 held since the thread finished goes back where it was, never over a file there.
+    const putBack = (copy: string) =>
+      hostedBlender.putBackHeld({ threadId: input.threadId, path: copy }).pipe(
+        Effect.mapError(
+          (error) =>
+            new HostedBlenderToolError({
+              reason:
+                error.reason === "heldCopyInTheWay"
+                  ? `T3 held this thread's working copy outside the project since the thread finished, but another file is at ${copy} now, so T3 didn't put the copy back. Ask the user to move that file aside, then call blender_start again.`
+                  : error.message,
+            }),
+        ),
+      );
     // Named directly, the working copy is opened as it is: classified and checked as named,
     // before any link is followed, against its master whatever that one's extension casing.
     const copySuffix = `.wip-${threadTag(input.threadId)}.blend`;
     const isCopy = path.basename(requested).endsWith(copySuffix);
+    let heldBack: { readonly masterChanged: boolean } | null = null;
     if (isCopy) {
+      const folder = yield* fileSystem
+        .realPath(path.dirname(requested))
+        .pipe(Effect.orElseSucceed(() => path.dirname(requested)));
+      heldBack = yield* putBack(path.join(folder, path.basename(requested)));
       if (Option.isNone(yield* fileSystem.lstat(requested).pipe(Effect.option))) {
         return yield* new HostedBlenderToolError({ reason: `${input.path} was not found.` });
       }
@@ -202,7 +210,17 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
 
     const name = workingCopyName(path.basename(master), input.threadId);
     const workingCopy = isCopy ? master : path.join(path.dirname(master), name);
+    if (!isCopy) heldBack = yield* putBack(workingCopy);
     const created = isCopy ? false : yield* createWorkingCopy(master, workingCopy, input.path);
+    // Only a copy T3 made is ever held or deleted; one already there may be the person's.
+    if (created) {
+      yield* hostedBlender.recordWorkingCopy({
+        threadId: input.threadId,
+        master,
+        path: workingCopy,
+        relativePath: path.relative(realRoot, workingCopy),
+      });
+    }
     // Paths under the workspace as configured, as the client matches file links against it.
     const relativePath = path.relative(realRoot, workingCopy);
     const result = {
@@ -271,6 +289,7 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
       ...(waiting === undefined || waiting.reloaded === true
         ? {}
         : { restoredUnsavedChanges: true }),
+      ...(heldBack?.masterChanged === true ? { masterChangedSinceHeld: true } : {}),
       status: status === "running" ? "running" : "starting",
     } satisfies HostedBlenderToolStartResult;
   },

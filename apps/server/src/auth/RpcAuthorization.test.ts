@@ -65,6 +65,7 @@ describe("RPC authorization scopes", () => {
     for (const method of [
       WS_METHODS.hostedBlenderSubscribeThread,
       WS_METHODS.hostedBlenderSubscribeRunning,
+      WS_METHODS.hostedBlenderSubscribeHeld,
       WS_METHODS.hostedBlenderCaptureView,
       WS_METHODS.hostedBlenderFindHits,
     ]) {
@@ -75,6 +76,8 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.hostedBlenderQuit,
       WS_METHODS.hostedBlenderReopen,
       WS_METHODS.hostedBlenderDismiss,
+      WS_METHODS.hostedBlenderDeleteHeld,
+      WS_METHODS.hostedBlenderKeepHeld,
       WS_METHODS.hostedBlenderSetView,
       // The Timeline strip is part of the Blender window every viewer shares.
       WS_METHODS.hostedBlenderSetTimeline,

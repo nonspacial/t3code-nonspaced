@@ -193,12 +193,74 @@ export const HostedBlenderKeptCopy = Schema.Struct({
   missing: Schema.optional(Schema.Boolean),
   /** When this copy was kept, which a Discard names so it never removes a newer one. */
   keptAt: Schema.optionalKey(Schema.Number),
+  /**
+   * The working copy itself is held outside the project since the thread finished; Reopen puts
+   * it back and opens it.
+   */
+  held: Schema.optionalKey(Schema.Boolean),
 });
 export type HostedBlenderKeptCopy = typeof HostedBlenderKeptCopy.Type;
 
 /**
+ * A finished thread's working copy, moved out of the project into T3 Code's own state when the
+ * thread settled or was archived, until the thread opens it again, it is deleted, or it expires.
+ */
+export const HostedBlenderHeldCopy = Schema.Struct({
+  /** Names it to Delete and Keep. */
+  id: Schema.String,
+  threadId: ThreadId,
+  /** The thread's title when its copy was held. */
+  threadTitle: Schema.String,
+  /** The master's path on the server. */
+  master: Schema.String,
+  /** Where the copy sat in the project, beside the master, and goes back to. */
+  path: Schema.String,
+  bytes: Schema.Number,
+  /** Epoch ms. */
+  heldAt: Schema.Number,
+  /** Epoch ms; absent for a copy left in the project. */
+  expiresAt: Schema.optionalKey(Schema.Number),
+  /** The master changed on disk since this copy was held. */
+  behind: Schema.optionalKey(Schema.Boolean),
+  /** Asked once the master changed, the person chose to keep it. */
+  kept: Schema.optionalKey(Schema.Boolean),
+  /** T3 Code couldn't be sure the file is its own copy, so it left it in the project. */
+  leftInProject: Schema.optionalKey(Schema.Boolean),
+});
+export type HostedBlenderHeldCopy = typeof HostedBlenderHeldCopy.Type;
+
+export const HostedBlenderHeldList = Schema.Array(HostedBlenderHeldCopy);
+
+/** A held copy as the person saw it: one held again since has another `heldAt`, and is left alone. */
+export const HostedBlenderHeldRef = Schema.Struct({ id: Schema.String, heldAt: Schema.Number });
+export type HostedBlenderHeldRef = typeof HostedBlenderHeldRef.Type;
+export type HostedBlenderHeldList = typeof HostedBlenderHeldList.Type;
+
+/**
+ * Other threads' held copies of this thread's master that the master has changed since, which
+ * the person hasn't kept: the pane asks once whether to delete them.
+ */
+export const HostedBlenderHeldBehind = Schema.Struct({
+  copies: Schema.NonEmptyArray(HostedBlenderHeldRef),
+  /** The thread's master, relative to its workspace. */
+  master: TrimmedNonEmptyString,
+  threadTitles: Schema.Array(Schema.String),
+  bytes: Schema.Number,
+  /** When the first of them is deleted anyway, epoch ms. */
+  expiresAt: Schema.Number,
+});
+export type HostedBlenderHeldBehind = typeof HostedBlenderHeldBehind.Type;
+
+export const HostedBlenderHeldInput = Schema.Struct({
+  copies: Schema.NonEmptyArray(HostedBlenderHeldRef),
+});
+export type HostedBlenderHeldInput = typeof HostedBlenderHeldInput.Type;
+
+const heldBehind = { heldBehind: Schema.optionalKey(HostedBlenderHeldBehind) };
+
+/**
  * A thread's hosted Blender. `unavailable` is a host that can never run one (not Linux);
- * `notSetUp` is a Linux host missing `missing`.
+ * `notSetUp` is a Linux host missing `missing`. `heldBehind`, in any state: see its type.
  */
 export const HostedBlenderThreadState = Schema.Union([
   Schema.Struct({
@@ -208,17 +270,19 @@ export const HostedBlenderThreadState = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("notSetUp"),
     missing: Schema.Array(HostedBlenderRequirement),
+    ...heldBehind,
   }),
-  Schema.Struct({ status: Schema.Literal("stopped") }),
+  Schema.Struct({ status: Schema.Literal("stopped"), ...heldBehind }),
   /** The last start never showed Blender's viewport window. Opening a file again retries. */
-  Schema.Struct({ status: Schema.Literal("failed") }),
+  Schema.Struct({ status: Schema.Literal("failed"), ...heldBehind }),
   /** No Blender running, and what earlier ones left for each file, newest first. */
   Schema.Struct({
     /** The newest copy's kind. */
     status: Schema.Literals(["closed", "crashed"]),
     copies: Schema.NonEmptyArray(HostedBlenderKeptCopy),
+    ...heldBehind,
   }),
-  HostedBlenderRunningState,
+  Schema.Struct({ ...HostedBlenderRunningState.fields, ...heldBehind }),
 ]);
 export type HostedBlenderThreadState = typeof HostedBlenderThreadState.Type;
 
@@ -445,6 +509,8 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "quitUnanswered",
       "sceneChanged",
       "stillSaving",
+      "heldCopyInTheWay",
+      "heldCopyNotDeleted",
     ]),
     /** With `unsavedImages` from a save: the edited images Blender couldn't save. */
     images: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -525,6 +591,10 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "Blender didn't answer, so it stays open, and the quit won't run later on its own. Try again once Blender has finished what it's doing.";
       case "stillSaving":
         return "Blender is still saving its last copy of this file from before T3 Code restarted. Try again in a moment.";
+      case "heldCopyNotDeleted":
+        return "T3 Code couldn't delete the held working copy, so it is still held. Try again.";
+      case "heldCopyInTheWay":
+        return "T3 Code is holding this thread's working copy, but another file now has its name in the project, so T3 Code didn't put the copy back. Move that file aside, then try again.";
     }
   }
 }
@@ -663,6 +733,11 @@ export const HostedBlenderToolStartResult = Schema.Struct({
    * restored: the copy opened with them, unsaved.
    */
   restoredUnsavedChanges: Schema.optionalKey(Schema.Boolean),
+  /**
+   * T3 had held the working copy outside the project since the thread finished, and put it back;
+   * the master changed since then, so what the copy was made from is no longer the master.
+   */
+  masterChangedSinceHeld: Schema.optionalKey(Schema.Boolean),
   status: Schema.Literals(["starting", "running"]),
   /** The MCP server whose tools edit the working copy. */
   mcpServer: Schema.String,
@@ -673,7 +748,8 @@ export const HostedBlenderToolStatusResult = Schema.Struct({
   blenders: Schema.Array(
     Schema.Struct({
       role: HostedBlenderRole,
-      status: Schema.Literals(["starting", "running", "failed", "closed", "crashed"]),
+      /** `held`: the working copy is held outside the project; `blender_start` puts it back. */
+      status: Schema.Literals(["starting", "running", "failed", "closed", "crashed", "held"]),
       /** The file's absolute path; absent for a start that failed or an untitled scene. */
       file: Schema.optionalKey(Schema.String),
       /** Closed or crashed: a recovery copy of its session that Reopen in the pane can restore. */

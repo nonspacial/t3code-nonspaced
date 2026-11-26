@@ -85,6 +85,8 @@ const layerFor = (input: {
   readonly workspace?: string;
   /** The thread's kept copies; by default those of a closed or crashed `state`. */
   readonly copies?: ReadonlyArray<HostedBlenderKeptCopy>;
+  /** The thread's working copies held outside the project. */
+  readonly held?: ReadonlyArray<string>;
   readonly master?: HostedBlenderMasterState;
   readonly opened?:
     | { readonly _tag: "desktop" }
@@ -99,6 +101,7 @@ const layerFor = (input: {
           threadState: () => Stream.succeed(input.state),
           keptCopies: () =>
             Effect.succeed(input.copies ?? ("copies" in input.state ? input.state.copies : [])),
+          heldWorkingCopies: () => Effect.succeed(input.held ?? []),
           masterState: () => Stream.succeed(input.master ?? { status: "none" }),
           openMaster: (open, options) =>
             Effect.sync(() => {
@@ -314,6 +317,24 @@ describe("hosted Blender MCP tools", () => {
       expect(quits).toEqual([]);
     }).pipe(Effect.provide(layerFor({ state: running, quits, shellReads })));
   });
+
+  it.effect("lists a working copy held outside the project, which blender_start puts back", () =>
+    Effect.gen(function* () {
+      const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
+      expect(status.structuredContent).toEqual({
+        blenders: [
+          { role: "working", status: "held", file: `${workspace}/models/hero.wip-3c4d5e6f.blend` },
+        ],
+      });
+    }).pipe(
+      Effect.provide(
+        layerFor({
+          state: { status: "stopped" },
+          held: [`${workspace}/models/hero.wip-3c4d5e6f.blend`],
+        }),
+      ),
+    ),
+  );
 
   it.effect("reports the file Blender has open and why access ended", () =>
     Effect.gen(function* () {

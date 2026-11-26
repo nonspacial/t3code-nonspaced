@@ -13227,6 +13227,15 @@
     },
     " geschlossen, als dieser Thread abgeschlossen wurde oder T3 Code beendet wurde, und die nicht gespeicherten Änderungen behalten. „Erneut öffnen“ stellt sie wieder her."
   ],
+  "5065123e0dd81fe3": [
+    "T3 Code hat ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " beim Abschluss des Threads aus diesem Projekt verschoben und bewahrt es bis zu 30 Tage auf. „Erneut öffnen“ legt es zurück und öffnet es."
+  ],
   "891e3d7d231af485": [
     "T3 Code hat ",
     {
@@ -13286,6 +13295,11 @@
   "3906097eebf88153": "Das ganze Display wird angezeigt",
   "27ea83219396f796": "Keine GPU: Blender wird langsam sein",
   "156c7543e861dda6": "Kein GPU-Zugriff: Blender wird langsam sein",
+  "76351436512c399d": "Die aufbewahrten Arbeitskopien konnten nicht geändert werden",
+  "f924543cf569d79f": "Unbekannter Thread",
+  "11b2e4f89a737c8b": "{count, plural, =1 {{master} hat sich geändert, seit T3 Code die Arbeitskopie davon aus {threads} aufbewahrt ({size}). Diese Kopie enthält einen Stand, den du hinter dir gelassen hast. Lösche sie jetzt oder behalte sie bis {date}.} other {{master} hat sich geändert, seit T3 Code {count} Arbeitskopien davon aus {threads} aufbewahrt ({size}). Sie enthalten einen Stand, den du hinter dir gelassen hast. Lösche sie jetzt oder behalte sie bis {date}.}}",
+  "8da9cb531d4e4b3f": "Löschen",
+  "cbe0ad4fb8adfdfa": "Behalten",
   "907a0f7ed16a709d": "Konnte nicht in Hosted Blender geöffnet werden",
   "7b0cb06d256e6b28": "In Hosted Blender öffnen",
   "119259d2fa66fadf": "Blender konnte nicht beendet werden",
@@ -13400,10 +13414,66 @@
   "29e40a5da4bbbf79": "3D-Ansicht konnte nicht aufgenommen werden",
   "ce122949162f2073": "Schwebende Blender-Vorschau",
   "a0f6aecb07b533ff": "Laufende Blender ({count})",
+  "73428370de12439f": "Aufbewahrte Arbeitskopien ({count})",
+  "3014b7f6587ef7f3": "Die aufbewahrte Arbeitskopie konnte nicht gelöscht werden",
   "b04a15f0adaa16b9": "Es läuft kein gehostetes Blender",
   "201b5d40d08e74d0": "Das gehostete Blender jedes Threads erscheint hier, solange es läuft.",
   "75daeb1e9b041511": "Unbekannter Thread",
   "0eda0be3d24af58c": "Beenden",
+  "6d24969032ce53a0": "Keine Arbeitskopien aufbewahrt",
+  "3d0a18ffc243356c": "Wenn ein Thread abgeschlossen oder archiviert wird, verschiebt T3 Code die Arbeitskopie seines Agenten aus dem Projekt und bewahrt sie hier bis zu 30 Tage auf, damit der Thread sie wieder aufnehmen kann.",
+  "e9ca4e90337acd65": [
+    "Im Projekt unter ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " belassen: T3 Code konnte nicht sicher sein, dass es seine eigene Arbeitskopie ist, und hat sie deshalb nicht verschoben."
+  ],
+  "72f632768d65286c": [
+    "Kopie von ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ". Der Master hat sich seitdem geändert. Wird am ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
+    " gelöscht."
+  ],
+  "cb54027f77eb65b0": [
+    "Kopie von ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ". Wird am ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
+    " gelöscht."
+  ],
+  "77e2ba01461cdf5f": "Löschen",
   "7660bc93bbd673be": "Lass T3 Code ein eigenes Blender auf diesem Server auf einem verborgenen Display ausführen, damit du es im Blender-Bereich sehen und steuern kannst. Nur Linux. Dein Desktop-Blender wird nie angetastet.",
   "41dfe036cd2b2975": "Hosted Blender",
   "9cc2228be8a75b39": "Agenten in Claude- und Codex-Threads dürfen die Hosted Blender dieses Servers starten, ab ihrer nächsten Sitzung. Andere Anbieter werden noch nicht unterstützt.",
@@ -13537,6 +13607,8 @@
   "6ac7d143dd2dd2a5": "blender 3d vorschau blend datei konvertieren glb modell pfad programm installieren",
   "dd6b767f08eff9f7": "Laufende Blender",
   "ec2bc06507d0d9af": "gehostet blender beenden speicher 3d thread",
+  "a814b94991df8526": "Aufbewahrte Arbeitskopien",
+  "9a71eb544988a290": "gehostet blender arbeitskopie wip abgeschlossen archiviert löschen ablauf master",
   "37d76dab21a26b2a": "blender hosted einrichtung installieren prüfen labwc gstreamer encoder gpu verborgenes display linux agent befehle",
   "f74fb1f1e951cb67": "blender hosted agenten mcp starten erlauben",
   "3cf7f8ed35b33c5f": "blender lab mcp server pfad programm installieren uv pipx",

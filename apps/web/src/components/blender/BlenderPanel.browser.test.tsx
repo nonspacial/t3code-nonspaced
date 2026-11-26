@@ -680,6 +680,68 @@ it("shows Setup needed, saying what is missing, with a way into Settings › Ble
   }
 });
 
+it("B19: asks about other threads' held copies once the master moved on, and Delete or Keep answers for them", async () => {
+  using _app = startup();
+  const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
+  const { Atom } = await import("effect/reactivity");
+  vi.spyOn(hostedBlenderEnvironment.deleteHeld, "permissionAtom").mockReturnValue(
+    Atom.make(true) as never,
+  );
+  stream.state = {
+    status: "stopped",
+    heldBehind: {
+      copies: [
+        { id: "held-a", heldAt: 1 },
+        { id: "held-b", heldAt: 2 },
+      ],
+      master: "models/hero.blend",
+      threadTitles: ["Hero pass", "Rig fix"],
+      bytes: 3 * 1024 * 1024,
+      expiresAt: new Date(2026, 11, 20).getTime(),
+    },
+  };
+  await using screen = await render(
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>,
+  );
+  await expect
+    .element(
+      screen.getByText(
+        /^hero\.blend has changed since T3 Code held 2 working copies of it from Hero pass, Rig fix \(3(\.0+)? MB\)\. They hold an edition you've moved past\. Delete them now, or keep them until [^.]*20[^.]*\.$/,
+      ),
+    )
+    .toBeInTheDocument();
+  await screen.getByRole("button", { name: "Delete" }).click();
+  await screen.getByRole("button", { name: "Keep" }).click();
+  expect(stream.commands).toEqual([
+    {
+      label: "environment-data:hosted-blender:delete-held",
+      value: {
+        environmentId: threadRef.environmentId,
+        input: {
+          copies: [
+            { id: "held-a", heldAt: 1 },
+            { id: "held-b", heldAt: 2 },
+          ],
+        },
+      },
+    },
+    {
+      label: "environment-data:hosted-blender:keep-held",
+      value: {
+        environmentId: threadRef.environmentId,
+        input: {
+          copies: [
+            { id: "held-a", heldAt: 1 },
+            { id: "held-b", heldAt: 2 },
+          ],
+        },
+      },
+    },
+  ]);
+});
+
 it("shows a closed or crashed Blender's card in the pane, never in the float", async () => {
   using _app = startup();
   const running = stream.state;

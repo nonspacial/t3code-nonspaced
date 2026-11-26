@@ -5,6 +5,9 @@ import {
   HostedBlenderError,
   type HostedBlenderDismissInput,
   HostedBlenderFindHitsInput,
+  type HostedBlenderHeldBehind,
+  type HostedBlenderHeldList,
+  type HostedBlenderHeldRef,
   type HostedBlenderKeptCopy,
   HostedBlenderKeptFile,
   HostedBlenderHits,
@@ -101,6 +104,13 @@ import {
 import { BitrateControl } from "./Bitrate.ts";
 import { sendHoldingSlot } from "./ControlSlot.ts";
 import { ViewerFlow } from "./ViewerFlow.ts";
+import * as WorkingCopies from "./workingCopies.ts";
+import {
+  decodeWorkingCopyRecord,
+  encodeWorkingCopyRecord,
+  HELD_COPY_LIMIT,
+  type WorkingCopyRecord,
+} from "./workingCopies.ts";
 
 const MAX_VIEWERS = 4;
 const INITIAL_SIZE = { width: 1280, height: 720 };
@@ -146,6 +156,11 @@ export const ReleasedFinishTimeout = Context.Reference<Duration.Input>(
 export const HeldWords = Context.Reference<
   (word: "connected" | "viewportShown") => Effect.Effect<void>
 >("t3/hostedBlender/HeldWords", { defaultValue: () => () => Effect.void });
+/** Runs between copying a working copy out and removing it from the project; a test holds one there. */
+export const HoldGate = Context.Reference<(copyPath: string) => Effect.Effect<void>>(
+  "t3/hostedBlender/HoldGate",
+  { defaultValue: () => () => Effect.void },
+);
 // A desktop Blender that doesn't answer by then counts as one T3 couldn't ask.
 const DESKTOP_PROBE_DEADLINE = Duration.seconds(8);
 // A start that shows no viewport window by then has failed (a broken file, no encoder).
@@ -585,6 +600,35 @@ export class HostedBlender extends Context.Service<
     readonly forgetThread: (input: { readonly threadId: ThreadId }) => Effect.Effect<void>;
     /** Every hosted Blender on this server, for Settings. */
     readonly runningBlenders: Stream.Stream<HostedBlenderRunningList>;
+    /**
+     * `blender_start` made `path`, the thread's working copy of `master` (both real paths): from
+     * now on T3 may hold it when the thread finishes, and delete it with the thread.
+     */
+    readonly recordWorkingCopy: (input: {
+      readonly threadId: ThreadId;
+      readonly master: string;
+      readonly path: string;
+      /** Its place under the workspace's real root, which the pane names it by. */
+      readonly relativePath: string;
+    }) => Effect.Effect<void>;
+    /**
+     * Puts the thread's held copy that sat at `path` back there, never over a file there now.
+     * Null when none is held; `masterChanged` when the master moved on since it was held.
+     */
+    readonly putBackHeld: (input: {
+      readonly threadId: ThreadId;
+      readonly path: string;
+    }) => Effect.Effect<{ readonly masterChanged: boolean } | null, HostedBlenderError>;
+    /** Where each of the thread's held working copies goes back to. */
+    readonly heldWorkingCopies: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<string>>;
+    /** Every held working copy, for Settings; subscribing checks whether their masters moved on. */
+    readonly heldCopies: Stream.Stream<HostedBlenderHeldList>;
+    /** Each copy only while it is still the hold the person saw, by its `heldAt`. */
+    readonly deleteHeld: (
+      copies: ReadonlyArray<HostedBlenderHeldRef>,
+    ) => Effect.Effect<void, HostedBlenderError>;
+    /** The person kept these past their master moving on: they stay until the limit, unasked. */
+    readonly keepHeld: (copies: ReadonlyArray<HostedBlenderHeldRef>) => Effect.Effect<void>;
     readonly threadState: (threadId: ThreadId) => Stream.Stream<HostedBlenderThreadState>;
     /** `canOperate`: the viewer may take control (`terminal:operate`). */
     readonly attachViewer: (
@@ -894,6 +938,8 @@ interface Instance {
   bitrateLead: string | null;
 }
 
+const isHostedBlenderError = Schema.is(HostedBlenderError);
+
 const masterKey = (blendPath: string) => `master:${blendPath}`;
 /**
  * A master Blender is one session its threads share, so its copy has one owner of its own,
@@ -942,6 +988,7 @@ const make = Effect.gen(function* () {
   const serviceScope = yield* Effect.scope;
   const signalProcess = yield* LeftoverSignal;
   const heldWords = yield* HeldWords;
+  const holdGate = yield* HoldGate;
   const releasedFinishTimeout = yield* ReleasedFinishTimeout;
   // Runs live here, so on shutdown they are ended with recovery copies before it closes.
   const runScope = yield* Scope.fork(serviceScope);
@@ -1009,6 +1056,151 @@ const make = Effect.gen(function* () {
     path.join(recoveryDir(threadId), NodeCrypto.createHash("sha256").update(key).digest("hex"));
   const sessionPath = (threadId: string, key: string) =>
     path.join(copyDir(threadId, key), "session.blend");
+  // The working copies `blender_start` made, by id, until they are deleted. Mirrors the records
+  // under `working-copies/`, where a held copy's file sits beside its record.
+  const workingCopiesDir = path.join(rootDir, "working-copies");
+  const workingCopies = new Map<string, WorkingCopyRecord>();
+  // Held copies whose master changed on disk since they were held, as last checked.
+  const behindMaster = new Set<string>();
+  // Copies T3 couldn't prove its own when it last tried to hold them, and when.
+  const leftInProject = new Map<string, number>();
+  // Moves and deletions of one working copy run one at a time, by its path; other copies don't
+  // wait. Opens of a recorded copy take the same lock.
+  const copyLocks = yield* KeyedLock.make<string>();
+  // Asks for another pass over the working copies, as a released Blender's end does.
+  const sweepRequests = yield* Queue.sliding<void>(1);
+  const heldList = yield* SubscriptionRef.make<HostedBlenderHeldList>([]);
+  const heldBehinds = yield* SubscriptionRef.make<ReadonlyMap<ThreadId, HostedBlenderHeldBehind>>(
+    new Map(),
+  );
+  const withFiles = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path>) =>
+    effect.pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
+  const notOwnCopy = (record: WorkingCopyRecord) => withFiles(WorkingCopies.notOwnCopy(record));
+  const copyOut = (from: string, held: string) => withFiles(WorkingCopies.copyOut(from, held));
+  const copyBack = (held: string, to: string) => withFiles(WorkingCopies.copyBack(held, to));
+  const removeBackups = (copy: string) => withFiles(WorkingCopies.removeBackups(copy));
+  const workingCopyId = (threadId: string, copyPath: string) =>
+    NodeCrypto.createHash("sha256").update(`${threadId}\n${copyPath}`).digest("hex");
+  const workingCopyDir = (id: string) => path.join(workingCopiesDir, id);
+  const heldFileOf = (id: string) => path.join(workingCopyDir(id), "copy.blend");
+  const heldExpiry = (record: WorkingCopyRecord) =>
+    (record.heldAt ?? 0) + Duration.toMillis(HELD_COPY_LIMIT);
+
+  /**
+   * The thread's own held copies, as the pane's kept copies: Reopen puts one back and opens it.
+   * One whose file also has a recovery copy is that copy, marked held.
+   */
+  const heldCardOf = (record: WorkingCopyRecord): HostedBlenderKeptCopy | null =>
+    record.state === "held" && record.relativePath !== undefined
+      ? {
+          key: fileKeyOf({ kind: "workspace", relativePath: record.relativePath }),
+          kind: "closed",
+          file: { kind: "workspace", relativePath: record.relativePath },
+          recovery: false,
+          keptAt: record.heldAt ?? 0,
+          held: true,
+        }
+      : null;
+  /** Each thread's held cards, in one pass over the records. */
+  const heldCardsByThread = () => {
+    const cards = new Map<string, Array<HostedBlenderKeptCopy>>();
+    for (const record of workingCopies.values()) {
+      const card = heldCardOf(record);
+      if (card === null) continue;
+      const thread = cards.get(record.threadId) ?? [];
+      thread.push(card);
+      cards.set(record.threadId, thread);
+    }
+    return cards;
+  };
+  /** The pane's kept copies: the recovery copies, and the held copies with no recovery copy. */
+  const shownCopiesOf = (
+    threadId: string,
+    held: ReadonlyArray<HostedBlenderKeptCopy>,
+  ): Array<HostedBlenderKeptCopy> => {
+    const keys = new Set(held.map((card) => card.key));
+    const kept = copiesOf(threadId).map((copy) =>
+      keys.has(copy.key) ? { ...copy, held: true } : copy,
+    );
+    const shown = new Set(kept.map((copy) => copy.key));
+    return [...kept, ...held.filter((card) => !shown.has(card.key))].toSorted(
+      (a, b) => (b.keptAt ?? 0) - (a.keptAt ?? 0),
+    );
+  };
+
+  /** Other threads' held copies of the thread's master that it moved past, unanswered. */
+  const heldBehindOf = (threadId: ThreadId): HostedBlenderHeldBehind | undefined => {
+    const known = threadMasters.get(threadId);
+    if (known === undefined) return undefined;
+    const behind = [...workingCopies].filter(
+      ([id, record]) =>
+        record.state === "held" &&
+        record.master === known.blendPath &&
+        record.threadId !== threadId &&
+        record.kept !== true &&
+        behindMaster.has(id),
+    );
+    const [first, ...rest] = behind.map(([id, record]) => ({ id, heldAt: record.heldAt ?? 0 }));
+    if (first === undefined) return undefined;
+    return {
+      copies: [first, ...rest],
+      master: known.relativePath,
+      threadTitles: [...new Set(behind.map(([, record]) => record.threadTitle ?? ""))].filter(
+        (title) => title !== "",
+      ),
+      bytes: behind.reduce((total, [, record]) => total + (record.bytes ?? 0), 0),
+      expiresAt: Math.min(...behind.map(([, record]) => heldExpiry(record))),
+    };
+  };
+
+  const publishHeld = () =>
+    Effect.suspend(() =>
+      SubscriptionRef.set(
+        heldBehinds,
+        new Map(
+          Array.from(threadMasters.keys()).flatMap((threadId) => {
+            const behind = heldBehindOf(threadId);
+            return behind === undefined ? [] : [[threadId, behind] as const];
+          }),
+        ),
+      ).pipe(
+        Effect.andThen(
+          SubscriptionRef.set(
+            heldList,
+            [...workingCopies]
+              .flatMap(([id, record]): HostedBlenderHeldList => {
+                const entry = {
+                  id,
+                  threadId: record.threadId,
+                  threadTitle: record.threadTitle ?? "",
+                  master: record.master,
+                  path: record.path,
+                  bytes: record.bytes ?? 0,
+                };
+                const leftAt = leftInProject.get(id);
+                if (record.state !== "held") {
+                  return leftAt === undefined || record.state !== "live"
+                    ? []
+                    : [{ ...entry, heldAt: leftAt, leftInProject: true }];
+                }
+                return [
+                  {
+                    ...entry,
+                    heldAt: record.heldAt ?? 0,
+                    expiresAt: heldExpiry(record),
+                    ...(behindMaster.has(id) ? { behind: true } : {}),
+                    ...(record.kept === true ? { kept: true } : {}),
+                  },
+                ];
+              })
+              .toSorted((a, b) => b.heldAt - a.heldAt),
+          ),
+        ),
+      ),
+    );
 
   /** The thread's copies, newest first, as the pane and the agent see them. */
   const copiesOf = (threadId: string): Array<HostedBlenderKeptCopy> =>
@@ -1155,12 +1347,16 @@ const make = Effect.gen(function* () {
             threadId,
             { status: "failed" },
           ]),
-          ...Array.from(records.keys()).flatMap((threadId): Array<[string, PublishedState]> => {
-            const [newest, ...rest] = copiesOf(threadId);
-            return newest === undefined
-              ? []
-              : [[threadId, { status: newest.kind, copies: [newest, ...rest] }]];
-          }),
+          ...((held) =>
+            // Only threads with something to show: a recovery copy or a held copy.
+            Array.from(new Set([...records.keys(), ...held.keys()])).flatMap(
+              (threadId): Array<[string, PublishedState]> => {
+                const [newest, ...rest] = shownCopiesOf(threadId, held.get(threadId) ?? []);
+                return newest === undefined
+                  ? []
+                  : [[threadId, { status: newest.kind, copies: [newest, ...rest] }]];
+              },
+            ))(heldCardsByThread()),
           ...Array.from(instances.values())
             .filter((instance) => instance.role === "working")
             .map((instance): [string, PublishedState] => [
@@ -1185,7 +1381,7 @@ const make = Effect.gen(function* () {
           ),
         ),
       ),
-    ).pipe(Effect.andThen(publishRunning()));
+    ).pipe(Effect.andThen(publishRunning()), Effect.andThen(publishHeld()));
 
   // Each write goes through a temporary name, so a crash mid-write never leaves half a file.
   // Runs inside keepRecord's span.
@@ -1605,6 +1801,103 @@ const make = Effect.gen(function* () {
     }
   });
 
+  const writeWorkingCopy = Effect.fnUntraced(function* (record: WorkingCopyRecord) {
+    const id = workingCopyId(record.threadId, record.path);
+    yield* fileSystem.makeDirectory(workingCopyDir(id), { recursive: true });
+    yield* writeAtomically(path.join(workingCopyDir(id), "record.json"), (to) =>
+      fileSystem.writeFileString(to, encodeWorkingCopyRecord(record)),
+    );
+    workingCopies.set(id, record);
+  });
+  // Forgotten only once its files are gone, so a removal that fails is tried again.
+  const dropWorkingCopy = Effect.fnUntraced(function* (id: string) {
+    yield* fileSystem.remove(workingCopyDir(id), { recursive: true, force: true });
+    workingCopies.delete(id);
+    behindMaster.delete(id);
+    leftInProject.delete(id);
+  });
+  const liveRecord = (record: WorkingCopyRecord): WorkingCopyRecord => ({
+    threadId: record.threadId,
+    master: record.master,
+    path: record.path,
+    ...(record.relativePath === undefined ? {} : { relativePath: record.relativePath }),
+    state: "live",
+  });
+  const removeHeldFile = (id: string) =>
+    Effect.all([
+      fileSystem.remove(heldFileOf(id), { force: true }),
+      fileSystem.remove(`${heldFileOf(id)}.partial`, { force: true }),
+    ]);
+
+  /**
+   * Finishes a move a crash interrupted, from the side that is whole: a copy being held is still
+   * in the project until its original is gone, and one being put back is held until it is in
+   * the project. Only T3's own state is removed here, never a project file. Null once forgotten.
+   */
+  const settleMove = Effect.fnUntraced(function* (id: string, record: WorkingCopyRecord) {
+    if (record.state === "holding") {
+      if (Option.isSome(yield* fileSystem.lstat(record.path).pipe(Effect.option))) {
+        yield* removeHeldFile(id);
+        const live = liveRecord(record);
+        yield* writeWorkingCopy(live);
+        return live;
+      }
+      if (!(yield* fileSystem.exists(heldFileOf(id)))) {
+        yield* dropWorkingCopy(id);
+        return null;
+      }
+      yield* removeBackups(record.path);
+      const held: WorkingCopyRecord = { ...record, state: "held" };
+      yield* writeWorkingCopy(held);
+      return held;
+    }
+    if (record.state === "returning") {
+      const there = yield* fileSystem.stat(record.path).pipe(Effect.option);
+      if (Option.isSome(there) && Number(there.value.size) === record.bytes) {
+        const live = liveRecord(record);
+        yield* writeWorkingCopy(live);
+        yield* removeHeldFile(id);
+        return live;
+      }
+      if (!(yield* fileSystem.exists(heldFileOf(id)))) {
+        yield* dropWorkingCopy(id);
+        return null;
+      }
+      const held: WorkingCopyRecord = { ...record, state: "held" };
+      yield* writeWorkingCopy(held);
+      return held;
+    }
+    return record;
+  });
+
+  // The working copies earlier runs made, read and any interrupted move finished before the
+  // service takes a request. A folder that can't be read is skipped.
+  const readWorkingCopies = Effect.gen(function* () {
+    for (const entry of yield* fileSystem
+      .readDirectory(workingCopiesDir)
+      .pipe(Effect.orElseSucceed(() => []))) {
+      yield* Effect.gen(function* () {
+        const record = decodeWorkingCopyRecord(
+          yield* fileSystem.readFileString(path.join(workingCopyDir(entry), "record.json")),
+        );
+        if (
+          Option.isNone(record) ||
+          workingCopyId(record.value.threadId, record.value.path) !== entry
+        ) {
+          return;
+        }
+        workingCopies.set(entry, record.value);
+        yield* settleMove(entry, record.value);
+      }).pipe(
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterruptsOnly(cause),
+          (cause) =>
+            Effect.logWarning("skipped a hosted Blender working copy record", { entry, cause }),
+        ),
+      );
+    }
+  });
+
   /**
    * Launches released at shutdown that still run, by their folder: the copy each will keep, and
    * the file it has open, by its real path, which no hosted Blender may open meanwhile.
@@ -1680,6 +1973,8 @@ const make = Effect.gen(function* () {
       yield* salvage(launchDir);
       yield* publishNow();
       releasedLaunches.delete(launchDir);
+      // Its file is free now, to hold if its thread finished meanwhile.
+      yield* Queue.offer(sweepRequests, undefined);
     }).pipe(
       Effect.onInterrupt(() => Effect.sync(() => releasedLaunches.delete(launchDir))),
       Effect.forkIn(serviceScope),
@@ -1729,6 +2024,7 @@ const make = Effect.gen(function* () {
     }
   });
   yield* readRecords;
+  yield* readWorkingCopies;
   yield* publishNow();
   const salvaged = yield* Deferred.make<void>();
   yield* salvageLeftovers.pipe(
@@ -2710,6 +3006,10 @@ const make = Effect.gen(function* () {
         yield* hear(instance, message.value.id, { _tag: "refused", why: "openFileChanged" });
         return;
       case "saved": {
+        // A copy back saves the master: held copies of it may be behind now.
+        if (instance.role === "master") {
+          yield* checkMasters(instance.blendPath).pipe(Effect.forkIn(serviceScope));
+        }
         // A save retires the copy whose work it held, judged against the load it was saved from
         // (a revert saved at once holds none); a restore that never succeeded held none.
         // The file it names is the one saved, which a Save As makes another than the open one.
@@ -3300,6 +3600,11 @@ const make = Effect.gen(function* () {
             );
             yield* publishNow();
             yield* Deferred.succeed(instance.ended, undefined);
+            // However it ended, a finished thread's copy leaves the project again, as at settle;
+            // never while a Blender released at shutdown still writes it.
+            if (instance.role === "working" && !instance.released && !shuttingDown) {
+              yield* holdFinished(instance.threadId).pipe(Effect.forkIn(serviceScope));
+            }
           }),
         ),
       ),
@@ -3512,14 +3817,20 @@ const make = Effect.gen(function* () {
   ) {
     yield* Effect.annotateCurrentSpan({ threadId });
     yield* afterSalvage;
-    const file = yield* checkedBlend(threadId, relativePath);
-    if (
-      releasedHolds(threadId, fileKeyOf({ kind: "workspace", relativePath: file.relativePath }))
-    ) {
-      return yield* new HostedBlenderError({ reason: "stillSaving" });
-    }
-    yield* claimLock.withPermits(1)(
-      startWorking(threadId, file, null, false, options?.agentWorkingCopy === true),
+    yield* openingCopy(
+      threadId,
+      relativePath,
+      Effect.gen(function* () {
+        const file = yield* checkedBlend(threadId, relativePath);
+        if (
+          releasedHolds(threadId, fileKeyOf({ kind: "workspace", relativePath: file.relativePath }))
+        ) {
+          return yield* new HostedBlenderError({ reason: "stillSaving" });
+        }
+        yield* claimLock.withPermits(1)(
+          startWorking(threadId, file, null, false, options?.agentWorkingCopy === true),
+        );
+      }),
     );
   });
 
@@ -3610,27 +3921,37 @@ const make = Effect.gen(function* () {
       );
     }
     const record = records.get(threadId)?.get(key);
-    if (record === undefined) return yield* new HostedBlenderError({ reason: "nothingToReopen" });
+    // A held working copy shows as a copy of its own, with no unsaved work to restore.
+    const held = (heldCardsByThread().get(threadId) ?? []).find((card) => card.key === key);
+    const file = record?.file ?? held?.file;
+    if (file === undefined) return yield* new HostedBlenderError({ reason: "nothingToReopen" });
     // T3 opens only workspace files, so only there can it check where a restore would save.
-    if (record.file.kind !== "workspace") {
+    if (file.kind !== "workspace") {
       return yield* new HostedBlenderError({ reason: "notInWorkspace" });
     }
-    const file = yield* checkedBlend(threadId, record.file.relativePath).pipe(
-      Effect.tapError((error) => noteMissing(error, threadId, key)),
-    );
-    failedRestores.delete(copyId(threadId, key));
-    if (missingOriginals.delete(copyId(threadId, key))) yield* publishNow();
-    // The record stays until this Blender ends too, so a restore that fails keeps its copy.
-    yield* claimLock.withPermits(1)(
-      startWorking(
-        threadId,
-        file,
-        restore && record.recovery ? sessionPath(threadId, key) : null,
-        true,
-        // Reopening from the pane is the person's: like any file they open, it never listens
-        // for the agent, which calls blender_start again to get its copy back.
-        options?.agentWorkingCopy === true,
-      ),
+    // A copy held since the thread finished goes back first, for its unsaved work to land on.
+    yield* openingCopy(
+      threadId,
+      file.relativePath,
+      Effect.gen(function* () {
+        const checked = yield* checkedBlend(threadId, file.relativePath).pipe(
+          Effect.tapError((error) => noteMissing(error, threadId, key)),
+        );
+        failedRestores.delete(copyId(threadId, key));
+        if (missingOriginals.delete(copyId(threadId, key))) yield* publishNow();
+        // The record stays until this Blender ends too, so a restore that fails keeps its copy.
+        yield* claimLock.withPermits(1)(
+          startWorking(
+            threadId,
+            checked,
+            restore && record?.recovery === true ? sessionPath(threadId, key) : null,
+            true,
+            // Reopening from the pane is the person's: like any file they open, it never listens
+            // for the agent, which calls blender_start again to get its copy back.
+            options?.agentWorkingCopy === true,
+          ),
+        );
+      }),
     );
   });
 
@@ -4081,8 +4402,9 @@ const make = Effect.gen(function* () {
   )(function* ({ threadId }) {
     yield* Effect.annotateCurrentSpan({ threadId });
     const instance = instanceFor(threadId, undefined);
-    if (instance === undefined) return;
-    yield* closeInstance(instance, "settle");
+    // With a Blender, its end holds the copy, however long a held close keeps it open.
+    if (instance !== undefined) return yield* closeInstance(instance, "settle");
+    yield* holdFinished(threadId).pipe(Effect.forkIn(serviceScope));
   });
 
   const forgetThread: HostedBlender["Service"]["forgetThread"] = Effect.fn(
@@ -4109,6 +4431,14 @@ const make = Effect.gen(function* () {
             }),
           ),
         ),
+      );
+      // Its held copy goes, and so does a copy still in the project, as a start's pass would.
+      yield* Effect.forEach(
+        [...workingCopies].filter(([, record]) => record.threadId === threadId),
+        ([id]) =>
+          onCopy(id, (record) =>
+            record.state === "held" ? dropWorkingCopy(id) : deleteFromProject(id, record),
+          ).pipe(Effect.catch(logHeldFailure)),
       );
       yield* publishNow();
     }).pipe(Effect.forkIn(serviceScope));
@@ -4147,17 +4477,19 @@ const make = Effect.gen(function* () {
 
   /** What asked for a background close still holds: its thread settled or archived, or the switch off. */
   const closeStillWanted = (instance: Instance, by: "settle" | "switchOff") =>
-    by === "switchOff"
-      ? Effect.sync(() => switchedOff)
-      : ThreadManagementService.ThreadManagementService.pipe(
-          Effect.flatMap((threads) => threads.getThreadShell(instance.threadId)),
-          Effect.map(
-            (shell) =>
-              shell !== null && (shell.archivedAt !== null || shell.settledOverride === "settled"),
-          ),
-          Effect.orElseSucceed(() => false),
-          Effect.provideContext(lookupContext),
-        );
+    by === "switchOff" ? Effect.sync(() => switchedOff) : threadFinished(instance.threadId);
+
+  /** The thread is settled or archived now. */
+  const threadFinished = (threadId: ThreadId) =>
+    ThreadManagementService.ThreadManagementService.pipe(
+      Effect.flatMap((threads) => threads.getThreadShell(threadId)),
+      Effect.map(
+        (shell) =>
+          shell !== null && (shell.archivedAt !== null || shell.settledOverride === "settled"),
+      ),
+      Effect.orElseSucceed(() => false),
+      Effect.provideContext(lookupContext),
+    );
 
   /** Blender is in use again: a background close it still owes won't run. */
   const cancelOwedClose = (instance: Instance, by?: "switchOff") => {
@@ -4344,12 +4676,32 @@ const make = Effect.gen(function* () {
   // A running Blender stays visible, and can be quit, even after setup or the switch changes.
   // From after the salvage, so a copy it keeps never first shows as nothing kept.
   const threadState: HostedBlender["Service"]["threadState"] = (threadId) =>
-    Stream.zipLatest(setup.readiness, SubscriptionRef.changes(states)).pipe(
-      Stream.onStart(afterSalvage),
-      Stream.map(
-        ([readiness, running]): HostedBlenderThreadState =>
-          running.get(threadId) ?? (readiness.status === "ok" ? { status: "stopped" } : readiness),
+    Stream.zipLatest(
+      Stream.zipLatest(setup.readiness, SubscriptionRef.changes(states)),
+      SubscriptionRef.changes(heldBehinds),
+    ).pipe(
+      // A pane showing is a moment to look at the thread's master, which nothing watches for
+      // this: a desktop Blender's copy back tells T3 nothing.
+      Stream.onStart(
+        afterSalvage.pipe(
+          Effect.andThen(
+            Effect.suspend(() => {
+              const known = threadMasters.get(threadId);
+              return known === undefined
+                ? Effect.void
+                : checkMasters(known.blendPath).pipe(Effect.forkIn(serviceScope), Effect.asVoid);
+            }),
+          ),
+        ),
       ),
+      Stream.map(([[readiness, running], behinds]): HostedBlenderThreadState => {
+        const state: HostedBlenderThreadState =
+          running.get(threadId) ?? (readiness.status === "ok" ? { status: "stopped" } : readiness);
+        const heldBehind = behinds.get(threadId);
+        return heldBehind === undefined || state.status === "unavailable"
+          ? state
+          : { ...state, heldBehind };
+      }),
       Stream.changesWith(sameState),
     );
 
@@ -4798,6 +5150,7 @@ const make = Effect.gen(function* () {
         known.chosen = true;
         if (options?.agentSession !== undefined) known.agentSession = options.agentSession;
         threadMasters.set(threadId, known);
+        yield* checkMasters(file.blendPath).pipe(Effect.forkIn(serviceScope));
         return yield* inMasterQueue(file.blendPath)(joinMaster(threadId, file, recover));
       }),
     );
@@ -5058,6 +5411,7 @@ const make = Effect.gen(function* () {
           return publishNow();
         }),
       );
+      yield* checkMasters(file.blendPath).pipe(Effect.forkIn(serviceScope));
     },
   );
 
@@ -5178,6 +5532,327 @@ const make = Effect.gen(function* () {
     },
   );
 
+  /** The thread as T3 knows it; none when the lookup failed, null when there is no such thread. */
+  const threadLookup = (threadId: ThreadId) =>
+    ThreadManagementService.ThreadManagementService.pipe(
+      Effect.flatMap((threads) => threads.getThreadShell(threadId)),
+      Effect.asSome,
+      Effect.orElseSucceed(() => Option.none()),
+      Effect.provideContext(lookupContext),
+    );
+
+  /** Moves one live copy out of the project into T3's state; runs under its copy's lock. */
+  const holdCopy = Effect.fnUntraced(function* (id: string, record: WorkingCopyRecord) {
+    const why = yield* notOwnCopy(record);
+    // Gone from the project already: nothing is left to hold.
+    if (why === "missing") return yield* dropWorkingCopy(id);
+    if (why !== null) {
+      leftInProject.set(id, yield* Clock.currentTimeMillis);
+      return yield* Effect.logWarning(
+        "left a hosted Blender working copy in the project: T3 can't be sure it is its own",
+        { path: record.path, why },
+      );
+    }
+    // A Blender has it open, or one released at shutdown may still be writing it. Every open
+    // of a recorded copy takes the same lock, so none starts on it while this moves it.
+    if ((yield* claimedBy(record.path)) !== undefined) return;
+    const shell = Option.getOrNull(yield* threadLookup(record.threadId));
+    const info = yield* fileSystem.stat(record.path);
+    const holding: WorkingCopyRecord = {
+      ...liveRecord(record),
+      state: "holding",
+      heldAt: yield* Clock.currentTimeMillis,
+      masterRevision: yield* readFileRevision(record.master),
+      bytes: Number(info.size),
+      threadTitle: shell?.title ?? "",
+    };
+    yield* writeWorkingCopy(holding);
+    if (!(yield* copyOut(record.path, heldFileOf(id)))) {
+      yield* writeWorkingCopy(liveRecord(record));
+      return;
+    }
+    yield* holdGate(record.path);
+    // The copy-out can take a while: a thread made active meanwhile keeps its copy in the project.
+    if (!(yield* threadFinished(record.threadId))) {
+      yield* removeHeldFile(id);
+      yield* writeWorkingCopy(liveRecord(record));
+      return;
+    }
+    yield* fileSystem.remove(record.path);
+    yield* removeBackups(record.path);
+    yield* writeWorkingCopy({ ...holding, state: "held" });
+    leftInProject.delete(id);
+  });
+
+  /** Removes a live copy whose thread is gone from the project, if it is provably T3's. */
+  const deleteFromProject = Effect.fnUntraced(function* (id: string, record: WorkingCopyRecord) {
+    if ((yield* claimedBy(record.path)) !== undefined) return;
+    const why = yield* notOwnCopy(record);
+    if (why === null) {
+      yield* fileSystem.remove(record.path);
+      yield* removeBackups(record.path);
+    } else if (why !== "missing") {
+      yield* Effect.logWarning(
+        "left a deleted thread's hosted Blender working copy: T3 can't be sure it is its own",
+        { path: record.path, why },
+      );
+    }
+    yield* dropWorkingCopy(id);
+  });
+
+  const logHeldFailure = (cause: unknown) =>
+    Effect.logWarning("couldn't move a hosted Blender working copy", { cause });
+
+  /** Runs `act` on the copy's current record under its lock, so a move under way finishes first. */
+  const onCopy = <A, E, R>(
+    id: string,
+    act: (record: WorkingCopyRecord) => Effect.Effect<A, E, R>,
+  ): Effect.Effect<A | undefined, E | PlatformError, R> =>
+    Effect.suspend(() => {
+      const found = workingCopies.get(id);
+      if (found === undefined) return Effect.undefined;
+      return copyLocks.withLock(
+        found.path,
+        Effect.suspend(() => {
+          const record = workingCopies.get(id);
+          // Nothing is mid-move under the lock: a state left between two is a write that failed.
+          return record === undefined
+            ? Effect.undefined
+            : settleMove(id, record).pipe(
+                Effect.flatMap((settled) => (settled === null ? Effect.undefined : act(settled))),
+              );
+        }),
+      );
+    });
+
+  /** The thread finished, and its Blender with it: its copies leave the project. */
+  const holdFinished = Effect.fnUntraced(function* (threadId: ThreadId) {
+    yield* afterSalvage;
+    const live = [...workingCopies].filter(
+      ([, record]) => record.threadId === threadId && record.state === "live",
+    );
+    if (live.length === 0 || instances.has(threadId)) return;
+    if (!(yield* threadFinished(threadId))) return;
+    yield* Effect.forEach(live, ([id]) =>
+      onCopy(id, (record) =>
+        // A Blender started meanwhile has its copy open again.
+        record.state !== "live" || instances.has(threadId) ? Effect.void : holdCopy(id, record),
+      ).pipe(Effect.catch(logHeldFailure)),
+    );
+    yield* publishNow();
+  });
+
+  /** Checks whether held copies' masters (or `master`'s) changed on disk since they were held. */
+  const checkMasters = Effect.fn("HostedBlender.checkHeldMasters")(function* (master?: string) {
+    const revisions = new Map<string, string | null>();
+    let changed = false;
+    for (const [id, record] of workingCopies) {
+      if (record.state !== "held" || (master !== undefined && record.master !== master)) continue;
+      if (!revisions.has(record.master)) {
+        revisions.set(record.master, yield* readFileRevision(record.master));
+      }
+      const now = revisions.get(record.master) ?? null;
+      const behind = now !== null && now !== record.masterRevision;
+      if (behind === behindMaster.has(id)) continue;
+      changed = true;
+      if (behind) behindMaster.add(id);
+      else behindMaster.delete(id);
+    }
+    if (changed) yield* publishNow();
+  });
+
+  /**
+   * At start and once a day: interrupted moves are finished, copies of finished threads held,
+   * of deleted threads deleted, and held copies past the limit or of deleted threads removed.
+   * Each copy under its own lock, so one large move holds up no other copy.
+   */
+  const sweepWorkingCopies = Effect.fn("HostedBlender.sweepWorkingCopies")(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    for (const id of Array.from(workingCopies.keys())) {
+      yield* onCopy(id, (record) =>
+        Effect.gen(function* () {
+          const lookup = yield* threadLookup(record.threadId);
+          // Unknown for now: the next pass looks again.
+          if (Option.isNone(lookup)) return;
+          const shell = lookup.value;
+          const gone = shell === null || shell.deletedAt !== null;
+          if (record.state === "held") {
+            if (gone || now >= heldExpiry(record)) yield* dropWorkingCopy(id);
+            return;
+          }
+          if (gone) return yield* deleteFromProject(id, record);
+          if (
+            (shell.archivedAt !== null || shell.settledOverride === "settled") &&
+            !instances.has(record.threadId)
+          ) {
+            yield* holdCopy(id, record);
+          }
+        }),
+      ).pipe(Effect.catch(logHeldFailure));
+    }
+    yield* checkMasters();
+    yield* publishNow();
+  });
+
+  const recordWorkingCopy: HostedBlender["Service"]["recordWorkingCopy"] = Effect.fn(
+    "HostedBlender.recordWorkingCopy",
+  )(function* ({ threadId, master, path: copyPath, relativePath }) {
+    yield* afterSalvage;
+    const id = workingCopyId(threadId, copyPath);
+    yield* copyLocks
+      .withLock(
+        copyPath,
+        Effect.suspend(() =>
+          workingCopies.has(id)
+            ? Effect.void
+            : writeWorkingCopy({ threadId, master, path: copyPath, relativePath, state: "live" }),
+        ),
+      )
+      .pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("couldn't record a hosted Blender working copy", { cause }),
+        ),
+      );
+  });
+
+  /** Puts a held copy back; runs under its copy's lock. Null when it isn't held. */
+  const putBack = Effect.fnUntraced(
+    function* (id: string, found: WorkingCopyRecord) {
+      const record = yield* settleMove(id, found);
+      if (record?.state !== "held") return null;
+      if (Option.isSome(yield* fileSystem.lstat(record.path).pipe(Effect.option))) {
+        return yield* new HostedBlenderError({ reason: "heldCopyInTheWay" });
+      }
+      const revision = yield* readFileRevision(record.master);
+      yield* writeWorkingCopy({ ...record, state: "returning" });
+      const moved = yield* copyBack(heldFileOf(id), record.path).pipe(
+        Effect.orElseSucceed(() => "incomplete" as const),
+      );
+      if (moved !== "linked") {
+        yield* writeWorkingCopy(record);
+        return yield* new HostedBlenderError({
+          reason: moved === "inTheWay" ? "heldCopyInTheWay" : "restoreFailed",
+        });
+      }
+      yield* writeWorkingCopy(liveRecord(record));
+      yield* removeHeldFile(id).pipe(Effect.ignore);
+      behindMaster.delete(id);
+      yield* publishNow();
+      return { masterChanged: revision !== null && revision !== record.masterRevision };
+    },
+    Effect.catchIf(
+      (error) => !isHostedBlenderError(error),
+      (cause) =>
+        Effect.logWarning("couldn't put back a hosted Blender working copy", { cause }).pipe(
+          Effect.andThen(Effect.fail(new HostedBlenderError({ reason: "restoreFailed" }))),
+        ),
+    ),
+  );
+
+  const putBackHeld: HostedBlender["Service"]["putBackHeld"] = Effect.fn(
+    "HostedBlender.putBackHeld",
+  )(function* ({ threadId, path: copyPath }) {
+    yield* afterSalvage;
+    const id = workingCopyId(threadId, copyPath);
+    return (
+      (yield* onCopy(id, (record) => putBack(id, record)).pipe(
+        Effect.catchIf(
+          (error) => !isHostedBlenderError(error),
+          () => Effect.fail(new HostedBlenderError({ reason: "restoreFailed" })),
+        ),
+      )) ?? null
+    );
+  });
+
+  /**
+   * Runs an open of the workspace file `relativePath` under the lock of any working copy T3
+   * recorded at that place: a move under way finishes first, and a held copy of the thread's
+   * goes back before the open. Files T3 never recorded open as before, with no lookup.
+   */
+  const openingCopy = Effect.fnUntraced(function* <A, E, R>(
+    threadId: ThreadId,
+    relativePath: string,
+    opening: Effect.Effect<A, E, R>,
+  ) {
+    const name = path.basename(relativePath);
+    if (![...workingCopies.values()].some((record) => path.basename(record.path) === name)) {
+      return yield* opening;
+    }
+    const root = yield* threadRoot(threadId);
+    if (root === undefined) return yield* opening;
+    const wanted = path.resolve(yield* realPathOr(root), relativePath);
+    const copyPath = path.join(yield* realPathOr(path.dirname(wanted)), name);
+    return yield* copyLocks.withLock(
+      copyPath,
+      Effect.gen(function* () {
+        const id = workingCopyId(threadId, copyPath);
+        const record = workingCopies.get(id);
+        if (record !== undefined) yield* putBack(id, record);
+        return yield* opening;
+      }),
+    );
+  });
+
+  const heldWorkingCopies: HostedBlender["Service"]["heldWorkingCopies"] = (threadId) =>
+    Effect.sync(() =>
+      [...workingCopies.values()]
+        .filter((record) => record.threadId === threadId && record.state === "held")
+        .map((record) => record.path),
+    );
+
+  const heldCopies: HostedBlender["Service"]["heldCopies"] = SubscriptionRef.changes(heldList).pipe(
+    // Opening the list is a moment to look at the masters, which nothing watches for this.
+    Stream.onStart(
+      afterSalvage.pipe(
+        Effect.andThen(checkMasters().pipe(Effect.forkIn(serviceScope))),
+        Effect.asVoid,
+      ),
+    ),
+    Stream.changesWith((a, b) => JSON.stringify(a) === JSON.stringify(b)),
+  );
+
+  /** The copy as the person saw it: one held again since is another hold, left alone. */
+  const asSeen = (record: WorkingCopyRecord, heldAt: number) =>
+    record.state === "held" && record.heldAt === heldAt;
+
+  const deleteHeld: HostedBlender["Service"]["deleteHeld"] = Effect.fn("HostedBlender.deleteHeld")(
+    function* (copies) {
+      yield* afterSalvage;
+      const failed = yield* Effect.forEach(copies, ({ id, heldAt }) =>
+        onCopy(id, (record) => (asSeen(record, heldAt) ? dropWorkingCopy(id) : Effect.void)).pipe(
+          Effect.as(false),
+          Effect.catch((cause) => logHeldFailure(cause).pipe(Effect.as(true))),
+        ),
+      );
+      yield* publishNow();
+      if (failed.some(Boolean)) {
+        return yield* new HostedBlenderError({ reason: "heldCopyNotDeleted" });
+      }
+    },
+  );
+
+  const keepHeld: HostedBlender["Service"]["keepHeld"] = Effect.fn("HostedBlender.keepHeld")(
+    function* (copies) {
+      yield* afterSalvage;
+      yield* Effect.forEach(copies, ({ id, heldAt }) =>
+        onCopy(id, (record) =>
+          asSeen(record, heldAt) ? writeWorkingCopy({ ...record, kept: true }) : Effect.void,
+        ).pipe(Effect.catch(logHeldFailure)),
+      );
+      yield* publishNow();
+    },
+  );
+
+  // Once salvage has said which files a Blender released at shutdown still writes.
+  yield* afterSalvage.pipe(
+    Effect.andThen(sweepWorkingCopies().pipe(Effect.repeat(Schedule.spaced(Duration.days(1))))),
+    Effect.forkIn(serviceScope),
+  );
+  yield* Stream.fromQueue(sweepRequests).pipe(
+    Stream.runForEach(() => sweepWorkingCopies()),
+    Effect.forkIn(serviceScope),
+  );
+
   const masterState: HostedBlender["Service"]["masterState"] = (threadId) =>
     SubscriptionRef.changes(masterStates).pipe(
       Stream.map((all): HostedBlenderMasterState => all.get(threadId) ?? { status: "none" }),
@@ -5200,6 +5875,12 @@ const make = Effect.gen(function* () {
     keptCopies,
     closeOnSettle,
     forgetThread,
+    recordWorkingCopy,
+    putBackHeld,
+    heldWorkingCopies,
+    heldCopies,
+    deleteHeld,
+    keepHeld,
     threadState,
     attachViewer,
     runningBlenders,

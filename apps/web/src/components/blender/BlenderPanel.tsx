@@ -124,6 +124,7 @@ import {
   type TakeScroll,
   wheelScroll,
 } from "./blenderInput";
+import { HeldCopiesNotice } from "./HeldCopiesNotice";
 import { reloadKey, useKeptCopySelection } from "./keptCopies";
 import { fileName, useQuitHostedBlender } from "./useQuitHostedBlender";
 
@@ -245,12 +246,27 @@ export function BlenderPanel(props: BlenderPanelProps) {
     ) : (
       <StateCard title={<Spinner />} />
     );
-  if (switcher === null || running) return body;
-  // A card has no toolbar, so the switch sits above it.
+  // Asked above whichever side shows, until it is answered.
+  const heldBehind = working !== null && "heldBehind" in working ? working.heldBehind : undefined;
+  const notice =
+    heldBehind === undefined ? null : (
+      <HeldCopiesNotice threadRef={props.threadRef} behind={heldBehind} />
+    );
+  const content =
+    switcher === null || running ? (
+      body
+    ) : (
+      // A card has no toolbar, so the switch sits above it.
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="flex h-9 shrink-0 items-center border-b border-border px-3">{switcher}</div>
+        <div className="min-h-0 flex-1">{body}</div>
+      </div>
+    );
+  if (notice === null) return content;
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-9 shrink-0 items-center border-b border-border px-3">{switcher}</div>
-      <div className="min-h-0 flex-1">{body}</div>
+      {notice}
+      <div className="min-h-0 flex-1">{content}</div>
     </div>
   );
 }
@@ -572,6 +588,11 @@ function ReopenCard(props: {
               T3 Code closed <Var>{name}</Var> when this thread settled or T3 Code stopped, and kept
               its unsaved changes. Reopen restores them.
             </T>
+          ) : copy.held === true ? (
+            <T>
+              T3 Code moved <Var>{name}</Var> out of this project when the thread finished, and
+              holds it for up to 30 days. Reopen puts it back and opens it.
+            </T>
           ) : (
             <T>
               T3 Code closed <Var>{name}</Var> when this thread settled or T3 Code stopped.
@@ -660,16 +681,19 @@ function ReopenCard(props: {
                   ) : null}
                 </>
               )}
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={pending}
-                onClick={() =>
-                  recovery ? setConfirmingDiscard({ keptAt: copy.keptAt }) : void run("dismiss")
-                }
-              >
-                {recovery ? <T>Discard</T> : <T>Dismiss</T>}
-              </Button>
+              {/* A held copy is deleted from Settings › Blender, never dismissed here. */}
+              {copy.held === true && !recovery ? null : (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={pending}
+                  onClick={() =>
+                    recovery ? setConfirmingDiscard({ keptAt: copy.keptAt }) : void run("dismiss")
+                  }
+                >
+                  {recovery ? <T>Discard</T> : <T>Dismiss</T>}
+                </Button>
+              )}
             </>
           ) : null
         }

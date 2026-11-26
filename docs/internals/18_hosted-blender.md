@@ -27,6 +27,33 @@ session, and a master's only through relays, one per agent thread and session, o
 current session and closed when that session's access ends. With no agent thread, nothing listens
 for a master's agents.
 
+## A finished thread's working copy is held, never left
+
+`blender_start` records each working copy it makes (its thread, its master by real path, its
+place) in T3's state, beside the recovery copies but not as one: a recovery copy is unsaved work
+over a file, a held copy is the file itself, so neither's lifecycle fits the other. Only a copy
+T3 recorded is ever moved or deleted, and only while it is still a regular file with one name,
+named and placed as that thread's copy of that master; anything else stays, and Settings says
+so. T3 can't tell a file the person saved under that name from Blender's own save of the copy.
+Copies made before the record existed are never imported.
+
+Its thread settling or being archived holds it once the thread's Blender has really ended,
+and so does any later end of a Blender of a thread still finished (however long a held close
+keeps it open, and never while a Blender released at shutdown may still write it): copied into the state folder through a synced temporary name, then the
+original and its `.blend1` backups removed. The project and the state are on different drives,
+so the record says which way a move was going, and whatever acts on a copy next (a start, an
+open, a hold, an answer) first finishes it from the side that is whole, removing only T3's own
+files: under the copy's lock nothing is mid-move, so a state left between two is a write that
+failed. Each copy's moves run under a lock of its own, by path,
+which every open of a recorded copy takes too, so an open during a move waits for it and acts on
+what it left. Opening the thread's Blender (the pane shows its held copy as a kept one) puts it
+back by hard link, which never replaces a file that took its name. Delete and Keep name a hold
+by when it was held, so an answer to an earlier hold never reaches a later one. The master "moving on" is its revision (as the
+reload watcher reads one) differing from the one recorded at hold, read only when it costs
+nothing (start, a thread opening or saving that master, Settings, the daily pass); nothing
+watches it. The daily pass, the only timer, also deletes what is past 30 days and what a
+deleted or missing thread left. Agents can't delete held copies.
+
 ## A quit is one record
 
 Every quit T3 sends the add-on (the person's discard, a held or plain close, Save and quit, a
