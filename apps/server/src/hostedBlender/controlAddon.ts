@@ -69,6 +69,11 @@ class _State:
     viewport_generation = 0
     viewport_shown = 0
     display = None
+    # The number announced for the next window, until T3 answers that it expects it.
+    viewport_wanted = None
+    viewport_expected = 0
+    # The window is up and whole, waiting for T3's word before the strip.
+    viewport_waiting = False
     # When Blender last loaded a file (open, revert, recover), epoch ms; T3 ignores autosaves
     # from before it.
     loaded_at = None
@@ -151,6 +156,7 @@ def _snapshot():
         "agentActing": _agent_acting(_mcp_server()),
         "mcpVersion": _State.mcp_version,
         "viewport": _State.viewport_generation,
+        "viewportWaiting": _State.viewport_waiting,
     }
     if _State.restore is not None:
         snapshot["restore"] = _State.restore
@@ -428,9 +434,11 @@ def _handle(command):
     if kind == "stopAgentListener":
         _end_grant()
         return
-    if kind in ("timeline", "viewportShown", "display"):
+    if kind in ("timeline", "viewportExpected", "viewportShown", "display"):
         if kind == "timeline":
             _State.timeline = bool(command.get("shown"))
+        elif kind == "viewportExpected":
+            _State.viewport_expected = command.get("generation", 0)
         elif kind == "viewportShown":
             _State.viewport_shown = command.get("generation", 0)
         else:
@@ -929,13 +937,20 @@ def _open_viewport_window():
         return 0.2
     if own:
         # Split, its title is no longer the one the hidden display finds it by.
-        if _State.timeline and not _viewport_settled(own[0]):
+        _State.viewport_waiting = _State.timeline and not _viewport_settled(own[0])
+        if _State.viewport_waiting:
             return TICK
         _show_timeline(own[0], _State.timeline)
         return None
-    # Announced before it exists while T3 is connected; otherwise T3 hears it on connecting.
-    _State.viewport_generation += 1
-    _publish_state()
+    _State.viewport_waiting = False
+    # Opened only once T3 expects it, so the capture T3 hears next is this window's.
+    if _State.viewport_wanted is None:
+        _State.viewport_generation += 1
+        _State.viewport_wanted = _State.viewport_generation
+        _publish_state()
+    if _State.viewport_expected != _State.viewport_wanted:
+        return TICK
+    _State.viewport_wanted = None
     areas = [area for area in window.screen.areas if area.type == "VIEW_3D"]
     if not areas:
         area = max(window.screen.areas, key=lambda area: area.width * area.height)

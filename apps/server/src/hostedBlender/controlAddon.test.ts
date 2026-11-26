@@ -502,10 +502,15 @@ elif _then in (
     bpy.ops.screen = types.SimpleNamespace(area_dupli=_dupli)
     if RECOVER_PATH is not None:
         _recover()
+    def _t3_pass():
+        # As T3 answers a window the add-on announced: it expects it.
+        if _State.viewport_wanted is not None:
+            _State.viewport_expected = _State.viewport_wanted
+        return _open_viewport_window()
     # The timer runs until it returns None; a stuck close must not keep it going.
     _runs = 0
     _late = _Window("VIEW_3D", marked=True)
-    while _open_viewport_window() is not None and _runs < 10:
+    while _t3_pass() is not None and _runs < 10:
         _runs += 1
         if _then == "lateMarked" and _runs == 1:
             # A marked window seen only after the first pass isn't the copy's to replace.
@@ -518,7 +523,7 @@ elif _then in (
         _opened.clear()
         _on_load_post()
         _runs = 0
-        while _open_viewport_window() is not None and _runs < 10:
+        while _t3_pass() is not None and _runs < 10:
             _runs += 1
         _steps.append(dict(
             viewports=len([window for window in _windows[1:] if _lone_3d_view(window)]),
@@ -533,7 +538,7 @@ elif _then in (
         _closes.clear()
         _on_load_post()
         _runs = 0
-        while _open_viewport_window() is not None and _runs < 10:
+        while _t3_pass() is not None and _runs < 10:
             _runs += 1
         lone = [window for window in _windows[1:] if _lone_3d_view(window)]
         _steps.append(dict(
@@ -556,7 +561,7 @@ elif _then in (
         for function in _scheduled:
             bpy.app.registered.remove(function)
             _passes = 0
-            while function() is not None and _passes < 10:
+            while _t3_pass() is not None and _passes < 10:
                 _passes += 1
         _steps.append(dict(
             stillOwn=_changed is not None and _changed[0] is _first,
@@ -1470,9 +1475,9 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     });
     const ready = { listener: "ready", listening: result.port, enabled: true };
     // T3's saved window swapped for one fresh, marked window; the user's own view kept; the
-    // agent's listener untouched. A pass closes, one opens, and one more sets the strip.
+    // agent's listener untouched. A pass closes, one announces, one opens, one sets the strip.
     expect(result.steps.slice(-4)).toEqual([
-      { ...ready, windows: 3, fresh: 1, usersKept: true, closes: 2, runs: 2, marked: true },
+      { ...ready, windows: 3, fresh: 1, usersKept: true, closes: 2, runs: 3, marked: true },
       ready,
       off,
       off,

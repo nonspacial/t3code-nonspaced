@@ -1,5 +1,5 @@
 import { SettingsGroup } from "./SettingsGroup";
-import { AuthSettingsWriteScope } from "@t3tools/contracts";
+import { type AuthEnvironmentScope, AuthSettingsWriteScope } from "@t3tools/contracts";
 import { usePrimaryEnvironmentId, usePrimaryEnvironment } from "../../state/environments";
 import { useEnvironmentScope, useEnvironmentsWithScope } from "../../state/session";
 import { useServerConfigs } from "../../state/entities";
@@ -323,6 +323,7 @@ export function SettingsRow({
   managedPaths = EMPTY_MANAGED_PATHS,
   mixed: mixedOverride,
   managed,
+  writeScope = AuthSettingsWriteScope,
   children,
   className,
   ...rowProps
@@ -342,6 +343,8 @@ export function SettingsRow({
   mixed?: boolean;
   /** Why an administrator's policy turns this row's control off, from the contract's denial helpers. */
   managed?: string | undefined;
+  /** What writing this server-scoped row takes, when its control is a command of its own. */
+  writeScope?: AuthEnvironmentScope;
   children?: ReactNode;
 }) {
   const gt = useGT();
@@ -350,11 +353,8 @@ export function SettingsRow({
   const context = useOptionalSettingsScope();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const primaryEnvironment = usePrimaryEnvironment();
-  const primaryCanWrite = useEnvironmentScope(primaryEnvironmentId, AuthSettingsWriteScope);
-  const writableIds = useEnvironmentsWithScope(
-    context?.connectedEnvironments ?? [],
-    AuthSettingsWriteScope,
-  );
+  const primaryCanWrite = useEnvironmentScope(primaryEnvironmentId, writeScope);
+  const writableIds = useEnvironmentsWithScope(context?.connectedEnvironments ?? [], writeScope);
   const canWriteSettings = context
     ? context.connectedEnvironments.length > 0 &&
       context.connectedEnvironments.every((target) => writableIds.has(target.environmentId))

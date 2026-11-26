@@ -1,11 +1,12 @@
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type {
-  EnvironmentId,
-  HostedBlenderSetupCheck,
-  HostedBlenderSetupItem,
-  HostedBlenderSetupResult,
-  ThreadId,
+import {
+  AuthOrchestrationOperateScope,
+  type EnvironmentId,
+  type HostedBlenderSetupCheck,
+  type HostedBlenderSetupItem,
+  type HostedBlenderSetupResult,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { resolvePastedPath } from "@t3tools/shared/path";
 import { useNavigate } from "@tanstack/react-router";
@@ -123,6 +124,8 @@ export function HostedBlenderSetupSettings(props: { readonly environmentId: Envi
         <SettingsRow
           {...setting("hosted-blender-timeline")}
           serverScoped
+          // The pane's command writes it, so operating hosted Blender is what it takes.
+          writeScope={AuthOrchestrationOperateScope}
           settingKeys={["hostedBlenderTimeline"]}
           description={gt(
             "Show Blender's Timeline under the 3D view in the Blender pane, for every hosted Blender on this server.",

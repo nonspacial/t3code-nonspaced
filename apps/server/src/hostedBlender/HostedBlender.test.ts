@@ -4354,15 +4354,21 @@ def _edit(*_args):
     marker = os.path.join(folder, "edited")
     if os.path.exists(marker):
         return
-    bpy.context.scene.collection.objects.link(bpy.data.objects.new("T3Edit", None))
-    open(marker, "w").close()
-    # Recorded as an undo step, as an edit through Blender's UI or an agent call is, so
-    # Blender reports the file unsaved.
-    def _push():
+    # Made once a 3D view has drawn: by then Blender has handled the load's notifiers, which
+    # clear the file's unsaved mark and would hide an edit made before them.
+    def _edit_now():
+        bpy.context.scene.collection.objects.link(bpy.data.objects.new("T3Edit", None))
+        open(marker, "w").close()
+        # Recorded as an undo step, as an edit through Blender's UI or an agent call is, so
+        # Blender reports the file unsaved.
         window = bpy.context.window_manager.windows[0]
         with bpy.context.temp_override(window=window):
             bpy.ops.ed.undo_push(message="T3 test edit")
-    bpy.app.timers.register(_push, first_interval=0.2)
+    handle = []
+    def _drawn():
+        bpy.types.SpaceView3D.draw_handler_remove(handle[0], "WINDOW")
+        bpy.app.timers.register(_edit_now, first_interval=0.1)
+    handle.append(bpy.types.SpaceView3D.draw_handler_add(_drawn, (), "WINDOW", "POST_PIXEL"))
 
 def register():
     bpy.app.handlers.load_post.append(_edit)
@@ -5537,7 +5543,7 @@ describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
 
       yield* service.open({ threadId, relativePath: "cube.blend" });
       yield* fillsPane;
-      yield* awaitState((state) => state.status === "running");
+      yield* awaitState((state) => state.status === "running" && state.dirty);
       yield* service.closeOnSettle({ threadId });
       yield* awaitState((state) => state.status === "closed");
       yield* service.reopen({ threadId, key: CUBE, restore: true });
@@ -5702,7 +5708,10 @@ describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
         }).pipe(Effect.scoped);
 
         yield* service.openMaster({ threadId, relativePath: "cube.blend" });
-        yield* masterState("running");
+        yield* service.masterState(threadId).pipe(
+          Stream.filter((state) => state.status === "running" && state.dirty),
+          Stream.runHead,
+        );
         expect(NodeFS.existsSync(NodePath.join(dir, "edited"))).toBe(true);
         // Switched off, the master closes into its copy; switched on again, Reopen restores it.
         yield* Queue.offer(switches, { status: "notSetUp", missing: ["enabled"] });
@@ -5754,7 +5763,7 @@ describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
           Queue.take(states).pipe(Effect.repeat({ until: matches }), Effect.map(card));
 
         yield* service.open({ threadId, relativePath: "cube.blend" });
-        yield* awaitState((state) => state.status === "running");
+        yield* awaitState((state) => state.status === "running" && state.dirty);
         expect(NodeFS.existsSync(NodePath.join(dir, "edited"))).toBe(true);
 
         // Settling quits without saving; the edit survives only in the recovery copy.
@@ -5785,7 +5794,11 @@ describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
         const crashed = yield* awaitState((state) => state.status === "crashed");
         expect(crashed).toMatchObject({ status: "crashed", relativePath: "cube.blend" });
         yield* service.reopen({ threadId, key: CUBE, restore: false });
-        yield* awaitState((state) => state.status === "running");
+        // Blender's own word that the file is clean: a file saved from a restored session reads
+        // unsaved as it loads, until Blender handles the load.
+        yield* awaitState(
+          (state) => state.status === "running" && state.openFile !== undefined && !state.dirty,
+        );
         // Quitting without saving keeps nothing new and removes only by Discard.
         yield* service.quit({ threadId, save: false });
         expect(yield* awaitState((state) => state.status === "crashed")).toMatchObject({
@@ -5871,7 +5884,7 @@ describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
           const first = yield* serviceFor(layer);
           const awaitState = yield* watch(first);
           yield* first.open({ threadId, relativePath: "cube.blend" });
-          yield* awaitState((state) => state.status === "running");
+          yield* awaitState((state) => state.status === "running" && state.dirty);
           return yield* Clock.currentTimeMillis;
         }).pipe(Effect.scoped);
         expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(5_000);
@@ -5892,7 +5905,7 @@ describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
         yield* service.dismiss({ threadId, key: CUBE });
         NodeFS.rmSync(NodePath.join(dir, "edited"), { force: true });
         yield* service.open({ threadId, relativePath: "cube.blend" });
-        yield* awaitState((state) => state.status === "running");
+        yield* awaitState((state) => state.status === "running" && state.dirty);
         yield* service.closeOnSettle({ threadId });
         expect(yield* awaitState((state) => state.status === "closed")).toEqual({
           status: "closed",
@@ -5963,6 +5976,9 @@ def control():
     else:
         # As the add-on does once a restore T3 asked for has run.
         state(blend, **({"restore": "ok"} if "--t3-recover" in t3 else {}))
+    if after == "viewportWords":
+        # A viewport window announced after the hidden display already captured another.
+        state(blend, viewport=1)
     for line in connection.makefile():
         with open(os.environ["STANDIN_ARGS"] + ".control", "a") as log:
             log.write(line)
@@ -5993,6 +6009,13 @@ def control():
                 # Someone opens another file through Blender's own UI.
                 state(os.environ.get("STANDIN_OTHER", "/elsewhere/other.blend"))
         command = json.loads(line)
+        if after == "viewportWords" and kind == "viewportExpected":
+            # The window T3 now expects opens, and the hidden display captures it.
+            event({"type": "windowCaptured", "title": "3D Viewport"})
+        if after == "viewportWords" and kind == "viewportShown" and not os.path.exists(os.environ["STANDIN_ARGS"] + ".waited"):
+            # As if the word went missing: still whole, still waiting.
+            open(os.environ["STANDIN_ARGS"] + ".waited", "w").close()
+            state(blend, viewport=1, viewportWaiting=True)
         if kind == "timeline" and after == "echoTimeline":
             # Answers each Timeline switch with a state T3 publishes: unsaved while it's off.
             state(blend, dirty=not command["shown"])
@@ -6171,6 +6194,53 @@ describe("The Timeline switch", () => {
       expect(args()).not.toContain("--t3-timeline");
       expect((yield* settings.getSettings).hostedBlenderTimeline).toBe(false);
     }).pipe(Effect.scoped),
+  );
+});
+
+describe("The viewport window's strip", () => {
+  it.live(
+    "S1: is allowed only for a capture heard after T3 expected the window, and again when the add-on still waits",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tempDir("viewport-words");
+        const bin = fakeTools(dir);
+        NodeFS.writeFileSync(NodePath.join(bin, "helper"), `#!${python}\n${ARGS_HELPER}`, {
+          mode: 0o755,
+        });
+        const runtime = NodePath.join(dir, "run");
+        NodeFS.mkdirSync(runtime);
+        NodeFS.writeFileSync(NodePath.join(dir, "cube.blend"), "");
+        const argsLog = NodePath.join(dir, "args.log");
+        const service = yield* serviceFor(
+          layerFor({
+            env: {
+              PATH: bin,
+              XDG_RUNTIME_DIR: runtime,
+              STANDIN_ARGS: argsLog,
+              STANDIN_AFTER: "viewportWords",
+            },
+            helper: NodePath.join(bin, "helper"),
+            workspaceRoot: dir,
+            baseDir: dir,
+          }),
+        );
+        const words = () =>
+          (NodeFS.existsSync(`${argsLog}.control`)
+            ? NodeFS.readFileSync(`${argsLog}.control`, "utf8").split("\n")
+            : []
+          )
+            .filter((line) => line.includes('"viewport'))
+            .map((line) => {
+              const word = JSON.parse(line);
+              return `${word.type} ${word.generation}`;
+            });
+        yield* service.open({ threadId, relativePath: "cube.blend" });
+        yield* fileAppears(dir, `${argsLog}.control`, () => words().length >= 3);
+        // The capture from before T3 expected window 1 never stood for it; the one after does,
+        // and a report that it still waits gets the word again.
+        expect(words()).toEqual(["viewportExpected 1", "viewportShown 1", "viewportShown 1"]);
+        yield* service.quit({ threadId, save: false });
+      }).pipe(Effect.scoped),
   );
 });
 
@@ -6451,6 +6521,37 @@ describe("Agent access at launch", () => {
       release();
       yield* Fiber.join(quitting);
     }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "S4: Save and quit with the agent's access live ends saved, though a report after the save reads unsaved",
+    () =>
+      Effect.gen(function* () {
+        const { service, release, argsLog } = yield* launch(
+          { agentPort: 41234 },
+          { agentWorkingCopy: true },
+          "offAfterSaved",
+        );
+        expect((yield* service.agentListener(threadId))?.state).toBe("ready");
+        const quitting = yield* service.quit({ threadId, save: true }).pipe(Effect.forkChild);
+        // Blender still reads unsaved while it ends the agent's grant, before it handles the
+        // save's notifier; the save already answered.
+        yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status === "running" && state.dirty),
+          Stream.runHead,
+        );
+        release();
+        yield* Fiber.join(quitting);
+        const ended = yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status !== "running"),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        expect(card(ended)).toEqual({ status: "stopped" });
+        expect(
+          recoveryOf(NodePath.join(NodePath.dirname(argsLog), "userdata", "hosted-blender")),
+        ).toBeNull();
+      }).pipe(Effect.scoped),
   );
 
   it.live("a shutdown ends the agent's access as revoked, though the connection drops first", () =>

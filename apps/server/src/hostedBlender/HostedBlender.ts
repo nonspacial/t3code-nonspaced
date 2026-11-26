@@ -170,6 +170,8 @@ const ControlMessage = Schema.Union([
     loadedAt: Schema.optional(Schema.Number),
     /** The number of the viewport window Blender opened last, announced before it opens. */
     viewport: Schema.optional(Schema.Int),
+    /** That window is up and whole, waiting for T3's word that the hidden display has it. */
+    viewportWaiting: Schema.optional(Schema.Boolean),
     /** The file on disk changed since Blender read or saved it. */
     stale: Schema.optional(Schema.Boolean),
     /** What holds the reload of a stale file. */
@@ -248,9 +250,12 @@ const encodeTimeline = Schema.encodeSync(
   Schema.fromJsonString(Schema.Struct({ type: Schema.Literal("timeline"), shown: Schema.Boolean })),
 );
 const timelineCommand = (shown: boolean) => `${encodeTimeline({ type: "timeline", shown })}\n`;
-const encodeViewportShown = Schema.encodeSync(
+const encodeViewportWord = Schema.encodeSync(
   Schema.fromJsonString(
-    Schema.Struct({ type: Schema.Literal("viewportShown"), generation: Schema.Int }),
+    Schema.Struct({
+      type: Schema.Literals(["viewportExpected", "viewportShown"]),
+      generation: Schema.Int,
+    }),
   ),
 );
 const encodeDisplay = Schema.encodeSync(
@@ -631,10 +636,11 @@ interface Instance {
   viewport: { readonly width: number; readonly height: number } | null;
   /** The hidden display's output size, which a captured window fills once fullscreen. */
   output: { readonly width: number; readonly height: number } | null;
-  /** The hidden display holds a window: captured, and not closed since. */
-  captureLive: boolean;
-  /** The viewport window Blender announced last, and whether the add-on has been told it shows. */
-  shownViewport: { readonly generation: number; shown: boolean } | null;
+  /**
+   * The viewport window Blender announced last: whether the hidden display captured a window
+   * since T3 told the add-on to open it, and whether the add-on has been told so.
+   */
+  shownViewport: { readonly generation: number; captured: boolean; shown: boolean } | null;
   lastKeyframeRequest: number;
   /** A keyframe request is waiting out the throttle. */
   keyframeDeferred: boolean;
@@ -1617,6 +1623,7 @@ const make = Effect.gen(function* () {
         instance.output = { width: event.width, height: event.height };
         yield* sendDisplay(instance);
         if (event.target === "output" && instance.shownViewport !== null) {
+          instance.shownViewport.captured = true;
           yield* viewportShown(instance);
         }
         // Sizes asked for before the helper ran went nowhere; ask for the wanted one now.
@@ -1631,7 +1638,7 @@ const make = Effect.gen(function* () {
         return;
       }
       case "windowCaptured":
-        instance.captureLive = true;
+        if (instance.shownViewport !== null) instance.shownViewport.captured = true;
         yield* viewportShown(instance);
         return yield* markRunning(instance);
       case "resized":
@@ -1658,26 +1665,44 @@ const make = Effect.gen(function* () {
         return yield* broadcast(instance, { type: "cursor", captured });
       }
       case "windowClosed":
-        instance.captureLive = false;
+        if (instance.shownViewport?.shown === false) instance.shownViewport.captured = false;
         return;
     }
   });
 
   // Running once Blender shows its viewport window and any restore asked for has succeeded.
-  // The add-on splits a viewport window only once the hidden display has it: a capture live once
-  // the add-on announced the window (it closes every other one first), and the window filling
-  // the output, which the add-on checks itself.
-  const viewportShown = Effect.fnUntraced(function* (instance: Instance) {
+  // The add-on opens a viewport window only once T3 expects it (it closes every other one first),
+  // so the capture T3 hears after that is this window's; it splits the window once T3 says so and
+  // the window fills the output, which it checks itself. Both words are safe to send again.
+  const expectViewport = Effect.fnUntraced(function* (instance: Instance, generation: number) {
+    instance.shownViewport = {
+      generation,
+      // Streaming the whole output, there's no capture to wait for.
+      captured: instance.stats?.target === "output",
+      shown: false,
+    };
+    if (instance.control) {
+      yield* instance.control.write(
+        `${encodeViewportWord({ type: "viewportExpected", generation })}\n`,
+      );
+    }
+    yield* viewportShown(instance);
+  });
+
+  const viewportShown = Effect.fnUntraced(function* (instance: Instance, again = false) {
     const shown = instance.shownViewport;
-    if (shown === null || shown.shown) return;
-    shown.shown = true;
     const control = instance.control;
-    if (control === null) return;
+    if (shown === null || !shown.captured || (shown.shown && !again) || control === null) return;
     yield* viewportShownGate.pipe(
       Effect.andThen(
         control.write(
-          `${encodeViewportShown({ type: "viewportShown", generation: shown.generation })}\n`,
+          `${encodeViewportWord({ type: "viewportShown", generation: shown.generation })}\n`,
         ),
+      ),
+      Effect.andThen(
+        Effect.sync(() => {
+          shown.shown = true;
+        }),
       ),
       Effect.forkIn(serviceScope),
     );
@@ -2069,11 +2094,10 @@ const make = Effect.gen(function* () {
       case "state": {
         const generation = message.value.viewport ?? 0;
         if (generation > 0 && instance.shownViewport?.generation !== generation) {
-          instance.shownViewport = { generation, shown: false };
-          // Streaming the whole output, there's no capture to wait for.
-          if (instance.captureLive || instance.stats?.target === "output") {
-            yield* viewportShown(instance);
-          }
+          yield* expectViewport(instance, generation);
+        } else if (message.value.viewportWaiting === true) {
+          // Still whole and waiting: T3's word may not have reached it.
+          yield* viewportShown(instance, true);
         }
         if (message.value.restore !== undefined) {
           // Blender restores the path the copy was saved from; saving must not write elsewhere
@@ -2093,7 +2117,9 @@ const make = Effect.gen(function* () {
         const openBefore = instance.openFile;
         // Its quit pushes an undo step for the quit copy, so a report after "quitting" is always
         // unsaved and says nothing about the person's work; "quitting" itself carried the facts.
-        if (!instance.quitHeard) {
+        // A Save and quit's "saved" is the last word too: Blender may still read unsaved until it
+        // handles the save's notifier, which comes after the reports ending the agent's grant.
+        if (!instance.quitHeard && !instance.saveConfirmed) {
           yield* noteFile(instance, message.value.filepath, message.value.dirty, {
             loadedAt: message.value.loadedAt,
           });
@@ -2246,6 +2272,13 @@ const make = Effect.gen(function* () {
       // Switched since the launch read it.
       yield* instance.control.write(timelineCommand(yield* timelineShown));
       yield* sendDisplay(instance);
+      // Words a connection before this one may not have carried.
+      if (instance.shownViewport !== null) {
+        yield* instance.control.write(
+          `${encodeViewportWord({ type: "viewportExpected", generation: instance.shownViewport.generation })}\n`,
+        );
+        yield* viewportShown(instance, true);
+      }
       const decoder = new TextDecoder();
       let buffer = "";
       return yield* Effect.forever(
@@ -2831,7 +2864,6 @@ const make = Effect.gen(function* () {
       memoryBytes: null,
       viewport: null,
       output: null,
-      captureLive: false,
       shownViewport: null,
       lastKeyframeRequest: Number.NEGATIVE_INFINITY,
       keyframeDeferred: false,
