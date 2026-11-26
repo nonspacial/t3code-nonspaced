@@ -869,7 +869,7 @@ it("keeps the quit dialog on the file it asked about, asking afresh once Blender
   }
 });
 
-it("fits its toolbar in a 360 px pane with a master, the menu still in reach and the name readable", async () => {
+it("fits its toolbar in a 360 px pane with a master, the menu still in reach and the name whole on its own line", async () => {
   using _app = startup();
   const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
   const { Atom } = await import("effect/reactivity");
@@ -895,10 +895,15 @@ it("fits its toolbar in a 360 px pane with a master, the menu still in reach and
     expect(box.width).toBeGreaterThan(0);
     expect(box.right).toBeLessThanOrEqual(bounds.right);
   }
-  // The switch says it is the working copy, so the name drops what would be cut off anyway.
-  await expect.element(screen.getByText("hero.wip-a1b2.blend")).not.toBeVisible();
-  const name = screen.getByText("hero.blend", { exact: true }).element().getBoundingClientRect();
-  expect(name.width).toBeGreaterThanOrEqual(56);
+  // The name has a line of its own under the buttons, whole, rather than cut between them.
+  const name = [...screen.container.querySelectorAll("span")].find(
+    (span) => span.textContent === "hero.wip-a1b2.blend" && span.checkVisibility(),
+  )!;
+  const menu = screen.getByRole("button", { name: "Blender menu" }).element();
+  expect(name.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+    menu.getBoundingClientRect().bottom,
+  );
+  expect(name.scrollWidth).toBeLessThanOrEqual(name.clientWidth);
 });
 
 it("points a thread with no Blender running at Files, where .blend files open", async () => {
