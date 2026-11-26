@@ -831,12 +831,16 @@ impl State {
         if self.streamable() && !capturing {
             self.restart_capture(qh);
         } else if !self.streamable() && capturing {
-            self.ext_capture = None;
-            if let Some(copy) = self.screencopy.take() {
-                copy.frame.destroy();
-            }
-            self.settle.cancel();
+            self.stop_capture();
         }
+    }
+
+    fn stop_capture(&mut self) {
+        self.ext_capture = None;
+        if let Some(copy) = self.screencopy.take() {
+            copy.frame.destroy();
+        }
+        self.settle.cancel();
     }
 
     fn match_toplevel(&mut self) {
@@ -1249,6 +1253,11 @@ impl Dispatch<wlr_toplevel::ZwlrForeignToplevelHandleV1, ()> for State {
                 };
                 state.managed[index].fullscreen = has(wlr_toplevel::State::Fullscreen);
                 state.managed[index].minimized = has(wlr_toplevel::State::Minimized);
+                // Stopped here, not at `Done`: a frame copied meanwhile could show the main
+                // window.
+                if !state.streamable() {
+                    state.stop_capture();
+                }
             }
             wlr_toplevel::Event::Done => {
                 let managed = &state.managed[index];

@@ -6330,7 +6330,9 @@ scene.frame_set(1)`;
         yield* layoutWhen((layout) => layout.others.length === 0 && withStrip(layout));
         yield* framesAfter(recording, units.length);
 
-        expectNoMainWindow(decodeFrames(units));
+        const frames = decodeFrames(units);
+        expect(frames.length).toBe(units.length);
+        expectNoMainWindow(frames);
         yield* service.quit({ threadId, save: false, discard: true });
       }).pipe(Effect.scoped),
   );
