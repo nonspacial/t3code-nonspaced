@@ -6061,6 +6061,8 @@ scene.frame_set(1)`;
       }).pipe(Effect.scoped),
   );
 
+  // The frames are decoded with ffmpeg.
+  const canDecode = onPath("ffmpeg");
   const KEY_ESC = 1;
   const KEY_O = 24;
   const KEY_N = 49;
@@ -6161,43 +6163,6 @@ scene.frame_set(1)`;
     const share = count / (SMALL.width * SMALL.height);
     return { share, x: count ? sumX / count : null, y: count ? sumY / count : null };
   };
-  /** Whether an access unit carries a sequence parameter set, as every keyframe here does. */
-  const startsSequence = (unit: Uint8Array) =>
-    unit.some(
-      (byte, at) =>
-        byte === 1 && unit[at - 1] === 0 && unit[at - 2] === 0 && (unit[at + 1]! & 0x1f) === 7,
-    );
-  /** Frames at full size by index, where HB_PROOF_DIR names a folder, for a person to look at. */
-  const saveProofs = (
-    units: ReadonlyArray<Uint8Array>,
-    proofs: ReadonlyArray<readonly [index: number, name: string]>,
-  ) => {
-    const dir = hostEnvironment.HB_PROOF_DIR;
-    if (!dir) return;
-    for (const [index, name] of proofs) {
-      // From the keyframe before it, so every frame decoded has its size.
-      let start = index;
-      while (start > 0 && !startsSequence(units[start]!)) start--;
-      NodeChildProcess.execFileSync(
-        "ffmpeg",
-        [
-          "-loglevel",
-          "error",
-          "-f",
-          "h264",
-          "-i",
-          "pipe:0",
-          "-fps_mode",
-          "passthrough",
-          "-update",
-          "1",
-          "-y",
-          NodePath.join(dir, `${name}.png`),
-        ],
-        { input: Buffer.concat(units.slice(start, index + 1)) },
-      );
-    }
-  };
   /** Blender's main window, painted green, is in none of the frames. */
   const expectNoMainWindow = (frames: ReadonlyArray<Uint8Array>) =>
     expect(
@@ -6227,7 +6192,7 @@ scene.frame_set(1)`;
     return { operator, keys, click };
   });
 
-  it.live(
+  it.live.skipIf(!canDecode)(
     "F12's render view floats centred in front of the viewport, Esc closes it, keys reach the viewport again, and Blender's main window is in no frame",
     () =>
       Effect.gen(function* () {
@@ -6268,16 +6233,9 @@ scene.frame_set(1)`;
         // The viewport has the keyboard again without a click: N shows its sidebar.
         yield* keys(KEY_N);
         yield* layoutWhen((layout) => layout.windows[0]?.areas[0]?.sidebar === true);
-        const sidebar = yield* framesAfter(recording, units.length);
 
         const frames = decodeFrames(units);
         expect(frames.length).toBe(units.length);
-        saveProofs(units, [
-          [viewport - 1, "f12-1-viewport"],
-          [rendered - 1, "f12-2-render-view"],
-          [closed - 1, "f12-3-after-esc"],
-          [sidebar - 1, "f12-4-key-reaches-viewport"],
-        ]);
         expect(coverage(frames[viewport - 1]!, isMagenta).share).toBe(0);
         const render = coverage(frames[rendered - 1]!, isMagenta);
         // The render floats in the middle, the viewport and its Timeline strip around it.
@@ -6291,7 +6249,7 @@ scene.frame_set(1)`;
       }).pipe(Effect.scoped),
   );
 
-  it.live(
+  it.live.skipIf(!canDecode)(
     "a render view larger than the pane is fitted inside it, and stays inside as the pane narrows",
     () =>
       Effect.gen(function* () {
@@ -6327,10 +6285,6 @@ scene.frame_set(1)`;
 
         const frames = decodeFrames(units);
         expect(frames.length).toBe(units.length);
-        saveProofs(units, [
-          [fitted - 1, "large-1-fitted"],
-          [small - 1, "large-2-narrow-pane"],
-        ]);
         // The render fills most of the picture, its title bar and edges inside it.
         expect(coverage(frames[fitted - 1]!, isMagenta).share).toBeGreaterThan(0.5);
         expect(coverage(frames[small - 1]!, isMagenta).share).toBeGreaterThan(0.4);
@@ -6339,7 +6293,7 @@ scene.frame_set(1)`;
       }).pipe(Effect.scoped),
   );
 
-  it.live(
+  it.live.skipIf(!canDecode)(
     "File > Open's browser floats in front and Esc returns, and Preferences floats and its close button closes it",
     () =>
       Effect.gen(function* () {
@@ -6356,7 +6310,6 @@ scene.frame_set(1)`;
         yield* layoutWhen((layout) =>
           layout.others.some((window) => window.areas.includes("FILE_BROWSER")),
         );
-        const browsing = yield* framesAfter(recording, units.length);
         yield* keys(KEY_ESC);
         yield* layoutWhen(
           (layout) =>
@@ -6364,30 +6317,20 @@ scene.frame_set(1)`;
             withStrip(layout) &&
             layout.windows[0]!.pointer === first.windows[0]!.pointer,
         );
-        const cancelled = yield* framesAfter(recording, units.length);
 
         yield* keys(KEY_LEFTCTRL, KEY_COMMA);
         const preferences = yield* layoutWhen((layout) =>
           layout.others.some((window) => window.areas.includes("PREFERENCES")),
         );
-        const shown = yield* framesAfter(recording, units.length);
         // Centred, so its close button is at the right end of a title bar over it.
         const { width, height } = preferences.others[0]!;
         const left = (1280 - width) / 2;
         const top = (720 - height - TITLE_BAR) / 2;
         yield* click(left + width - 14, top + TITLE_BAR / 2);
         yield* layoutWhen((layout) => layout.others.length === 0 && withStrip(layout));
-        const closed = yield* framesAfter(recording, units.length);
+        yield* framesAfter(recording, units.length);
 
-        const frames = decodeFrames(units);
-        expect(frames.length).toBe(units.length);
-        saveProofs(units, [
-          [browsing - 1, "browser-1-file-browser"],
-          [cancelled - 1, "browser-2-after-esc"],
-          [shown - 1, "browser-3-preferences"],
-          [closed - 1, "browser-4-after-close"],
-        ]);
-        expectNoMainWindow(frames);
+        expectNoMainWindow(decodeFrames(units));
         yield* service.quit({ threadId, save: false, discard: true });
       }).pipe(Effect.scoped),
   );

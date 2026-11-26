@@ -324,7 +324,6 @@ impl State {
         // Bound before the program starts, so the first window it lists is the program's first:
         // Blender's main window.
         let toplevels_wanted = options.window_title.is_some()
-            && ext.is_some()
             && globals
                 .bind::<wlr_toplevel_manager::ZwlrForeignToplevelManagerV1, _, _>(qh, 1..=3, ())
                 .is_ok();
@@ -393,7 +392,8 @@ impl State {
         }
     }
 
-    /// `window_title` survives only when the compositor can list and manage its windows.
+    /// `window_title` survives only when the compositor can list and manage its windows, whichever
+    /// capture backend it offers.
     pub fn capture_target(&self) -> CaptureTarget {
         if self.window_title.is_some() {
             CaptureTarget::Window
@@ -577,13 +577,10 @@ impl State {
     }
 
     fn restart_capture(&mut self, qh: &QueueHandle<State>) {
-        if self.paused {
+        if self.paused || !self.streamable() {
             return;
         }
         if let Some(ext) = self.ext.as_ref() {
-            if !self.streamable() {
-                return;
-            }
             let source = ext.output_sources.create_source(&self.output, qh, ());
             // No paint_cursors: with it the cursor session reports leave and never comes back.
             let session = ext.manager.create_session(
@@ -609,7 +606,7 @@ impl State {
     }
 
     fn request_screencopy(&mut self, full: bool, qh: &QueueHandle<State>) {
-        if self.paused || self.screencopy.is_some() {
+        if self.paused || self.screencopy.is_some() || !self.streamable() {
             return;
         }
         let Some(manager) = self.screencopy_manager.as_ref() else {
@@ -828,13 +825,16 @@ impl State {
         }
     }
 
-    /// Starts or stops capture as `streamable` changes.
+    /// Starts or stops capture as `streamable` changes, on either backend.
     fn sync_capture(&mut self, qh: &QueueHandle<State>) {
-        let capturing = self.ext_capture.is_some();
+        let capturing = self.ext_capture.is_some() || self.screencopy.is_some();
         if self.streamable() && !capturing {
             self.restart_capture(qh);
         } else if !self.streamable() && capturing {
             self.ext_capture = None;
+            if let Some(copy) = self.screencopy.take() {
+                copy.frame.destroy();
+            }
             self.settle.cancel();
         }
     }
