@@ -65,7 +65,8 @@ export class BlendConversion extends Context.Service<
     /**
      * Converts like `convert`, then again each time the file or a library it links changes,
      * until interrupted. It ends only when the file cannot be converted at all, is over
-     * `BLEND_LARGE_FILE_BYTES` (`large`), or after the one conversion `once` asks for.
+     * `BLEND_LARGE_FILE_BYTES` on disk or once inflated (`large`), or after the one conversion
+     * `once` asks for.
      */
     readonly watch: (
       input: BlendConversionInput,
@@ -402,20 +403,26 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
       if (watching && byteLength > BLEND_LARGE_FILE_BYTES) {
         return { status: "large" as const, byteLength };
       }
-      const facts = yield* Effect.tryPromise({
-        try: (signal) => readBlendFileFacts(target.realPath, revision, signal, true),
-        catch: (cause) =>
-          isBlendFileFormatError(cause)
-            ? cause
-            : new WorkspaceFileSystem.WorkspaceFileSystemOperationError({
-                workspaceRoot: input.cwd,
-                relativePath: input.relativePath,
-                resolvedPath: target.realPath,
-                operationPath: target.realPath,
-                operation: "read",
-                cause,
-              }),
-      });
+      const readFacts = (whole: boolean) =>
+        Effect.tryPromise({
+          try: (signal) => readBlendFileFacts(target.realPath, revision, signal, whole),
+          catch: (cause) =>
+            isBlendFileFormatError(cause)
+              ? cause
+              : new WorkspaceFileSystem.WorkspaceFileSystemOperationError({
+                  workspaceRoot: input.cwd,
+                  relativePath: input.relativePath,
+                  resolvedPath: target.realPath,
+                  operationPath: target.realPath,
+                  operation: "read",
+                  cause,
+                }),
+        });
+      // A compressed file small on disk can inflate past the size: the preview's read says so.
+      if (watching && (yield* readFacts(false)).large === true) {
+        return { status: "large" as const, byteLength };
+      }
+      const facts = yield* readFacts(true);
       const blender = yield* detection.find;
       if (blender === null) return unavailable({ reason: "noBlender" });
       if (savedByNewerBlender(facts.blenderVersion, blender.version)) {

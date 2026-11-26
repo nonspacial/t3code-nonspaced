@@ -33,6 +33,8 @@ export interface BlendFileFacts {
   readonly libraries: ReadonlyArray<string>;
   /** Only the start was read: a large file's, or one past a limit. Scene facts are empty. */
   readonly partial?: true;
+  /** Past the large-file size on disk, or once inflated: it converts only when asked. */
+  readonly large?: true;
 }
 
 interface ByteSource {
@@ -455,11 +457,11 @@ async function readBlocks(
   let scanned = 0;
   let keptBytes = 0;
   // At a limit the walk ends with what it found so far.
-  const partial = () => ({ kept, counts, partial: true as const });
+  const partial = (large = false) => ({ kept, counts, partial: true as const, large });
   for (;;) {
     // A closed preview or a newer request stops the walk; the source closes on the way out.
     signal?.throwIfAborted();
-    if (headOnly && kept.some((block) => block.code === "TEST")) return partial();
+    if (headOnly && kept.some((block) => block.code === "TEST")) return partial(true);
     blocks += 1;
     if (blocks > limits.maxBlocks) return partial();
     const bytes = await source.read(headerSize);
@@ -467,7 +469,7 @@ async function readBlocks(
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const le = header.littleEndian;
     const code = ascii(bytes.subarray(0, 4));
-    if (code === "ENDB") return { kept, counts, partial: false as const };
+    if (code === "ENDB") return { kept, counts, partial: false as const, large: false };
     // Blender 5.0's large block header puts the struct index before the pointer and the length after.
     const length = header.largeBlocks ? Number(view.getBigInt64(16, le)) : view.getInt32(4, le);
     const sdnaIndex = header.largeBlocks
@@ -486,7 +488,7 @@ async function readBlocks(
       : source.compressed
         ? Math.min(limits.maxScannedBytes, limits.wholeUpTo)
         : Infinity;
-    if (scanned > budget) return partial();
+    if (scanned > budget) return partial(headOnly || scanned > limits.wholeUpTo);
     counts.set(code, (counts.get(code) ?? 0) + 1);
     if (!KEPT_CODES.has(code)) {
       if (!(await source.skip(length))) throw new BlendFileFormatError({ problem: "ends_early" });
@@ -540,7 +542,7 @@ export async function readBlendFile(
   try {
     const header = await readHeader(source);
     const resolved = { ...DEFAULT_LIMITS, ...limits };
-    const { kept, counts, partial } = await readBlocks(source, header, resolved, signal);
+    const { kept, counts, partial, large } = await readBlocks(source, header, resolved, signal);
     const thumbnail = readThumbnail(
       kept.find((block) => block.code === "TEST"),
       header,
@@ -557,6 +559,7 @@ export async function readBlendFile(
         materials: 0,
         libraries: [],
         partial: true,
+        ...(large ? { large: true as const } : {}),
       };
     }
     const dna = kept.find((block) => block.code === "DNA1");

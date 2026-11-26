@@ -57,6 +57,11 @@ export const BlendPreview = Schema.Struct({
    * scene, counts and libraries above weren't read.
    */
   partial: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Over `BLEND_LARGE_FILE_BYTES` on disk or once inflated: a compressed file small on disk can
+   * be large in Blender. It converts only when asked.
+   */
+  large: Schema.optionalKey(Schema.Boolean),
 });
 export type BlendPreview = typeof BlendPreview.Type;
 
@@ -139,7 +144,10 @@ export const BlendConversionStatus = Schema.Union([
   }),
   /** Stopped at the time limit; `keepTrying` runs it again without one. */
   Schema.Struct({ status: Schema.Literal("slow") }),
-  /** Over `BLEND_LARGE_FILE_BYTES` as the server last read it: a `once` request converts it. */
+  /**
+   * Over `BLEND_LARGE_FILE_BYTES` on disk or once inflated, as the server last read it: a `once`
+   * request converts it.
+   */
   Schema.Struct({ status: Schema.Literal("large"), byteLength: NonNegativeInt }),
   Schema.Struct({ status: Schema.Literal("failed"), log: Schema.String }),
   Schema.Struct({

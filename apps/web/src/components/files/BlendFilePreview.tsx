@@ -121,7 +121,10 @@ export function BlendFilePreview(props: {
   } | null>(null);
   const serverBytes = largeOnServer?.file === askKey ? largeOnServer.byteLength : null;
   const largeBytes = Math.max(preview?.byteLength ?? 0, serverBytes ?? 0);
-  const large = preview !== null && largeBytes > BLEND_LARGE_FILE_BYTES;
+  // Large on disk, or once inflated: a compressed file can be small on disk and huge in Blender.
+  const large =
+    preview !== null &&
+    (preview.large === true || serverBytes !== null || largeBytes > BLEND_LARGE_FILE_BYTES);
   const converts = source.kind === "file" && supportsConversion && preview !== null;
   const conversion = useEnvironmentQuery(
     source.kind === "file" && converts && !request.cancelled && (!large || asked)
