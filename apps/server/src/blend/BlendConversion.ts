@@ -193,11 +193,11 @@ const make = Effect.fn("BlendConversion.make")(function* (options: {
       revisions: input.keyRevisions,
       blender: input.blender,
       script: BLEND_EXPORT_SCRIPT,
-    }).pipe(Effect.orDie);
+    });
     return yield* digest
       .digest(Digest.sha256, new TextEncoder().encode(key))
-      .pipe(Effect.map(Hex.encode), Effect.orDie);
-  });
+      .pipe(Effect.map(Hex.encode));
+  }, Effect.orDie);
 
   /** Marks a hit as recently used, so the size cap evicts other entries first. */
   const touch = (file: string) =>
