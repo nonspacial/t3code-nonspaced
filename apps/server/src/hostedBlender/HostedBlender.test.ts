@@ -2423,26 +2423,30 @@ describe("Endings and recovery", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("never resumes capture for a Blender that is ending", () =>
-    Effect.gen(function* () {
-      const { service, openReady, awaitStatus, helperCommands } = yield* standIn(
-        "ending-capture",
-        "slow-quit",
-      );
-      yield* openReady;
-      const attached = yield* service.attachViewer(threadId, { canOperate: false });
-      assert.strictEqual(attached._tag, "attached");
-      if (attached._tag !== "attached") return;
-      yield* attached.viewer.setVisible(false);
-      // The settle waits on a quit Blender acknowledged; a pane shown meanwhile stays dark.
-      yield* service.closeOnSettle({ threadId });
-      yield* attached.viewer.setVisible(true);
-      yield* awaitStatus("closed");
-      const capture = helperCommands().filter(
-        (command) => command.type === "pause" || command.type === "resume",
-      );
-      expect(capture.at(-1)?.type).toBe("pause");
-    }).pipe(Effect.scoped),
+  it.live(
+    "never resumes capture for a Blender that is ending, and pauses it once nobody watches",
+    () =>
+      Effect.gen(function* () {
+        const { service, openReady, awaitStatus, helperCommands } = yield* standIn(
+          "ending-capture",
+          "slow-quit",
+        );
+        yield* openReady;
+        const attached = yield* service.attachViewer(threadId, { canOperate: false });
+        assert.strictEqual(attached._tag, "attached");
+        if (attached._tag !== "attached") return;
+        yield* attached.viewer.setVisible(true);
+        // The settle waits on a quit Blender acknowledged; the last pane leaving meanwhile pauses
+        // capture, and one shown again stays dark.
+        yield* service.closeOnSettle({ threadId });
+        yield* attached.viewer.setVisible(false);
+        yield* attached.viewer.setVisible(true);
+        yield* awaitStatus("closed");
+        const capture = helperCommands().filter(
+          (command) => command.type === "pause" || command.type === "resume",
+        );
+        expect(capture.at(-1)?.type).toBe("pause");
+      }).pipe(Effect.scoped),
   );
 
   it.live("a file can't start again while a settle that keeps its copy finishes", () =>

@@ -1648,12 +1648,16 @@ const make = Effect.gen(function* () {
   // keyframe.
   const applyCapture = (instance: Instance) =>
     Effect.suspend(() => {
-      // A Blender being saved, closed or quit is left as it is; a failed save catches up.
-      if (instance.quitting || instance.closeRequested || instance.pendingSave !== null) {
-        return Effect.void;
-      }
       const wanted = instance.viewers.some((viewer) => viewer.visible);
       if (wanted === instance.capturing) return Effect.void;
+      // A Blender being saved, closed or quit isn't resumed; a failed save catches up. Nobody
+      // watching always pauses it.
+      if (
+        wanted &&
+        (instance.quitting || instance.closeRequested || instance.pendingSave !== null)
+      ) {
+        return Effect.void;
+      }
       instance.capturing = wanted;
       return instance.helper({ type: wanted ? "resume" : "pause" });
     });
