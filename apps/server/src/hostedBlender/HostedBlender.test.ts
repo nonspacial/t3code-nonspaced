@@ -1994,6 +1994,33 @@ describe("B19: a finished thread's working copy is held", () => {
     }).pipe(Effect.scoped);
   });
 
+  it.live(
+    "a thread made active while its copy is being moved keeps the copy in the project",
+    () => {
+      let settled = true;
+      return Effect.gen(function* () {
+        // The hold waits once it has copied the file out, before removing it from the project.
+        const copied = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const { at, record, start } = yield* heldHost("held-active", {
+          threadSettled: () => settled,
+          holdGate: () =>
+            Deferred.succeed(copied, undefined).pipe(Effect.andThen(Deferred.await(release))),
+        });
+        const service = yield* start;
+        yield* record(service);
+        yield* service.closeOnSettle({ threadId });
+        yield* Deferred.await(copied);
+        settled = false;
+        yield* Deferred.succeed(release, undefined);
+        // Waits for the move under the copy's lock: nothing was held, so nothing is put back.
+        expect(yield* service.putBackHeld({ threadId, path: at(COPY) })).toBeNull();
+        expect(NodeFS.readFileSync(at(COPY), "utf8")).toBe("working copy");
+        expect(yield* service.heldWorkingCopies(threadId)).toEqual([]);
+      }).pipe(Effect.scoped);
+    },
+  );
+
   it.live("Reopen puts the held copy back first, with the unsaved work kept at settle", () =>
     Effect.gen(function* () {
       // The hold waits once it has copied the file out, before removing it from the project.

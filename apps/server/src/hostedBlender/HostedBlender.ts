@@ -5572,6 +5572,12 @@ const make = Effect.gen(function* () {
       return;
     }
     yield* holdGate(record.path);
+    // The copy-out can take a while: a thread made active meanwhile keeps its copy in the project.
+    if (!(yield* threadFinished(record.threadId))) {
+      yield* removeHeldFile(id);
+      yield* writeWorkingCopy(liveRecord(record));
+      return;
+    }
     yield* fileSystem.remove(record.path);
     yield* removeBackups(record.path);
     yield* writeWorkingCopy({ ...holding, state: "held" });
