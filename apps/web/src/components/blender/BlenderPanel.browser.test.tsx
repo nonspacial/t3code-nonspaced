@@ -736,7 +736,7 @@ it("asks with the quit dialog when image edits hold a quit, and says so in the p
   expect(quits()).toEqual([]);
 });
 
-it("fits its toolbar in a 380 px pane with a master, the menu still in reach", async () => {
+it("fits its toolbar in a 360 px pane with a master, the menu still in reach and the name readable", async () => {
   using _app = startup();
   const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
   const { Atom } = await import("effect/reactivity");
@@ -749,7 +749,7 @@ it("fits its toolbar in a 380 px pane with a master, the menu still in reach", a
     dirty: false,
   };
   await using screen = await render(
-    <div style={{ height: 400, width: 380 }}>
+    <div style={{ height: 400, width: 360 }}>
       <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
     </div>,
   );
@@ -763,7 +763,7 @@ it("fits its toolbar in a 380 px pane with a master, the menu still in reach", a
   }
   expect(screen.getByText("hero.wip-a1b2.blend", { exact: false }).query()).toBeNull();
   const name = screen.getByText("hero.blend").element().getBoundingClientRect();
-  expect(name.width).toBeGreaterThan(20);
+  expect(name.width).toBeGreaterThanOrEqual(56);
 });
 
 it("points a thread with no Blender running at Files, where .blend files open", async () => {

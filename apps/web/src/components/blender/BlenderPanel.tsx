@@ -961,129 +961,138 @@ function BlenderToolbar(props: {
   const quit = props.quit;
   return (
     // A container, so a narrow pane drops the buttons' words before anything leaves its edge.
-    <div className="@container/blender-toolbar flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
-      {props.switcher}
-      <span className="min-w-0 flex-1 truncate font-mono text-xs font-semibold">{name}</span>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              type="button"
-              aria-label={gt("Screenshot & annotate")}
-              disabled={props.onAnnotate === null}
-              // Pressing it must not move focus off the stream, which would give control back.
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => props.onAnnotate?.()}
-            />
-          }
-        >
-          <CameraIcon />
-        </TooltipTrigger>
-        <TooltipPopup side="bottom">{gt("Screenshot & annotate")}</TooltipPopup>
-      </Tooltip>
-      {!canOperate ? null : controller !== "you" ? (
-        <ToolbarAction
-          label={controller === "another-viewer" ? gt("Take over") : gt("Take control")}
-          icon={<HandIcon />}
-          onClick={() => props.streamRef.current?.takeControl(controller === "another-viewer")}
-        />
-      ) : canUseFullscreen() ? (
-        <ToolbarAction
-          label={gt("Fullscreen")}
-          icon={<MaximizeIcon />}
-          // Pressing it must not move focus off the stream, which would give control back.
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => props.streamRef.current?.fullscreen()}
-        />
-      ) : null}
-      {canQuit || canOperate || canSetTimeline ? (
-        <Menu>
-          <MenuTrigger
+    <div className="@container/blender-toolbar shrink-0 border-b border-border">
+      <div className="flex h-9 items-center gap-2 px-3 @max-[30rem]/blender-toolbar:gap-1.5 @max-[30rem]/blender-toolbar:px-2">
+        {props.switcher}
+        <Tooltip>
+          <TooltipTrigger
+            render={<span className="min-w-14 flex-1 truncate font-mono text-xs font-semibold" />}
+          >
+            {name}
+          </TooltipTrigger>
+          <TooltipPopup side="bottom">{name}</TooltipPopup>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger
             render={
               <Button
                 variant="ghost"
                 size="icon-xs"
                 type="button"
-                aria-label={gt("Blender menu")}
+                aria-label={gt("Screenshot & annotate")}
+                disabled={props.onAnnotate === null}
+                // Pressing it must not move focus off the stream, which would give control back.
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => props.onAnnotate?.()}
               />
             }
           >
-            <MoreVertical />
-          </MenuTrigger>
-          <MenuPopup align="end" sideOffset={6}>
-            {canSetTimeline ? (
-              <MenuCheckboxItem
-                checked={timeline}
-                onCheckedChange={(shown) =>
-                  void setTimeline({
-                    environmentId: props.threadRef.environmentId,
-                    input: { shown },
-                  })
-                }
-              >
-                <T context="Blender's animation editor, shown under the 3D view">Timeline</T>
-              </MenuCheckboxItem>
-            ) : null}
-            {canSetTimeline && canOperate ? <MenuSeparator /> : null}
-            {canOperate ? (
-              <>
-                <MenuSub>
-                  <MenuSubTrigger>
-                    <T>Keyboard layout</T>
-                  </MenuSubTrigger>
-                  <MenuSubPopup>
-                    <MenuRadioGroup
-                      value={keyboardLayout}
-                      onValueChange={(value) => setKeyboardLayout(value as KeyboardLayoutSetting)}
-                    >
-                      <MenuRadioItem value="auto" closeOnClick>
-                        <T context="keyboard layout setting">Automatic</T>
-                      </MenuRadioItem>
-                      {HOSTED_BLENDER_KEYBOARD_LAYOUTS.map((layout) => (
-                        <MenuRadioItem key={layout} value={layout} closeOnClick>
-                          {m(KEYBOARD_LAYOUT_NAMES[layout])}
+            <CameraIcon />
+          </TooltipTrigger>
+          <TooltipPopup side="bottom">{gt("Screenshot & annotate")}</TooltipPopup>
+        </Tooltip>
+        {!canOperate ? null : controller !== "you" ? (
+          <ToolbarAction
+            label={controller === "another-viewer" ? gt("Take over") : gt("Take control")}
+            icon={<HandIcon />}
+            onClick={() => props.streamRef.current?.takeControl(controller === "another-viewer")}
+          />
+        ) : canUseFullscreen() ? (
+          <ToolbarAction
+            label={gt("Fullscreen")}
+            icon={<MaximizeIcon />}
+            // Pressing it must not move focus off the stream, which would give control back.
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => props.streamRef.current?.fullscreen()}
+          />
+        ) : null}
+        {canQuit || canOperate || canSetTimeline ? (
+          <Menu>
+            <MenuTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  type="button"
+                  aria-label={gt("Blender menu")}
+                />
+              }
+            >
+              <MoreVertical />
+            </MenuTrigger>
+            <MenuPopup align="end" sideOffset={6}>
+              {canSetTimeline ? (
+                <MenuCheckboxItem
+                  checked={timeline}
+                  onCheckedChange={(shown) =>
+                    void setTimeline({
+                      environmentId: props.threadRef.environmentId,
+                      input: { shown },
+                    })
+                  }
+                >
+                  <T context="Blender's animation editor, shown under the 3D view">Timeline</T>
+                </MenuCheckboxItem>
+              ) : null}
+              {canSetTimeline && canOperate ? <MenuSeparator /> : null}
+              {canOperate ? (
+                <>
+                  <MenuSub>
+                    <MenuSubTrigger>
+                      <T>Keyboard layout</T>
+                    </MenuSubTrigger>
+                    <MenuSubPopup>
+                      <MenuRadioGroup
+                        value={keyboardLayout}
+                        onValueChange={(value) => setKeyboardLayout(value as KeyboardLayoutSetting)}
+                      >
+                        <MenuRadioItem value="auto" closeOnClick>
+                          <T context="keyboard layout setting">Automatic</T>
                         </MenuRadioItem>
-                      ))}
-                    </MenuRadioGroup>
-                  </MenuSubPopup>
-                </MenuSub>
-                <MenuSub>
-                  <MenuSubTrigger>
-                    <T>Scrolling</T>
-                  </MenuSubTrigger>
-                  <MenuSubPopup>
-                    <MenuRadioGroup
-                      value={scrolling}
-                      onValueChange={(value) =>
-                        setScrolling(value as HostedBlenderScrollPreference)
-                      }
-                    >
-                      <MenuRadioItem value="auto" closeOnClick>
-                        <T context="scrolling setting">Automatic</T>
-                      </MenuRadioItem>
-                      <MenuRadioItem value="wheel" closeOnClick>
-                        <T>Mouse wheel</T>
-                      </MenuRadioItem>
-                      <MenuRadioItem value="trackpad" closeOnClick>
-                        <T>Trackpad</T>
-                      </MenuRadioItem>
-                    </MenuRadioGroup>
-                  </MenuSubPopup>
-                </MenuSub>
-              </>
-            ) : null}
-            {canQuit && (canOperate || canSetTimeline) ? <MenuSeparator /> : null}
-            {canQuit ? (
-              <MenuItem disabled={quit.quitting} onClick={() => quit.request(props.state.dirty)}>
-                <T>Quit Blender</T>
-              </MenuItem>
-            ) : null}
-          </MenuPopup>
-        </Menu>
-      ) : null}
-      {quit.dialog}
+                        {HOSTED_BLENDER_KEYBOARD_LAYOUTS.map((layout) => (
+                          <MenuRadioItem key={layout} value={layout} closeOnClick>
+                            {m(KEYBOARD_LAYOUT_NAMES[layout])}
+                          </MenuRadioItem>
+                        ))}
+                      </MenuRadioGroup>
+                    </MenuSubPopup>
+                  </MenuSub>
+                  <MenuSub>
+                    <MenuSubTrigger>
+                      <T>Scrolling</T>
+                    </MenuSubTrigger>
+                    <MenuSubPopup>
+                      <MenuRadioGroup
+                        value={scrolling}
+                        onValueChange={(value) =>
+                          setScrolling(value as HostedBlenderScrollPreference)
+                        }
+                      >
+                        <MenuRadioItem value="auto" closeOnClick>
+                          <T context="scrolling setting">Automatic</T>
+                        </MenuRadioItem>
+                        <MenuRadioItem value="wheel" closeOnClick>
+                          <T>Mouse wheel</T>
+                        </MenuRadioItem>
+                        <MenuRadioItem value="trackpad" closeOnClick>
+                          <T>Trackpad</T>
+                        </MenuRadioItem>
+                      </MenuRadioGroup>
+                    </MenuSubPopup>
+                  </MenuSub>
+                </>
+              ) : null}
+              {canQuit && (canOperate || canSetTimeline) ? <MenuSeparator /> : null}
+              {canQuit ? (
+                <MenuItem disabled={quit.quitting} onClick={() => quit.request(props.state.dirty)}>
+                  <T>Quit Blender</T>
+                </MenuItem>
+              ) : null}
+            </MenuPopup>
+          </Menu>
+        ) : null}
+        {quit.dialog}
+      </div>
     </div>
   );
 }

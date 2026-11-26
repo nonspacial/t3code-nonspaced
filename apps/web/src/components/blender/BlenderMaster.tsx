@@ -85,7 +85,13 @@ export function BlenderRoleSwitch(props: {
     >
       <Toggle value="working">
         <StatusDot dot={dotFor(props.working)} />
-        <T>Working copy</T>
+        {/* In a narrow pane's toolbar, room goes to the file's name. */}
+        <span className="@max-[30rem]/blender-toolbar:hidden">
+          <T>Working copy</T>
+        </span>
+        <span className="hidden @max-[30rem]/blender-toolbar:inline">
+          <T context="short for the working copy, in a narrow switch">Working</T>
+        </span>
       </Toggle>
       <Toggle value="master">
         <StatusDot dot={dotFor(props.master)} />
