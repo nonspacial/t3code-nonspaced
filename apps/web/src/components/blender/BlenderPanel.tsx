@@ -98,6 +98,7 @@ import {
 import { formatEnvironmentQueryError } from "~/state/query";
 import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { useRightPanelStore } from "~/rightPanelStore";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 
 import { HiddenThreadContext } from "../chat/backgroundThread";
@@ -268,6 +269,17 @@ function WorkingBlender(
           title={<T>No hosted Blender running</T>}
           description={
             <T>Open a .blend file in the file preview and choose Open in hosted Blender.</T>
+          }
+          action={
+            props.projectId === undefined ? null : (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => useRightPanelStore.getState().open(props.threadRef, "files")}
+              >
+                <T>Open Files</T>
+              </Button>
+            )
           }
         />
       );

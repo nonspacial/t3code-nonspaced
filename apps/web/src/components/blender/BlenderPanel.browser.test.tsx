@@ -5,7 +5,12 @@ import type {
   HostedBlenderControl,
   HostedBlenderStreamEvents,
 } from "@t3tools/client-runtime/hosted-blender/stream";
-import { EnvironmentId, type HostedBlenderViewerMessage, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  type HostedBlenderViewerMessage,
+  type ProjectId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { expect, it, vi } from "vite-plus/test";
 import { commands } from "vite-plus/test/browser";
 
@@ -628,6 +633,23 @@ it("shows each kept file's card, naming its own file, and acts on that file", as
   } finally {
     stream.state = running;
   }
+});
+
+it("points a thread with no Blender running at Files, where .blend files open", async () => {
+  using _app = startup();
+  const { useRightPanelStore } = await import("~/rightPanelStore");
+  using openPane = vi.spyOn(useRightPanelStore.getState(), "open").mockImplementation(() => {});
+  stream.state = { status: "stopped" };
+  await using pane = await render(
+    <BlenderPanel
+      threadRef={threadRef}
+      visible
+      composerTarget={threadRef}
+      projectId={"project-1" as ProjectId}
+    />,
+  );
+  await pane.getByRole("button", { name: "Open Files" }).click();
+  expect(openPane).toHaveBeenCalledWith(threadRef, "files");
 });
 
 it("offers a reload's copy as older than the file, opening the file first", async () => {
