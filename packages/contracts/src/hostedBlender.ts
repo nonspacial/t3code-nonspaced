@@ -355,6 +355,10 @@ export const HostedBlenderViewCapture = Schema.Struct({
   }),
   cameraView: PreviewAnnotationCameraViewSchema,
   projection: HostedBlenderViewProjection,
+  /** The file Blender had open as it rendered: after File > Open, not the launch file. */
+  openFile: Schema.optionalKey(HostedBlenderKeptFile),
+  /** When Blender had last loaded it, null before any load since it started; hits name it. */
+  loadedAt: Schema.optionalKey(Schema.NullOr(Schema.Number)),
 });
 export type HostedBlenderViewCapture = typeof HostedBlenderViewCapture.Type;
 
@@ -365,6 +369,8 @@ export const HostedBlenderFindHitsInput = Schema.Struct({
   threadId: ThreadId,
   role: Schema.optionalKey(HostedBlenderRole),
   projection: HostedBlenderViewProjection,
+  /** The capture's load: Blender answers no hits once it has loaded something else since. */
+  loadedAt: Schema.optionalKey(Schema.NullOr(Schema.Number)),
   /** Each mark's samples, tried in order until one meets a surface. */
   marks: Schema.Array(Schema.Array(WindowSample).check(Schema.isMaxLength(256))).check(
     Schema.isMaxLength(64),

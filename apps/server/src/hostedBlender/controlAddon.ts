@@ -351,6 +351,9 @@ def _view_result(view_matrix, window_matrix, rv3d, screenshot):
     perspective = window_matrix @ view_matrix
     return {
         "screenshot": screenshot,
+        # The file and load the picture is of, which the annotation names and its hits check.
+        "filepath": bpy.data.filepath,
+        "loadedAt": _State.loaded_at,
         "cameraView": _camera_view(view_matrix, rv3d.view_distance),
         "projection": {
             "matrix": [value for row in perspective for value in row],
@@ -361,6 +364,9 @@ def _view_result(view_matrix, window_matrix, rv3d, screenshot):
 
 
 def _hits(command):
+    # Drawn on a screenshot of another load (a reload, File > Open): its marks name nothing here.
+    if "loadedAt" in command and command["loadedAt"] != _State.loaded_at:
+        return None
     found = _viewport()
     if found is None:
         return None

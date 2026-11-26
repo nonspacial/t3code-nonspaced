@@ -404,6 +404,7 @@ const ControlRequest = Schema.Union([
     type: Schema.Literal("hits"),
     id: Schema.Int,
     ...HostedBlenderViewProjection.fields,
+    loadedAt: HostedBlenderFindHitsInput.fields.loadedAt,
     marks: HostedBlenderFindHitsInput.fields.marks,
   }),
   Schema.Struct({
@@ -445,7 +446,11 @@ const AddonViewCapture = Schema.Struct({
   ...HostedBlenderViewCapture.fields,
   /** Null when Blender can't render this view (an external engine's rendered shading). */
   screenshot: Schema.NullOr(Schema.Struct({ width: Schema.Int, height: Schema.Int })),
+  /** The file Blender has open, as it names it; `openFile` once T3 has placed it. */
+  filepath: Schema.optional(Schema.String),
 });
+/** A capture as Blender rendered it, with the file it had open as it names it. */
+type RenderedCapture = HostedBlenderViewCapture & { readonly filepath?: string | undefined };
 /** Above what the add-on's pixel cap can produce; anything larger is not sent. */
 const MAX_SCREENSHOT_BYTES = 8 * 1024 * 1024;
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -665,7 +670,7 @@ interface Instance {
   /** The private folder of the control socket, where the add-on writes screenshots. */
   controlDir: string | null;
   /** The screenshot being rendered, shared by every caller until Blender is done with it. */
-  capture: Deferred.Deferred<HostedBlenderViewCapture, HostedBlenderError> | null;
+  capture: Deferred.Deferred<RenderedCapture, HostedBlenderError> | null;
   helper: (command: HelperCommand) => Effect.Effect<void>;
   control: ControlConnection | null;
   /** What the add-on says while `quit` waits on a save. */
@@ -3893,7 +3898,7 @@ const make = Effect.gen(function* () {
     }
     // Rendering blocks Blender, so one screenshot renders at a time; callers meanwhile share it.
     if (instance.capture === null) {
-      const capture = yield* Deferred.make<HostedBlenderViewCapture, HostedBlenderError>();
+      const capture = yield* Deferred.make<RenderedCapture, HostedBlenderError>();
       instance.capture = capture;
       yield* renderScreenshot(instance, instance.controlDir, capture).pipe(
         Effect.ensuring(
@@ -3908,7 +3913,15 @@ const make = Effect.gen(function* () {
       Effect.timeoutOption(CONTROL_REPLY_TIMEOUT),
     );
     if (Option.isNone(captured)) return yield* new HostedBlenderError({ reason: "noReply" });
-    return captured.value;
+    const { filepath, ...view } = captured.value;
+    if (filepath === undefined) return view;
+    // The master file goes by each thread's own name for it.
+    const known = instance.role === "master" ? threadMasters.get(threadId) : undefined;
+    const openFile: KeptFile =
+      known !== undefined && filepath === instance.blendPath
+        ? { kind: "workspace", relativePath: known.relativePath }
+        : keptFileOf(filepath, instance.workspaceRoot, path.relative);
+    return { ...view, openFile };
   });
 
   /**
@@ -3919,7 +3932,7 @@ const make = Effect.gen(function* () {
   const renderScreenshot = Effect.fnUntraced(function* (
     instance: Instance,
     controlDir: string,
-    capture: Deferred.Deferred<HostedBlenderViewCapture, HostedBlenderError>,
+    capture: Deferred.Deferred<RenderedCapture, HostedBlenderError>,
   ) {
     screenshots += 1;
     const file = path.join(controlDir, `view-${screenshots}.png`);
@@ -3957,13 +3970,19 @@ const make = Effect.gen(function* () {
   });
 
   const findHits: HostedBlender["Service"]["findHits"] = Effect.fn("HostedBlender.findHits")(
-    function* ({ threadId, projection, marks, role }) {
+    function* ({ threadId, projection, marks, role, loadedAt }) {
       yield* Effect.annotateCurrentSpan({ threadId, marks: marks.length, role });
       const instance = instanceFor(threadId, role);
       if (instance === undefined) return yield* new HostedBlenderError({ reason: "notRunning" });
-      return yield* ask(instance, { type: "hits", ...projection, marks }, HostedBlenderHits, {
-        slot: instance.hitsLock,
-      });
+      const load = loadedAt === undefined ? {} : { loadedAt };
+      return yield* ask(
+        instance,
+        { type: "hits", ...projection, ...load, marks },
+        HostedBlenderHits,
+        {
+          slot: instance.hitsLock,
+        },
+      );
     },
   );
 

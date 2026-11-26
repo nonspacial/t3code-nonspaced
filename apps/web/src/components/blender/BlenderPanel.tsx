@@ -773,7 +773,7 @@ function RunningBlender(
   const streamRef = useRef<BlenderStreamHandle | null>(null);
   const annotation = useBlenderAnnotation({
     threadRef: props.threadRef,
-    relativePath: props.state.relativePath,
+    openFile: quitFileOf(props.state),
     composerTarget: props.composerTarget,
     projectId: props.projectId,
     master,

@@ -27,7 +27,7 @@ const stroke = {
 };
 const base = {
   id: "model_1",
-  relativePath: "models/hero.wip-a1b2.blend",
+  file: { kind: "workspace" as const, relativePath: "models/hero.wip-a1b2.blend" },
   comment: " Round this edge ",
   regions: [region],
   strokes: [stroke],
@@ -83,6 +83,26 @@ describe("blenderAnnotationPayload", () => {
     expect(payload).not.toHaveProperty("cameraView");
     expect(payload.pageUrl).toBe("models/hero.wip-a1b2.blend");
     expect(payload.screenshot?.dataUrl).toBe(base.screenshot.dataUrl);
+  });
+
+  it("names the file the frame is of, and asks for hits on that load only", async () => {
+    const findHits = vi.fn(async () => [null, null]);
+    const outside = await blenderAnnotationPayload({
+      ...base,
+      file: { kind: "outside", path: "/elsewhere/other.blend" },
+      capture: { ...capture, loadedAt: 7 },
+      findHits,
+    });
+    expect(outside.pageUrl.startsWith("/elsewhere/other.blend#view=")).toBe(true);
+    expect(outside.pageTitle).toBe("other.blend · Master");
+    expect(findHits).toHaveBeenCalledWith(expect.objectContaining({ loadedAt: 7 }));
+    const untitled = await blenderAnnotationPayload({
+      ...base,
+      file: { kind: "untitled" },
+      capture: null,
+      findHits: null,
+    });
+    expect(untitled.pageTitle).toBe("Untitled scene");
   });
 
   it("looks for nothing under the marks when the frame isn't the viewport window alone", async () => {

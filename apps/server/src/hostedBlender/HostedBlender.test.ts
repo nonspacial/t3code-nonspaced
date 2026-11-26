@@ -607,6 +607,8 @@ def control():
             continue
         elif kind == "view":
             result = {"screenshot": view_reply(command),
+                      # The file it has open, by its path as given, and when it loaded it.
+                      "filepath": opened, "loadedAt": 7.0,
                       "cameraView": {**view, "upAxis": "z"},
                       "projection": {"matrix": [2] + [0] * 15,
                                      "region": {"x": 0.1, "y": 0.05, "width": 0.8, "height": 0.9}}}
@@ -2724,7 +2726,7 @@ describe("Endings and recovery", () => {
 describe("The viewport window", () => {
   it.live("reads its camera and casts each mark through the frozen view", () =>
     Effect.gen(function* () {
-      const { service, openReady, runtime } = yield* standIn("view", "");
+      const { service, openReady, runtime, dir } = yield* standIn("view", "");
       yield* openReady;
       const capture = yield* service.captureView(threadId);
       assert.deepStrictEqual(capture, {
@@ -2735,13 +2737,23 @@ describe("The viewport window", () => {
           matrix: [2, ...Array.from({ length: 15 }, () => 0)],
           region: { x: 0.1, y: 0.05, width: 0.8, height: 0.9 },
         },
+        // What the picture is of, which the annotation links to and its hits are checked against.
+        loadedAt: 7,
+        openFile: { kind: "workspace", relativePath: "cube.blend" },
       });
       const hits = yield* service.findHits({
         threadId,
         projection: capture.projection,
+        loadedAt: 7,
         marks: [[{ x: 0.5, y: 0.25 }], []],
       });
       assert.deepStrictEqual(hits, [{ object: "m2", point: [0.5, 0.25, 2] }, null]);
+      const asked = NodeFS.readFileSync(NodePath.join(dir, "saves.log.control"), "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+        .find((command) => command.type === "hits");
+      expect(asked).toMatchObject({ loadedAt: 7 });
       expect(
         NodeFS.readdirSync(runtime, { recursive: true }).filter((name) =>
           String(name).endsWith(".png"),
@@ -4185,6 +4197,66 @@ print("T3-RESULT", json.dumps(results))`,
       ["BLENDER_EEVEE", "RENDERED", true],
       ["BLENDER_WORKBENCH", "RENDERED", true],
     ]);
+  });
+
+  it("holds a quit that asks while an image is edited, and finds no hits on a load the screenshot isn't of", () => {
+    // A background Blender of the test's own, settings and temporary files in its folder.
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-hosted-blender-hold-"));
+    try {
+      NodeFS.mkdirSync(NodePath.join(dir, "tmp"));
+      const output = NodeChildProcess.execFileSync(
+        "blender",
+        [
+          "--background",
+          "--factory-startup",
+          "--python-expr",
+          `${CONTROL_ADDON_SOURCE}
+assert bpy.app.tempdir.startswith(${JSON.stringify(dir)}), bpy.app.tempdir
+sent = []
+_send = sent.append
+image = bpy.data.images.new("paint", 4, 4)
+image.pixels[0] = 0.5
+dirty = image.is_dirty
+_handle({"type": "quit", "save": False, "hold": True})
+_handle({"type": "quit", "save": True, "hold": True})
+# Background Blender has no viewport: whether hits looked for one says whether they went ahead.
+looked = []
+_viewport = lambda: looked.append(True)
+_State.loaded_at = 2.0
+hits = {"matrix": [0] * 16, "region": {}, "marks": [[]]}
+_hits({**hits, "loadedAt": 1.0})
+other_load = len(looked)
+_hits({**hits, "loadedAt": 2.0})
+print("T3-RESULT", json.dumps({
+    "dirty": dirty,
+    "sent": sent,
+    "looked": [other_load, len(looked)],
+}))`,
+        ],
+        {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+          env: {
+            PATH: hostEnvironment.PATH,
+            HOME: dir,
+            TMPDIR: NodePath.join(dir, "tmp"),
+            BLENDER_USER_RESOURCES: dir,
+          },
+        },
+      );
+      // Had either quit gone ahead, Blender would have exited before printing.
+      const line = output.split("\n").find((entry) => entry.startsWith("T3-RESULT "));
+      expect(JSON.parse(line!.slice("T3-RESULT ".length))).toEqual({
+        dirty: true,
+        sent: [
+          { type: "quitFailed", reason: "images" },
+          { type: "quitFailed", reason: "images" },
+        ],
+        looked: [0, 1],
+      });
+    } finally {
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it.each([
