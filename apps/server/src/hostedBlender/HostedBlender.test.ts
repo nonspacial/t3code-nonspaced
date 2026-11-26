@@ -1900,10 +1900,10 @@ describe("Endings and recovery", () => {
       // Blender opens the user's file; the copy is restored over it, so saves still go there.
       expect(reopened).toContain(NodeFS.realpathSync(NodePath.join(hostedDir, "../../cube.blend")));
 
-      // The person's Quit without saving keeps nothing new, and removes the copy only by Discard.
+      // The person's Quit without saving discards the restored changes, and the copy they came from.
       yield* service.quit({ threadId, save: false, discard: true });
-      expect(yield* awaitStatus("closed")).toMatchObject({ relativePath: "cube.blend" });
-      expect(recoveryOf(hostedDir)?.contents).toBe(recovery?.contents);
+      expect(yield* awaitStatus("stopped")).toEqual({ status: "stopped" });
+      expect(recoveryOf(hostedDir)).toBeNull();
     }).pipe(Effect.scoped),
   );
 
@@ -2284,9 +2284,10 @@ describe("Endings and recovery", () => {
     () =>
       Effect.gen(function* () {
         const openFile = { kind: "workspace" as const, relativePath: "cube.blend" };
+        // Busy, so a discard read before the drop goes unanswered rather than quitting it.
         const { service, openReady, awaitStatus, loseConnection, hostedDir } = yield* standIn(
           "lost-discard",
-          "",
+          "ignores-quit",
         );
         yield* openReady;
         // The control connection drops while the stream goes on.

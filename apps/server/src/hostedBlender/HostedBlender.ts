@@ -2293,7 +2293,30 @@ const make = Effect.gen(function* () {
         (quit.kind === "stop" && quitLive({ ...quit, phase })) ||
         (quit.kind === "ifClean" && (phase === "asking" || phase === "cancelling")),
     );
-    return { ending: closed || (saved && !instance.saved), quitting: stopped || saved };
+    const discarded = exits.some(
+      ({ quit, phase }) =>
+        quit.kind === "discard" && (quit.heard._tag === "accepted" || phase === "stopping"),
+    );
+    return {
+      ending: closed || (saved && !instance.saved),
+      quitting: stopped || saved,
+      discarded,
+    };
+  };
+
+  /**
+   * The copy of the open file whose work the scene holds: restored since Blender last loaded the
+   * file. A discard of the scene discards that copy too.
+   */
+  const copyHeld = (instance: Instance) => {
+    const record = records.get(ownerOf(instance))?.get(fileKeyOf(instance.endFile.file));
+    const contained = instance.contained;
+    return record !== undefined &&
+      contained !== null &&
+      contained.keptAt === record.keptAt &&
+      contained.loadedAt === instance.loadedAt
+      ? record.keptAt
+      : null;
   };
 
   /**
@@ -2965,6 +2988,7 @@ const make = Effect.gen(function* () {
           // Still writing its copy, which the next start's salvage keeps.
           if (instance.released) return;
           const intent = quitEndingOf(instance);
+          const held = intent.discarded ? copyHeld(instance) : null;
           yield* keepStagedLeft({
             owner: ownerOf(instance),
             role: instance.role,
@@ -2976,12 +3000,13 @@ const make = Effect.gen(function* () {
               threadId: ownerOf(instance),
               endFile: instance.endFile,
               tmpDir: path.join(stateDir, "tmp"),
-              retires: instance.retires,
+              retires: intent.discarded ? held : instance.retires,
             },
             cleanupOf({
               restore: instance.restore,
               saved: instance.saved,
               clean: instance.clean,
+              discarded: intent.discarded,
               ending: endingOf({
                 wasRunning: instance.status === "running",
                 ending: intent.ending,

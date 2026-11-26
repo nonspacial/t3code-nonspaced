@@ -40,7 +40,7 @@ run ended closed (its copy kept) or stopped (nothing kept) are read from those r
 place each; a flag beside them is how the paths drifted apart before.
 
 Only the person's own Quit without saving, a discard, ends a run without keeping its unsaved
-work; every other quit without saving (an agent's, or a one-click quit of a file the client last
+work, and a discard of changes restored from a copy removes that copy too; every other quit without saving (an agent's, or a one-click quit of a file the client last
 saw clean) is a close, so what Blender reports as it quits decides what is kept. What is kept is
 the .blend alone, so closes the person or a settle asks for are held while Blender has unsaved
 image or asset catalog edits: Blender stays open, the quit says which, and the running state

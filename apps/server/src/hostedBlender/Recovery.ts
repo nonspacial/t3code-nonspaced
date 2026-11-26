@@ -92,10 +92,13 @@ export const cleanupOf = (run: {
   readonly ending: Ending;
   /** Blender's last report for that file, before it began quitting, was clean. */
   readonly clean: boolean;
+  /** The person's discard ended it: the copy whose work the scene held goes with that work. */
+  readonly discarded?: boolean;
 }): Cleanup => {
   // A restore that never succeeded had the saved file open, never the copy's work.
   if (run.restore === "pending" || run.restore === "failed") return { action: "leave" };
   if (run.saved) return { action: "forget" };
+  if (run.discarded === true && run.ending === "stopped") return { action: "forget" };
   // Quit by the person, or by Blender's own File menu: nothing more to keep, and nothing to
   // remove but by Discard.
   if (run.ending === "stopped" || run.ending === "failed") return { action: "leave" };
