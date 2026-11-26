@@ -83,6 +83,7 @@ import { isElectron } from "~/env";
 import { getLocalStorageItem, useLocalStorage } from "~/hooks/useLocalStorage";
 import { resolveShortcutCommand } from "~/keybindings";
 import { getKeyboardLayoutMap } from "~/keyboardLayout";
+import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { formatBytes } from "~/lib/formatBytes";
 import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
@@ -373,6 +374,13 @@ function ReopenCard(props: {
   const crashed = copy.kind === "crashed";
   // T3 opens only workspace files, so only there can it check where a restore would save.
   const reopenable = copy.file.kind === "workspace";
+  // Older than the file on disk, which Open as last saved shows; Restore puts these back over it.
+  const reloaded = copy.reloaded === true && copy.recovery && !crashed;
+  const missing = copy.missing === true;
+  const { copyToClipboard, isCopied } = useCopyToClipboard<void>({
+    onError: () =>
+      toastManager.add(stackedThreadToast({ type: "error", title: gt("Couldn't copy the path") })),
+  });
   const run = async (action: "restore" | "fresh" | "dismiss") => {
     setPending(true);
     const input = {
@@ -422,6 +430,17 @@ function ReopenCard(props: {
             ) : (
               <T>Blender had an untitled scene open, which T3 Code can't reopen.</T>
             )
+          ) : missing ? (
+            recovery ? (
+              <T>
+                <Var>{name}</Var> is no longer in this project, so T3 Code can't reopen it. Its
+                unsaved changes are kept at <Var>{copyPath}</Var>.
+              </T>
+            ) : (
+              <T>
+                <Var>{name}</Var> is no longer in this project, so T3 Code can't reopen it.
+              </T>
+            )
           ) : restoreFailed ? (
             <T>
               Blender couldn't restore the copy of <Var>{name}</Var>. The copy is kept: try again,
@@ -438,6 +457,11 @@ function ReopenCard(props: {
                 <Var>{name}</Var> stopped unexpectedly. Restart opens the file as last saved.
               </T>
             )
+          ) : reloaded ? (
+            <T>
+              T3 Code kept these unsaved changes to <Var>{name}</Var> when Blender reloaded the file
+              after it changed on disk. The file on disk is newer than them.
+            </T>
           ) : recovery ? (
             <T>
               T3 Code closed <Var>{name}</Var> when this thread settled or T3 Code stopped, and kept
@@ -452,7 +476,41 @@ function ReopenCard(props: {
         action={
           canOperate ? (
             <>
-              {!reopenable ? null : crashed ? (
+              {copyPath === undefined ? null : (
+                <Button
+                  size="sm"
+                  variant={missing ? "default" : "outline"}
+                  onClick={() => copyToClipboard(copyPath, undefined)}
+                >
+                  {isCopied ? <T>Copied</T> : <T>Copy path</T>}
+                </Button>
+              )}
+              {!reopenable ? null : missing ? (
+                recovery ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={pending}
+                    onClick={() => void run("restore")}
+                  >
+                    {crashed ? <T>Restore autosave</T> : <T>Reopen</T>}
+                  </Button>
+                ) : null
+              ) : reloaded ? (
+                <>
+                  <Button size="sm" disabled={pending} onClick={() => void run("fresh")}>
+                    <T>Open as last saved</T>
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={pending}
+                    onClick={() => void run("restore")}
+                  >
+                    <T>Restore changes</T>
+                  </Button>
+                </>
+              ) : crashed ? (
                 <>
                   <Button size="sm" disabled={pending} onClick={() => void run("fresh")}>
                     <T>Restart</T>

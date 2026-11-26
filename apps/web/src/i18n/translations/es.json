@@ -4606,6 +4606,7 @@
   "b29e1856c4aab31f": "Esta máquina",
   "0cb5a221e9e13a4e": "Aquí el agente lee los registros y el código fuente de T3 Code, y pregunta antes de aplicar una corrección o publicar nada.",
   "e7588632064e0364": "Copiado",
+  "afb8bba375e0ff0e": "Copiar ruta",
   "996f7752fa033da6": [
     "o ejecuta",
     {
@@ -13060,6 +13061,7 @@
   "c77caac5b764ef8c": "Inglés (Dvorak)",
   "7b15925473b02c07": "Inglés (Colemak)",
   "7c6bc1129dc9f48e": "Escena sin título",
+  "83f2e3a5ca79c4ca": "No se pudo copiar la ruta",
   "cd078f4497dfcd36": "No se pudo reiniciar Blender",
   "ad3ce6044792509a": "No se pudo volver a abrir Blender",
   "90e3c64eab32945e": "¿Descartar el guardado automático de {name}?",
@@ -13110,6 +13112,28 @@
     "."
   ],
   "c3528aaa534d9a33": "Blender tenía abierta una escena sin título, que T3 Code no puede volver a abrir.",
+  "24bbaa011bf94b06": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ya no está en este proyecto, así que T3 Code no puede volver a abrirlo. Sus cambios sin guardar se conservan en ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "8ca51613f669ada0": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ya no está en este proyecto, así que T3 Code no puede volver a abrirlo."
+  ],
   "df374db2c12ff019": [
     "Blender no pudo restaurar la copia de ",
     {
@@ -13134,6 +13158,15 @@
       "v": "v"
     },
     " se detuvo inesperadamente. Reiniciar abre el archivo tal como se guardó por última vez."
+  ],
+  "7a2548c51178b2e1": [
+    "T3 Code conservó estos cambios sin guardar de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " cuando Blender volvió a cargar el archivo tras cambiar en el disco. El archivo en el disco es más reciente que ellos."
   ],
   "a1705e3412c3634e": [
     "T3 Code cerró ",

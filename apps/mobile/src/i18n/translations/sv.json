@@ -5722,6 +5722,8 @@
   "ff6a638da8b52407": "Öppna en .blend-fil i filförhandsvisningen och välj Öppna i Hosted Blender.",
   "d94056cad49e6876": "Blender startade inte",
   "3370a58cb5b075a2": "Blender kunde inte öppna filen på den dolda skärmen. Kontrollera att Blender kan öppna den och öppna den sedan i Hosted Blender igen.",
+  "907e7d11c58af98b": "{name} finns inte längre i det här projektet, så T3 Code kan inte öppna den igen. Dess osparade ändringar finns kvar i {path}.",
+  "635ecb4c5859ea47": "T3 Code behöll de här osparade ändringarna i {name} när Blender läste in filen igen efter att den ändrats på disken. Filen på disken är nyare än dem. Öppna den senast sparade eller återställ dem från T3 Code på webben eller datorn.",
   "7c6bc1129dc9f48e": "Namnlös scen",
   "23c303ff8becd94b": "T3 Code stängde {name} när den här tråden avslutades eller T3 Code stoppades. Öppna den igen från T3 Code på webben eller datorn.",
   "37a6c07570e9736f": "{name} stannade oväntat. Starta om den från T3 Code på webben eller datorn.",

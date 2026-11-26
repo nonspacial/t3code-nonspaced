@@ -4607,6 +4607,7 @@
   "b29e1856c4aab31f": "Cette machine",
   "0cb5a221e9e13a4e": "L’agent lit ici les journaux et le code source de T3 Code, et demande avant d’appliquer un correctif ou de publier quoi que ce soit.",
   "e7588632064e0364": "Copié",
+  "afb8bba375e0ff0e": "Copier le chemin",
   "996f7752fa033da6": [
     "ou exécutez",
     {
@@ -13065,6 +13066,7 @@
   "c77caac5b764ef8c": "Anglais (Dvorak)",
   "7b15925473b02c07": "Anglais (Colemak)",
   "7c6bc1129dc9f48e": "Scène sans titre",
+  "83f2e3a5ca79c4ca": "Impossible de copier le chemin",
   "cd078f4497dfcd36": "Impossible de redémarrer Blender",
   "ad3ce6044792509a": "Impossible de rouvrir Blender",
   "90e3c64eab32945e": "Supprimer l’enregistrement automatique de {name} ?",
@@ -13115,6 +13117,28 @@
     "."
   ],
   "c3528aaa534d9a33": "Blender avait une scène sans titre ouverte, que T3 Code ne peut pas rouvrir.",
+  "24bbaa011bf94b06": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ne se trouve plus dans ce projet, T3 Code ne peut donc pas le rouvrir. Ses modifications non enregistrées sont conservées dans ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "8ca51613f669ada0": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ne se trouve plus dans ce projet, T3 Code ne peut donc pas le rouvrir."
+  ],
   "df374db2c12ff019": [
     "Blender n’a pas pu restaurer la copie de ",
     {
@@ -13139,6 +13163,15 @@
       "v": "v"
     },
     " s’est arrêté de façon inattendue. Redémarrer ouvre le fichier tel qu’enregistré en dernier."
+  ],
+  "7a2548c51178b2e1": [
+    "T3 Code a conservé ces modifications non enregistrées de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " quand Blender a rechargé le fichier après sa modification sur le disque. Le fichier sur le disque est plus récent qu’elles."
   ],
   "a1705e3412c3634e": [
     "T3 Code a fermé ",

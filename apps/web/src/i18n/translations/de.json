@@ -4609,6 +4609,7 @@
   "b29e1856c4aab31f": "Dieser Rechner",
   "0cb5a221e9e13a4e": "Der Agent liest hier die Logs und den Quellcode von T3 Code und fragt nach, bevor er eine Korrektur anwendet oder etwas veröffentlicht.",
   "e7588632064e0364": "Kopiert",
+  "afb8bba375e0ff0e": "Pfad kopieren",
   "996f7752fa033da6": [
     "oder führe aus:",
     {
@@ -13065,6 +13066,7 @@
   "c77caac5b764ef8c": "Englisch (Dvorak)",
   "7b15925473b02c07": "Englisch (Colemak)",
   "7c6bc1129dc9f48e": "Unbenannte Szene",
+  "83f2e3a5ca79c4ca": "Pfad konnte nicht kopiert werden",
   "cd078f4497dfcd36": "Blender konnte nicht neu gestartet werden",
   "ad3ce6044792509a": "Blender konnte nicht erneut geöffnet werden",
   "90e3c64eab32945e": "Die automatische Sicherung von {name} verwerfen?",
@@ -13115,6 +13117,28 @@
     " aufbewahrt."
   ],
   "c3528aaa534d9a33": "Blender hatte eine unbenannte Szene geöffnet, die T3 Code nicht erneut öffnen kann.",
+  "24bbaa011bf94b06": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ist nicht mehr in diesem Projekt, daher kann T3 Code sie nicht erneut öffnen. Ihre ungespeicherten Änderungen liegen unter ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "8ca51613f669ada0": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ist nicht mehr in diesem Projekt, daher kann T3 Code sie nicht erneut öffnen."
+  ],
   "df374db2c12ff019": [
     "Blender konnte die Kopie von ",
     {
@@ -13139,6 +13163,15 @@
       "v": "v"
     },
     " wurde unerwartet beendet. „Neu starten“ öffnet die zuletzt gespeicherte Datei."
+  ],
+  "7a2548c51178b2e1": [
+    "T3 Code hat diese ungespeicherten Änderungen an ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " behalten, als Blender die Datei nach einer Änderung auf der Festplatte neu geladen hat. Die Datei auf der Festplatte ist neuer als sie."
   ],
   "a1705e3412c3634e": [
     "T3 Code hat ",

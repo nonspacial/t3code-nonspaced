@@ -271,14 +271,27 @@ function BlenderStateCard(props: { readonly state: HostedBlenderThreadState }) {
         const untitled = gt("Untitled scene");
         const name = keptName(newest, untitled);
         const detail =
-          newest.kind === "closed"
+          newest.missing === true && newest.copyPath !== undefined
             ? gt(
-                "T3 Code closed {name} when this thread settled or T3 Code stopped. Reopen it from T3 Code on the web or desktop.",
-                { name },
+                "{name} is no longer in this project, so T3 Code can't reopen it. Its unsaved changes are kept at {path}.",
+                { name, path: newest.copyPath },
               )
-            : gt("{name} stopped unexpectedly. Restart it from T3 Code on the web or desktop.", {
-                name,
-              });
+            : newest.reloaded === true && newest.recovery && newest.kind === "closed"
+              ? gt(
+                  "T3 Code kept these unsaved changes to {name} when Blender reloaded the file after it changed on disk. The file on disk is newer than them. Open it as last saved or restore them from T3 Code on the web or desktop.",
+                  { name },
+                )
+              : newest.kind === "closed"
+                ? gt(
+                    "T3 Code closed {name} when this thread settled or T3 Code stopped. Reopen it from T3 Code on the web or desktop.",
+                    { name },
+                  )
+                : gt(
+                    "{name} stopped unexpectedly. Restart it from T3 Code on the web or desktop.",
+                    {
+                      name,
+                    },
+                  );
         return [
           newest.kind === "closed" ? gt("Blender was closed") : gt("Blender crashed"),
           others.length === 0

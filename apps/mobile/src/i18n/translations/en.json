@@ -5724,6 +5724,8 @@
   "ff6a638da8b52407": "Open a .blend file in the file preview and choose Open in hosted Blender.",
   "d94056cad49e6876": "Blender didn't start",
   "3370a58cb5b075a2": "Blender couldn't open the file on the hidden display. Check that Blender opens it, then open it in hosted Blender again.",
+  "907e7d11c58af98b": "{name} is no longer in this project, so T3 Code can't reopen it. Its unsaved changes are kept at {path}.",
+  "635ecb4c5859ea47": "T3 Code kept these unsaved changes to {name} when Blender reloaded the file after it changed on disk. The file on disk is newer than them. Open it as last saved or restore them from T3 Code on the web or desktop.",
   "7c6bc1129dc9f48e": "Untitled scene",
   "23c303ff8becd94b": "T3 Code closed {name} when this thread settled or T3 Code stopped. Reopen it from T3 Code on the web or desktop.",
   "37a6c07570e9736f": "{name} stopped unexpectedly. Restart it from T3 Code on the web or desktop.",

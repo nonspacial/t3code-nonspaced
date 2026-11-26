@@ -4608,6 +4608,7 @@
   "b29e1856c4aab31f": "This machine",
   "0cb5a221e9e13a4e": "The agent reads T3 Code's logs and source here, and asks before it applies a fix or posts anything.",
   "e7588632064e0364": "Copied",
+  "afb8bba375e0ff0e": "Copy path",
   "996f7752fa033da6": [
     "or run",
     {
@@ -13075,6 +13076,7 @@
   "c77caac5b764ef8c": "English (Dvorak)",
   "7b15925473b02c07": "English (Colemak)",
   "7c6bc1129dc9f48e": "Untitled scene",
+  "83f2e3a5ca79c4ca": "Couldn't copy the path",
   "cd078f4497dfcd36": "Couldn't restart Blender",
   "ad3ce6044792509a": "Couldn't reopen Blender",
   "90e3c64eab32945e": "Discard the autosave of {name}?",
@@ -13125,6 +13127,28 @@
     "."
   ],
   "c3528aaa534d9a33": "Blender had an untitled scene open, which T3 Code can't reopen.",
+  "24bbaa011bf94b06": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " is no longer in this project, so T3 Code can't reopen it. Its unsaved changes are kept at ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "8ca51613f669ada0": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " is no longer in this project, so T3 Code can't reopen it."
+  ],
   "df374db2c12ff019": [
     "Blender couldn't restore the copy of ",
     {
@@ -13149,6 +13173,15 @@
       "v": "v"
     },
     " stopped unexpectedly. Restart opens the file as last saved."
+  ],
+  "7a2548c51178b2e1": [
+    "T3 Code kept these unsaved changes to ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " when Blender reloaded the file after it changed on disk. The file on disk is newer than them."
   ],
   "a1705e3412c3634e": [
     "T3 Code closed ",

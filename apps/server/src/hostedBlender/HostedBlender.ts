@@ -850,6 +850,8 @@ const make = Effect.gen(function* () {
   const records = new Map<string, Map<string, RecoveryRecord>>();
   // Copies whose last restore failed, by `copyId`; the copy is kept and the pane says so.
   const failedRestores = new Set<string>();
+  // Copies whose file the last Reopen found gone, by `copyId`; the pane shows where the copy is.
+  const missingOriginals = new Set<string>();
   const copyId = (threadId: string, key: string) => `${threadId}\n${key}`;
   /** Each thread's master file, by its checked real path, and what T3 last saw of it. */
   const threadMasters = new Map<
@@ -904,8 +906,10 @@ const make = Effect.gen(function* () {
           recovery: record.recovery,
           ...(record.reloaded === true ? { reloaded: true } : {}),
           ...(failedRestores.has(copyId(threadId, key)) ? { restoreFailed: true } : {}),
-          // T3 reopens only workspace files; the person can find any other copy here.
-          ...(record.recovery && record.file.kind !== "workspace"
+          ...(missingOriginals.has(copyId(threadId, key)) ? { missing: true } : {}),
+          // T3 reopens only workspace files it still finds; the person can find any other copy here.
+          ...(record.recovery &&
+          (record.file.kind !== "workspace" || missingOriginals.has(copyId(threadId, key)))
             ? { copyPath: sessionPath(threadId, key) }
             : {}),
         };
@@ -980,7 +984,14 @@ const make = Effect.gen(function* () {
             kind: record.kind,
             file: { kind: "workspace", relativePath: known.relativePath },
             recovery: record.recovery,
+            ...(record.reloaded === true ? { reloaded: true } : {}),
             ...(failedRestores.has(copyId(MASTER_OWNER, key)) ? { restoreFailed: true } : {}),
+            ...(missingOriginals.has(copyId(MASTER_OWNER, key))
+              ? {
+                  missing: true,
+                  ...(record.recovery ? { copyPath: sessionPath(MASTER_OWNER, key) } : {}),
+                }
+              : {}),
           },
         ],
       };
@@ -1163,6 +1174,7 @@ const make = Effect.gen(function* () {
         const kept = records.get(threadId);
         if (keptAt !== undefined && kept?.get(key)?.keptAt !== keptAt) return false;
         failedRestores.delete(copyId(threadId, key));
+        missingOriginals.delete(copyId(threadId, key));
         if (!kept?.delete(key)) return false;
         if (kept.size === 0) records.delete(threadId);
         yield* fileSystem
@@ -3117,6 +3129,9 @@ const make = Effect.gen(function* () {
         { threadId, relativePath: copy.known.relativePath },
         undefined,
         restore && copy.record.recovery ? sessionPath(MASTER_OWNER, key) : null,
+      ).pipe(
+        Effect.tap(() => Effect.sync(() => missingOriginals.delete(copyId(MASTER_OWNER, key)))),
+        Effect.tapError((error) => noteMissing(error, MASTER_OWNER, key)),
       );
     }
     const record = records.get(threadId)?.get(key);
@@ -3125,8 +3140,11 @@ const make = Effect.gen(function* () {
     if (record.file.kind !== "workspace") {
       return yield* new HostedBlenderError({ reason: "notInWorkspace" });
     }
-    const file = yield* checkedBlend(threadId, record.file.relativePath);
+    const file = yield* checkedBlend(threadId, record.file.relativePath).pipe(
+      Effect.tapError((error) => noteMissing(error, threadId, key)),
+    );
     failedRestores.delete(copyId(threadId, key));
+    if (missingOriginals.delete(copyId(threadId, key))) yield* publishNow();
     // The record stays until this Blender ends too, so a restore that fails keeps its copy.
     yield* claimLock.withPermits(1)(
       startWorking(
@@ -3140,6 +3158,15 @@ const make = Effect.gen(function* () {
       ),
     );
   });
+
+  /** A Reopen that found the copy's file gone: the pane then shows where the copy is. */
+  const noteMissing = (error: HostedBlenderError, owner: string, key: string) =>
+    Effect.suspend(() => {
+      const id = copyId(owner, key);
+      if (error.reason !== "fileNotFound" || missingOriginals.has(id)) return Effect.void;
+      missingOriginals.add(id);
+      return publishNow();
+    });
 
   /** The copy of the open file put back over it, unsaved, as a launch's restore would. */
   // Runs inside reopen's span.

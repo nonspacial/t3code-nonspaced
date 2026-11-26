@@ -4607,6 +4607,7 @@
   "b29e1856c4aab31f": "Den här datorn",
   "0cb5a221e9e13a4e": "Agenten läser T3 Codes loggar och källkod här och frågar innan den tillämpar en åtgärd eller publicerar något.",
   "e7588632064e0364": "Kopierat",
+  "afb8bba375e0ff0e": "Kopiera sökväg",
   "996f7752fa033da6": [
     "eller kör",
     {
@@ -13072,6 +13073,7 @@
   "c77caac5b764ef8c": "Engelska (Dvorak)",
   "7b15925473b02c07": "Engelska (Colemak)",
   "7c6bc1129dc9f48e": "Namnlös scen",
+  "83f2e3a5ca79c4ca": "Det gick inte att kopiera sökvägen",
   "cd078f4497dfcd36": "Det gick inte att starta om Blender",
   "ad3ce6044792509a": "Det gick inte att öppna Blender igen",
   "90e3c64eab32945e": "Ta bort den automatiska sparningen av {name}?",
@@ -13122,6 +13124,28 @@
     "."
   ],
   "c3528aaa534d9a33": "Blender hade en namnlös scen öppen, som T3 Code inte kan öppna igen.",
+  "24bbaa011bf94b06": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " finns inte längre i det här projektet, så T3 Code kan inte öppna den igen. Dess osparade ändringar finns kvar i ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "8ca51613f669ada0": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " finns inte längre i det här projektet, så T3 Code kan inte öppna den igen."
+  ],
   "df374db2c12ff019": [
     "Blender kunde inte återställa kopian av ",
     {
@@ -13146,6 +13170,15 @@
       "v": "v"
     },
     " stannade oväntat. Starta om öppnar filen som den senast sparades."
+  ],
+  "7a2548c51178b2e1": [
+    "T3 Code behöll de här osparade ändringarna i ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " när Blender läste in filen igen efter att den ändrats på disken. Filen på disken är nyare än dem."
   ],
   "a1705e3412c3634e": [
     "T3 Code stängde ",

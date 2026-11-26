@@ -87,6 +87,13 @@ const kept = (kind: "closed" | "crashed", relativePath: string, recovery: boolea
   file: { kind: "workspace" as const, relativePath },
   recovery,
 });
+const canReopen = async () => {
+  const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
+  const { Atom } = await import("effect/reactivity");
+  return vi
+    .spyOn(hostedBlenderEnvironment.reopen, "permissionAtom")
+    .mockReturnValue(Atom.make(true) as never);
+};
 const control = (next: HostedBlenderControl) => act(() => stream.events?.onControl?.(next));
 
 /** The app installs keyboard capture at startup; each test starts with a fresh stream. */
@@ -585,6 +592,55 @@ it("shows each kept file's card, naming its own file, and acts on that file", as
   } finally {
     stream.state = running;
   }
+});
+
+it("offers a reload's copy as older than the file, opening the file first", async () => {
+  using _app = startup();
+  using _reopen = await canReopen();
+  stream.state = {
+    status: "closed",
+    copies: [{ ...kept("closed", "models/hero.blend", true), reloaded: true }],
+  };
+  await using pane = await render(
+    <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+  );
+  await expect
+    .element(pane.getByText("The file on disk is newer than them", { exact: false }))
+    .toBeInTheDocument();
+  await expect.element(pane.getByRole("button", { name: "Reopen" })).not.toBeInTheDocument();
+  const open = pane.getByRole("button", { name: "Open as last saved" }).element();
+  const restore = pane.getByRole("button", { name: "Restore changes" }).element();
+  expect(open.compareDocumentPosition(restore) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  await pane.getByRole("button", { name: "Open as last saved" }).click();
+  expect(stream.commands.at(-1)?.value).toMatchObject({ input: { restore: false } });
+});
+
+it("shows where a copy is once its file is gone, offering no open of the file as saved", async () => {
+  using _app = startup();
+  using _reopen = await canReopen();
+  stream.state = {
+    status: "closed",
+    copies: [
+      {
+        ...kept("closed", "models/hero.blend", true),
+        missing: true,
+        copyPath: "/srv/state/session.blend",
+      },
+    ],
+  };
+  await using pane = await render(
+    <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+  );
+  await expect
+    .element(pane.getByText("hero.blend is no longer in this project", { exact: false }))
+    .toBeInTheDocument();
+  await expect
+    .element(pane.getByText("/srv/state/session.blend", { exact: false }))
+    .toBeInTheDocument();
+  await expect.element(pane.getByRole("button", { name: "Copy path" })).toBeInTheDocument();
+  await expect
+    .element(pane.getByRole("button", { name: "Open as last saved" }))
+    .not.toBeInTheDocument();
 });
 
 it("warns in the status strip when the server has no usable GPU", async () => {

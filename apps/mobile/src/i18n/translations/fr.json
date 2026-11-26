@@ -5716,6 +5716,8 @@
   "ff6a638da8b52407": "Ouvrez un fichier .blend dans l’aperçu de fichier et choisissez Ouvrir dans Hosted Blender.",
   "d94056cad49e6876": "Blender n’a pas démarré",
   "3370a58cb5b075a2": "Blender n’a pas pu ouvrir le fichier sur l’écran masqué. Vérifiez que Blender l’ouvre, puis rouvrez-le dans Hosted Blender.",
+  "907e7d11c58af98b": "{name} ne se trouve plus dans ce projet, T3 Code ne peut donc pas le rouvrir. Ses modifications non enregistrées sont conservées dans {path}.",
+  "635ecb4c5859ea47": "T3 Code a conservé ces modifications non enregistrées de {name} quand Blender a rechargé le fichier après sa modification sur le disque. Le fichier sur le disque est plus récent qu’elles. Ouvrez la dernière version enregistrée ou restaurez-les depuis T3 Code sur le web ou sur ordinateur.",
   "7c6bc1129dc9f48e": "Scène sans titre",
   "23c303ff8becd94b": "T3 Code a fermé {name} lorsque ce fil a été réglé ou que T3 Code s’est arrêté. Rouvrez-le depuis T3 Code sur le web ou sur ordinateur.",
   "37a6c07570e9736f": "{name} s’est arrêté de façon inattendue. Redémarrez-le depuis T3 Code sur le web ou sur ordinateur.",

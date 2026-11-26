@@ -5716,6 +5716,8 @@
   "ff6a638da8b52407": "Abre un archivo .blend en la vista previa de archivos y elige Abrir en Hosted Blender.",
   "d94056cad49e6876": "Blender no se inició",
   "3370a58cb5b075a2": "Blender no pudo abrir el archivo en la pantalla oculta. Comprueba que Blender lo abre y vuelve a abrirlo en Hosted Blender.",
+  "907e7d11c58af98b": "{name} ya no está en este proyecto, así que T3 Code no puede volver a abrirlo. Sus cambios sin guardar se conservan en {path}.",
+  "635ecb4c5859ea47": "T3 Code conservó estos cambios sin guardar de {name} cuando Blender volvió a cargar el archivo tras cambiar en el disco. El archivo en el disco es más reciente que ellos. Ábrelo como se guardó por última vez o restáuralos desde T3 Code en la web o el escritorio.",
   "7c6bc1129dc9f48e": "Escena sin título",
   "23c303ff8becd94b": "T3 Code cerró {name} cuando este hilo se resolvió o T3 Code se detuvo. Vuelve a abrirlo desde T3 Code en la web o en el escritorio.",
   "37a6c07570e9736f": "{name} se detuvo inesperadamente. Reinícialo desde T3 Code en la web o en el escritorio.",

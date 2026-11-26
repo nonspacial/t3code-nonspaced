@@ -183,10 +183,12 @@ export const HostedBlenderKeptCopy = Schema.Struct({
   recovery: Schema.Boolean,
   /** The last try to restore it failed; the copy is kept. */
   restoreFailed: Schema.optional(Schema.Boolean),
-  /** Where the copy is on the server, for one T3 can't reopen: untitled or outside the workspace. */
+  /** Where the copy is on the server, for one T3 can't reopen: untitled, outside the workspace, or missing. */
   copyPath: Schema.optional(Schema.String),
   /** Kept as Blender reloaded the file after it changed on disk: older than the file there. */
   reloaded: Schema.optional(Schema.Boolean),
+  /** The file is gone from the workspace, as the last Reopen found; `copyPath` says where the copy is. */
+  missing: Schema.optional(Schema.Boolean),
 });
 export type HostedBlenderKeptCopy = typeof HostedBlenderKeptCopy.Type;
 

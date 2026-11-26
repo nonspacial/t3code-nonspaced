@@ -1882,6 +1882,31 @@ describe("Endings and recovery", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("says where a copy is once Reopen finds its file gone from the workspace", () =>
+    Effect.gen(function* () {
+      const { dir, service, openReady, awaitStatus, hostedDir } = yield* standIn("gone", "");
+      yield* openReady;
+      yield* service.closeOnSettle({ threadId });
+      yield* awaitStatus("closed");
+      expect((yield* service.keptCopies(threadId))[0]).not.toHaveProperty("copyPath");
+      // A checkout removed it.
+      NodeFS.rmSync(NodePath.join(dir, "cube.blend"));
+      const refused = yield* service
+        .reopen({ threadId, key: CUBE, restore: true })
+        .pipe(Effect.flip);
+      expect(refused.reason).toBe("fileNotFound");
+      expect((yield* service.keptCopies(threadId))[0]).toMatchObject({
+        missing: true,
+        copyPath: recoveryOf(hostedDir)?.session,
+      });
+      // Back again, it reopens as any copy does.
+      NodeFS.writeFileSync(NodePath.join(dir, "cube.blend"), "");
+      yield* service.reopen({ threadId, key: CUBE, restore: true });
+      yield* awaitStatus("running");
+      expect((yield* service.keptCopies(threadId))[0]).not.toHaveProperty("missing");
+    }).pipe(Effect.scoped),
+  );
+
   it.live("keeps a file outside the workspace under its own name, and says where its copy is", () =>
     Effect.gen(function* () {
       const { service, openReady, awaitStatus, hostedDir } = yield* standIn(
@@ -3217,6 +3242,15 @@ describe("B13: a file changed on disk", () => {
         });
       }
       expect(disk.reloads()).toBe(1);
+      // Quit with nothing newer to keep, the Master side offers the reload's copy as what it is.
+      NodeFS.writeFileSync(NodePath.join(dir, "staged-quietly"), "");
+      yield* service.quit({ threadId, save: false, role: "master" });
+      const closed = yield* service.masterState(threadId).pipe(
+        Stream.filter((state) => state.status === "closed"),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
+      expect(closed).toMatchObject({ copies: [{ recovery: true, reloaded: true }] });
     }).pipe(Effect.scoped),
   );
 
