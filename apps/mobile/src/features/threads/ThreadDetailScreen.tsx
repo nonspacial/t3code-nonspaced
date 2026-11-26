@@ -470,11 +470,12 @@ function ThreadDetailBody(
       ...(tabId === undefined ? {} : { tabId }),
     });
   };
+  // Watched only while a turn runs, as on web: a thread opened and read holds no Blender stream.
   const watchableBlender = watchableHostedBlender(
     useHostedBlenderState(
       chatHostedBlenderThread(
         props.serverConfig,
-        props.draftMode
+        props.draftMode || props.selectedThread.runtime?.activeRunId == null
           ? null
           : { environmentId: props.environmentId, threadId: props.selectedThread.id },
       ),
