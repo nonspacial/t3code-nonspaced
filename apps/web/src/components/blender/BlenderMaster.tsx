@@ -29,7 +29,8 @@ import {
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { Toggle, ToggleGroup } from "~/components/ui/toggle-group";
 import { cn } from "~/lib/utils";
-import { hostedBlenderEnvironment, isRestoreReplacingUnsaved } from "~/state/hostedBlender";
+import { isRestoreReplacingUnsaved } from "@t3tools/client-runtime/state/hosted-blender";
+import { hostedBlenderEnvironment } from "~/state/hostedBlender";
 import { formatEnvironmentQueryError } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
 
