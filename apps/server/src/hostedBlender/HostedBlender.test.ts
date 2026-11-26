@@ -6136,8 +6136,6 @@ describe("The Timeline switch", () => {
             XDG_RUNTIME_DIR: runtime,
             STANDIN_ARGS: argsLog,
             STANDIN_AFTER: "echoTimeline",
-            // Its first report reads unsaved, so only an answered switch reads as shown.
-            STANDIN_DIRTY: "1",
           },
           helper: NodePath.join(bin, "helper"),
           workspaceRoot: dir,
@@ -6157,19 +6155,25 @@ describe("The Timeline switch", () => {
         );
       const args = () => NodeFS.readFileSync(argsLog, "utf8").split("\n");
       const switches = () =>
-        NodeFS.readFileSync(`${argsLog}.control`, "utf8")
+        (NodeFS.existsSync(`${argsLog}.control`)
+          ? NodeFS.readFileSync(`${argsLog}.control`, "utf8")
+          : ""
+        )
           .split("\n")
           .filter((line) => line.includes('"timeline"'))
           .map((line) => JSON.parse(line).shown);
 
-      // On by default: Blender opens its viewport window with the strip, and hears the switch
-      // again once T3 is connected, in case it changed in between.
+      // On by default: Blender opens its viewport window with the strip, as the launch says;
+      // T3 repeats the switch on connecting only if it changed since.
       yield* service.open({ threadId, relativePath: "cube.blend" });
-      // Its first report, then its answer to the switch T3 sends on connecting.
-      yield* awaitShown(false);
-      yield* awaitShown(true);
+      // Its first report, clean.
+      yield* Queue.take(states).pipe(
+        Effect.repeat({
+          until: (state) => state.status === "running" && state.openFile !== undefined,
+        }),
+      );
       expect(args()).toContain("--t3-timeline");
-      expect(switches()).toEqual([true]);
+      expect(switches()).toEqual([]);
 
       // Switched in Settings or the pane's menu: the running Blender hears it, no restart.
       yield* settings.updateSettings({ hostedBlenderTimeline: false });
@@ -6181,7 +6185,7 @@ describe("The Timeline switch", () => {
       yield* awaitShown(false);
       yield* service.setTimeline(true);
       yield* awaitShown(true);
-      expect(switches()).toEqual([true, false, true, false, true]);
+      expect(switches()).toEqual([false, true, false, true]);
       expect(NodeFS.readFileSync(`${argsLog}.launches`, "utf8")).toBe("launch\n");
 
       // The next launch starts as the switch was left.

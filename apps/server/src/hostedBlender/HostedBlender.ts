@@ -641,6 +641,8 @@ interface Instance {
    * since T3 told the add-on to open it, and whether the add-on has been told so.
    */
   shownViewport: { readonly generation: number; captured: boolean; shown: boolean } | null;
+  /** The Timeline switch as this launch passed it to Blender. */
+  launchTimeline: boolean;
   lastKeyframeRequest: number;
   /** A keyframe request is waiting out the throttle. */
   keyframeDeferred: boolean;
@@ -2088,9 +2090,25 @@ const make = Effect.gen(function* () {
     const message = decodeControlMessage(line);
     if (Option.isNone(message)) return;
     switch (message.value.type) {
-      case "hello":
+      case "hello": {
         instance.pid = message.value.pid;
+        // Sent once the connection is being read: anything awaited before reading starts can
+        // lose a quick quit's answer.
+        const control = instance.control;
+        if (control === null) return;
+        // Switched since the launch passed it.
+        const shown = yield* timelineShown;
+        if (shown !== instance.launchTimeline) yield* control.write(timelineCommand(shown));
+        yield* sendDisplay(instance);
+        // Words a connection before this one may not have carried.
+        if (instance.shownViewport !== null) {
+          yield* control.write(
+            `${encodeViewportWord({ type: "viewportExpected", generation: instance.shownViewport.generation })}\n`,
+          );
+          yield* viewportShown(instance, true);
+        }
         return;
+      }
       case "state": {
         const generation = message.value.viewport ?? 0;
         if (generation > 0 && instance.shownViewport?.generation !== generation) {
@@ -2269,16 +2287,6 @@ const make = Effect.gen(function* () {
       if (instance.retryQuit) yield* retryQuit(instance).pipe(Effect.forkIn(serviceScope));
       // Revoked before the add-on could hear it; a grant waits for its first state.
       if (instance.agentListenerRevoked) yield* instance.control.write(STOP_AGENT_LISTENER);
-      // Switched since the launch read it.
-      yield* instance.control.write(timelineCommand(yield* timelineShown));
-      yield* sendDisplay(instance);
-      // Words a connection before this one may not have carried.
-      if (instance.shownViewport !== null) {
-        yield* instance.control.write(
-          `${encodeViewportWord({ type: "viewportExpected", generation: instance.shownViewport.generation })}\n`,
-        );
-        yield* viewportShown(instance, true);
-      }
       const decoder = new TextDecoder();
       let buffer = "";
       return yield* Effect.forever(
@@ -2602,7 +2610,7 @@ const make = Effect.gen(function* () {
               recover: instance.recover,
               revision,
               mcpListen: agentPort !== null,
-              timeline: yield* timelineShown,
+              timeline: (instance.launchTimeline = yield* timelineShown),
               ...(mcpSnapshot === null ? {} : { mcpSnapshot }),
               // Plan mode is read-only, whatever the runtime mode. A master serves threads of
               // any mode, so its embedded scripts never run.
@@ -2865,6 +2873,7 @@ const make = Effect.gen(function* () {
       viewport: null,
       output: null,
       shownViewport: null,
+      launchTimeline: true,
       lastKeyframeRequest: Number.NEGATIVE_INFINITY,
       keyframeDeferred: false,
       controlDir: null,
