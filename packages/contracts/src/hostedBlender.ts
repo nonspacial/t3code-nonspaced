@@ -157,7 +157,7 @@ export const HostedBlenderRunningState = Schema.Struct({
   agentActing: Schema.optionalKey(Schema.Boolean),
   /**
    * The file Blender has open now, once it has said: after File > Open, not `relativePath`.
-   * Quitting names this file, and a discard sends it back.
+   * Quitting names this file, and both choices of the save/discard dialog send it back.
    */
   openFile: Schema.optionalKey(HostedBlenderKeptFile),
   /**
@@ -276,8 +276,8 @@ export const HostedBlenderQuitInput = Schema.Struct({
    */
   discard: Schema.optionalKey(Schema.Boolean),
   /**
-   * With `discard`: the file the dialog named. Refused with `openFileChanged` when Blender has
-   * another file open by then, so a discard never drops another file's changes.
+   * With `discard` or `save`: the file the dialog named. Refused with `openFileChanged` when
+   * Blender has another file open by then, so neither choice reaches another file.
    */
   openFile: Schema.optionalKey(HostedBlenderKeptFile),
   /** Quitting the master Blender quits it for every thread sharing it. */
@@ -321,6 +321,8 @@ export const HostedBlenderRunningBlender = Schema.Struct({
   /** The file Blender has open now, once it has said. */
   openFile: Schema.optionalKey(HostedBlenderKeptFile),
   memoryBytes: Schema.NullOr(Schema.Number),
+  /** A quit was held by these unsaved edits outside the .blend, which are still unsaved. */
+  quitHeld: Schema.optionalKey(Schema.Literals(["images", "catalogs"])),
   /** A master Blender's own key, which Quit takes: it may have no thread left. */
   master: Schema.optionalKey(Schema.String),
 });
@@ -436,6 +438,8 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "unsavedImages",
       "unsavedCatalogs",
       "discardUnconfirmed",
+      "quitUnanswered",
+      "sceneChanged",
     ]),
     /** With `unsavedImages` from a save: the edited images Blender couldn't save. */
     images: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -510,6 +514,10 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "Blender has unsaved asset catalog edits, which quitting would lose: they live outside the .blend, so its recovery copy can't keep them. Save them in Blender's asset browser first, or quit without saving to discard them.";
       case "discardUnconfirmed":
         return "Blender didn't answer, so it stays open with its changes. If it still doesn't answer, choosing Quit without saving again stops it and keeps what Blender last autosaved.";
+      case "sceneChanged":
+        return "The scene changed since the picture was taken, so its marks can't name objects.";
+      case "quitUnanswered":
+        return "Blender didn't answer, so it stays open, and the quit won't run later on its own. Try again once Blender has finished what it's doing.";
     }
   }
 }

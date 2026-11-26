@@ -317,8 +317,11 @@ describe("P1: reading a large .blend", () => {
     inflation.abortAt = 32 * 1024 * 1024;
     inflation.onPast = () => controller.abort();
     try {
+      // A conversion's read, which walks a compressed file past the large-file size.
       await withTempFile(compressed, (path) =>
-        expect(readBlendFile(path, {}, controller.signal)).rejects.toMatchObject({
+        expect(
+          readBlendFile(path, { wholeUpTo: Infinity }, controller.signal),
+        ).rejects.toMatchObject({
           name: "AbortError",
         }),
       );
@@ -328,12 +331,37 @@ describe("P1: reading a large .blend", () => {
     }
   });
 
-  it("walks a file once while its revision stays the same", async () => {
+  it("never inflates a compressed file past what its read may walk", async () => {
+    // Header, then one 64 MiB block of zeros that gzip packs small.
+    const head = new Uint8Array(12 + 24);
+    head.set(new TextEncoder().encode("BLENDER-v405"));
+    head.set(new TextEncoder().encode("DATA"), 12);
+    new DataView(head.buffer).setInt32(16, 64 * 1024 * 1024, true);
+    const compressed = NodeZlib.gzipSync(Buffer.concat([head, new Uint8Array(64 * 1024 * 1024)]), {
+      level: 1,
+    });
+    await withTempFile(compressed, async (path) => {
+      // A large file's thumbnail read, whose block would end past its budget.
+      inflation.produced = 0;
+      await expect(readBlendFile(path, { wholeUpTo: 0 })).resolves.toMatchObject({ partial: true });
+      expect(inflation.produced).toBeLessThan(4 * 1024 * 1024);
+      // A small file that inflates past the large-file size is read as a large one.
+      inflation.produced = 0;
+      await expect(readBlendFile(path, { wholeUpTo: 1024 * 1024 })).resolves.toMatchObject({
+        partial: true,
+      });
+      expect(inflation.produced).toBeLessThan(4 * 1024 * 1024);
+    });
+  });
+
+  it("walks a file once while its revision stays the same, whichever read asked", async () => {
     await withTempFile(await NodeFSP.readFile(fixture("bracket-5.blend")), async (path) => {
       const first = await readBlendFileFacts(path, "revision-1");
       // Whatever is on disk now, the same revision answers from what was read.
       await NodeFSP.writeFile(path, "not a blend file");
       expect(await readBlendFileFacts(path, "revision-1")).toBe(first);
+      // A conversion's whole read of a file under the large-file size is the preview's walk.
+      expect(await readBlendFileFacts(path, "revision-1", undefined, true)).toBe(first);
       await expect(readBlendFileFacts(path, "revision-2")).rejects.toMatchObject({
         problem: "not_blend",
       });

@@ -10,6 +10,7 @@ import {
   type HeldQuit,
   heldQuitOf,
   isDiscardUnconfirmed,
+  isQuitUnanswered,
   isRestoreReplacingUnsaved,
   quitFileOf,
 } from "@t3tools/client-runtime/state/hosted-blender";
@@ -114,8 +115,8 @@ function BlenderScreen(props: {
   const canQuit = useAtomValue(hostedBlenderEnvironment.quit.permissionAtom(props.environmentId));
   const quit = useAtomCommand(hostedBlenderEnvironment.quit, { reportFailure: false });
   const [quitting, setQuitting] = useState(false);
-  // `discard` only from the dialog's Quit without saving, naming the file it showed; see
-  // useQuitHostedBlender on web. Refused once Blender has another file open, which the next
+  // `discard` only from the dialog's Quit without saving. Both choices name the file it showed;
+  // see useQuitHostedBlender on web. Refused once Blender has another file open, which the next
   // Quit Blender names.
   const quitBlender = async (save: boolean, discard = false) => {
     setQuitting(true);
@@ -128,7 +129,8 @@ function BlenderScreen(props: {
       input: {
         threadId: props.threadId,
         save,
-        ...(discard ? { discard, ...(openFile === undefined ? {} : { openFile }) } : {}),
+        ...(discard ? { discard } : {}),
+        ...((save || discard) && openFile !== undefined ? { openFile } : {}),
       },
     }).finally(() => setQuitting(false));
     // Held for edits a recovery copy can't keep: the same choice again, saying which.
@@ -143,7 +145,13 @@ function BlenderScreen(props: {
                 "Blender didn't answer, so it stays open with its changes. If it still doesn't answer, choosing Quit without saving again stops it and keeps what Blender last autosaved.",
               ),
             )
-          : formatEnvironmentQueryError(result.cause),
+          : isQuitUnanswered(result.cause)
+            ? m(
+                msg(
+                  "Blender didn't answer, so it stays open, and the quit won't run later on its own. Try again once Blender has finished what it's doing.",
+                ),
+              )
+            : formatEnvironmentQueryError(result.cause),
       );
     }
   };
@@ -273,7 +281,11 @@ function BlenderScreen(props: {
       ) : running ? (
         <View className="flex-1" />
       ) : (
-        <BlenderStateCard state={blender} />
+        <BlenderStateCard
+          environmentId={props.environmentId}
+          threadId={props.threadId}
+          state={blender}
+        />
       )}
     </View>
   );
@@ -359,7 +371,7 @@ function ReloadNotices(props: {
       ? null
       : held === "images"
         ? gt(
-            "Blender stayed open: quitting would lose its unsaved image edits, which a recovery copy can't keep. Save them in Blender (Image › Save All Images), or quit without saving.",
+            "Blender stayed open: quitting would lose its unsaved image edits, which a recovery copy can't keep. Save or pack them in Blender (Image › Save All Images, or Image › Pack), or quit without saving.",
           )
         : gt(
             "Blender stayed open: quitting would lose its unsaved asset catalog edits, which a recovery copy can't keep. Save them in Blender's asset browser, or quit without saving.",
@@ -400,9 +412,22 @@ function StateMessage(props: { readonly children: ReactNode }) {
   return <View className="flex-1 items-center justify-center gap-4 px-6">{props.children}</View>;
 }
 
-function BlenderStateCard(props: { readonly state: HostedBlenderThreadState }) {
+function BlenderStateCard(props: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly state: HostedBlenderThreadState;
+}) {
   const gt = useGT();
   const messages = useMessages();
+  if (props.state.status === "closed" || props.state.status === "crashed") {
+    return (
+      <KeptCopyCard
+        environmentId={props.environmentId}
+        threadId={props.threadId}
+        copies={props.state.copies}
+      />
+    );
+  }
   const [title, detail] = ((): readonly [string, string] => {
     switch (props.state.status) {
       case "unavailable":
@@ -426,43 +451,6 @@ function BlenderStateCard(props: { readonly state: HostedBlenderThreadState }) {
             "Blender couldn't open the file on the hidden display. Check that Blender opens it, then open it in hosted Blender again.",
           ),
         ];
-      // Reopening and restarting happen in the Blender pane on the web or desktop.
-      case "closed":
-      case "crashed": {
-        const [newest, ...others] = props.state.copies;
-        const untitled = gt("Untitled scene");
-        const name = keptName(newest, untitled);
-        const detail =
-          newest.missing === true && newest.copyPath !== undefined
-            ? gt(
-                "{name} is no longer in this project, so T3 Code can't reopen it. Its unsaved changes are kept at {path}.",
-                { name, path: newest.copyPath },
-              )
-            : newest.reloaded === true && newest.recovery && newest.kind === "closed"
-              ? gt(
-                  "T3 Code kept these unsaved changes to {name} when Blender reloaded the file after it changed on disk. The file on disk is newer than them. Open it as last saved or restore them from T3 Code on the web or desktop.",
-                  { name },
-                )
-              : newest.kind === "closed"
-                ? gt(
-                    "T3 Code closed {name} when this thread settled or T3 Code stopped. Reopen it from T3 Code on the web or desktop.",
-                    { name },
-                  )
-                : gt(
-                    "{name} stopped unexpectedly. Restart it from T3 Code on the web or desktop.",
-                    {
-                      name,
-                    },
-                  );
-        return [
-          newest.kind === "closed" ? gt("Blender was closed") : gt("Blender crashed"),
-          others.length === 0
-            ? detail
-            : `${detail} ${gt("Also kept: {names}", {
-                names: others.map((copy) => keptName(copy, untitled)).join(", "),
-              })}`,
-        ];
-      }
       case "starting":
       case "running":
         return [
@@ -480,6 +468,170 @@ function BlenderStateCard(props: { readonly state: HostedBlenderThreadState }) {
       ) : null}
       <AppText className="text-center font-t3-medium text-base">{title}</AppText>
       <AppText className="text-center text-sm text-foreground-muted">{detail}</AppText>
+    </StateMessage>
+  );
+}
+
+/**
+ * What a closed or crashed Blender left, newest first, with the Blender pane's choices on web
+ * and desktop for the newest copy.
+ */
+function KeptCopyCard(props: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly copies: Extract<HostedBlenderThreadState, { status: "closed" | "crashed" }>["copies"];
+}) {
+  const gt = useGT();
+  const canOperate = useAtomValue(
+    hostedBlenderEnvironment.reopen.permissionAtom(props.environmentId),
+  );
+  const reopen = useAtomCommand(hostedBlenderEnvironment.reopen, { reportFailure: false });
+  const dismiss = useAtomCommand(hostedBlenderEnvironment.dismiss, { reportFailure: false });
+  const [pending, setPending] = useState(false);
+  const [copy, ...others] = props.copies;
+  const untitled = gt("Untitled scene");
+  const name = keptName(copy, untitled);
+  const crashed = copy.kind === "crashed";
+  const { recovery } = copy;
+  // T3 opens only workspace files, so only there can it check where a restore would save.
+  const reopenable = copy.file.kind === "workspace";
+  // Older than the file on disk, which Open as last saved shows; Restore puts these back over it.
+  const reloaded = copy.reloaded === true && recovery && !crashed;
+  const missing = copy.missing === true;
+  const run = async (action: "restore" | "fresh" | "dismiss") => {
+    setPending(true);
+    const input = { threadId: props.threadId, key: copy.key };
+    const result = await (
+      action === "dismiss"
+        ? dismiss({ environmentId: props.environmentId, input })
+        : reopen({
+            environmentId: props.environmentId,
+            input: { ...input, restore: action === "restore" },
+          })
+    ).finally(() => setPending(false));
+    if (result._tag === "Failure") {
+      Dialog.alert(
+        crashed ? m(msg("Couldn't restart Blender")) : m(msg("Couldn't reopen Blender")),
+        formatEnvironmentQueryError(result.cause),
+      );
+    }
+  };
+  const discard = () =>
+    Dialog.confirm({
+      title: crashed
+        ? gt("Discard the autosave of {name}?", { name })
+        : gt("Discard the unsaved changes to {name}?", { name }),
+      message: gt("The file as last saved is kept. This can't be undone."),
+      confirmText: gt("Discard"),
+      destructive: true,
+      onConfirm: () => void run("dismiss"),
+    });
+  const path = copy.copyPath ?? "";
+  const detail =
+    copy.file.kind === "outside"
+      ? recovery
+        ? gt(
+            "{name} is outside this project, so T3 Code can't reopen it. Its unsaved changes are kept at {path}.",
+            { name, path },
+          )
+        : gt("{name} is outside this project, so T3 Code can't reopen it.", { name })
+      : copy.file.kind === "untitled"
+        ? recovery
+          ? gt("T3 Code kept the unsaved changes to an untitled scene at {path}.", { path })
+          : gt("Blender had an untitled scene open, which T3 Code can't reopen.")
+        : missing
+          ? recovery
+            ? gt(
+                "{name} is no longer in this project, so T3 Code can't reopen it. Its unsaved changes are kept at {path}.",
+                { name, path },
+              )
+            : gt("{name} is no longer in this project, so T3 Code can't reopen it.", { name })
+          : copy.restoreFailed === true
+            ? gt(
+                "Blender couldn't restore the copy of {name}. The copy is kept: try again, open the file as last saved, or discard the copy.",
+                { name },
+              )
+            : crashed
+              ? recovery
+                ? gt(
+                    "{name} stopped unexpectedly. Restart opens the file as last saved, or restore its newest autosave.",
+                    { name },
+                  )
+                : gt("{name} stopped unexpectedly. Restart opens the file as last saved.", { name })
+              : reloaded
+                ? gt(
+                    "T3 Code kept these unsaved changes to {name} when Blender reloaded the file after it changed on disk. The file on disk is newer than them.",
+                    { name },
+                  )
+                : recovery
+                  ? gt(
+                      "T3 Code closed {name} when this thread settled or T3 Code stopped, and kept its unsaved changes. Reopen restores them.",
+                      { name },
+                    )
+                  : gt("T3 Code closed {name} when this thread settled or T3 Code stopped.", {
+                      name,
+                    });
+  const actions: ReadonlyArray<{ readonly label: string; readonly onPress: () => void }> =
+    !reopenable
+      ? []
+      : missing
+        ? recovery
+          ? [
+              {
+                label: crashed ? gt("Restore autosave") : gt("Reopen"),
+                onPress: () => void run("restore"),
+              },
+            ]
+          : []
+        : reloaded
+          ? [
+              { label: gt("Open as last saved"), onPress: () => void run("fresh") },
+              { label: gt("Restore changes"), onPress: () => void run("restore") },
+            ]
+          : crashed
+            ? [
+                { label: gt("Restart"), onPress: () => void run("fresh") },
+                ...(recovery
+                  ? [{ label: gt("Restore autosave"), onPress: () => void run("restore") }]
+                  : []),
+              ]
+            : [
+                { label: gt("Reopen"), onPress: () => void run("restore") },
+                ...(recovery
+                  ? [{ label: gt("Open as last saved"), onPress: () => void run("fresh") }]
+                  : []),
+              ];
+  return (
+    <StateMessage>
+      <AppText className="text-center font-t3-medium text-base">
+        {crashed ? gt("Blender crashed") : gt("Blender was closed")}
+      </AppText>
+      <AppText selectable className="text-center text-sm text-foreground-muted">
+        {others.length === 0
+          ? detail
+          : `${detail} ${gt("Also kept: {names}", {
+              names: others.map((other) => keptName(other, untitled)).join(", "),
+            })}`}
+      </AppText>
+      {canOperate ? (
+        <View className="flex-row flex-wrap justify-center gap-2">
+          {actions.map((action, index) => (
+            <Button
+              key={action.label}
+              label={action.label}
+              tone={index === 0 ? "primary" : "secondary"}
+              disabled={pending}
+              onPress={action.onPress}
+            />
+          ))}
+          <Button
+            label={recovery ? gt("Discard") : gt("Dismiss")}
+            tone="text"
+            disabled={pending}
+            onPress={recovery ? discard : () => void run("dismiss")}
+          />
+        </View>
+      ) : null}
     </StateMessage>
   );
 }

@@ -413,6 +413,7 @@ elif _then == "saveInBlender":
     ])
 elif _then in (
     "saveAndQuit", "failedSaveAndQuit", "pendingSaveAndQuit", "quitWithoutSaving", "discardOther",
+    "saveOther",
 ):
     # Save and quit as T3 asks for it: Blender's own operators stood in for.
     import contextlib, types
@@ -444,7 +445,7 @@ elif _then in (
         _addons.log("heard", [
             [message["type"], message.get("filepath"), message.get("dirty")]
             for message in map(json.loads, heard.decode().splitlines())
-            if message["type"] in ("saved", "quitting")
+            if message["type"] in ("saved", "quitting", "quitAccepted")
         ])
     def _undo_push(message):
         # A real undo step marks the file unsaved.
@@ -459,10 +460,13 @@ elif _then in (
         # The person's discard of a file Blender no longer has open.
         else b'{"type": "quit", "save": false, "filepath": "/work/other.blend"}\n'
         if _then == "discardOther"
+        # The person's Save and quit of a file Blender no longer has open.
+        else b'{"type": "quit", "save": true, "hold": true, "filepath": "/work/other.blend"}\n'
+        if _then == "saveOther"
         else b'{"type": "quit", "save": true}\n'
     )
     _tick()
-    if _then == "discardOther":
+    if _then in ("discardOther", "saveOther"):
         _t3.setblocking(False)
         try:
             _addons.log("heard", [json.loads(line)["type"] for line in _t3.recv(65536).decode().splitlines()])
@@ -996,6 +1000,7 @@ const runAddon = (input: {
     | "pendingSaveAndQuit"
     | "quitWithoutSaving"
     | "discardOther"
+    | "saveOther"
     | "loadTime"
     | "ownClosed"
     | "childClosed"
@@ -1479,13 +1484,17 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       listen: true,
       then: "quitWithoutSaving",
     });
-    expect(heardOf(quit)).toEqual([["quitting", "/work/hero.wip-1a2b3c4d.blend", false]]);
+    // Taken first, before ending the agent's grant, which can be slow on a large scene.
+    expect(heardOf(quit)).toEqual([
+      ["quitAccepted", null, null],
+      ["quitting", "/work/hero.wip-1a2b3c4d.blend", false],
+    ]);
     expect(quit.calls).toContainEqual(["undo_push", "T3 recovery copy"]);
     // The agent's access ended before it said so, as a held quit leaves it until then.
     expect(quit.calls).toContainEqual(["quit", "off", false]);
   });
 
-  it("N1: refuses a discard of a file it no longer has open, and stays open", () => {
+  it("N1: refuses a discard or a Save and quit of a file it no longer has open, and stays open", () => {
     const refused = runAddon({
       installed: [MCP],
       enabled: [MCP],
@@ -1497,6 +1506,16 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     expect(heardOf(refused)).not.toContain("quitting");
     expect(refused.calls.some((call: Array<unknown>) => call[0] === "quit_blender")).toBe(false);
     expect(refused.calls).not.toContainEqual(["undo_push", "T3 recovery copy"]);
+    const save = runAddon({
+      installed: [MCP],
+      enabled: [MCP],
+      listen: true,
+      dirty: true,
+      then: "saveOther",
+    });
+    expect(heardOf(save)).toEqual(expect.arrayContaining(["quitFailed"]));
+    expect(heardOf(save)).not.toContain("saving");
+    expect(save.calls.some((call: Array<unknown>) => call[0] === "quit")).toBe(false);
   });
 
   it("reports when Blender loaded a file, a revert of the same file included", () => {

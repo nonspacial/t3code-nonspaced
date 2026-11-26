@@ -25,14 +25,20 @@ first saves the images as Blender's own quit does (and the save writes the catal
 only by an image it couldn't save, which it names. Only the discard, a deleted thread and T3 stopping don't ask.
 A held quit or a discard carries T3's deadline, and the add-on refuses one it reads after it: a
 Blender busy past it (a render, a long load) is left running, never stopped, and nothing T3 gave
-up on runs later. No agent tool can reopen or discard a copy, so the agent's next
-`blender_start` of a working copy with a waiting copy restores it rather than refusing. A discard
-carries the file its dialog named, and the add-on refuses it if Blender has another open by then,
-so a file opened from Blender's own menu is never discarded under another's name. It runs beside
+up on runs later. The add-on answers a quit it takes at once, before ending the grant (which can
+record agent work as undo steps, slow on a large scene), so T3 never reports as unanswered a quit
+Blender goes on to carry out. A settle, archive or switch-off left unanswered is owed: it runs
+again, still held, once that Blender answers anything, unless a pane shows it or the agent acts
+in it by then. No agent tool can reopen or discard a copy, so the agent's next
+`blender_start` of a working copy with a waiting copy restores it rather than refusing. Both choices
+of the save/discard dialog carry the file it named, and the add-on refuses either if Blender has
+another open by then, so a file opened from Blender's own menu is never discarded or written under
+another's name. A discard runs beside
 the client's per-thread command lane, so a Save and quit stuck in a busy Blender can't hold it.
 At its deadline it stops Blender only once Blender has said it is quitting that file, or is saving
-it; unheard, Blender stays open and the discard is reported unconfirmed. A second unheard discard stops it, but
-the run ends as a crash, never a discard: its last autosave is kept, and only Discard on that card,
+it; unheard, Blender stays open and the discard is reported unconfirmed. A run counts as
+discarded only once Blender has taken the discard; an exit before that, a crash or a second
+unheard discard that stops it, ends as a crash: its last autosave is kept, and only Discard on that card,
 naming the file, removes it. A settle waits on a Save and quit
 Blender has begun however long it takes; one still queued by the deadline is left to run. Only T3
 stopping and a deleted thread stop a Blender that doesn't answer.
@@ -40,7 +46,8 @@ At shutdown, a Blender that has said it is saving or quitting is released, never
 it writes what may be the only copy of its latest work: the helper is told to `detach` (Blender
 dies with the helper, so the helper stays until Blender exits, whatever T3 does), its handle is
 unref'd so the server's exit signals nothing in its process group, and its launch folder stays
-for the next start's salvage, which waits for it before stopping anything. Deleting a thread ends its Blender, then removes the copies it kept, which
+for the next start, which never signals it: its salvage waits for it to exit, beside the service,
+and only an open of the file whose copy it is writing waits with it. Deleting a thread ends its Blender, then removes the copies it kept, which
 nothing could show again; a master's copy is never the thread's. Agent access is narrower still: it lasts only while T3 holds the control
 connection, Allow agents is on, and the launch file (the working copy, or the master) is still the
 open file. Once any of those ends, access stays ended until that Blender restarts

@@ -93,7 +93,7 @@ class _State:
     quit_held = None
     # Unique to this launch, so another launch's capture never matches one of this.
     launch = os.urandom(8).hex()
-    # Counts the scene's changes, which a view moved alone doesn't make.
+    # Counts moves and reshapes in the scene, which a view moved or a selection alone doesn't make.
     scene_changes = 0
     # The open file as Blender last read or saved it; anything else on disk is a change Blender
     # didn't make. Revisions are identity, size and nanosecond times, as T3's previews tell.
@@ -384,8 +384,9 @@ def _scene_identity(scene):
 
 
 @persistent
-def _on_depsgraph_update(*_args):
-    _State.scene_changes += 1
+def _on_depsgraph_update(_scene, depsgraph):
+    if any(update.is_updated_transform or update.is_updated_geometry for update in depsgraph.updates):
+        _State.scene_changes += 1
 
 
 def _view_result(view_matrix, window_matrix, rv3d, screenshot, scene):
@@ -412,7 +413,7 @@ def _hits(command):
     # Cast only in the scene as captured: a load, playback, another viewer or the agent may have
     # changed it since the screenshot, whose marks then name nothing here.
     if command.get("scene") != _scene_identity(window.scene):
-        return None
+        return "sceneChanged"
     inverse = Matrix([command["matrix"][row * 4:row * 4 + 4] for row in range(4)]).inverted()
     region = command["region"]
     # Timers run in the main window's context; the marks are on the person's window, whose
@@ -536,10 +537,13 @@ def _handle(command):
             _send({"type": "quitExpired"})
             return
         expected = command.get("filepath")
-        if not command.get("save") and expected is not None and expected != bpy.data.filepath:
-            # The person's discard named the file T3 last heard of; another is open now, whose
-            # changes they never chose to lose.
-            _send({"type": "discardRefused"})
+        if expected is not None and expected != bpy.data.filepath:
+            # The person's choice named the file T3 last heard of; another is open now, whose
+            # changes they never chose to lose or write.
+            if command.get("save"):
+                _send({"type": "quitFailed", "reason": "openFileChanged"})
+            else:
+                _send({"type": "discardRefused"})
             return
         # What T3 keeps is the .blend: edits outside it would be lost, so Blender stays open
         # until they are saved. A save saves the catalogs and the images it can, as Blender's own
@@ -550,6 +554,8 @@ def _handle(command):
             _send({"type": "quitFailed", "reason": held})
             return
         if not command.get("save"):
+            # T3's answer, before ending the grant, which can take long on a large scene.
+            _send({"type": "quitAccepted"})
             # A held quit leaves the grant to the agent until here, since Blender may stay open
             # for it to save the images; this runs on the main thread, so no call slips between.
             _end_grant()

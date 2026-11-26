@@ -459,9 +459,7 @@ async function readBlocks(
   for (;;) {
     // A closed preview or a newer request stops the walk; the source closes on the way out.
     signal?.throwIfAborted();
-    if (headOnly && (scanned > HEAD_MAX_BYTES || kept.some((block) => block.code === "TEST"))) {
-      return partial();
-    }
+    if (headOnly && kept.some((block) => block.code === "TEST")) return partial();
     blocks += 1;
     if (blocks > limits.maxBlocks) return partial();
     const bytes = await source.read(headerSize);
@@ -481,7 +479,14 @@ async function readBlocks(
       throw new BlendFileFormatError({ problem: "damaged" });
     // Checked before the payload is read or inflated, so a block claiming terabytes costs nothing.
     scanned += headerSize + length;
-    if (source.compressed && scanned > limits.maxScannedBytes) return partial();
+    // A large file is read only as far as its thumbnail's budget, and a compressed file that
+    // inflates past the large-file size is a large file too.
+    const budget = headOnly
+      ? HEAD_MAX_BYTES
+      : source.compressed
+        ? Math.min(limits.maxScannedBytes, limits.wholeUpTo)
+        : Infinity;
+    if (scanned > budget) return partial();
     counts.set(code, (counts.get(code) ?? 0) + 1);
     if (!KEPT_CODES.has(code)) {
       if (!(await source.skip(length))) throw new BlendFileFormatError({ problem: "ends_early" });
@@ -629,7 +634,8 @@ export async function readBlendFile(
 }
 
 // A cold preview reads a file's facts, then its conversion checks the same file twice; a file
-// whose revision hasn't changed is walked once.
+// whose revision hasn't changed is walked once. A read that reached the end is the whole file's,
+// whoever asked; only a large file's partial read is kept apart, as conversions need the rest.
 const FACTS_CACHE_ENTRIES = 16;
 const factsCache = new Map<string, BlendFileFacts>();
 
@@ -643,14 +649,18 @@ export async function readBlendFileFacts(
   signal?: AbortSignal,
   whole = false,
 ): Promise<BlendFileFacts> {
-  const key = revision === null ? null : `${realPath}\n${revision}\n${whole}`;
-  const hit = key === null ? undefined : factsCache.get(key);
-  if (key !== null && hit !== undefined) {
-    factsCache.delete(key);
-    factsCache.set(key, hit);
-    return hit;
+  const keyOf = (read: "whole" | "head") =>
+    revision === null ? null : `${realPath}\n${revision}\n${read}`;
+  for (const key of whole ? [keyOf("whole")] : [keyOf("whole"), keyOf("head")]) {
+    const hit = key === null ? undefined : factsCache.get(key);
+    if (key !== null && hit !== undefined) {
+      factsCache.delete(key);
+      factsCache.set(key, hit);
+      return hit;
+    }
   }
   const facts = await readBlendFile(realPath, whole ? { wholeUpTo: Infinity } : {}, signal);
+  const key = keyOf(whole || facts.partial !== true ? "whole" : "head");
   if (key !== null) {
     factsCache.set(key, facts);
     if (factsCache.size > FACTS_CACHE_ENTRIES) factsCache.delete(factsCache.keys().next().value!);
