@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { stillSavingText } from "@t3tools/client-runtime/state/hosted-blender";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { HostedBlenderError, type ScopedThreadRef } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -19,6 +20,7 @@ import { formatEnvironmentQueryError } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
 
 import { useBlenderRoleStore } from "./blenderRole";
+import { fileName } from "./useQuitHostedBlender";
 
 const isHostedBlenderError = Schema.is(HostedBlenderError);
 
@@ -71,7 +73,9 @@ export function OpenInHostedBlender(props: {
           stackedThreadToast({
             type: "error",
             title: gt("Couldn't open the master"),
-            description: formatEnvironmentQueryError(result.cause, m),
+            description:
+              stillSavingText(result.cause, fileName(props.relativePath), m) ??
+              formatEnvironmentQueryError(result.cause, m),
           }),
         );
       }
@@ -112,7 +116,9 @@ export function OpenInHostedBlender(props: {
       stackedThreadToast({
         type: "error",
         title: gt("Couldn't open in hosted Blender"),
-        description: formatEnvironmentQueryError(result.cause, m),
+        description:
+          stillSavingText(result.cause, fileName(props.relativePath), m) ??
+          formatEnvironmentQueryError(result.cause, m),
       }),
     );
   };

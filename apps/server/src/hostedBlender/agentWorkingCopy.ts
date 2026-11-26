@@ -240,7 +240,17 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
               { threadId: input.threadId, key: waiting.key, restore: waiting.reloaded !== true },
               { agentWorkingCopy: true },
             )
-      ).pipe(Effect.mapError((error) => new HostedBlenderToolError({ reason: error.message })));
+      ).pipe(
+        Effect.mapError(
+          (error) =>
+            new HostedBlenderToolError({
+              reason:
+                error.reason === "stillSaving"
+                  ? `A Blender from before T3 Code restarted is still saving its last copy of ${name}. Wait a moment, then call blender_start again.`
+                  : error.message,
+            }),
+        ),
+      );
     }
     // The copy was made from it, so the pane's Master side can offer it; nothing opens.
     if (!isCopy) {

@@ -13,6 +13,7 @@ import {
   isQuitUnanswered,
   isRestoreReplacingUnsaved,
   quitFileOf,
+  stillSavingText,
 } from "@t3tools/client-runtime/state/hosted-blender";
 import {
   EnvironmentId,
@@ -512,7 +513,7 @@ function KeptCopyCard(props: {
     if (result._tag === "Failure") {
       Dialog.alert(
         crashed ? m(msg("Couldn't restart Blender")) : m(msg("Couldn't reopen Blender")),
-        formatEnvironmentQueryError(result.cause),
+        stillSavingText(result.cause, name, m) ?? formatEnvironmentQueryError(result.cause),
       );
     }
   };

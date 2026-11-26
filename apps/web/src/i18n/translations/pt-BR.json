@@ -750,6 +750,7 @@
   "f0ab079175905bbb": "Commit, push e criar {shortLabel}",
   "8360d689ebc7f829": "Fazer push e criar {shortLabel} a partir do branch padrão?",
   "daa408bb99d21d18": "{kind, select, pr {Esta ação vai fazer push dos commits locais e criar um PR em \"{branch}\". Você pode continuar neste branch ou criar um branch de feature e executar a mesma ação nele.} mr {Esta ação vai fazer push dos commits locais e criar um MR em \"{branch}\". Você pode continuar neste branch ou criar um branch de feature e executar a mesma ação nele.} generic {Esta ação vai fazer push dos commits locais e criar uma solicitação de alteração em \"{branch}\". Você pode continuar neste branch ou criar um branch de feature e executar a mesma ação nele.} other {Esta ação vai fazer push dos commits locais e criar {changeRequest} em \"{branch}\". Você pode continuar neste branch ou criar um branch de feature e executar a mesma ação nele.}}",
+  "52e3a38c91652959": "O Blender ainda está salvando a última cópia de {name} de antes de o T3 Code reiniciar. Tente novamente em instantes.",
   "8471c4c5a50ffde3": "Ainda não é possível navegar pelas issues deste host.",
   "2f4a47129f89fe22": "Não conectado. Adicione uma chave de API pessoal para listar as issues.",
   "024baab60525a419": "A credencial salva foi recusada.",

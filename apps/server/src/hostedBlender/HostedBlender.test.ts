@@ -85,6 +85,8 @@ interface Host {
   readonly afterSettingsRead?: Effect.Effect<void>;
   /** Holds back T3's words to the add-on. */
   readonly heldWords?: (word: "connected" | "viewportShown") => Effect.Effect<void>;
+  /** Whether the thread is settled now; it is unless a test makes it active again. */
+  readonly threadSettled?: () => boolean;
 }
 
 const blenderOnPath = (env: NodeJS.ProcessEnv) =>
@@ -149,6 +151,8 @@ const layerFor = (host: Host) =>
                       projectId: "project",
                       runtimeMode: host.runtimeMode ?? "approval-required",
                       interactionMode: host.interactionMode ?? "default",
+                      settledOverride: host.threadSettled?.() === false ? "active" : "settled",
+                      archivedAt: null,
                     } as never)
                   : null,
               ),
@@ -583,6 +587,12 @@ def control():
             event({"type": "exited", "process": "blender", "code": 0, "signal": None})
             connection.close()
             return
+        if command.get("type") == "quit" and not command.get("save") and scenario == "opens-during-discard":
+            # File > Open finishes while the discard waits, announcing a viewport window T3 must
+            # expect; the discard, naming the file that was open, is then refused.
+            send(connection, {"type": "state", "filepath": opened, "dirty": True, "viewport": 2})
+            send(connection, {"type": "discardRefused"})
+            continue
         if command.get("type") == "quit" and not command.get("save") and scenario == "answers-late":
             # Busy with a render through the first quit; free by the next, it reads the first
             # past its deadline, refuses it, then takes the next.
@@ -782,7 +792,7 @@ const standIn = Effect.fn(function* (
   prefix: string,
   scenario: string,
   beforeThreadLookup?: () => Effect.Effect<void>,
-  host: Pick<Host, "readinessChanges" | "agentPort" | "heldWords"> = {},
+  host: Pick<Host, "readinessChanges" | "agentPort" | "heldWords" | "threadSettled"> = {},
   extraEnv: Readonly<Record<string, string>> = {},
 ) {
   const dir = yield* tempDir(prefix);
@@ -1550,7 +1560,7 @@ describe("Salvaging what a stopped server left", () => {
   );
 
   it.live(
-    "leaves a Blender released at shutdown to finish its copy, holding up only an open of its file",
+    "leaves a Blender released at shutdown to finish its copy, refusing an open of its file in any thread meanwhile",
     () =>
       Effect.gen(function* () {
         const dir = yield* tempDir("salvage-released");
@@ -1574,23 +1584,75 @@ describe("Salvaging what a stopped server left", () => {
         );
         yield* Effect.addFinalizer(() => Effect.sync(() => helper.kill("SIGKILL")));
         yield* fileAppears(dir, readyFile);
-        leftover(dir, { helperPid: helper.pid! });
+        leftover(dir, {
+          helperPid: helper.pid!,
+          facts: { restore: "none", saved: false, changed: true },
+        });
         NodeFS.writeFileSync(NodePath.join(launchDir, "outcome"), "released");
         const service = yield* idleService(dir);
-        // Ready while it still runs: nothing waits for it but an open of its own file.
+        // Ready while it still runs: nothing waits for it.
         expect((yield* firstState(service).pipe(Effect.timeout("5 seconds"))).status).toBe(
           "stopped",
+        );
+        // Its file is its own until it exits: an open of it, from any thread, says so at once.
+        for (const id of [threadId, otherThreadId]) {
+          const refused = yield* service
+            .open({ threadId: id, relativePath: "cube.blend" })
+            .pipe(Effect.flip, Effect.timeout("5 seconds"));
+          expect(refused.reason).toBe("stillSaving");
+        }
+        NodeFS.writeFileSync(done, "");
+        // Kept once it exits, and then an open finds the copy waiting.
+        yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status === "closed"),
+          Stream.runHead,
         );
         const opening = yield* service
           .open({ threadId, relativePath: "cube.blend" })
           .pipe(Effect.flip, Effect.forkChild);
-        NodeFS.writeFileSync(done, "");
-        // Kept once it exits, before that open goes on and finds the copy waiting.
         expect((yield* Fiber.join(opening)).reason).toBe("recoveryPending");
         expect(recoveryOf(hostedDir)?.contents).toBe("left behind");
         expect(NodeFS.existsSync(signalled)).toBe(false);
         expect(NodeFS.existsSync(launchDir)).toBe(false);
       }).pipe(Effect.scoped),
+  );
+
+  it.live("stops a Blender released at shutdown that never finishes, keeping what it left", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage-stuck");
+      const { hostedDir, launchDir } = leftover(dir, {});
+      const signalled = NodePath.join(dir, "signalled");
+      const readyFile = NodePath.join(dir, "ready");
+      // Never finishes on its own; the signal that stops it is noted.
+      const helper = NodeChildProcess.spawn(
+        python,
+        [
+          "-c",
+          "import signal, sys, time\nsignal.signal(signal.SIGTERM, lambda *_: (open(sys.argv[1], 'w').close(), sys.exit(0)))\nopen(sys.argv[2], 'w').close()\nwhile True: time.sleep(0.05)",
+          signalled,
+          readyFile,
+          "--state-dir",
+          launchDir,
+        ],
+        { cwd: launchDir, stdio: "ignore", detached: true },
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(() => helper.kill("SIGKILL")));
+      yield* fileAppears(dir, readyFile);
+      leftover(dir, { helperPid: helper.pid! });
+      NodeFS.writeFileSync(NodePath.join(launchDir, "outcome"), "released");
+      // Its bound shortened from two hours.
+      const service = yield* idleService(dir).pipe(
+        Effect.provideService(HostedBlender.ReleasedFinishTimeout, "1 second"),
+      );
+      yield* fileAppears(dir, signalled);
+      const kept = yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "closed"),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
+      expect(card(kept)).toEqual({ status: "closed", relativePath: "cube.blend", recovery: true });
+      expect(recoveryOf(hostedDir)?.contents).toBe("left behind");
+    }).pipe(Effect.scoped),
   );
 
   it.live("leaves a launch it couldn't stop for the next start, collecting nothing", () =>
@@ -2218,6 +2280,54 @@ describe("Endings and recovery", () => {
   );
 
   it.live(
+    "a discard its dropped connection can't carry is unconfirmed, then stops Blender as a crash",
+    () =>
+      Effect.gen(function* () {
+        const openFile = { kind: "workspace" as const, relativePath: "cube.blend" };
+        const { service, openReady, awaitStatus, loseConnection, hostedDir } = yield* standIn(
+          "lost-discard",
+          "",
+        );
+        yield* openReady;
+        // The control connection drops while the stream goes on.
+        loseConnection();
+        const discard = service
+          .quit({ threadId, save: false, discard: true, openFile })
+          .pipe(Effect.flip, Effect.option);
+        expect(Option.getOrThrow(yield* discard).reason).toBe("discardUnconfirmed");
+        expect((yield* firstState(service)).status).toBe("running");
+        expect(Option.isNone(yield* discard)).toBe(true);
+        expect(yield* awaitStatus("crashed")).toMatchObject({ recovery: true });
+        expect(recoveryOf(hostedDir)?.contents).toBe("autosave");
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("a discard Blender refuses sends the window words it held back", () =>
+    Effect.gen(function* () {
+      const { dir, service, openReady } = yield* standIn("held-words", "opens-during-discard");
+      yield* openReady;
+      const refused = yield* service
+        .quit({
+          threadId,
+          save: false,
+          discard: true,
+          openFile: { kind: "workspace", relativePath: "cube.blend" },
+        })
+        .pipe(Effect.flip);
+      expect(refused.reason).toBe("openFileChanged");
+      // The window announced while the discard was queued is expected after all.
+      const control = NodePath.join(dir, "saves.log.control");
+      yield* fileAppears(
+        dir,
+        control,
+        () =>
+          NodeFS.existsSync(control) &&
+          NodeFS.readFileSync(control, "utf8").includes('"type":"viewportExpected","generation":2'),
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
     "a quit or a settle leaves a Blender with unsaved image edits open, saying so; Quit without saving still quits",
     () =>
       Effect.gen(function* () {
@@ -2778,6 +2888,43 @@ describe("Endings and recovery", () => {
       yield* service.reopen({ threadId, key: CUBE, restore: true });
       yield* awaitDirty(true);
       expect(launches().at(-1)).toContain(recoveryOf(hostedDir)?.session);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a close owed to a settled thread never runs once the thread is active again", () =>
+    Effect.gen(function* () {
+      let settled = true;
+      const { service, awaitStatus, bind, marker, hostedDir } = yield* standIn(
+        "unsettled",
+        "late-control",
+        undefined,
+        { threadSettled: () => settled },
+      );
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitStatus("running");
+      const launches = NodePath.join(hostedDir, "launches");
+      const outcome = () => {
+        const [launch] = NodeFS.readdirSync(launches);
+        return launch === undefined ? null : NodePath.join(launches, launch, "outcome");
+      };
+      const closing = () => {
+        const file = outcome();
+        return file !== null && NodeFS.existsSync(file);
+      };
+      yield* service.closeOnSettle({ threadId });
+      yield* fileAppears(NodePath.dirname(outcome()!), outcome()!, closing);
+      yield* fileAppears(NodePath.dirname(outcome()!), outcome()!, () => !closing());
+      // The person sends a message meanwhile, so the thread is no longer settled.
+      settled = false;
+      bind();
+      // Its words are read in order: once its first report is published, the close was weighed.
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "running" && state.dirty),
+        Stream.runHead,
+      );
+      // Still open, and still answering.
+      expect((yield* service.captureView(threadId)).screenshot).not.toBeNull();
+      expect(NodeFS.existsSync(marker)).toBe(false);
     }).pipe(Effect.scoped),
   );
 

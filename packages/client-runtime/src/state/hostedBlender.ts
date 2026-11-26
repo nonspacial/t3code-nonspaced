@@ -2,6 +2,8 @@ import { HostedBlenderError, type HostedBlenderKeptFile, WS_METHODS } from "@t3t
 import * as Cause from "effect/Cause";
 import type { Atom } from "effect/reactivity";
 import * as Schema from "effect/Schema";
+import { mFallback, msg } from "gt-i18n";
+import type { MFunctionType } from "gt-i18n/types";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import {
@@ -45,6 +47,26 @@ export const isDiscardUnconfirmed = (cause: Cause.Cause<unknown>) => {
 export const isQuitUnanswered = (cause: Cause.Cause<unknown>) => {
   const error = Cause.squash(cause);
   return isHostedBlenderError(error) && error.reason === "quitUnanswered";
+};
+
+/**
+ * An open refused while a Blender released before T3 Code restarted still writes its last copy of
+ * that file, named as the person knows it; null for any other failure.
+ */
+export const stillSavingText = (
+  cause: Cause.Cause<unknown>,
+  name: string,
+  resolve: MFunctionType = mFallback,
+): string | null => {
+  const error = Cause.squash(cause);
+  return isHostedBlenderError(error) && error.reason === "stillSaving"
+    ? resolve(
+        msg(
+          "Blender is still saving its last copy of {name} from before T3 Code restarted. Try again in a moment.",
+          { name },
+        ),
+      )
+    : null;
 };
 
 /** The scene changed since an annotation's picture, so its marks name no objects. */

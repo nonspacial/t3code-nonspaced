@@ -65,7 +65,17 @@ export const openAgentMaster = Effect.fn("HostedBlender.openAgentMaster")(functi
   const relativePath = path.relative(root, requested);
   const opened = yield* hostedBlender
     .openMaster({ threadId: input.threadId, relativePath }, { agentSession: input.agentSession })
-    .pipe(Effect.mapError((error) => new HostedBlenderToolError({ reason: error.message })));
+    .pipe(
+      Effect.mapError(
+        (error) =>
+          new HostedBlenderToolError({
+            reason:
+              error.reason === "stillSaving"
+                ? `A Blender from before T3 Code restarted is still saving its last copy of ${path.basename(relativePath)}. Wait a moment, then call blender_master_open again.`
+                : error.message,
+          }),
+      ),
+    );
   const master = path.join(root, relativePath);
   if (opened._tag === "desktop") {
     return {

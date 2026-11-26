@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
+import { stillSavingText } from "@t3tools/client-runtime/state/hosted-blender";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { type EnvironmentId, HostedBlenderError, type ThreadId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
@@ -71,9 +72,10 @@ export function useOpenInHostedBlender(
     ) {
       return showBlender();
     }
+    const name = target.relativePath.slice(target.relativePath.lastIndexOf("/") + 1);
     Dialog.alert(
       m(msg("Couldn't open in hosted Blender")),
-      formatEnvironmentQueryError(result.cause),
+      stillSavingText(result.cause, name, m) ?? formatEnvironmentQueryError(result.cause),
     );
   };
   return {

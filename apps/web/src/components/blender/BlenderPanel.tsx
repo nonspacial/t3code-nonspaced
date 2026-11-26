@@ -28,7 +28,11 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { blendFileName, quitFileOf } from "@t3tools/client-runtime/state/hosted-blender";
+import {
+  blendFileName,
+  quitFileOf,
+  stillSavingText,
+} from "@t3tools/client-runtime/state/hosted-blender";
 import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { CameraIcon, HandIcon, MaximizeIcon, MoreVertical } from "lucide-react";
@@ -448,7 +452,8 @@ function ReopenCard(props: {
         stackedThreadToast({
           type: "error",
           title: crashed ? gt("Couldn't restart Blender") : gt("Couldn't reopen Blender"),
-          description: formatEnvironmentQueryError(result.cause, m),
+          description:
+            stillSavingText(result.cause, name, m) ?? formatEnvironmentQueryError(result.cause, m),
         }),
       );
     }

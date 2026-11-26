@@ -440,6 +440,7 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "discardUnconfirmed",
       "quitUnanswered",
       "sceneChanged",
+      "stillSaving",
     ]),
     /** With `unsavedImages` from a save: the edited images Blender couldn't save. */
     images: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -518,6 +519,8 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "The scene changed since the picture was taken, so its marks can't name objects.";
       case "quitUnanswered":
         return "Blender didn't answer, so it stays open, and the quit won't run later on its own. Try again once Blender has finished what it's doing.";
+      case "stillSaving":
+        return "Blender is still saving its last copy of this file from before T3 Code restarted. Try again in a moment.";
     }
   }
 }

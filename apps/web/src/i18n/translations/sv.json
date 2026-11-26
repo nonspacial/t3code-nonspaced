@@ -750,6 +750,7 @@
   "f0ab079175905bbb": "Committa, pusha och skapa {shortLabel}",
   "8360d689ebc7f829": "Pusha och skapa {shortLabel} från standardgrenen?",
   "daa408bb99d21d18": "{kind, select, pr {Den här åtgärden pushar lokala commits och skapar en PR på ”{branch}”. Du kan fortsätta på den här grenen eller skapa en funktionsgren och köra samma åtgärd där.} mr {Den här åtgärden pushar lokala commits och skapar en MR på ”{branch}”. Du kan fortsätta på den här grenen eller skapa en funktionsgren och köra samma åtgärd där.} generic {Den här åtgärden pushar lokala commits och skapar en ändringsbegäran på ”{branch}”. Du kan fortsätta på den här grenen eller skapa en funktionsgren och köra samma åtgärd där.} other {Den här åtgärden pushar lokala commits och skapar {changeRequest} på ”{branch}”. Du kan fortsätta på den här grenen eller skapa en funktionsgren och köra samma åtgärd där.}}",
+  "52e3a38c91652959": "Blender sparar fortfarande sin senaste kopia av {name} från innan T3 Code startade om. Försök igen om en stund.",
   "8471c4c5a50ffde3": "Det går inte att bläddra bland ärenden för den här värden än.",
   "2f4a47129f89fe22": "Inte ansluten. Lägg till en personlig API-nyckel för att lista dess ärenden.",
   "024baab60525a419": "Den sparade autentiseringsuppgiften avvisades.",
