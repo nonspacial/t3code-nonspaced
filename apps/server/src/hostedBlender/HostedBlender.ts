@@ -130,7 +130,7 @@ export const LeftoverSignal = Context.Reference<(pid: number, signal: NodeJS.Sig
     },
   },
 );
-/** What the add-on waits for before splitting a viewport window; tests hold it back. */
+
 /** Holds back T3's words to the add-on, on connecting or when a viewport shows; tests use it. */
 export const HeldWords = Context.Reference<
   (word: "connected" | "viewportShown") => Effect.Effect<void>
