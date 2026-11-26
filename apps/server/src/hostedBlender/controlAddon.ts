@@ -346,13 +346,24 @@ def _screenshot_size(width, height):
     return max(1, int(width * scale)), max(1, int(height * scale))
 
 
+def _floating_windows():
+    # Blender's other windows (render view, file browser, Preferences) float in front of the
+    # viewport in the stream; the main window never shows. With one open, the 3D view alone
+    # isn't what the pane shows, so no picture of it is made: the pane freezes its own frame.
+    return [
+        window
+        for window in list(bpy.context.window_manager.windows)[1:]
+        if window.as_pointer() != _State.viewport_window
+    ]
+
+
 def _view(command):
     # The screenshot goes beside the control socket, in T3's private folder for this Blender.
     name = command["screenshot"]
     if os.path.basename(name) != name or not name.endswith(".png"):
         return None
     found = _viewport()
-    if found is None:
+    if found is None or _floating_windows():
         return None
     window, area, region, space = found
     rv3d = space.region_3d
@@ -995,7 +1006,7 @@ def _viewport_windows():
 
 
 def _open_viewport_window():
-    # The pane streams this window alone, so the agent's own view in the main window never moves.
+    # The pane shows this window and never the main one, so the agent's own view there never moves.
     window = _main_window()
     if window is None:
         return None

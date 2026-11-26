@@ -11,6 +11,9 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(10);
+/// F19 (evdev; its keysym is F19 under xkb's evdev rules, unlike F20 to F24), bound in labwc's
+/// config to fit the floating windows inside the output.
+pub const REFIT_KEY: u32 = 189;
 
 /// Everything a hidden display owns: the runtime directory (see `RuntimeDir`) and the rest
 /// under one state directory.
@@ -93,8 +96,12 @@ impl Paths {
     }
 }
 
-/// One inert keybind stops labwc loading its defaults (Alt+F4, Alt+Tab...), which would steal
-/// Blender's keys. The captured window is made fullscreen so stream pixels are output pixels.
+/// The captured window is made fullscreen so stream pixels are output pixels. Blender's other
+/// windows (render view, file browser, Preferences) float centred in front of it with a close
+/// button; `REFIT_KEY`, which the helper presses after resizing the output, fits them inside it
+/// again. That one keybind also stops labwc loading its defaults (Alt+F4, Alt+Tab...), which would
+/// steal Blender's keys. Its own mousebinds replace labwc's defaults: a click focuses, and raises
+/// any window but the undecorated viewport, which would otherwise cover them all.
 pub fn labwc_config(window_title: Option<&str>) -> String {
     let window_rule = window_title
         .map(|title| {
@@ -105,11 +112,33 @@ pub fn labwc_config(window_title: Option<&str>) -> String {
             )
         })
         .unwrap_or_default();
+    let focus = |button: &str| {
+        format!(
+            "\n      <mousebind button=\"{button}\" action=\"Press\"><action name=\"Focus\"/>\
+             <action name=\"If\"><query decoration=\"none\"/><else><action name=\"Raise\"/>\
+             </else></action></mousebind>"
+        )
+    };
+    let client: String = ["Left", "Middle", "Right"].map(focus).concat();
     format!(
         "<?xml version=\"1.0\"?>\n<labwc_config>\n  <core><decoration>server</decoration></core>\n  \
-         <theme><maximizedDecoration>none</maximizedDecoration></theme>\n  <keyboard>\n    \
-         <keybind key=\"W-F24\"><action name=\"None\"/></keybind>\n  </keyboard>\n  \
-         <mouse><default/></mouse>{window_rule}\n</labwc_config>\n"
+         <placement><policy>center</policy></placement>\n  \
+         <theme><maximizedDecoration>none</maximizedDecoration>\
+         <titlebar><layout>:close</layout></titlebar></theme>\n  <keyboard>\n    \
+         <keybind key=\"F19\"><action name=\"ForEach\"><query decoration=\"full\"/><then>\
+         <action name=\"FitToOutput\"/><action name=\"AutoPlace\" policy=\"center\"/></then>\
+         </action></keybind>\n  </keyboard>\n  \
+         <mouse>\n    <context name=\"Client\">{client}\n    </context>\n    \
+         <context name=\"Border\">\n      <mousebind button=\"Left\" action=\"Press\">\
+         <action name=\"Focus\"/><action name=\"Raise\"/></mousebind>\n      \
+         <mousebind button=\"Left\" action=\"Drag\"><action name=\"Resize\"/></mousebind>\n    \
+         </context>\n    <context name=\"TitleBar\">\n      \
+         <mousebind button=\"Left\" action=\"Press\"><action name=\"Focus\"/>\
+         <action name=\"Raise\"/></mousebind>\n    </context>\n    <context name=\"Title\">\n      \
+         <mousebind button=\"Left\" action=\"Drag\"><action name=\"Move\"/></mousebind>\n    \
+         </context>\n    <context name=\"Close\">\n      \
+         <mousebind button=\"Left\" action=\"Click\"><action name=\"Close\"/></mousebind>\n    \
+         </context>\n  </mouse>{window_rule}\n</labwc_config>\n"
     )
 }
 
@@ -419,12 +448,48 @@ mod tests {
     #[test]
     fn labwc_config_clears_default_keybinds_and_fullscreens_the_captured_window() {
         let config = labwc_config(Some("3D \"Viewport\" & <more>"));
-        assert!(config.contains(r#"<keybind key="W-F24"><action name="None"/></keybind>"#));
+        assert_eq!(
+            config.matches("<keybind ").count(),
+            1,
+            "the refit key alone"
+        );
+        assert!(
+            config.contains(
+                r#"<keybind key="F19"><action name="ForEach"><query decoration="full"/>"#
+            )
+        );
+        assert!(
+            config.contains(
+                r#"<action name="FitToOutput"/><action name="AutoPlace" policy="center"/>"#
+            )
+        );
         assert!(config.contains("<maximizedDecoration>none</maximizedDecoration>"));
         assert!(
             config.contains(r#"<windowRule title="*3D &quot;Viewport&quot; &amp; &lt;more&gt;*""#)
         );
         assert!(config.contains(r#"<action name="ToggleFullscreen"/>"#));
         assert!(!labwc_config(None).contains("windowRule"));
+    }
+
+    #[test]
+    fn labwc_config_floats_other_windows_centred_with_a_close_button_and_keeps_them_in_front() {
+        let config = labwc_config(Some("3D Viewport"));
+        assert!(config.contains("<placement><policy>center</policy></placement>"));
+        assert!(config.contains("<titlebar><layout>:close</layout></titlebar>"));
+        assert!(
+            !config.contains("<default"),
+            "labwc's own mousebinds raise on any click"
+        );
+        // A click in a window focuses it; the undecorated viewport is never raised over the rest.
+        let client = &config[config.find(r#"<context name="Client">"#).unwrap()..];
+        let client = &client[..client.find("</context>").unwrap()];
+        assert_eq!(client.matches(r#"<action name="Focus"/>"#).count(), 3);
+        assert_eq!(
+            client
+                .matches(r#"<action name="If"><query decoration="none"/><else><action name="Raise"/></else></action>"#)
+                .count(),
+            3
+        );
+        assert!(config.contains(r#"<context name="Close">"#));
     }
 }

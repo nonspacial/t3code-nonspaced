@@ -14,12 +14,7 @@ use wayland_client::protocol::{
 use wayland_client::{
     Connection, Dispatch, QueueHandle, WEnum, delegate_noop, event_created_child,
 };
-use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
-    ext_foreign_toplevel_handle_v1 as toplevel_handle,
-    ext_foreign_toplevel_list_v1 as toplevel_list,
-};
 use wayland_protocols::ext::image_capture_source::v1::client::{
-    ext_foreign_toplevel_image_capture_source_manager_v1 as toplevel_sources,
     ext_image_capture_source_v1 as source,
     ext_output_image_capture_source_manager_v1 as output_sources,
 };
@@ -202,7 +197,8 @@ struct Constraints {
 
 enum Target {
     Output,
-    Toplevel(toplevel_handle::ExtForeignToplevelHandleV1),
+    /// The output, while this window (the viewport) fills it; see `State::streamable`.
+    Viewport(wlr_toplevel::ZwlrForeignToplevelHandleV1),
 }
 
 struct ExtCapture {
@@ -233,16 +229,9 @@ struct Screencopy {
     full: bool,
 }
 
-struct Toplevel {
-    handle: toplevel_handle::ExtForeignToplevelHandleV1,
-    title: String,
-    closed: bool,
-}
-
 struct ExtGlobals {
     manager: capture_manager::ExtImageCopyCaptureManagerV1,
     output_sources: output_sources::ExtOutputImageCaptureSourceManagerV1,
-    toplevel_sources: Option<toplevel_sources::ExtForeignToplevelImageCaptureSourceManagerV1>,
 }
 
 pub struct State {
@@ -263,10 +252,12 @@ pub struct State {
     screencopy_manager: Option<screencopy_manager::ZwlrScreencopyManagerV1>,
     dmabuf: Option<dmabuf::ZwpLinuxDmabufV1>,
     gbm: Option<gbm::Device>,
-    toplevels: Vec<Toplevel>,
-    /// The same windows through wlr-foreign-toplevel-management, which can set them fullscreen.
+    /// The program's windows, through wlr-foreign-toplevel-management, which can set them
+    /// fullscreen or minimized.
     managed: Vec<ManagedToplevel>,
     window_title: Option<String>,
+    /// The program's first window has been listed.
+    first_seen: bool,
     target: Option<Target>,
     ext_capture: Option<ExtCapture>,
     screencopy: Option<Screencopy>,
@@ -321,7 +312,6 @@ impl State {
                 Some(ExtGlobals {
                     manager: globals.bind(qh, 1..=1, ()).ok()?,
                     output_sources: globals.bind(qh, 1..=1, ()).ok()?,
-                    toplevel_sources: globals.bind(qh, 1..=1, ()).ok(),
                 })
             })
             .flatten();
@@ -331,19 +321,12 @@ impl State {
                 "the compositor offers neither ext-image-copy-capture nor wlr-screencopy".into(),
             );
         }
+        // Bound before the program starts, so the first window it lists is the program's first:
+        // Blender's main window.
         let toplevels_wanted = options.window_title.is_some()
-            && ext
-                .as_ref()
-                .is_some_and(|ext| ext.toplevel_sources.is_some());
-        if toplevels_wanted {
-            let _list: toplevel_list::ExtForeignToplevelListV1 = globals
-                .bind(qh, 1..=1, ())
-                .map_err(bind_error("ext_foreign_toplevel_list_v1"))?;
-            // labwc's rule only toggles fullscreen as a window maps, so one that maps fullscreen
-            // already (Blender restoring a window from a file) would leave it; this keeps it set.
-            let _manager: Option<wlr_toplevel_manager::ZwlrForeignToplevelManagerV1> =
-                globals.bind(qh, 1..=3, ()).ok();
-        }
+            && globals
+                .bind::<wlr_toplevel_manager::ZwlrForeignToplevelManagerV1, _, _>(qh, 1..=3, ())
+                .is_ok();
 
         let cursor = ext.as_ref().map(|ext| {
             let source = ext.output_sources.create_source(&output, qh, ());
@@ -375,13 +358,13 @@ impl State {
             screencopy_manager,
             dmabuf: globals.bind(qh, 3..=4, ()).ok(),
             gbm: None,
-            toplevels: Vec::new(),
             managed: Vec::new(),
             window_title: if toplevels_wanted {
                 options.window_title
             } else {
                 None
             },
+            first_seen: false,
             target: None,
             ext_capture: None,
             screencopy: None,
@@ -409,7 +392,8 @@ impl State {
         }
     }
 
-    /// `window_title` survives only when the compositor can capture a single window.
+    /// `window_title` survives only when the compositor can list and manage its windows, whichever
+    /// capture backend it offers.
     pub fn capture_target(&self) -> CaptureTarget {
         if self.window_title.is_some() {
             CaptureTarget::Window
@@ -593,18 +577,11 @@ impl State {
     }
 
     fn restart_capture(&mut self, qh: &QueueHandle<State>) {
-        if self.paused {
+        if self.paused || !self.streamable() {
             return;
         }
         if let Some(ext) = self.ext.as_ref() {
-            let source = match self.target.as_ref() {
-                Some(Target::Output) => ext.output_sources.create_source(&self.output, qh, ()),
-                Some(Target::Toplevel(handle)) => match ext.toplevel_sources.as_ref() {
-                    Some(sources) => sources.create_source(handle, qh, ()),
-                    None => return,
-                },
-                None => return,
-            };
+            let source = ext.output_sources.create_source(&self.output, qh, ());
             // No paint_cursors: with it the cursor session reports leave and never comes back.
             let session = ext.manager.create_session(
                 &source,
@@ -629,7 +606,7 @@ impl State {
     }
 
     fn request_screencopy(&mut self, full: bool, qh: &QueueHandle<State>) {
-        if self.paused || self.screencopy.is_some() {
+        if self.paused || self.screencopy.is_some() || !self.streamable() {
             return;
         }
         let Some(manager) = self.screencopy_manager.as_ref() else {
@@ -827,35 +804,69 @@ impl State {
         self.settle.on_frame(Instant::now());
     }
 
-    fn match_toplevel(&mut self, qh: &QueueHandle<State>) {
+    /// The whole output is streamed, so other windows show where they float. With a window title,
+    /// only while that window fills the output and the program's first window (Blender's main
+    /// window, with its menu bar) is minimized: it never reaches a frame, even for an instant.
+    fn streamable(&self) -> bool {
+        match &self.target {
+            Some(Target::Output) => true,
+            Some(Target::Viewport(handle)) => {
+                let viewport = self
+                    .managed
+                    .iter()
+                    .find(|managed| &managed.handle == handle);
+                viewport.is_some_and(|viewport| viewport.fullscreen)
+                    && self
+                        .managed
+                        .iter()
+                        .all(|managed| !managed.first || managed.minimized)
+            }
+            None => false,
+        }
+    }
+
+    /// Starts or stops capture as `streamable` changes, on either backend.
+    fn sync_capture(&mut self, qh: &QueueHandle<State>) {
+        let capturing = self.ext_capture.is_some() || self.screencopy.is_some();
+        if self.streamable() && !capturing {
+            self.restart_capture(qh);
+        } else if !self.streamable() && capturing {
+            self.stop_capture();
+        }
+    }
+
+    fn stop_capture(&mut self) {
+        self.ext_capture = None;
+        if let Some(copy) = self.screencopy.take() {
+            copy.frame.destroy();
+        }
+        self.settle.cancel();
+    }
+
+    fn match_toplevel(&mut self) {
         if self.target.is_some() {
             return;
         }
         let Some(title) = self.window_title.as_deref() else {
             return;
         };
-        let Some(toplevel) = self
-            .toplevels
+        let Some(viewport) = self
+            .managed
             .iter()
-            .find(|toplevel| !toplevel.closed && toplevel.title.contains(title))
+            .find(|managed| !managed.first && managed.title.contains(title))
         else {
             return;
         };
         self.events.push(Event::WindowCaptured {
-            title: toplevel.title.clone(),
+            title: viewport.title.clone(),
         });
-        self.target = Some(Target::Toplevel(toplevel.handle.clone()));
-        self.restart_capture(qh);
+        self.target = Some(Target::Viewport(viewport.handle.clone()));
     }
 
-    fn target_lost(&mut self, qh: &QueueHandle<State>) {
-        self.ext_capture = None;
-        self.settle.cancel();
-        if matches!(self.target, Some(Target::Toplevel(_))) {
-            self.target = None;
-            self.events.push(Event::WindowClosed);
-            self.match_toplevel(qh);
-        }
+    fn viewport_closed(&mut self) {
+        self.target = None;
+        self.events.push(Event::WindowClosed);
+        self.match_toplevel();
     }
 }
 
@@ -901,6 +912,10 @@ impl Dispatch<wl_output::WlOutput, ()> for State {
                 if !first {
                     let (width, height) = state.output_size;
                     state.events.push(Event::Resized { width, height });
+                    // labwc keeps a floating window's size as the output shrinks.
+                    let time = state.time();
+                    state.keyboard.key(time, crate::display::REFIT_KEY, 1);
+                    state.keyboard.key(time, crate::display::REFIT_KEY, 0);
                 }
             }
             _ => {}
@@ -957,7 +972,10 @@ impl Dispatch<capture_session::ExtImageCopyCaptureSessionV1, CaptureKind> for St
                 capture.stale = true;
                 state.capture_next(qh);
             }
-            capture_session::Event::Stopped => state.target_lost(qh),
+            capture_session::Event::Stopped => {
+                state.ext_capture = None;
+                state.settle.cancel();
+            }
             _ => {}
         }
     }
@@ -1178,6 +1196,9 @@ struct ManagedToplevel {
     handle: wlr_toplevel::ZwlrForeignToplevelHandleV1,
     title: String,
     fullscreen: bool,
+    minimized: bool,
+    /// The program's first window.
+    first: bool,
 }
 
 impl Dispatch<wlr_toplevel_manager::ZwlrForeignToplevelManagerV1, ()> for State {
@@ -1190,10 +1211,14 @@ impl Dispatch<wlr_toplevel_manager::ZwlrForeignToplevelManagerV1, ()> for State 
         _: &QueueHandle<Self>,
     ) {
         if let wlr_toplevel_manager::Event::Toplevel { toplevel } = event {
+            let first = !state.first_seen;
+            state.first_seen = true;
             state.managed.push(ManagedToplevel {
                 handle: toplevel,
                 title: String::new(),
                 fullscreen: false,
+                minimized: false,
+                first,
             });
         }
     }
@@ -1207,7 +1232,7 @@ impl Dispatch<wlr_toplevel::ZwlrForeignToplevelHandleV1, ()> for State {
         event: wlr_toplevel::Event,
         _: &(),
         _: &Connection,
-        _: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
     ) {
         let Some(index) = state
             .managed
@@ -1219,78 +1244,47 @@ impl Dispatch<wlr_toplevel::ZwlrForeignToplevelHandleV1, ()> for State {
         match event {
             wlr_toplevel::Event::Title { title } => state.managed[index].title = title,
             wlr_toplevel::Event::State { state: states } => {
-                let fullscreen = wlr_toplevel::State::Fullscreen as u32;
-                state.managed[index].fullscreen = states
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .any(|chunk| u32::from_ne_bytes(*chunk) == fullscreen);
+                let has = |wanted: wlr_toplevel::State| {
+                    states
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .any(|chunk| u32::from_ne_bytes(*chunk) == wanted as u32)
+                };
+                state.managed[index].fullscreen = has(wlr_toplevel::State::Fullscreen);
+                state.managed[index].minimized = has(wlr_toplevel::State::Minimized);
+                // Stopped here, not at `Done`: a frame copied meanwhile could show the main
+                // window.
+                if !state.streamable() {
+                    state.stop_capture();
+                }
             }
-            // Every window the capture would match fills the display, whatever state it mapped in.
             wlr_toplevel::Event::Done => {
                 let managed = &state.managed[index];
-                let wanted = state
-                    .window_title
-                    .as_deref()
-                    .is_some_and(|title| managed.title.contains(title));
+                // Blender's main window stays minimized however it is brought back.
+                if managed.first && !managed.minimized {
+                    managed.handle.set_minimized();
+                }
+                // Every window the capture would match fills the display, whatever state it
+                // mapped in: labwc's rule only toggles fullscreen as a window maps.
+                let wanted = !managed.first
+                    && state
+                        .window_title
+                        .as_deref()
+                        .is_some_and(|title| managed.title.contains(title));
                 if wanted && !managed.fullscreen {
                     managed.handle.set_fullscreen(None);
                 }
+                state.match_toplevel();
+                state.sync_capture(qh);
             }
             wlr_toplevel::Event::Closed => {
-                state.managed.remove(index).handle.destroy();
-            }
-            _ => {}
-        }
-    }
-}
-
-impl Dispatch<toplevel_list::ExtForeignToplevelListV1, ()> for State {
-    fn event(
-        state: &mut Self,
-        _: &toplevel_list::ExtForeignToplevelListV1,
-        event: toplevel_list::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let toplevel_list::Event::Toplevel { toplevel } = event {
-            state.toplevels.push(Toplevel {
-                handle: toplevel,
-                title: String::new(),
-                closed: false,
-            });
-        }
-    }
-    event_created_child!(State, toplevel_list::ExtForeignToplevelListV1, [toplevel_list::EVT_TOPLEVEL_OPCODE => (toplevel_handle::ExtForeignToplevelHandleV1, ())]);
-}
-
-impl Dispatch<toplevel_handle::ExtForeignToplevelHandleV1, ()> for State {
-    fn event(
-        state: &mut Self,
-        handle: &toplevel_handle::ExtForeignToplevelHandleV1,
-        event: toplevel_handle::Event,
-        _: &(),
-        _: &Connection,
-        qh: &QueueHandle<Self>,
-    ) {
-        let Some(toplevel) = state
-            .toplevels
-            .iter_mut()
-            .find(|toplevel| &toplevel.handle == handle)
-        else {
-            return;
-        };
-        match event {
-            toplevel_handle::Event::Title { title } => toplevel.title = title,
-            toplevel_handle::Event::Done => state.match_toplevel(qh),
-            toplevel_handle::Event::Closed => {
-                toplevel.closed = true;
-                handle.destroy();
-                state.toplevels.retain(|toplevel| !toplevel.closed);
-                if matches!(&state.target, Some(Target::Toplevel(current)) if current == handle) {
-                    state.target_lost(qh);
+                let closed = state.managed.remove(index).handle;
+                if matches!(&state.target, Some(Target::Viewport(current)) if current == &closed) {
+                    state.viewport_closed();
                 }
+                closed.destroy();
+                state.sync_capture(qh);
             }
             _ => {}
         }
@@ -1307,7 +1301,6 @@ delegate_noop!(State: ignore virtual_pointer::ZwlrVirtualPointerV1);
 delegate_noop!(State: ignore keyboard_manager::ZwpVirtualKeyboardManagerV1);
 delegate_noop!(State: ignore virtual_keyboard::ZwpVirtualKeyboardV1);
 delegate_noop!(State: ignore output_sources::ExtOutputImageCaptureSourceManagerV1);
-delegate_noop!(State: ignore toplevel_sources::ExtForeignToplevelImageCaptureSourceManagerV1);
 delegate_noop!(State: ignore source::ExtImageCaptureSourceV1);
 delegate_noop!(State: ignore capture_manager::ExtImageCopyCaptureManagerV1);
 delegate_noop!(State: ignore screencopy_manager::ZwlrScreencopyManagerV1);

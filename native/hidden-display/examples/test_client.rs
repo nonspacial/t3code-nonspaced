@@ -4,6 +4,10 @@
 //!
 //! F9 replaces its window with a new one that asks for fullscreen, as Blender replaces its
 //! windows when it loads a file; labwc's rule then takes it out of fullscreen, at another size.
+//! F10 opens another window in front of it, as Blender's render view does, leaving it unpainted;
+//! F11 repaints that window alone.
+//!
+//! Like Blender, it first maps a main window, titled "main", before the window under test.
 //!
 //! usage: test_client TITLE LOG_PATH
 
@@ -28,6 +32,8 @@ use xkbcommon::xkb;
 
 const BTN_LEFT: u32 = 272;
 const KEY_F9: u32 = 67;
+const KEY_F10: u32 = 68;
+const KEY_F11: u32 = 87;
 const COLOURS: [u32; 4] = [0xff20_4080, 0xff80_2040, 0xff40_8020, 0xffc0_c0c0];
 
 struct Client {
@@ -47,9 +53,20 @@ struct Client {
     relative_pointer: Option<relative_pointer::ZwpRelativePointerV1>,
     enter_serial: u32,
     size: (i32, i32),
+    /// The size last drawn: a configure that only changes focus repaints nothing, as Blender's.
+    drawn: (i32, i32),
     colour: usize,
     configured: bool,
     xkb: Option<xkb::State>,
+    /// Blender's main window and the render view, which only ever show one colour.
+    others: Vec<(wl_surface::WlSurface, xdg_toplevel::XdgToplevel)>,
+    main_shown: bool,
+}
+
+/// A window of one colour, which is not the one under test.
+struct Other {
+    surface: wl_surface::WlSurface,
+    colour: u32,
 }
 
 impl Client {
@@ -88,6 +105,7 @@ impl Client {
         self.surface.attach(Some(&buffer), 0, 0);
         self.surface.damage_buffer(0, 0, width, height);
         self.surface.commit();
+        self.drawn = (width, height);
         self.log(format!("draw {width}x{height}"));
     }
 
@@ -102,9 +120,23 @@ impl Client {
         self.toplevel.set_title(self.title.clone());
         self.toplevel.set_fullscreen(None);
         self.size = (320, 240);
+        self.drawn = (0, 0);
         self.colour += 1;
         self.surface.commit();
         self.log("replaced".into());
+    }
+
+    fn open_other(&mut self, title: &str, colour: u32, qh: &QueueHandle<Client>) {
+        let surface = self.compositor.create_surface(qh, ());
+        let other = Other {
+            surface: surface.clone(),
+            colour,
+        };
+        let xdg = self.wm.get_xdg_surface(&surface, qh, other);
+        let toplevel = xdg.get_toplevel(qh, colour);
+        toplevel.set_title(title.into());
+        surface.commit();
+        self.others.push((surface, toplevel));
     }
 
     fn show_cursor(&self, pointer: &wl_pointer::WlPointer) {
@@ -129,8 +161,6 @@ fn main() {
     let surface = compositor.create_surface(&qh, ());
     let xdg = wm.get_xdg_surface(&surface, &qh, ());
     let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_title(title.clone());
-    surface.commit();
     let cursor_surface = compositor.create_surface(&qh, ());
     let mut client = Client {
         log,
@@ -149,10 +179,19 @@ fn main() {
         relative_pointer: None,
         enter_serial: 0,
         size: (320, 240),
+        drawn: (0, 0),
         colour: 0,
         configured: false,
         xkb: None,
+        others: Vec::new(),
+        main_shown: false,
     };
+    client.open_other("main", 0xff00_ff00, &qh);
+    while !client.main_shown {
+        queue.blocking_dispatch(&mut client).unwrap();
+    }
+    client.toplevel.set_title(client.title.clone());
+    client.surface.commit();
     let cursor = client.buffer(8, 8, 0xffff_ffff, &qh);
     client.cursor_surface.attach(Some(&cursor), 0, 0);
     client.cursor_surface.commit();
@@ -201,7 +240,29 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
         if let xdg_surface::Event::Configure { serial } = event {
             xdg.ack_configure(serial);
             client.configured = true;
-            client.draw(qh);
+            if client.drawn != client.size {
+                client.draw(qh);
+            }
+        }
+    }
+}
+
+impl Dispatch<xdg_surface::XdgSurface, Other> for Client {
+    fn event(
+        client: &mut Self,
+        xdg: &xdg_surface::XdgSurface,
+        event: xdg_surface::Event,
+        other: &Other,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let xdg_surface::Event::Configure { serial } = event {
+            xdg.ack_configure(serial);
+            let buffer = client.buffer(240, 180, other.colour, qh);
+            other.surface.attach(Some(&buffer), 0, 0);
+            other.surface.damage_buffer(0, 0, 240, 180);
+            other.surface.commit();
+            client.main_shown = true;
         }
     }
 }
@@ -399,6 +460,18 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
                 client.log(format!("key {key} {} {name}", u8::from(pressed)));
                 if pressed && key == KEY_F9 {
                     client.replace_window(qh);
+                } else if pressed && key == KEY_F10 {
+                    client.open_other("render", 0xffff_00ff, qh);
+                } else if pressed && key == KEY_F11 {
+                    let Some((surface, _)) = client.others.last() else {
+                        return;
+                    };
+                    let surface = surface.clone();
+                    let buffer = client.buffer(240, 180, 0xff00_ffff, qh);
+                    surface.attach(Some(&buffer), 0, 0);
+                    surface.damage_buffer(0, 0, 240, 180);
+                    surface.commit();
+                    client.log("repainted".into());
                 } else if pressed {
                     client.colour += 1;
                     client.draw(qh);
@@ -406,6 +479,19 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
             }
             _ => {}
         }
+    }
+}
+
+/// The other windows keep their one size; only the window under test reacts.
+impl Dispatch<xdg_toplevel::XdgToplevel, u32> for Client {
+    fn event(
+        _: &mut Self,
+        _: &xdg_toplevel::XdgToplevel,
+        _: xdg_toplevel::Event,
+        _: &u32,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
     }
 }
 

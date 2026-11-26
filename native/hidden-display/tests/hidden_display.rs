@@ -316,18 +316,28 @@ fn exercise(capture: &str) {
         assert_eq!(ready["capture"], "wlrScreencopy");
     }
     assert_eq!(ready["cursorTracking"], json!(ext));
-    // Older labwc has no window capture, so the fallback streams the whole display.
-    assert_eq!(ready["target"], if ext { "window" } else { "output" });
-    if ext {
-        assert!(
-            helper.event("windowCaptured")["title"]
-                .as_str()
-                .unwrap()
-                .contains(TITLE)
-        );
-    }
+    // Either backend follows the window: the display streams only once it fills it and the
+    // client's first window (Blender's main window) is minimized.
+    assert_eq!(ready["target"], "window");
+    let captured = helper.wait_index(
+        "windowCaptured",
+        |packet| matches!(packet, Packet::Event(event) if event["type"] == "windowCaptured"),
+    );
+    let Packet::Event(event) = &helper.seen[captured] else {
+        unreachable!()
+    };
+    assert!(event["title"].as_str().unwrap().contains(TITLE));
 
     let (key, _) = helper.video();
+    let first_video = helper
+        .seen
+        .iter()
+        .position(|packet| matches!(packet, Packet::Video { .. }))
+        .unwrap();
+    assert!(
+        first_video > captured,
+        "nothing streams before the window is up"
+    );
     assert!(key, "the stream starts with a keyframe");
     // The client maps at 320x240; labwc's window rule then makes it fullscreen.
     helper.frame_size(640, 480);
@@ -542,6 +552,48 @@ fn quits_cleanly_after_a_resize_on_nvenc() {
     helper.send(json!({"type": "quit"}));
     let status = helper.child.wait().unwrap();
     assert!(status.success(), "{status}");
+}
+
+/// Blender opens other windows (render view, file browser, Preferences) in front of the one the
+/// stream follows; they reach the stream, and their changes do, though the window under them is
+/// unchanged.
+fn stream_windows_in_front(capture: &str) {
+    let mut helper = Helper::start(capture);
+    helper.event("ready");
+    helper.event("windowCaptured");
+    helper.frame_size(640, 480);
+    helper.quiet();
+    helper.mark();
+    // F10: the test client opens a window in front, leaving its own unpainted; F11 repaints
+    // only the window in front.
+    helper.key(68, true);
+    helper.key(68, false);
+    helper.client_logs("key 68 1 F10");
+    helper.quiet();
+    helper.mark();
+    helper.key(87, true);
+    helper.client_logs("repainted");
+    helper.video();
+    helper.key(87, false);
+    helper.send(json!({"type": "quit"}));
+    let status = helper.child.wait().unwrap();
+    assert!(status.success(), "{status}");
+}
+
+#[test]
+fn streams_windows_in_front_of_its_window() {
+    if skip_without_labwc_and_x264() {
+        return;
+    }
+    stream_windows_in_front("auto");
+}
+
+#[test]
+fn streams_windows_in_front_of_its_window_on_wlr_screencopy() {
+    if skip_without_labwc_and_x264() {
+        return;
+    }
+    stream_windows_in_front("screencopy");
 }
 
 /// Blender replaces its windows when it loads a file, and one it restores may map fullscreen

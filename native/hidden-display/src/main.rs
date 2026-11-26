@@ -1,5 +1,6 @@
-//! t3-hidden-display: runs a program (Blender) on a private headless labwc, streams one of its
-//! windows as H.264, and forwards input. Driven over stdin/stdout; see `control.rs`.
+//! t3-hidden-display: runs a program (Blender) on a private headless labwc, streams the window
+//! that fills it and those floating in front as H.264, and forwards input. Driven over
+//! stdin/stdout; see `control.rs`.
 
 mod control;
 mod display;
@@ -29,8 +30,9 @@ const USAGE: &str = "usage:
   t3-hidden-display --state-dir DIR [options] -- COMMAND [ARGS...]
       --state-dir DIR        private runtime, tmp and labwc config live here
       --user-resources DIR   BLENDER_USER_RESOURCES (default DIR/blender-user)
-      --window-title TEXT    stream only the first window whose title contains TEXT
-                             (default: the whole display)
+      --window-title TEXT    stream the display while the first window whose title
+                             contains TEXT fills it, and keep the program's first window
+                             minimized (default: the whole display)
       --width PX --height PX initial display size (default 1280x720)
       --encoder NAME         auto, nvh264enc, vah264enc, x264enc or openh264enc (default auto)
       --bitrate KBPS         initial bitrate (default 8000)
