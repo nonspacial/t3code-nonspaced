@@ -20,7 +20,8 @@ import {
   type HostedBlenderThreadState,
   ThreadId,
 } from "@t3tools/contracts";
-import { useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomValue } from "@effect/atom-react";
+import { Atom } from "effect/reactivity";
 import { msg, useGT, useMessages } from "gt-react-native";
 import { type ReactNode, type RefObject, useEffect, useReducer, useRef, useState } from "react";
 import { View } from "react-native";
@@ -60,6 +61,12 @@ type BlenderRouteScreenProps = StaticScreenProps<{
 }>;
 
 const fileName = (relativePath: string) => relativePath.slice(relativePath.lastIndexOf("/") + 1);
+
+// The reload notice each thread's Blender last dismissed, by when that reload kept its copy, for
+// the session: leaving the screen unmounts it.
+const dismissedReloadFamily = Atom.family((_thread: string) =>
+  Atom.make<number | null>(null).pipe(Atom.keepAlive),
+);
 const keptName = (copy: HostedBlenderKeptCopy, untitled: string) =>
   copy.file.kind === "workspace"
     ? fileName(copy.file.relativePath)
@@ -285,7 +292,9 @@ function ReloadNotices(props: {
   const reopen = useAtomCommand(hostedBlenderEnvironment.reopen, { reportFailure: false });
   const [pending, setPending] = useState(false);
   // Hidden until the next reload keeps a copy; the copy itself stays as any kept copy does.
-  const [dismissed, setDismissed] = useState<number | null>(null);
+  const [dismissed, setDismissed] = useAtom(
+    dismissedReloadFamily(`${props.environmentId}:${props.threadId}`),
+  );
   const name = blendFileName(quitFileOf(props.state), gt("Untitled scene"));
   const kept = props.state.reloadKept;
   const blocked = props.state.reloadBlocked;

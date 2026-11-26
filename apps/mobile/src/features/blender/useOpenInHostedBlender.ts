@@ -61,11 +61,13 @@ export function useOpenInHostedBlender(
       input: { threadId: target.threadId, relativePath: target.relativePath },
     }).finally(() => setPending(false));
     if (result._tag === "Success") return showBlender();
-    // The check found something missing: Blender shows what.
+    // The check found something missing, or a recovery copy waits: Blender shows which.
     const error = squashAtomCommandFailure(result);
     if (
       isHostedBlenderError(error) &&
-      (error.reason === "notSetUp" || error.reason === "unavailable")
+      (error.reason === "notSetUp" ||
+        error.reason === "unavailable" ||
+        error.reason === "recoveryPending")
     ) {
       return showBlender();
     }
