@@ -163,18 +163,6 @@ const running: HostedBlenderThreadState = {
 };
 
 describe("hosted Blender MCP tools", () => {
-  it.effect("registers blender_start, blender_master_open, blender_status and blender_quit", () =>
-    Effect.gen(function* () {
-      const server = yield* McpServer.McpServer;
-      expect(server.tools.map(({ tool }) => tool.name).toSorted()).toEqual([
-        "blender_master_open",
-        "blender_quit",
-        "blender_start",
-        "blender_status",
-      ]);
-    }).pipe(Effect.provide(layerFor({ state: running }))),
-  );
-
   it.effect("reports the thread's working Blender", () =>
     Effect.gen(function* () {
       const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
@@ -222,23 +210,30 @@ describe("hosted Blender MCP tools", () => {
     },
   );
 
-  it.effect("hides the tools from outside clients and threads without the hosted Blender MCP", () =>
-    Effect.gen(function* () {
-      const server = yield* McpServer.McpServer;
-      // EnabledWhen reads the caller from the fiber, as it does for each /mcp request.
-      const visibleTo = (scope: McpInvocationContext.McpInvocationScope) =>
-        Effect.sync(() =>
-          server.tools
-            .filter(({ annotations }) => {
-              const enabledWhen = Context.getOrUndefined(annotations, McpSchema.EnabledWhen);
-              return enabledWhen?.({ protocolVersion: "", capabilities: {} }) ?? true;
-            })
-            .map(({ tool }) => tool.name),
-        ).pipe(Effect.provideService(McpInvocationContext.McpInvocationContext, scope));
-      expect(yield* visibleTo(threadCaller(["hosted-blender"]))).toHaveLength(4);
-      expect(yield* visibleTo(threadCaller(["orchestration"]))).toEqual([]);
-      expect(yield* visibleTo(outsideClient)).toEqual([]);
-    }).pipe(Effect.provide(layerFor({ state: running }))),
+  it.effect(
+    "shows its four tools only to threads with the hosted Blender MCP, never to outside clients",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* McpServer.McpServer;
+        // EnabledWhen reads the caller from the fiber, as it does for each /mcp request.
+        const visibleTo = (scope: McpInvocationContext.McpInvocationScope) =>
+          Effect.sync(() =>
+            server.tools
+              .filter(({ annotations }) => {
+                const enabledWhen = Context.getOrUndefined(annotations, McpSchema.EnabledWhen);
+                return enabledWhen?.({ protocolVersion: "", capabilities: {} }) ?? true;
+              })
+              .map(({ tool }) => tool.name),
+          ).pipe(Effect.provideService(McpInvocationContext.McpInvocationContext, scope));
+        expect((yield* visibleTo(threadCaller(["hosted-blender"]))).toSorted()).toEqual([
+          "blender_master_open",
+          "blender_quit",
+          "blender_start",
+          "blender_status",
+        ]);
+        expect(yield* visibleTo(threadCaller(["orchestration"]))).toEqual([]);
+        expect(yield* visibleTo(outsideClient)).toEqual([]);
+      }).pipe(Effect.provide(layerFor({ state: running }))),
   );
 
   it.effect("stops once the user switches agents off", () =>

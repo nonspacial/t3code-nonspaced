@@ -1,6 +1,9 @@
 import "../../index.css";
 
 import {
+  AuthOrchestrationOperateScope,
+  type AuthEnvironmentScope,
+  AuthSettingsWriteScope,
   EnvironmentId,
   type HostedBlenderSetupCheck,
   type HostedBlenderSetupState,
@@ -8,18 +11,17 @@ import {
 } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { Atom } from "effect/reactivity";
-import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
 import { render } from "../../../test/render";
 import type { ScopedSettingsPatch } from "./scopedSettings";
 
+// The real Settings rows, on a connection holding only the scopes a test grants.
 const state = vi.hoisted(() => ({
   settings: {} as Record<string, unknown>,
   setup: null as HostedBlenderSetupState | null,
-  canOperate: true,
-  canSetTimeline: true,
+  grants: new Set<string>(),
   setTimeline: vi.fn(async () => ({ _tag: "Success", value: undefined })),
   updateSettings: vi.fn<(patch: ScopedSettingsPatch) => void>(),
   install: vi.fn(async () => ({ _tag: "Success", value: { threadId: "thread-install" } })),
@@ -32,20 +34,29 @@ vi.mock(import("./useScopedSettings"), async (original) => ({
   useScopedSettingsMixed: () => false,
   useUpdateScopedSettings: () => state.updateSettings,
 }));
-vi.mock(import("./settingsLayout"), async (original) => ({
+vi.mock(import("../../state/session"), async (original) => ({
   ...(await original()),
-  SettingsRow: (({ title, description, control, children }: Record<string, ReactNode>) => (
-    <div role="group" aria-label={typeof title === "string" ? title : undefined}>
-      <div>{title}</div>
-      <div>{description}</div>
-      <div>{control}</div>
-      {children}
-    </div>
-  )) as never,
+  useEnvironmentScope: ((_environmentId: unknown, scope: AuthEnvironmentScope) =>
+    state.grants.has(scope)) as never,
+  useEnvironmentsWithScope: ((
+    environments: ReadonlyArray<{ readonly environmentId: string }>,
+    scope: AuthEnvironmentScope,
+  ) =>
+    new Set(
+      state.grants.has(scope) ? environments.map((environment) => environment.environmentId) : [],
+    )) as never,
+}));
+vi.mock(import("../../hooks/useSettings"), async (original) => ({
+  ...(await original()),
+  usePrimarySettingsAvailable: () => true,
+}));
+vi.mock(import("../../state/environments"), async (original) => ({
+  ...(await original()),
+  usePrimaryEnvironmentId: (() => EnvironmentId.make("environment-1")) as never,
 }));
 vi.mock(import("~/state/hostedBlender"), async (original) => {
   const actual = await original();
-  const allowed = () => Atom.make(state.canOperate);
+  const allowed = () => Atom.make(state.grants.has(AuthOrchestrationOperateScope));
   return {
     ...actual,
     useHostedBlenderSetupState: (() => state.setup) as never,
@@ -58,7 +69,7 @@ vi.mock(import("~/state/hostedBlender"), async (original) => {
       },
       setTimeline: {
         ...actual.hostedBlenderEnvironment.setTimeline,
-        permissionAtom: () => Atom.make(state.canSetTimeline),
+        permissionAtom: allowed,
       },
     } as never,
   };
@@ -76,6 +87,11 @@ vi.mock(import("~/state/use-atom-command"), async (original) => ({
 import { HostedBlenderSetupSettings } from "./HostedBlenderSetupSettings";
 
 const environmentId = EnvironmentId.make("environment-1");
+const BOTH = [AuthOrchestrationOperateScope, AuthSettingsWriteScope];
+const timelineSwitch = () =>
+  document.querySelector<HTMLElement>('[aria-label="Timeline in the Blender pane"]');
+const agentsSwitch = () =>
+  document.querySelector<HTMLElement>('[aria-label="Allow agents to start hosted Blenders"]');
 
 const checked = (
   checks: ReadonlyArray<HostedBlenderSetupCheck>,
@@ -110,6 +126,7 @@ const OK: ReadonlyArray<HostedBlenderSetupCheck> = [
 
 describe("HostedBlenderSetupSettings", () => {
   it("is off by default and shows only its switch until switched on", async () => {
+    state.grants = new Set(BOTH);
     state.settings = {};
     state.setup = checked(OK);
     await using screen = await render(<HostedBlenderSetupSettings environmentId={environmentId} />);
@@ -121,23 +138,20 @@ describe("HostedBlenderSetupSettings", () => {
   });
 
   it("lets only a session that may run programs here switch it on, and anyone switch it off", async () => {
-    state.canOperate = false;
-    try {
-      state.settings = {};
-      state.setup = null;
-      await using off = await render(<HostedBlenderSetupSettings environmentId={environmentId} />);
-      await expect.element(off.getByRole("switch", { name: "Hosted Blender" })).toBeDisabled();
-      await off.unmount();
-      state.settings = { hostedBlenderEnabled: true };
-      state.setup = checked(OK);
-      await using on = await render(<HostedBlenderSetupSettings environmentId={environmentId} />);
-      await expect.element(on.getByRole("switch", { name: "Hosted Blender" })).toBeEnabled();
-    } finally {
-      state.canOperate = true;
-    }
+    state.grants = new Set([AuthSettingsWriteScope]);
+    state.settings = {};
+    state.setup = null;
+    await using off = await render(<HostedBlenderSetupSettings environmentId={environmentId} />);
+    await expect.element(off.getByRole("switch", { name: "Hosted Blender" })).toBeDisabled();
+    await off.unmount();
+    state.settings = { hostedBlenderEnabled: true };
+    state.setup = checked(OK);
+    await using on = await render(<HostedBlenderSetupSettings environmentId={environmentId} />);
+    await expect.element(on.getByRole("switch", { name: "Hosted Blender" })).toBeEnabled();
   });
 
   it("lists each check, the capture path and the encoder from the test encode", async () => {
+    state.grants = new Set(BOTH);
     state.settings = { hostedBlenderEnabled: true };
     state.setup = checked(OK);
     await using screen = await render(<HostedBlenderSetupSettings environmentId={environmentId} />);
@@ -156,36 +170,39 @@ describe("HostedBlenderSetupSettings", () => {
     expect(state.check).toHaveBeenCalledWith({ environmentId, input: {} });
   });
 
-  it("B16: shows the Timeline switch, on by default, writing it as the pane's menu does", async () => {
+  it("S2: the Timeline switch, on by default, works for a connection that may operate hosted Blender but not change settings, as the pane's menu does", async () => {
+    state.grants = new Set([AuthOrchestrationOperateScope]);
     state.settings = { hostedBlenderEnabled: true };
-    state.setup = checked(OK);
+    state.setup = null;
+    state.setTimeline.mockClear();
     state.updateSettings.mockClear();
     await using screen = await render(<HostedBlenderSetupSettings environmentId={environmentId} />);
-    const timeline = screen.getByRole("switch", { name: "Timeline in the Blender pane" });
-    await expect.element(timeline).toBeChecked();
-    await userEvent.click(timeline);
+    await expect
+      .element(screen.getByRole("switch", { name: "Timeline in the Blender pane" }))
+      .toBeChecked();
+    expect(timelineSwitch()!.closest("[inert]")).toBeNull();
+    // Rows written as settings stay out of its reach.
+    expect(agentsSwitch()!.closest("[inert]")).not.toBeNull();
+    await userEvent.click(timelineSwitch()!);
     // The operate-gated command, never a plain settings write.
     expect(state.setTimeline).toHaveBeenCalledWith({ environmentId, input: { shown: false } });
     expect(state.updateSettings).not.toHaveBeenCalledWith({ hostedBlenderTimeline: false });
   });
 
-  it("S2: offers the Timeline switch only to a session that may operate hosted Blender", async () => {
-    state.canSetTimeline = false;
-    try {
-      state.settings = { hostedBlenderEnabled: true };
-      state.setup = checked(OK);
-      await using screen = await render(
-        <HostedBlenderSetupSettings environmentId={environmentId} />,
-      );
-      await expect
-        .element(screen.getByRole("switch", { name: "Timeline in the Blender pane" }))
-        .toBeDisabled();
-    } finally {
-      state.canSetTimeline = true;
-    }
+  it("S2: the Timeline switch is out of reach for a connection that may change settings but not operate Blender", async () => {
+    state.grants = new Set([AuthSettingsWriteScope]);
+    state.settings = { hostedBlenderEnabled: true };
+    state.setup = null;
+    await using _screen = await render(
+      <HostedBlenderSetupSettings environmentId={environmentId} />,
+    );
+    await expect.poll(() => timelineSwitch()).not.toBeNull();
+    expect(timelineSwitch()!.closest("[inert]")).not.toBeNull();
+    expect(agentsSwitch()!.closest("[inert]")).toBeNull();
   });
 
   it("offers an agent or the commands for what is missing, and warns about the GPU", async () => {
+    state.grants = new Set(BOTH);
     state.settings = { hostedBlenderEnabled: true };
     state.setup = checked(
       OK.map((check) =>
@@ -217,6 +234,7 @@ describe("HostedBlenderSetupSettings", () => {
   });
 
   it("points at the install thread while its agent works", async () => {
+    state.grants = new Set(BOTH);
     state.settings = { hostedBlenderEnabled: true };
     state.setup = checked([{ item: "labwc", status: "missing" }], {
       installThreadId: ThreadId.make("thread-install"),
@@ -230,6 +248,7 @@ describe("HostedBlenderSetupSettings", () => {
   });
 
   it("waits for someone allowed to run programs before checking", async () => {
+    state.grants = new Set(BOTH);
     state.settings = { hostedBlenderEnabled: true };
     state.setup = { result: null, checking: false, installThreadId: null };
     state.check.mockClear();
@@ -240,6 +259,7 @@ describe("HostedBlenderSetupSettings", () => {
   });
 
   it("says when the blender-mcp found isn't Blender Lab's, and keeps agents off", async () => {
+    state.grants = new Set(BOTH);
     state.settings = { hostedBlenderEnabled: true };
     state.setup = checked(
       OK.map((check) =>
@@ -260,6 +280,7 @@ describe("HostedBlenderSetupSettings", () => {
   });
 
   it("says why a host can't run hosted Blender", async () => {
+    state.grants = new Set(BOTH);
     state.settings = { hostedBlenderEnabled: true };
     state.setup = {
       result: { status: "unavailable", reason: "distro", distro: "Ubuntu 22.04.5 LTS" },
