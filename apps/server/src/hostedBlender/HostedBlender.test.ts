@@ -2102,6 +2102,7 @@ describe("Endings and recovery", () => {
         recovery: true,
       });
       // Dismissing a Blender that is running again does nothing, so a stale card can't end it.
+      const shown = recoveryOf(hostedDir)?.record.keptAt;
       yield* service.reopen({ threadId, key: CUBE, restore: true });
       yield* awaitDirty(true);
       yield* service.dismiss({ threadId, key: CUBE });
@@ -2109,6 +2110,10 @@ describe("Endings and recovery", () => {
       expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
       yield* service.closeOnSettle({ threadId });
       yield* awaitStatus("closed");
+      // A Discard confirmed on the copy from before the reopen leaves the one kept since.
+      yield* service.dismiss({ threadId, key: CUBE, keptAt: shown });
+      expect(recoveryOf(hostedDir)?.record.keptAt).toBeGreaterThan(shown ?? Infinity);
+      expect((yield* firstState(service)).status).toBe("closed");
       yield* service.dismiss({ threadId, key: CUBE });
       yield* awaitStatus("stopped");
       expect(recoveryOf(hostedDir)).toBeNull();
@@ -2185,6 +2190,50 @@ describe("Endings and recovery", () => {
       expect(recoveryOf(NodePath.join(dir, "userdata", "hosted-blender"))?.contents).toMatch(
         /^quit copy \d+$/,
       );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a discard released at shutdown brings nothing back after the restart", () =>
+    Effect.gen(function* () {
+      const { dir, layer, marker } = yield* standIn("slow-discard", "slow-quit");
+      const hostedDir = NodePath.join(dir, "userdata", "hosted-blender");
+      yield* Effect.gen(function* () {
+        const first = yield* serviceFor(layer);
+        const states = yield* Queue.unbounded<HostedBlenderThreadState>();
+        yield* first.threadState(threadId).pipe(
+          Stream.runForEach((state) => Queue.offer(states, state)),
+          Effect.forkScoped,
+        );
+        const next = (until: (state: HostedBlenderThreadState) => boolean) =>
+          Queue.take(states).pipe(Effect.repeat({ until }));
+        yield* first.open({ threadId, relativePath: "cube.blend" });
+        yield* next((state) => state.status === "running" && state.dirty);
+        yield* first.closeOnSettle({ threadId });
+        yield* next((state) => state.status === "closed");
+        NodeFS.rmSync(marker);
+        // Restored, then the person's Quit without saving, and T3 stops while Blender writes.
+        yield* first.reopen({ threadId, key: CUBE, restore: true });
+        yield* next((state) => state.status === "running" && state.dirty);
+        yield* first
+          .quit({
+            threadId,
+            save: false,
+            discard: true,
+            openFile: { kind: "workspace", relativePath: "cube.blend" },
+          })
+          .pipe(Effect.forkChild);
+        const control = NodePath.join(dir, "saves.log.control");
+        yield* fileAppears(dir, control, () =>
+          NodeFS.readFileSync(control, "utf8").includes('"filepath"'),
+        );
+      }).pipe(Effect.scoped);
+      yield* fileAppears(dir, marker);
+      expect(NodeFS.readFileSync(marker, "utf8")).toBe("finished");
+      // The work the person chose to lose, restored copy and quit copy alike, is gone.
+      const restarted = yield* serviceFor(layer);
+      expect(yield* firstState(restarted)).toEqual({ status: "stopped" });
+      expect(recoveryOf(hostedDir)).toBeNull();
+      expect(yield* restarted.keptCopies(threadId)).toEqual([]);
     }).pipe(Effect.scoped),
   );
 
@@ -6683,8 +6732,9 @@ def control():
             state(blend, quitHeld="images")
             continue
         if kind == "quit" and not command.get("save"):
-            # As the add-on does: its last word on the file, then Blender's quit copy.
-            connection.sendall((json.dumps({"type": "quitting", "filepath": blend, "id": command.get("id"),
+            # As the add-on does: its last word on the file it has open, then Blender's quit copy.
+            open_file = os.environ["STANDIN_OTHER"] if after == "otherFileFirst" else blend
+            connection.sendall((json.dumps({"type": "quitting", "filepath": open_file, "id": command.get("id"),
                                             "dirty": os.environ.get("STANDIN_DIRTY") == "1"}) + "\n").encode())
             if after == "holdOnStop":
                 # Its connection drops at once, but it is gone only once the test says.
@@ -8192,6 +8242,52 @@ describe("Master Blenders' endings", () => {
         yield* next.openMaster({ threadId, relativePath: "cube.blend" });
         expect((yield* firstMaster(next, threadId)).status).toBe("running");
         expect(host.launches()).toBe(2);
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "a master closed with another file open offers that file's copy on its Master side, after a restart too",
+    () =>
+      Effect.gen(function* () {
+        const switches = yield* Queue.unbounded<HostedBlenderSetup.HostedBlenderReadiness>();
+        const host = yield* masterHost({
+          stayOnStop: true,
+          dirty: true,
+          otherFileFirst: true,
+          readinessChanges: Stream.fromQueue(switches),
+        });
+        const { service, dir } = host;
+        const other = NodeFS.realpathSync(NodePath.join(dir, "other.blend"));
+        yield* service.openMaster({ threadId, relativePath: "cube.blend" });
+        yield* service.masterState(threadId).pipe(
+          Stream.filter((state) => state.status === "running" && "openFile" in state),
+          Stream.runHead,
+        );
+        yield* Queue.offer(switches, { status: "notSetUp", missing: ["enabled"] });
+        // Named by its own file, which isn't this master: where the copy is, not a Reopen.
+        const closed = yield* service.masterState(threadId).pipe(
+          Stream.filter((state) => state.status !== "running" && state.status !== "starting"),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        expect(closed).toMatchObject({
+          relativePath: "cube.blend",
+          copies: [{ kind: "closed", recovery: true, file: { kind: "outside", path: other } }],
+        });
+        const key = "copies" in closed ? closed.copies[0].key : "";
+        const refused = yield* service
+          .reopen({ threadId, key, restore: true, role: "master" })
+          .pipe(Effect.flip);
+        expect(refused.reason).toBe("notInWorkspace");
+        // After a restart, a thread whose master is that file finds it the same way.
+        const next = yield* serviceFor(host.layer);
+        yield* next.knowMaster({ threadId: otherThreadId, relativePath: "cube.blend" });
+        expect(yield* firstMaster(next, otherThreadId)).toMatchObject({
+          status: "closed",
+          copies: [{ key, file: { path: other } }],
+        });
+        yield* next.dismiss({ threadId: otherThreadId, key, role: "master" });
+        expect((yield* firstMaster(next, otherThreadId)).status).toBe("notOpen");
       }).pipe(Effect.scoped),
   );
 

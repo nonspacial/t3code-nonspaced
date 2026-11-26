@@ -415,7 +415,10 @@ function ReopenCard(props: {
   const reopen = useAtomCommand(hostedBlenderEnvironment.reopen, { reportFailure: false });
   const dismiss = useAtomCommand(hostedBlenderEnvironment.dismiss, { reportFailure: false });
   const [pending, setPending] = useState(false);
-  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+  // The copy the open Discard dialog shows: a copy kept since is never discarded with it.
+  const [confirmingDiscard, setConfirmingDiscard] = useState<{
+    readonly keptAt: number | undefined;
+  } | null>(null);
   const selected = useKeptCopySelection(
     (selection) => selection.byThread[scopedThreadKey(props.threadRef)],
   );
@@ -434,8 +437,9 @@ function ReopenCard(props: {
     onError: () =>
       toastManager.add(stackedThreadToast({ type: "error", title: gt("Couldn't copy the path") })),
   });
-  const run = async (action: "restore" | "fresh" | "dismiss") => {
+  const run = async (action: "restore" | "fresh" | "dismiss", shown?: number) => {
     setPending(true);
+    const keptAt = shown ?? copy.keptAt;
     const input = {
       threadId: props.threadRef.threadId,
       key: copy.key,
@@ -443,10 +447,13 @@ function ReopenCard(props: {
     };
     const result =
       action === "dismiss"
-        ? await dismiss({ environmentId, input })
+        ? await dismiss({
+            environmentId,
+            input: { ...input, ...(keptAt === undefined ? {} : { keptAt }) },
+          })
         : await reopen({ environmentId, input: { ...input, restore: action === "restore" } });
     setPending(false);
-    setConfirmingDiscard(false);
+    setConfirmingDiscard(null);
     if (result._tag === "Failure") {
       toastManager.add(
         stackedThreadToast({
@@ -465,7 +472,20 @@ function ReopenCard(props: {
       <StateCard
         title={crashed ? <T>Blender crashed</T> : <T>Blender was closed</T>}
         description={
-          copy.file.kind === "outside" ? (
+          // A master's copy is of its master file, unless Blender had another file open.
+          props.master && copy.file.kind === "outside" ? (
+            recovery ? (
+              <T>
+                Blender had <Var>{name}</Var> open instead of the master file, so T3 Code can't
+                reopen it here. Its unsaved changes are kept at <Var>{copyPath}</Var>.
+              </T>
+            ) : (
+              <T>
+                Blender had <Var>{name}</Var> open instead of the master file, so T3 Code can't
+                reopen it here.
+              </T>
+            )
+          ) : copy.file.kind === "outside" ? (
             recovery ? (
               <T>
                 <Var>{name}</Var> is outside this project, so T3 Code can't reopen it. Its unsaved
@@ -601,7 +621,9 @@ function ReopenCard(props: {
                 size="sm"
                 variant="ghost"
                 disabled={pending}
-                onClick={() => (recovery ? setConfirmingDiscard(true) : void run("dismiss"))}
+                onClick={() =>
+                  recovery ? setConfirmingDiscard({ keptAt: copy.keptAt }) : void run("dismiss")
+                }
               >
                 {recovery ? <T>Discard</T> : <T>Dismiss</T>}
               </Button>
@@ -626,7 +648,12 @@ function ReopenCard(props: {
           ) : null
         }
       />
-      <AlertDialog open={confirmingDiscard} onOpenChange={setConfirmingDiscard}>
+      <AlertDialog
+        open={confirmingDiscard !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmingDiscard(null);
+        }}
+      >
         <AlertDialogPopup>
           <AlertDialogHeader>
             <AlertDialogTitle>
@@ -646,7 +673,7 @@ function ReopenCard(props: {
               variant="destructive"
               size="sm"
               disabled={pending}
-              onClick={() => void run("dismiss")}
+              onClick={() => void run("dismiss", confirmingDiscard?.keptAt)}
             >
               <T>Discard</T>
             </Button>

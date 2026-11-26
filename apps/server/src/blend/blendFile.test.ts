@@ -354,6 +354,37 @@ describe("P1: reading a large .blend", () => {
     });
   });
 
+  it("keeps a compressed file that inflates past the large-file size large after a whole read", async () => {
+    // Blender 4.5's scene with a 513 MiB block of zeros after its header, which gzip packs small.
+    const scene = await uncompressed("bracket-4.blend");
+    const blockBytes = 513 * 1024 * 1024;
+    const block = new Uint8Array(24);
+    block.set(new TextEncoder().encode("DATA"));
+    new DataView(block.buffer).setInt32(4, blockBytes, true);
+    const zeros = Buffer.alloc(16 * 1024 * 1024);
+    const compressed = Buffer.concat(
+      await NodeStream.Readable.from(
+        (function* () {
+          yield Buffer.from(scene.subarray(0, 12));
+          yield Buffer.from(block);
+          for (let sent = 0; sent < blockBytes; sent += zeros.byteLength) yield zeros;
+          yield Buffer.from(scene.subarray(12));
+        })(),
+      )
+        .pipe(NodeZlib.createGzip({ level: 1 }))
+        .toArray(),
+    );
+    await withTempFile(compressed, async (path) => {
+      expect(await readBlendFileFacts(path, "revision-1")).toMatchObject({ large: true });
+      // A conversion reads it whole; the next preview of that revision still asks first.
+      expect(await readBlendFileFacts(path, "revision-1", undefined, true)).toMatchObject({
+        large: true,
+        objects: 4,
+      });
+      expect(await readBlendFileFacts(path, "revision-1")).toMatchObject({ large: true });
+    });
+  });
+
   it("walks a file once while its revision stays the same, whichever read asked", async () => {
     await withTempFile(await NodeFSP.readFile(fixture("bracket-5.blend")), async (path) => {
       const first = await readBlendFileFacts(path, "revision-1");

@@ -13096,6 +13096,30 @@
   "3f25b97ec987231e": "Blender konnte die Datei auf dem verborgenen Display nicht öffnen. Prüfe, ob Blender sie öffnet und ob GStreamer einen H.264-Encoder hat, und öffne sie dann erneut in Hosted Blender.",
   "c9d23ccb15073177": "Blender ist abgestürzt",
   "9f406050b6efb934": "Blender wurde geschlossen",
+  "5bb5a35408a98d44": [
+    "Blender hatte ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " statt der Master-Datei geöffnet, daher kann T3 Code sie hier nicht erneut öffnen. Ihre ungespeicherten Änderungen liegen unter ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "30c3fba6cec25d84": [
+    "Blender hatte ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " statt der Master-Datei geöffnet, daher kann T3 Code sie hier nicht erneut öffnen."
+  ],
   "0693a88b1530f8eb": [
     {
       "i": 1,

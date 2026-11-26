@@ -191,6 +191,8 @@ export const HostedBlenderKeptCopy = Schema.Struct({
   reloaded: Schema.optional(Schema.Boolean),
   /** The file is gone from the workspace, as the last Reopen found; `copyPath` says where the copy is. */
   missing: Schema.optional(Schema.Boolean),
+  /** When this copy was kept, which a Discard names so it never removes a newer one. */
+  keptAt: Schema.optionalKey(Schema.Number),
 });
 export type HostedBlenderKeptCopy = typeof HostedBlenderKeptCopy.Type;
 
@@ -293,6 +295,8 @@ export const HostedBlenderDismissInput = Schema.Struct({
   role: Schema.optionalKey(HostedBlenderRole),
   /** Discards this copy; without one, clears a failed start. */
   key: Schema.optional(Schema.String),
+  /** The copy's `keptAt` as the person saw it: a copy kept since is left alone. */
+  keptAt: Schema.optionalKey(Schema.Number),
 });
 export type HostedBlenderDismissInput = typeof HostedBlenderDismissInput.Type;
 

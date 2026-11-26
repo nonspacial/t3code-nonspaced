@@ -469,7 +469,15 @@ async function readBlocks(
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const le = header.littleEndian;
     const code = ascii(bytes.subarray(0, 4));
-    if (code === "ENDB") return { kept, counts, partial: false as const, large: false };
+    // Large once inflated, whatever this read was allowed to walk.
+    if (code === "ENDB") {
+      return {
+        kept,
+        counts,
+        partial: false as const,
+        large: source.compressed && scanned > BLEND_LARGE_FILE_BYTES,
+      };
+    }
     // Blender 5.0's large block header puts the struct index before the pointer and the length after.
     const length = header.largeBlocks ? Number(view.getBigInt64(16, le)) : view.getInt32(4, le);
     const sdnaIndex = header.largeBlocks
@@ -625,6 +633,7 @@ export async function readBlendFile(
           utf8(bytesAt(block, ["filepath"]) ?? bytesAt(block, ["name"]) ?? new Uint8Array()),
         )
         .filter((path) => path.length > 0),
+      ...(large ? { large: true as const } : {}),
     };
   } catch (cause) {
     // What the closed source made of the walk says nothing; the abort is the reason.

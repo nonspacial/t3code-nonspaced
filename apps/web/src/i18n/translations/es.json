@@ -13091,6 +13091,30 @@
   "3f25b97ec987231e": "Blender no pudo abrir el archivo en la pantalla oculta. Comprueba que Blender lo abre y que GStreamer tiene un codificador H.264, y vuelve a abrirlo en Hosted Blender.",
   "c9d23ccb15073177": "Blender se cerró inesperadamente",
   "9f406050b6efb934": "Blender se cerró",
+  "5bb5a35408a98d44": [
+    "Blender tenía abierto ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " en lugar del archivo maestro, así que T3 Code no puede volver a abrirlo aquí. Sus cambios sin guardar están en ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "30c3fba6cec25d84": [
+    "Blender tenía abierto ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " en lugar del archivo maestro, así que T3 Code no puede volver a abrirlo aquí."
+  ],
   "0693a88b1530f8eb": [
     {
       "i": 1,
