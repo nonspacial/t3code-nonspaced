@@ -373,7 +373,10 @@ function StateCard(props: {
     <Empty className="h-full">
       <EmptyHeader>
         <EmptyTitle>{props.title}</EmptyTitle>
-        {props.description ? <EmptyDescription>{props.description}</EmptyDescription> : null}
+        {props.description ? (
+          // A kept copy's path has no place to break, so it may break anywhere.
+          <EmptyDescription className="wrap-anywhere">{props.description}</EmptyDescription>
+        ) : null}
       </EmptyHeader>
       {props.action ? (
         <EmptyContent className="flex-row flex-wrap justify-center">{props.action}</EmptyContent>
@@ -414,6 +417,10 @@ function ReopenCard(props: {
   const canOperate = useAtomValue(hostedBlenderEnvironment.reopen.permissionAtom(environmentId));
   const reopen = useAtomCommand(hostedBlenderEnvironment.reopen, { reportFailure: false });
   const dismiss = useAtomCommand(hostedBlenderEnvironment.dismiss, { reportFailure: false });
+  const canOpenMaster = useAtomValue(
+    hostedBlenderEnvironment.openMaster.permissionAtom(environmentId),
+  );
+  const openMaster = useAtomCommand(hostedBlenderEnvironment.openMaster, { reportFailure: false });
   const [pending, setPending] = useState(false);
   // The copy the open Discard dialog shows: a copy kept since is never discarded with it.
   const [confirmingDiscard, setConfirmingDiscard] = useState<{
@@ -467,6 +474,30 @@ function ReopenCard(props: {
   };
   const { recovery, restoreFailed, copyPath } = copy;
   const others = copies.filter((kept) => kept !== copy);
+  // A copy of another file leaves the master file itself free to open, the copy kept meanwhile.
+  const masterName =
+    props.master && !reopenable && "relativePath" in props.state
+      ? fileName(props.state.relativePath)
+      : undefined;
+  const openTheMaster = async () => {
+    setPending(true);
+    const result = await openMaster({
+      environmentId,
+      input: { threadId: props.threadRef.threadId },
+    });
+    setPending(false);
+    if (result._tag === "Failure") {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: gt("Couldn't open the master"),
+          description:
+            stillSavingText(result.cause, masterName ?? name, m) ??
+            formatEnvironmentQueryError(result.cause, m),
+        }),
+      );
+    }
+  };
   return (
     <>
       <StateCard
@@ -557,6 +588,18 @@ function ReopenCard(props: {
                   onClick={() => copyToClipboard(copyPath, undefined)}
                 >
                   {isCopied ? <T>Copied</T> : <T>Copy path</T>}
+                </Button>
+              )}
+              {masterName === undefined || !canOpenMaster ? null : (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={pending}
+                  onClick={() => void openTheMaster()}
+                >
+                  <T>
+                    Open <Var>{masterName}</Var>
+                  </T>
                 </Button>
               )}
               {!reopenable ? null : missing ? (
