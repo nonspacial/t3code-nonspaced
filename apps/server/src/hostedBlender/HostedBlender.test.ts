@@ -310,7 +310,13 @@ event({"type": "ready", "capture": "extImageCopyCapture", "target": "window",
        "encoder": "x264enc", "width": 1280, "height": 720, "cursorTracking": True})
 if scenario != "never-shows":
     event({"type": "windowCaptured", "title": "3D Viewport"})
+# The quit being answered: as the add-on does, every answer about a quit names its request.
+asking = [None]
+QUIT_ANSWERS = ("quitAccepted", "quitting", "saving", "saved", "quitFailed", "discardRefused",
+                "quitExpired")
 def send(connection, value):
+    if value.get("type") in QUIT_ANSWERS and value.get("quit") is not False and "id" not in value:
+        value = dict(value, id=asking[0])
     if value.get("type") == "state":
         state["open"] = value["filepath"]
         state["dirty"] = value["dirty"]
@@ -406,6 +412,7 @@ def control():
         open(os.path.join(tmp, "cube_4242_autosave.blend"), "w").write("autosave")
     view = {"position": [7, -7, 5], "target": [0, 0, 1]}
     outstanding = [0]
+    late = []
     def slow_hits(command):
         # Answers later, saying how many hit requests were waiting when this one arrived.
         result = [{"object": "in flight %d" % outstanding[0], "point": [0, 0, 0]}]
@@ -497,6 +504,8 @@ def control():
         with open(os.environ["STANDIN_SAVES"] + ".control", "a") as log:
             log.write(line)
         command = json.loads(line)
+        if command.get("type") == "quit":
+            asking[0] = command.get("id")
         if command.get("type") == "quit" and not command.get("save") and os.environ.get("STANDIN_LINGER"):
             # Read, then still reading a moment before answering: anything T3 sends after its
             # quit lands here.
@@ -574,6 +583,14 @@ def control():
             event({"type": "exited", "process": "blender", "code": 0, "signal": None})
             connection.close()
             return
+        if command.get("type") == "quit" and not command.get("save") and scenario == "answers-late":
+            # Busy with a render through the first quit; free by the next, it reads the first
+            # past its deadline, refuses it, then takes the next.
+            late.append(command.get("id"))
+            if len(late) == 1:
+                continue
+            send(connection, {"type": "quitExpired", "id": late[0]})
+            send(connection, {"type": "quitAccepted"})
         if command.get("type") == "quit" and not command.get("save"):
             if scenario == "ignores-quit":
                 continue
@@ -661,18 +678,18 @@ def control():
         if scenario == "stuck-saving":
             # Begun, and stuck in the write: nothing after it is read.
             threading.Event().wait()
+        failed = {"type": "quitFailed", "reason": "saveFailed", "id": command.get("id")}
         if scenario == "held-save":
             # Acknowledged, then fails once the test creates STANDIN_BIND.
             def fail_when_released():
                 while not os.path.exists(os.environ["STANDIN_BIND"]):
                     time.sleep(0.05)
-                connection.sendall(b'{"type": "quitFailed", "reason": "saveFailed"}\n')
+                send(connection, failed)
             threading.Thread(target=fail_when_released, daemon=True).start()
             continue
         if scenario == "late-failing-save":
             # Acknowledged, then fails only after T3's 20-second settle deadline.
-            threading.Timer(21.0, lambda: connection.sendall(
-                b'{"type": "quitFailed", "reason": "saveFailed"}\n')).start()
+            threading.Timer(21.0, lambda: send(connection, failed)).start()
             continue
         if scenario == "exit-while-saving":
             os._exit(0)
@@ -704,8 +721,7 @@ def control():
             threading.Timer(1.0, lambda: os._exit(0)).start()
             return
         if scenario == "slow-failing-save" and saves == 1:
-            threading.Timer(1.0, lambda: connection.sendall(
-                b'{"type": "quitFailed", "reason": "saveFailed"}\n')).start()
+            threading.Timer(1.0, lambda: send(connection, failed)).start()
 threading.Thread(target=control, daemon=True).start()
 def stopped(how):
     marker = os.environ.get("STANDIN_MARKER")
@@ -2280,6 +2296,24 @@ describe("Endings and recovery", () => {
         });
         yield* Effect.all([busySave, deaf], { concurrency: "unbounded" });
       }).pipe(Effect.scoped),
+  );
+
+  it.live("a late answer to an earlier quit never settles a later one", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, hostedDir } = yield* standIn(
+        "answers-late",
+        "answers-late",
+      );
+      yield* openReady;
+      // Busy past the first quit's deadline: unanswered, and Blender stays open.
+      expect((yield* service.quit({ threadId, save: false }).pipe(Effect.flip)).reason).toBe(
+        "quitUnanswered",
+      );
+      // The retry goes through, whatever Blender then says of the first, and keeps its copy.
+      yield* service.quit({ threadId, save: false });
+      expect(yield* awaitStatus("closed")).toMatchObject({ recovery: true });
+      expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
+    }).pipe(Effect.scoped),
   );
 
   it.live("a settle that outlasts a failing save still quits Blender with its copy", () =>
@@ -6355,7 +6389,7 @@ def control():
             # included) while it writes its quit copy and exits.
             import time
             for reply in ({"type": "saving"}, {"type": "saved", "filepath": blend, "dirty": False}):
-                connection.sendall((json.dumps(reply) + "\n").encode())
+                connection.sendall((json.dumps(dict(reply, id=command.get("id"))) + "\n").encode())
             if after == "offAfterSaved":
                 # The add-on ended the grant on saving; its next state says the listener is off,
                 # then (dirty again) marks that T3 has read both.
@@ -6412,16 +6446,17 @@ def control():
             continue
         if kind == "quit" and command.get("filepath") is not None and after == "holdsQuit":
             # The person opened another file just before the discard arrived, as the add-on sees.
-            connection.sendall(b'{"type": "discardRefused"}\n')
+            connection.sendall((json.dumps({"type": "discardRefused", "id": command.get("id")}) + "\n").encode())
             continue
         if kind == "quit" and not command.get("save") and command.get("hold") and after == "holdsQuit":
             # Unsaved image edits hold it, as the add-on does, and it says so until they're saved.
-            connection.sendall(b'{"type": "quitFailed", "reason": "images"}\n')
+            connection.sendall((json.dumps({"type": "quitFailed", "reason": "images",
+                                            "id": command.get("id")}) + "\n").encode())
             state(blend, quitHeld="images")
             continue
         if kind == "quit" and not command.get("save"):
             # As the add-on does: its last word on the file, then Blender's quit copy.
-            connection.sendall((json.dumps({"type": "quitting", "filepath": blend,
+            connection.sendall((json.dumps({"type": "quitting", "filepath": blend, "id": command.get("id"),
                                             "dirty": os.environ.get("STANDIN_DIRTY") == "1"}) + "\n").encode())
             if after == "holdOnStop":
                 # Its connection drops at once, but it is gone only once the test says.
@@ -6437,7 +6472,7 @@ def control():
         if kind == "quitIfClean":
             def exit_now():
                 # The same last word as any quit, clean as it was found.
-                connection.sendall((json.dumps({"type": "quitting", "filepath": blend,
+                connection.sendall((json.dumps({"type": "quitting", "filepath": blend, "id": asked,
                                                 "dirty": False}) + "\n").encode())
                 with open(os.environ["STANDIN_ARGS"] + ".exits", "a") as log:
                     log.write("exit\n")
