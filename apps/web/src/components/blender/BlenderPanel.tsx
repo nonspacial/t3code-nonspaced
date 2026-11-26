@@ -785,6 +785,7 @@ function RunningBlender(
     (selection) => selection.dismissedReloads[reloadKey(props.threadRef, master)],
   );
   const reloadKept = props.state.reloadKept;
+  const quit = useQuitHostedBlender(props.threadRef, props.state, master ? { role: "master" } : {});
   return (
     <div className="flex h-full min-h-0 flex-col">
       <BlenderToolbar
@@ -795,8 +796,17 @@ function RunningBlender(
         onAnnotate={live ? annotation.start : null}
         switcher={props.switcher}
         master={master}
+        quit={quit}
       />
       {props.notice}
+      {props.state.quitHeld === undefined ? null : (
+        <QuitHeldNotice
+          environmentId={props.threadRef.environmentId}
+          edits={props.state.quitHeld}
+          quitting={quit.quitting}
+          onQuit={() => quit.request(props.state.dirty)}
+        />
+      )}
       {props.state.reloadBlocked === undefined ? null : (
         <ReloadBlockedNotice
           name={blendFileName(quitFileOf(props.state), gt("Untitled scene"))}
@@ -850,6 +860,41 @@ function RunningBlender(
   );
 }
 
+/**
+ * A quit Blender held for edits a recovery copy can't keep, until they're saved or dropped. A
+ * settle that left it running says nothing else.
+ */
+function QuitHeldNotice(props: {
+  readonly environmentId: EnvironmentId;
+  readonly edits: "images" | "catalogs";
+  readonly quitting: boolean;
+  readonly onQuit: () => void;
+}) {
+  const canQuit = useAtomValue(hostedBlenderEnvironment.quit.permissionAtom(props.environmentId));
+  return (
+    <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border bg-warning/8 px-3 py-1.5 text-warning-foreground text-xs">
+      <span className="min-w-0 flex-1">
+        {props.edits === "images" ? (
+          <T>
+            Blender stayed open: quitting would lose its unsaved image edits, which a recovery copy
+            can't keep. Save them in Blender (Image › Save All Images), or quit without saving.
+          </T>
+        ) : (
+          <T>
+            Blender stayed open: quitting would lose its unsaved asset catalog edits, which a
+            recovery copy can't keep. Save them in Blender's asset browser, or quit without saving.
+          </T>
+        )}
+      </span>
+      {canQuit ? (
+        <Button size="xs" variant="outline" disabled={props.quitting} onClick={props.onQuit}>
+          <T context="opens the dialog to quit Blender">Quit…</T>
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 function BlenderToolbar(props: {
   readonly threadRef: ScopedThreadRef;
   readonly state: HostedBlenderRunningState;
@@ -859,6 +904,7 @@ function BlenderToolbar(props: {
   readonly onAnnotate: (() => void) | null;
   readonly switcher: ReactNode;
   readonly master: boolean;
+  readonly quit: ReturnType<typeof useQuitHostedBlender>;
 }) {
   const gt = useGT();
   const canQuit = useAtomValue(
@@ -886,11 +932,7 @@ function BlenderToolbar(props: {
   // The file Blender has open, which File > Open can have changed since it started.
   const name = blendFileName(quitFileOf(props.state), gt("Untitled scene"));
   const { canOperate, controller } = props.control;
-  const quit = useQuitHostedBlender(
-    props.threadRef,
-    props.state,
-    props.master ? { role: "master" } : {},
-  );
+  const quit = props.quit;
   return (
     // A container, so a narrow pane drops the buttons' words before anything leaves its edge.
     <div className="@container/blender-toolbar flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">

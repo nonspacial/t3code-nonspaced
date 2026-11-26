@@ -7,6 +7,8 @@ import {
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import {
   blendFileName,
+  type HeldQuit,
+  heldQuitOf,
   isDiscardUnconfirmed,
   isRestoreReplacingUnsaved,
   quitFileOf,
@@ -122,6 +124,9 @@ function BlenderScreen(props: {
         ...(discard ? { discard, ...(openFile === undefined ? {} : { openFile }) } : {}),
       },
     }).finally(() => setQuitting(false));
+    // Held for edits a recovery copy can't keep: the same choice again, saying which.
+    const held = result._tag === "Failure" && !discard ? heldQuitOf(result.cause) : null;
+    if (held !== null) return askToQuit(held);
     if (result._tag === "Failure") {
       Dialog.alert(
         m(msg("Couldn't quit Blender")),
@@ -135,14 +140,25 @@ function BlenderScreen(props: {
       );
     }
   };
-  const askToQuit = () => {
+  const askToQuit = (heldBy?: HeldQuit) => {
     if (blender?.status !== "running" && blender?.status !== "starting") return;
-    if (!blender.dirty) return void quitBlender(false);
+    const held =
+      heldBy ?? (blender.quitHeld === undefined ? null : { edits: blender.quitHeld, images: [] });
+    if (!blender.dirty && held === null) return void quitBlender(false);
     Dialog.alert(
       gt("Save changes to {name} before quitting?", {
         name: blendFileName(quitFileOf(blender), gt("Untitled scene")),
       }),
-      gt("Changes Blender hasn't saved are lost if you quit without saving."),
+      held === null
+        ? gt("Changes Blender hasn't saved are lost if you quit without saving.")
+        : held.edits === "catalogs"
+          ? gt("Blender has unsaved asset catalog edits, which quitting without saving discards.")
+          : held.images.length > 0
+            ? gt(
+                "Blender couldn't save {images}, so quitting without saving discards their edits.",
+                { images: held.images.join(", ") },
+              )
+            : gt("Blender has unsaved image edits, which quitting without saving discards."),
       [
         { text: gt("Cancel"), style: "cancel" },
         {
@@ -273,6 +289,7 @@ function ReloadNotices(props: {
   const name = blendFileName(quitFileOf(props.state), gt("Untitled scene"));
   const kept = props.state.reloadKept;
   const blocked = props.state.reloadBlocked;
+  const held = props.state.quitHeld;
   const restore = async (key: string, replaceUnsaved: boolean) => {
     setPending(true);
     const result = await reopen({
@@ -328,10 +345,21 @@ function ReloadNotices(props: {
                   "{name} changed on disk, but Blender couldn't load the new version. It tries again when the file changes.",
                   { name },
                 );
+  const heldText =
+    held === undefined
+      ? null
+      : held === "images"
+        ? gt(
+            "Blender stayed open: quitting would lose its unsaved image edits, which a recovery copy can't keep. Save them in Blender (Image › Save All Images), or quit without saving.",
+          )
+        : gt(
+            "Blender stayed open: quitting would lose its unsaved asset catalog edits, which a recovery copy can't keep. Save them in Blender's asset browser, or quit without saving.",
+          );
   const showKept = kept !== undefined && kept.at !== dismissed;
-  if (blockedText === null && !showKept) return null;
+  if (blockedText === null && heldText === null && !showKept) return null;
   return (
     <View className="gap-2 px-3 pt-2">
+      {heldText === null ? null : <Notice message={heldText} />}
       {blockedText === null ? null : <Notice message={blockedText} />}
       {kept !== undefined && showKept ? (
         <>

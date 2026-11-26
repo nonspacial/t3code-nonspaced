@@ -33,6 +33,8 @@ const stream = vi.hoisted(() => ({
   commands: [] as Array<{ readonly label: string; readonly value: unknown }>,
   targets: [] as unknown[],
   setup: null as unknown,
+  /** Unsaved image edits hold any quit that isn't a discard. */
+  imagesHold: false,
 }));
 
 vi.mock(import("@t3tools/client-runtime/hosted-blender/stream"), async (original) => ({
@@ -68,6 +70,15 @@ vi.mock(import("@t3tools/client-runtime/device/frame"), async (original) => ({
 vi.mock(import("~/state/use-atom-command"), () => ({
   useAtomCommand: ((command: { readonly label: string }) => async (value: unknown) => {
     stream.commands.push({ label: command.label, value });
+    const input = (value as { readonly input?: { readonly discard?: boolean } }).input;
+    if (stream.imagesHold && command.label.endsWith(":quit") && input?.discard !== true) {
+      const { HostedBlenderError } = await import("@t3tools/contracts");
+      const Cause = await import("effect/Cause");
+      return {
+        _tag: "Failure",
+        cause: Cause.fail(new HostedBlenderError({ reason: "unsavedImages" })),
+      };
+    }
     return { _tag: "Success", value: undefined };
   }) as never,
 }));
@@ -111,6 +122,7 @@ const startup = (): Disposable => {
   stream.events = null;
   stream.targets = [];
   stream.commands = [];
+  stream.imagesHold = false;
   useBlenderRoleStore.setState({ roles: {} });
   useKeptCopySelection.setState({ byThread: {}, dismissedReloads: {} });
   stream.master = { status: "none" };
@@ -666,6 +678,62 @@ it("shows each kept file's card, naming its own file, and acts on that file", as
   } finally {
     stream.state = running;
   }
+});
+
+it("asks with the quit dialog when image edits hold a quit, and says so in the pane meanwhile", async () => {
+  using _app = startup();
+  stream.imagesHold = true;
+  const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
+  const { Atom } = await import("effect/reactivity");
+  using _quit = vi
+    .spyOn(hostedBlenderEnvironment.quit, "permissionAtom")
+    .mockReturnValue(Atom.make(true) as never);
+  const ui = () => (
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>
+  );
+  const line = "Blender has unsaved image edits, which quitting without saving discards.";
+  const quits = () =>
+    stream.commands.filter((command) => command.label.endsWith(":quit")).map(({ value }) => value);
+  {
+    await using screen = await render(ui());
+    await control({ canOperate: true, controller: "unclaimed" });
+    await screen.getByRole("button", { name: "Blender menu" }).click();
+    await screen.getByRole("menuitem", { name: "Quit Blender" }).click();
+    await expect.element(screen.getByText(line)).toBeVisible();
+    await act(() =>
+      (
+        screen.getByRole("button", { name: "Quit without saving" }).element() as HTMLElement
+      ).click(),
+    );
+    await vi.waitFor(() => expect(quits()).toHaveLength(2));
+    expect(quits()).toEqual([
+      {
+        environmentId: threadRef.environmentId,
+        input: { threadId: threadRef.threadId, save: false },
+      },
+      {
+        environmentId: threadRef.environmentId,
+        input: { threadId: threadRef.threadId, save: false, discard: true },
+      },
+    ]);
+  }
+  // A settle held meanwhile: the pane says why Blender stayed open, and its Quit asks at once.
+  stream.commands = [];
+  stream.state = {
+    status: "running",
+    relativePath: "models/hero.blend",
+    dirty: false,
+    quitHeld: "images",
+  };
+  await using screen = await render(ui());
+  await expect
+    .element(screen.getByText(/Blender stayed open: quitting would lose its unsaved image edits/))
+    .toBeVisible();
+  await screen.getByRole("button", { name: "Quit…" }).click();
+  await expect.element(screen.getByText(line)).toBeVisible();
+  expect(quits()).toEqual([]);
 });
 
 it("fits its toolbar in a 380 px pane with a master, the menu still in reach", async () => {
