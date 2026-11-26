@@ -14,40 +14,7 @@ known master is not a member of, moved with, or relayed to any master Blender un
 chooses it, so it never keeps one running or counts at settle. Every other ending (T3 stopping, Hosted Blender switched off, a crash)
 ends it like a working one, and its recovery copy belongs to the master, not a thread: one copy,
 under the master file's real path, that any thread whose master is that file reopens or discards.
-Only the person's own Quit without saving, which the quit request marks as a discard, ends a run
-without keeping its unsaved work; every other quit without saving (an agent's, or a one-click quit
-of a file the client last saw clean) ends as a settle does, so what Blender reports as it quits
-decides what is kept. What is kept is the .blend alone, so those quits are held while Blender has
-unsaved image or asset catalog edits: Blender stays open, the quit says which, and the running
-state keeps saying so until they are saved, so a held settle isn't silent. The agent keeps its access through a held quit, to save
-what holds it: the add-on ends the grant itself as it begins to quit. Save and quit
-first saves the images as Blender's own quit does (and the save writes the catalogs), and is held
-only by an image it couldn't save, which it names. Only the discard, a deleted thread and T3 stopping don't ask.
-A held quit or a discard carries T3's deadline, and the add-on refuses one it reads after it: a
-Blender busy past it (a render, a long load) is left running, never stopped, and nothing T3 gave
-up on runs later. The add-on answers a quit it takes at once, before ending the grant (which can
-record agent work as undo steps, slow on a large scene), so T3 never reports as unanswered a quit
-Blender goes on to carry out. A settle, archive or switch-off left unanswered is owed: it runs
-again, still held, once that Blender answers anything, unless a pane shows it or the agent acts
-in it by then. No agent tool can reopen or discard a copy, so the agent's next
-`blender_start` of a working copy with a waiting copy restores it rather than refusing. Both choices
-of the save/discard dialog carry the file it named, and the add-on refuses either if Blender has
-another open by then, so a file opened from Blender's own menu is never discarded or written under
-another's name. A discard runs beside
-the client's per-thread command lane, so a Save and quit stuck in a busy Blender can't hold it.
-At its deadline it stops Blender only once Blender has said it is quitting that file, or is saving
-it; unheard, Blender stays open and the discard is reported unconfirmed. A run counts as
-discarded only once Blender has taken the discard; an exit before that, a crash or a second
-unheard discard that stops it, ends as a crash: its last autosave is kept, and only Discard on that card,
-naming the file, removes it. A settle waits on a Save and quit
-Blender has begun however long it takes; one still queued by the deadline is left to run. Only T3
-stopping and a deleted thread stop a Blender that doesn't answer.
-At shutdown, a Blender that has said it is saving or quitting is released, never killed while
-it writes what may be the only copy of its latest work: the helper is told to `detach` (Blender
-dies with the helper, so the helper stays until Blender exits, whatever T3 does), its handle is
-unref'd so the server's exit signals nothing in its process group, and its launch folder stays
-for the next start, which never signals it: its salvage waits for it to exit, beside the service,
-and only an open of the file whose copy it is writing waits with it. Deleting a thread ends its Blender, then removes the copies it kept, which
+Deleting a thread ends its Blender, then removes the copies it kept, which
 nothing could show again; a master's copy is never the thread's. Agent access is narrower still: it lasts only while T3 holds the control
 connection, Allow agents is on, and the launch file (the working copy, or the master) is still the
 open file. Once any of those ends, access stays ended until that Blender restarts
@@ -59,6 +26,68 @@ T3's own: a working copy's agent reaches it only through the Blender Lab server 
 session, and a master's only through relays, one per agent thread and session, opened for a
 current session and closed when that session's access ends. With no agent thread, nothing listens
 for a master's agents.
+
+## A quit is one record
+
+Every quit T3 sends the add-on (the person's discard, a held or plain close, Save and quit, a
+master's quit-if-clean) carries a request id, and the add-on names that id on every answer about
+it. The server keeps one record per quit (`QuitRequest` in
+[`HostedBlender.ts`](../../apps/server/src/hostedBlender/HostedBlender.ts)): its kind, who asked,
+the file it named, its deadline, its phase and what Blender has said of it. An answer to a quit
+no path still waits on changes nothing, so Blender refusing an earlier quit as expired never
+settles a retry. Whether Blender stays open, a close is owed, a discard counts, and whether the
+run ended closed (its copy kept) or stopped (nothing kept) are read from those records, in one
+place each; a flag beside them is how the paths drifted apart before.
+
+Only the person's own Quit without saving, a discard, ends a run without keeping its unsaved
+work, and a discard of changes restored from a copy removes that copy too; every other quit without saving (an agent's, or a one-click quit of a file the client last
+saw clean) is a close, so what Blender reports as it quits decides what is kept. What is kept is
+the .blend alone, so closes the person or a settle asks for are held while Blender has unsaved
+image or asset catalog edits: Blender stays open, the quit says which, and the running state
+keeps saying so until they are saved, so a held settle isn't silent. The agent keeps its access
+through a held quit, to save what holds it: the add-on ends the grant itself as it begins to
+quit. Save and quit first saves the images as Blender's own quit does (and the save writes the
+catalogs), and is held only by an image it couldn't save, which it names. Only the discard, a
+deleted thread and T3 stopping don't ask.
+
+A held close or a discard carries T3's deadline, and the add-on refuses one it reads after it: a
+Blender busy past it (a render, a long load) is left running, never stopped, and nothing T3 gave
+up on runs later. The add-on answers a quit it takes at once, before ending the grant (which can
+record agent work as undo steps, slow on a large scene), so T3 never reports as unanswered a
+quit Blender goes on to carry out. A settle, archive or switch-off left unanswered is owed: it
+runs again, still held, once that Blender answers anything (at once if it already answered while
+T3 was giving up), unless a pane shows it or the agent acts in it by then. The retry first checks
+that the thread is still settled or archived, or Hosted Blender still off; opening or reopening
+that Blender, switching Hosted Blender back on, or granting an agent access to it cancels the
+owed close. A quit that leaves Blender open sends again the window words it held back while it
+was queued: the viewport handshake, the Timeline and the display. No agent tool can reopen or
+discard a copy, so the agent's next `blender_start` of a working copy with a waiting copy
+restores it rather than refusing.
+
+Both choices of the save/discard dialog carry the file it named, and the add-on refuses either if
+Blender has another open by then, so a file opened from Blender's own menu is never discarded or
+written under another's name; the dialog keeps the file and Blender it opened for, and asks
+afresh when either changes. A discard runs beside the client's per-thread command lane, so a
+Save and quit stuck in a busy Blender can't hold it. At its deadline it stops Blender only once
+Blender has said it is quitting that file, or is saving it; unheard, or unsendable because the
+control connection dropped, Blender stays open and the discard is reported unconfirmed. A run
+counts as discarded only once Blender has taken the discard; an exit before that, a crash or a
+second unheard discard that stops it, ends as a crash: its last autosave is kept, and only
+Discard on that card, naming the file, removes it. A settle waits on a Save and quit Blender has
+begun however long it takes; one still queued by the deadline is left to run. Only T3 stopping
+and a deleted thread stop a Blender that doesn't answer.
+
+At shutdown, a Blender that has said it is saving or quitting is released, never killed while it
+writes what may be the only copy of its latest work: the helper is told to `detach` (Blender dies
+with the helper, so the helper stays until Blender exits, whatever T3 does), its handle is
+unref'd so the server's exit signals nothing in its process group, and its launch folder stays
+for the next start. That start never signals it for two hours: its salvage waits for it to exit,
+beside the service, reading only its processes' own `/proc` entries every few seconds and
+walking `/proc` again only when one of them is gone. Meanwhile the file it has open stays claimed,
+by its real path, for every thread and the master: an open of it, or a Reopen of the copy it is
+writing, fails at once saying Blender is still saving, rather than waiting or starting a second
+Blender on the file. One still running after two hours is stuck: it is stopped then, and its
+salvage keeps whatever copy or autosave it left.
 
 ## The viewport window is found by its title
 
@@ -76,7 +105,8 @@ that capture, and the add-on splits only once T3 has also said the capture's mod
 `display`: an output size its window fills, or the whole output. Unknown, it waits; a window
 that never fills the output stays whole and capturable. T3's words that shape the window go out
 one at a time, the Timeline's read as it is written, and none once a quit is queued: a Blender
-that closes with a command unread can make T3's end of the socket drop its last report. Once captured, the helper keeps the
+that closes with a command unread can make T3's end of the socket drop its last report. A quit
+that leaves it open sends again what it held back. Once captured, the helper keeps the
 window whatever its title becomes. Screenshots, marks, view capture and view links read the 3D
 view's own area and region, never the strip's; the stream and the pane's size follow the whole
 window.

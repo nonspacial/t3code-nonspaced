@@ -143,6 +143,13 @@ def _send(message):
         _drop_client()
 
 
+def _answer(command, message):
+    # An answer about a quit names the request it answers, so T3 never takes it for a later one.
+    if command.get("id") is not None:
+        message["id"] = command["id"]
+    _send(message)
+
+
 def _drop_client():
     if _State.client is not None:
         try:
@@ -351,7 +358,7 @@ def _view(command):
     rv3d = space.region_3d
     if not _renders_offscreen(space, window.scene):
         # The camera is still right; only the picture can't be had.
-        return _view_result(rv3d.view_matrix, rv3d.window_matrix, rv3d, None, window.scene)
+        return _view_result(rv3d.view_matrix, rv3d.window_matrix, rv3d, None, window)
     view_matrix = rv3d.view_matrix.copy()
     window_matrix = rv3d.window_matrix.copy()
     width, height = _screenshot_size(region.width, region.height)
@@ -375,12 +382,17 @@ def _view(command):
         offscreen.free()
     _write_png(os.path.join(os.path.dirname(SOCKET_PATH), name), width, height, rgba)
     return _view_result(
-        view_matrix, window_matrix, rv3d, {"width": width, "height": height}, window.scene
+        view_matrix, window_matrix, rv3d, {"width": width, "height": height}, window
     )
 
 
-def _scene_identity(scene):
-    return "%s:%s:%d:%d" % (_State.launch, _State.loaded_at, scene.frame_current, _State.scene_changes)
+def _scene_identity(window):
+    # The person's window: its scene, view layer and frame, and what it hides. A hide (H) reaches
+    # the depsgraph only as a Scene update, as a selection click does, so it is read here.
+    scene, view_layer = window.scene, window.view_layer
+    hidden = hash(tuple(o.name for o in view_layer.objects if not o.visible_get(view_layer=view_layer)))
+    return json.dumps([_State.launch, _State.loaded_at, scene.frame_current, _State.scene_changes,
+                       scene.name, view_layer.name, hidden])
 
 
 @persistent
@@ -389,13 +401,13 @@ def _on_depsgraph_update(_scene, depsgraph):
         _State.scene_changes += 1
 
 
-def _view_result(view_matrix, window_matrix, rv3d, screenshot, scene):
+def _view_result(view_matrix, window_matrix, rv3d, screenshot, window):
     perspective = window_matrix @ view_matrix
     return {
         "screenshot": screenshot,
         # The file the picture is of, which the annotation names, and the scene its hits check.
         "filepath": bpy.data.filepath,
-        "scene": _scene_identity(scene),
+        "scene": _scene_identity(window),
         "cameraView": _camera_view(view_matrix, rv3d.view_distance),
         "projection": {
             "matrix": [value for row in perspective for value in row],
@@ -412,7 +424,7 @@ def _hits(command):
     window, area, view_region, _space = found
     # Cast only in the scene as captured: a load, playback, another viewer or the agent may have
     # changed it since the screenshot, whose marks then name nothing here.
-    if command.get("scene") != _scene_identity(window.scene):
+    if command.get("scene") != _scene_identity(window):
         return "sceneChanged"
     inverse = Matrix([command["matrix"][row * 4:row * 4 + 4] for row in range(4)]).inverted()
     region = command["region"]
@@ -512,7 +524,7 @@ def _handle(command):
         return
     if kind == "cancelQuit":
         _State.cancelled_quits.add(command.get("id"))
-        _send({"type": "quitCancelled", "id": command.get("id")})
+        _answer(command, {"type": "quitCancelled"})
         return
     if kind == "quitIfClean":
         if command.get("id") in _State.cancelled_quits:
@@ -523,10 +535,10 @@ def _handle(command):
         pending_writes = any(record["writes"] for record in _Guard.deferred)
         _record_pending_deferred()
         if pending_writes or not _session_is_clean():
-            _send({"type": "quitRefused", "id": command.get("id")})
+            _answer(command, {"type": "quitRefused"})
             return
         # The same last word as any quit: what its end keeps is judged by the same facts.
-        _send({"type": "quitting", "filepath": bpy.data.filepath, "dirty": bool(bpy.data.is_dirty)})
+        _answer(command, {"type": "quitting", "filepath": bpy.data.filepath, "dirty": bool(bpy.data.is_dirty)})
         with bpy.context.temp_override(window=_main_window()):
             bpy.ops.wm.quit_blender()
         return
@@ -534,16 +546,16 @@ def _handle(command):
         deadline = command.get("deadline")
         if deadline is not None and time.time() * 1000 > deadline:
             # T3 stopped waiting for it and told the person Blender stays open: so it does.
-            _send({"type": "quitExpired"})
+            _answer(command, {"type": "quitExpired"})
             return
         expected = command.get("filepath")
         if expected is not None and expected != bpy.data.filepath:
             # The person's choice named the file T3 last heard of; another is open now, whose
             # changes they never chose to lose or write.
             if command.get("save"):
-                _send({"type": "quitFailed", "reason": "openFileChanged"})
+                _answer(command, {"type": "quitFailed", "reason": "openFileChanged"})
             else:
-                _send({"type": "discardRefused"})
+                _answer(command, {"type": "discardRefused"})
             return
         # What T3 keeps is the .blend: edits outside it would be lost, so Blender stays open
         # until they are saved. A save saves the catalogs and the images it can, as Blender's own
@@ -551,18 +563,18 @@ def _handle(command):
         held = _unkeepable() if command.get("hold") and not command.get("save") else None
         if held is not None:
             _State.quit_held = held
-            _send({"type": "quitFailed", "reason": held})
+            _answer(command, {"type": "quitFailed", "reason": held})
             return
         if not command.get("save"):
             # T3's answer, before ending the grant, which can take long on a large scene.
-            _send({"type": "quitAccepted"})
+            _answer(command, {"type": "quitAccepted"})
             # A held quit leaves the grant to the agent until here, since Blender may stay open
             # for it to save the images; this runs on the main thread, so no call slips between.
             _end_grant()
             # T3 waits on this rather than stopping a Blender still writing its quit copy. It
             # carries the file and its unsaved bit as they are now, before the undo step below
             # (which always reads unsaved), as the run's last word on them.
-            _send({
+            _answer(command, {
                 "type": "quitting",
                 "filepath": bpy.data.filepath,
                 "dirty": bool(bpy.data.is_dirty),
@@ -571,21 +583,21 @@ def _handle(command):
         else:
             if _changed_on_disk():
                 # What Blender read would be written over the newer file; nothing is saved.
-                _send({"type": "quitFailed", "reason": "changedOnDisk"})
+                _answer(command, {"type": "quitFailed", "reason": "changedOnDisk"})
                 return
             # Answered before the save, which blocks Blender for as long as a big file takes. It
             # names the file, which Blender can't change until the save is over.
-            _send({"type": "saving", "filepath": bpy.data.filepath})
+            _answer(command, {"type": "saving", "filepath": bpy.data.filepath})
             if command.get("hold"):
                 unsaved = _save_images()
                 if unsaved:
                     # Nowhere to save them (no file, not packed): the person or agent decides.
                     _State.quit_held = "images"
-                    _send({"type": "quitFailed", "reason": "images", "images": unsaved})
+                    _answer(command, {"type": "quitFailed", "reason": "images", "images": unsaved})
                     return
             if _changed_on_disk():
                 # A newer file can land while the images are written.
-                _send({"type": "quitFailed", "reason": "changedOnDisk"})
+                _answer(command, {"type": "quitFailed", "reason": "changedOnDisk"})
                 return
             _State.quit_saving = True
             try:
@@ -593,7 +605,7 @@ def _handle(command):
             finally:
                 _State.quit_saving = False
             if not saved:
-                _send({"type": "quitFailed", "reason": "saveFailed"})
+                _answer(command, {"type": "quitFailed", "reason": "saveFailed"})
                 return
             # Saved, so Blender quits next: the agent's grant ends now, as T3's stop would
             # come too late once quitting begins. Ending it records the agent's pending work
@@ -605,7 +617,7 @@ def _handle(command):
                 and any(record["writes"] for record in _Guard.deferred)
             )
             _end_grant()
-            _send(_loaded({"type": "saved", "filepath": bpy.data.filepath, "dirty": pending}))
+            _answer(command, _loaded({"type": "saved", "filepath": bpy.data.filepath, "dirty": pending}))
         window = _main_window()
         with bpy.context.temp_override(window=window):
             bpy.ops.wm.quit_blender()

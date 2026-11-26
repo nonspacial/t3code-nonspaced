@@ -638,6 +638,18 @@ it("converts a large .blend only when asked, once, saying it runs Blender, and r
   });
 });
 
+it("asks first for a compressed .blend that is small on disk but large once inflated", async () => {
+  state.preview = { ...previewOf(20 * 1024 * 1024), partial: true, large: true };
+  state.queries = [];
+  state.status = null;
+  await using screen = await render(preview("packed.blend"));
+  await screen.getByRole("button", { name: "Show 3D view" }).click();
+  expect(conversions()).toHaveLength(1);
+  expect(conversions()[0]).toMatchObject({
+    convertBlend: { input: { relativePath: "packed.blend", once: true } },
+  });
+});
+
 it("asks first when the server finds a .blend large since its facts were read", async () => {
   state.preview = previewOf(20 * 1024 * 1024);
   state.queries = [];

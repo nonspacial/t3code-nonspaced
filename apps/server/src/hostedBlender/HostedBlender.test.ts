@@ -85,6 +85,8 @@ interface Host {
   readonly afterSettingsRead?: Effect.Effect<void>;
   /** Holds back T3's words to the add-on. */
   readonly heldWords?: (word: "connected" | "viewportShown") => Effect.Effect<void>;
+  /** Whether the thread is settled now; it is unless a test makes it active again. */
+  readonly threadSettled?: () => boolean;
 }
 
 const blenderOnPath = (env: NodeJS.ProcessEnv) =>
@@ -149,6 +151,8 @@ const layerFor = (host: Host) =>
                       projectId: "project",
                       runtimeMode: host.runtimeMode ?? "approval-required",
                       interactionMode: host.interactionMode ?? "default",
+                      settledOverride: host.threadSettled?.() === false ? "active" : "settled",
+                      archivedAt: null,
                     } as never)
                   : null,
               ),
@@ -310,7 +314,13 @@ event({"type": "ready", "capture": "extImageCopyCapture", "target": "window",
        "encoder": "x264enc", "width": 1280, "height": 720, "cursorTracking": True})
 if scenario != "never-shows":
     event({"type": "windowCaptured", "title": "3D Viewport"})
+# The quit being answered: as the add-on does, every answer about a quit names its request.
+asking = [None]
+QUIT_ANSWERS = ("quitAccepted", "quitting", "saving", "saved", "quitFailed", "discardRefused",
+                "quitExpired")
 def send(connection, value):
+    if value.get("type") in QUIT_ANSWERS and value.get("quit") is not False and "id" not in value:
+        value = dict(value, id=asking[0])
     if value.get("type") == "state":
         state["open"] = value["filepath"]
         state["dirty"] = value["dirty"]
@@ -406,6 +416,7 @@ def control():
         open(os.path.join(tmp, "cube_4242_autosave.blend"), "w").write("autosave")
     view = {"position": [7, -7, 5], "target": [0, 0, 1]}
     outstanding = [0]
+    late = []
     def slow_hits(command):
         # Answers later, saying how many hit requests were waiting when this one arrived.
         result = [{"object": "in flight %d" % outstanding[0], "point": [0, 0, 0]}]
@@ -497,6 +508,8 @@ def control():
         with open(os.environ["STANDIN_SAVES"] + ".control", "a") as log:
             log.write(line)
         command = json.loads(line)
+        if command.get("type") == "quit":
+            asking[0] = command.get("id")
         if command.get("type") == "quit" and not command.get("save") and os.environ.get("STANDIN_LINGER"):
             # Read, then still reading a moment before answering: anything T3 sends after its
             # quit lands here.
@@ -574,6 +587,20 @@ def control():
             event({"type": "exited", "process": "blender", "code": 0, "signal": None})
             connection.close()
             return
+        if command.get("type") == "quit" and not command.get("save") and scenario == "opens-during-discard":
+            # File > Open finishes while the discard waits, announcing a viewport window T3 must
+            # expect; the discard, naming the file that was open, is then refused.
+            send(connection, {"type": "state", "filepath": opened, "dirty": True, "viewport": 2})
+            send(connection, {"type": "discardRefused"})
+            continue
+        if command.get("type") == "quit" and not command.get("save") and scenario == "answers-late":
+            # Busy with a render through the first quit; free by the next, it reads the first
+            # past its deadline, refuses it, then takes the next.
+            late.append(command.get("id"))
+            if len(late) == 1:
+                continue
+            send(connection, {"type": "quitExpired", "id": late[0]})
+            send(connection, {"type": "quitAccepted"})
         if command.get("type") == "quit" and not command.get("save"):
             if scenario == "ignores-quit":
                 continue
@@ -661,18 +688,18 @@ def control():
         if scenario == "stuck-saving":
             # Begun, and stuck in the write: nothing after it is read.
             threading.Event().wait()
+        failed = {"type": "quitFailed", "reason": "saveFailed", "id": command.get("id")}
         if scenario == "held-save":
             # Acknowledged, then fails once the test creates STANDIN_BIND.
             def fail_when_released():
                 while not os.path.exists(os.environ["STANDIN_BIND"]):
                     time.sleep(0.05)
-                connection.sendall(b'{"type": "quitFailed", "reason": "saveFailed"}\n')
+                send(connection, failed)
             threading.Thread(target=fail_when_released, daemon=True).start()
             continue
         if scenario == "late-failing-save":
             # Acknowledged, then fails only after T3's 20-second settle deadline.
-            threading.Timer(21.0, lambda: connection.sendall(
-                b'{"type": "quitFailed", "reason": "saveFailed"}\n')).start()
+            threading.Timer(21.0, lambda: send(connection, failed)).start()
             continue
         if scenario == "exit-while-saving":
             os._exit(0)
@@ -704,8 +731,7 @@ def control():
             threading.Timer(1.0, lambda: os._exit(0)).start()
             return
         if scenario == "slow-failing-save" and saves == 1:
-            threading.Timer(1.0, lambda: connection.sendall(
-                b'{"type": "quitFailed", "reason": "saveFailed"}\n')).start()
+            threading.Timer(1.0, lambda: send(connection, failed)).start()
 threading.Thread(target=control, daemon=True).start()
 def stopped(how):
     marker = os.environ.get("STANDIN_MARKER")
@@ -766,7 +792,7 @@ const standIn = Effect.fn(function* (
   prefix: string,
   scenario: string,
   beforeThreadLookup?: () => Effect.Effect<void>,
-  host: Pick<Host, "readinessChanges" | "agentPort" | "heldWords"> = {},
+  host: Pick<Host, "readinessChanges" | "agentPort" | "heldWords" | "threadSettled"> = {},
   extraEnv: Readonly<Record<string, string>> = {},
 ) {
   const dir = yield* tempDir(prefix);
@@ -1534,7 +1560,7 @@ describe("Salvaging what a stopped server left", () => {
   );
 
   it.live(
-    "leaves a Blender released at shutdown to finish its copy, holding up only an open of its file",
+    "leaves a Blender released at shutdown to finish its copy, refusing an open of its file in any thread meanwhile",
     () =>
       Effect.gen(function* () {
         const dir = yield* tempDir("salvage-released");
@@ -1558,23 +1584,75 @@ describe("Salvaging what a stopped server left", () => {
         );
         yield* Effect.addFinalizer(() => Effect.sync(() => helper.kill("SIGKILL")));
         yield* fileAppears(dir, readyFile);
-        leftover(dir, { helperPid: helper.pid! });
+        leftover(dir, {
+          helperPid: helper.pid!,
+          facts: { restore: "none", saved: false, changed: true },
+        });
         NodeFS.writeFileSync(NodePath.join(launchDir, "outcome"), "released");
         const service = yield* idleService(dir);
-        // Ready while it still runs: nothing waits for it but an open of its own file.
+        // Ready while it still runs: nothing waits for it.
         expect((yield* firstState(service).pipe(Effect.timeout("5 seconds"))).status).toBe(
           "stopped",
+        );
+        // Its file is its own until it exits: an open of it, from any thread, says so at once.
+        for (const id of [threadId, otherThreadId]) {
+          const refused = yield* service
+            .open({ threadId: id, relativePath: "cube.blend" })
+            .pipe(Effect.flip, Effect.timeout("5 seconds"));
+          expect(refused.reason).toBe("stillSaving");
+        }
+        NodeFS.writeFileSync(done, "");
+        // Kept once it exits, and then an open finds the copy waiting.
+        yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status === "closed"),
+          Stream.runHead,
         );
         const opening = yield* service
           .open({ threadId, relativePath: "cube.blend" })
           .pipe(Effect.flip, Effect.forkChild);
-        NodeFS.writeFileSync(done, "");
-        // Kept once it exits, before that open goes on and finds the copy waiting.
         expect((yield* Fiber.join(opening)).reason).toBe("recoveryPending");
         expect(recoveryOf(hostedDir)?.contents).toBe("left behind");
         expect(NodeFS.existsSync(signalled)).toBe(false);
         expect(NodeFS.existsSync(launchDir)).toBe(false);
       }).pipe(Effect.scoped),
+  );
+
+  it.live("stops a Blender released at shutdown that never finishes, keeping what it left", () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir("salvage-stuck");
+      const { hostedDir, launchDir } = leftover(dir, {});
+      const signalled = NodePath.join(dir, "signalled");
+      const readyFile = NodePath.join(dir, "ready");
+      // Never finishes on its own; the signal that stops it is noted.
+      const helper = NodeChildProcess.spawn(
+        python,
+        [
+          "-c",
+          "import signal, sys, time\nsignal.signal(signal.SIGTERM, lambda *_: (open(sys.argv[1], 'w').close(), sys.exit(0)))\nopen(sys.argv[2], 'w').close()\nwhile True: time.sleep(0.05)",
+          signalled,
+          readyFile,
+          "--state-dir",
+          launchDir,
+        ],
+        { cwd: launchDir, stdio: "ignore", detached: true },
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(() => helper.kill("SIGKILL")));
+      yield* fileAppears(dir, readyFile);
+      leftover(dir, { helperPid: helper.pid! });
+      NodeFS.writeFileSync(NodePath.join(launchDir, "outcome"), "released");
+      // Its bound shortened from two hours.
+      const service = yield* idleService(dir).pipe(
+        Effect.provideService(HostedBlender.ReleasedFinishTimeout, "1 second"),
+      );
+      yield* fileAppears(dir, signalled);
+      const kept = yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "closed"),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
+      expect(card(kept)).toEqual({ status: "closed", relativePath: "cube.blend", recovery: true });
+      expect(recoveryOf(hostedDir)?.contents).toBe("left behind");
+    }).pipe(Effect.scoped),
   );
 
   it.live("leaves a launch it couldn't stop for the next start, collecting nothing", () =>
@@ -1822,10 +1900,10 @@ describe("Endings and recovery", () => {
       // Blender opens the user's file; the copy is restored over it, so saves still go there.
       expect(reopened).toContain(NodeFS.realpathSync(NodePath.join(hostedDir, "../../cube.blend")));
 
-      // The person's Quit without saving keeps nothing new, and removes the copy only by Discard.
+      // The person's Quit without saving discards the restored changes, and the copy they came from.
       yield* service.quit({ threadId, save: false, discard: true });
-      expect(yield* awaitStatus("closed")).toMatchObject({ relativePath: "cube.blend" });
-      expect(recoveryOf(hostedDir)?.contents).toBe(recovery?.contents);
+      expect(yield* awaitStatus("stopped")).toEqual({ status: "stopped" });
+      expect(recoveryOf(hostedDir)).toBeNull();
     }).pipe(Effect.scoped),
   );
 
@@ -2202,6 +2280,55 @@ describe("Endings and recovery", () => {
   );
 
   it.live(
+    "a discard its dropped connection can't carry is unconfirmed, then stops Blender as a crash",
+    () =>
+      Effect.gen(function* () {
+        const openFile = { kind: "workspace" as const, relativePath: "cube.blend" };
+        // Busy, so a discard read before the drop goes unanswered rather than quitting it.
+        const { service, openReady, awaitStatus, loseConnection, hostedDir } = yield* standIn(
+          "lost-discard",
+          "ignores-quit",
+        );
+        yield* openReady;
+        // The control connection drops while the stream goes on.
+        loseConnection();
+        const discard = service
+          .quit({ threadId, save: false, discard: true, openFile })
+          .pipe(Effect.flip, Effect.option);
+        expect(Option.getOrThrow(yield* discard).reason).toBe("discardUnconfirmed");
+        expect((yield* firstState(service)).status).toBe("running");
+        expect(Option.isNone(yield* discard)).toBe(true);
+        expect(yield* awaitStatus("crashed")).toMatchObject({ recovery: true });
+        expect(recoveryOf(hostedDir)?.contents).toBe("autosave");
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("a discard Blender refuses sends the window words it held back", () =>
+    Effect.gen(function* () {
+      const { dir, service, openReady } = yield* standIn("held-words", "opens-during-discard");
+      yield* openReady;
+      const refused = yield* service
+        .quit({
+          threadId,
+          save: false,
+          discard: true,
+          openFile: { kind: "workspace", relativePath: "cube.blend" },
+        })
+        .pipe(Effect.flip);
+      expect(refused.reason).toBe("openFileChanged");
+      // The window announced while the discard was queued is expected after all.
+      const control = NodePath.join(dir, "saves.log.control");
+      yield* fileAppears(
+        dir,
+        control,
+        () =>
+          NodeFS.existsSync(control) &&
+          NodeFS.readFileSync(control, "utf8").includes('"type":"viewportExpected","generation":2'),
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live(
     "a quit or a settle leaves a Blender with unsaved image edits open, saying so; Quit without saving still quits",
     () =>
       Effect.gen(function* () {
@@ -2280,6 +2407,24 @@ describe("Endings and recovery", () => {
         });
         yield* Effect.all([busySave, deaf], { concurrency: "unbounded" });
       }).pipe(Effect.scoped),
+  );
+
+  it.live("a late answer to an earlier quit never settles a later one", () =>
+    Effect.gen(function* () {
+      const { service, openReady, awaitStatus, hostedDir } = yield* standIn(
+        "answers-late",
+        "answers-late",
+      );
+      yield* openReady;
+      // Busy past the first quit's deadline: unanswered, and Blender stays open.
+      expect((yield* service.quit({ threadId, save: false }).pipe(Effect.flip)).reason).toBe(
+        "quitUnanswered",
+      );
+      // The retry goes through, whatever Blender then says of the first, and keeps its copy.
+      yield* service.quit({ threadId, save: false });
+      expect(yield* awaitStatus("closed")).toMatchObject({ recovery: true });
+      expect(recoveryOf(hostedDir)?.contents).toMatch(/^quit copy /);
+    }).pipe(Effect.scoped),
   );
 
   it.live("a settle that outlasts a failing save still quits Blender with its copy", () =>
@@ -2744,6 +2889,43 @@ describe("Endings and recovery", () => {
       yield* service.reopen({ threadId, key: CUBE, restore: true });
       yield* awaitDirty(true);
       expect(launches().at(-1)).toContain(recoveryOf(hostedDir)?.session);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("a close owed to a settled thread never runs once the thread is active again", () =>
+    Effect.gen(function* () {
+      let settled = true;
+      const { service, awaitStatus, bind, marker, hostedDir } = yield* standIn(
+        "unsettled",
+        "late-control",
+        undefined,
+        { threadSettled: () => settled },
+      );
+      yield* service.open({ threadId, relativePath: "cube.blend" });
+      yield* awaitStatus("running");
+      const launches = NodePath.join(hostedDir, "launches");
+      const outcome = () => {
+        const [launch] = NodeFS.readdirSync(launches);
+        return launch === undefined ? null : NodePath.join(launches, launch, "outcome");
+      };
+      const closing = () => {
+        const file = outcome();
+        return file !== null && NodeFS.existsSync(file);
+      };
+      yield* service.closeOnSettle({ threadId });
+      yield* fileAppears(NodePath.dirname(outcome()!), outcome()!, closing);
+      yield* fileAppears(NodePath.dirname(outcome()!), outcome()!, () => !closing());
+      // The person sends a message meanwhile, so the thread is no longer settled.
+      settled = false;
+      bind();
+      // Its words are read in order: once its first report is published, the close was weighed.
+      yield* service.threadState(threadId).pipe(
+        Stream.filter((state) => state.status === "running" && state.dirty),
+        Stream.runHead,
+      );
+      // Still open, and still answering.
+      expect((yield* service.captureView(threadId)).screenshot).not.toBeNull();
+      expect(NodeFS.existsSync(marker)).toBe(false);
     }).pipe(Effect.scoped),
   );
 
@@ -4378,7 +4560,7 @@ print("T3-RESULT", json.dumps({
     }
   });
 
-  it("holds a quit that asks while an image is edited, and names the scene anew once it changes", () => {
+  it("holds a quit that asks while an image is edited, and names the scene anew once it changes or hides", () => {
     // A background Blender of the test's own, settings and temporary files in its folder.
     const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-hosted-blender-hold-"));
     try {
@@ -4398,20 +4580,29 @@ image.pixels[0] = 0.5
 dirty = image.is_dirty
 _handle({"type": "quit", "save": False, "hold": True})
 scene = bpy.context.scene
+# Background Blender has no window: one showing the scene and its view layer stands in.
+window = type("Window", (), {"scene": scene, "view_layer": scene.view_layers[0]})()
 # The image made above is still to be evaluated.
 scene.view_layers[0].update()
-names = [_scene_identity(scene)]
+names = [_scene_identity(window)]
 scene.view_layers[0].update()
-names.append(_scene_identity(scene))
+names.append(_scene_identity(window))
 bpy.data.objects["Cube"].location.x += 1
 scene.view_layers[0].update()
-names.append(_scene_identity(scene))
+names.append(_scene_identity(window))
 scene.frame_set(scene.frame_current + 1)
-names.append(_scene_identity(scene))
+names.append(_scene_identity(window))
+bpy.data.objects["Camera"].select_set(True)
+scene.view_layers[0].update()
+selected = _scene_identity(window)
+bpy.data.objects["Cube"].hide_set(True)
+scene.view_layers[0].update()
 print("T3-RESULT", json.dumps({
     "dirty": dirty,
     "sent": sent,
     "names": [names[0] == names[1], len(set(names[1:]))],
+    "selection": selected == names[-1],
+    "hide": _scene_identity(window) == selected,
 }))`,
         ],
         {
@@ -4430,8 +4621,11 @@ print("T3-RESULT", json.dumps({
       expect(JSON.parse(line!.slice("T3-RESULT ".length))).toEqual({
         dirty: true,
         sent: [{ type: "quitFailed", reason: "images" }],
-        // An update with nothing changed names the same scene; an edit or another frame doesn't.
+        // An update with nothing changed names the same scene; an edit or another frame doesn't,
+        // nor does a hide. A selection names the same scene.
         names: [true, 3],
+        selection: true,
+        hide: false,
       });
     } finally {
       NodeFS.rmSync(dir, { recursive: true, force: true });
@@ -5100,9 +5294,9 @@ describe.skipIf(!canHostBlender)("B13: a real hosted Blender whose file changes 
 });
 
 // Writes T3's viewport windows to HB_TEST_DIR/layout.json each tick, and runs HB_TEST_DIR/command
-// as a person would, one a tick (";" chains): "strip <type>" switches the strip's editor, "view
-// <type>" the 3D view's, "open <path>" is File > Open, "edit <name>" adds an object through undo,
-// "move <name>" moves one through undo.
+// one a tick (";" chains): "strip|view <type>" switches the strip's or 3D view's editor, "open
+// <path>" is File > Open, "edit|move <name>" adds or moves an object through undo, "hide|unhide
+// <name>" hides one as H does, "scene <name>" shows that scene in T3's viewport window.
 const LAYOUT_STARTUP_SCRIPT = `import json, os
 import bpy
 
@@ -5155,6 +5349,8 @@ def _poll():
             bpy.data.objects[argument].location.x += 1
             with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
                 bpy.ops.ed.undo_push(message="T3 test move")
+        elif verb in ("hide", "unhide"):
+            bpy.data.objects[argument].hide_set(verb == "hide")
         elif windows:
             window = windows[0]
             view = next(area for area in window.screen.areas if area.type == "VIEW_3D")
@@ -5163,6 +5359,8 @@ def _poll():
                 view.type = argument
             elif verb == "strip" and strip is not None:
                 strip.type = argument
+            elif verb == "scene":
+                window.scene = bpy.data.scenes.get(argument) or bpy.data.scenes.new(argument)
     _ticks[0] += 1
     layout = {
         "tick": _ticks[0],
@@ -5171,8 +5369,10 @@ def _poll():
         "frame": bpy.context.scene.frame_current,
         "selected": [o.name for o in bpy.context.view_layer.objects if o.select_get()],
         "moves": bpy.data.objects["Cube"].location.x if "Cube" in bpy.data.objects else None,
+        "hidden": [o.name for o in bpy.context.view_layer.objects if o.hide_get()],
         "windows": [{"pointer": window.as_pointer(), "width": window.width, "height": window.height,
-                     "areas": _areas(window)} for window in _viewport_windows()],
+                     "scene": window.scene.name, "areas": _areas(window)}
+                    for window in _viewport_windows()],
     }
     with open(os.path.join(folder, "layout.json.part"), "w") as out:
         json.dump(layout, out)
@@ -5211,10 +5411,13 @@ interface Layout {
   readonly selected: ReadonlyArray<string>;
   /** Where the cube sits along x, which "move Cube" changes. */
   readonly moves: number | null;
+  /** The objects hidden in the view layer, as H hides them. */
+  readonly hidden: ReadonlyArray<string>;
   readonly windows: ReadonlyArray<{
     readonly pointer: number;
     readonly width: number;
     readonly height: number;
+    readonly scene: string;
     /** Top first. */
     readonly areas: ReadonlyArray<LayoutArea>;
   }>;
@@ -5473,6 +5676,20 @@ scene.frame_set(1)`;
         yield* layoutWhen((layout) => layout.moves !== deselected.moves);
         expect((yield* service.captureView(threadId)).scene).not.toBe(risen.scene);
         expect((yield* centre(risen).pipe(Effect.flip)).reason).toBe("sceneChanged");
+        // Hiding an object, as H does, changes what a mark would hit; so does showing another
+        // scene in the window.
+        const moved = yield* service.captureView(threadId);
+        command("hide Cube");
+        yield* layoutWhen((layout) => layout.hidden.includes("Cube"));
+        const hidden = yield* service.captureView(threadId);
+        expect(hidden.scene).not.toBe(moved.scene);
+        command("scene Other");
+        yield* layoutWhen((layout) => layout.windows[0]?.scene === "Other");
+        expect((yield* service.captureView(threadId)).scene).not.toBe(hidden.scene);
+        command("scene Scene;unhide Cube");
+        yield* layoutWhen(
+          (layout) => layout.windows[0]?.scene === "Scene" && !layout.hidden.includes("Cube"),
+        );
 
         // The wheel over the strip reaches the Timeline: Ctrl+wheel moves its frame range.
         const span = (layout: Layout) => layout.windows[0]!.areas[1]!.frames!;
@@ -6355,7 +6572,7 @@ def control():
             # included) while it writes its quit copy and exits.
             import time
             for reply in ({"type": "saving"}, {"type": "saved", "filepath": blend, "dirty": False}):
-                connection.sendall((json.dumps(reply) + "\n").encode())
+                connection.sendall((json.dumps(dict(reply, id=command.get("id"))) + "\n").encode())
             if after == "offAfterSaved":
                 # The add-on ended the grant on saving; its next state says the listener is off,
                 # then (dirty again) marks that T3 has read both.
@@ -6412,16 +6629,17 @@ def control():
             continue
         if kind == "quit" and command.get("filepath") is not None and after == "holdsQuit":
             # The person opened another file just before the discard arrived, as the add-on sees.
-            connection.sendall(b'{"type": "discardRefused"}\n')
+            connection.sendall((json.dumps({"type": "discardRefused", "id": command.get("id")}) + "\n").encode())
             continue
         if kind == "quit" and not command.get("save") and command.get("hold") and after == "holdsQuit":
             # Unsaved image edits hold it, as the add-on does, and it says so until they're saved.
-            connection.sendall(b'{"type": "quitFailed", "reason": "images"}\n')
+            connection.sendall((json.dumps({"type": "quitFailed", "reason": "images",
+                                            "id": command.get("id")}) + "\n").encode())
             state(blend, quitHeld="images")
             continue
         if kind == "quit" and not command.get("save"):
             # As the add-on does: its last word on the file, then Blender's quit copy.
-            connection.sendall((json.dumps({"type": "quitting", "filepath": blend,
+            connection.sendall((json.dumps({"type": "quitting", "filepath": blend, "id": command.get("id"),
                                             "dirty": os.environ.get("STANDIN_DIRTY") == "1"}) + "\n").encode())
             if after == "holdOnStop":
                 # Its connection drops at once, but it is gone only once the test says.
@@ -6437,7 +6655,7 @@ def control():
         if kind == "quitIfClean":
             def exit_now():
                 # The same last word as any quit, clean as it was found.
-                connection.sendall((json.dumps({"type": "quitting", "filepath": blend,
+                connection.sendall((json.dumps({"type": "quitting", "filepath": blend, "id": asked,
                                                 "dirty": False}) + "\n").encode())
                 with open(os.environ["STANDIN_ARGS"] + ".exits", "a") as log:
                     log.write("exit\n")

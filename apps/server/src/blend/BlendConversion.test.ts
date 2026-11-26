@@ -1,3 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off - the test packs a compressed .blend with Node's zstd.
+import * as NodeStream from "node:stream";
+import * as NodeZlib from "node:zlib";
+
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
@@ -533,6 +537,47 @@ describe("BlendConversion", () => {
         const input = { cwd: root, relativePath: "bracket.blend" };
         const watched = yield* startConversion(input, "watch");
         expect(yield* Queue.take(watched.progress)).toEqual({ status: "large", byteLength });
+        yield* Fiber.join(watched.fiber);
+        expect(yield* convertAll(input)).toEqual(["converting", "ready"]);
+      }).pipe(Effect.provide(layerFor({ run: writeGlb }))),
+  );
+
+  it.effect(
+    "converts a compressed file that is small on disk but inflates past the limit only when asked",
+    () =>
+      Effect.gen(function* () {
+        const { root, path, fileSystem } = yield* workspace;
+        const file = path.join(root, "bracket-4.blend");
+        const bytes = NodeZlib.zstdDecompressSync(yield* fileSystem.readFile(file));
+        // A block of zeros past the limit right after the header, which zstd packs small.
+        const block = new Uint8Array(24);
+        block.set(new TextEncoder().encode("DATA"));
+        new DataView(block.buffer).setInt32(4, BLEND_LARGE_FILE_BYTES + 1, true);
+        const zeros = Buffer.alloc(16 * 1024 * 1024);
+        const packed = Buffer.concat(
+          yield* Effect.promise(() =>
+            NodeStream.Readable.from(
+              (function* () {
+                yield Buffer.from(bytes.subarray(0, 12));
+                yield Buffer.from(block);
+                for (let left = BLEND_LARGE_FILE_BYTES + 1; left > 0; left -= zeros.byteLength) {
+                  yield zeros.subarray(0, Math.min(left, zeros.byteLength));
+                }
+                yield Buffer.from(bytes.subarray(12));
+              })(),
+            )
+              .pipe(NodeZlib.createZstdCompress())
+              .toArray(),
+          ),
+        );
+        expect(packed.byteLength).toBeLessThan(BLEND_LARGE_FILE_BYTES);
+        yield* fileSystem.writeFile(file, packed);
+        const input = { cwd: root, relativePath: "bracket-4.blend" };
+        const watched = yield* startConversion(input, "watch");
+        expect(yield* Queue.take(watched.progress)).toEqual({
+          status: "large",
+          byteLength: packed.byteLength,
+        });
         yield* Fiber.join(watched.fiber);
         expect(yield* convertAll(input)).toEqual(["converting", "ready"]);
       }).pipe(Effect.provide(layerFor({ run: writeGlb }))),

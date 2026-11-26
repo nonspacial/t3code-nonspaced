@@ -28,7 +28,11 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { blendFileName, quitFileOf } from "@t3tools/client-runtime/state/hosted-blender";
+import {
+  blendFileName,
+  quitFileOf,
+  stillSavingText,
+} from "@t3tools/client-runtime/state/hosted-blender";
 import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { CameraIcon, HandIcon, MaximizeIcon, MoreVertical } from "lucide-react";
@@ -448,7 +452,8 @@ function ReopenCard(props: {
         stackedThreadToast({
           type: "error",
           title: crashed ? gt("Couldn't restart Blender") : gt("Couldn't reopen Blender"),
-          description: formatEnvironmentQueryError(result.cause, m),
+          description:
+            stillSavingText(result.cause, name, m) ?? formatEnvironmentQueryError(result.cause, m),
         }),
       );
     }
@@ -821,7 +826,6 @@ function RunningBlender(
         streamRef={streamRef}
         onAnnotate={live ? annotation.start : null}
         switcher={props.switcher}
-        master={master}
         quit={quit}
       />
       {props.notice}
@@ -930,7 +934,6 @@ function BlenderToolbar(props: {
   /** Null while there's no live frame to freeze. */
   readonly onAnnotate: (() => void) | null;
   readonly switcher: ReactNode;
-  readonly master: boolean;
   readonly quit: ReturnType<typeof useQuitHostedBlender>;
 }) {
   const gt = useGT();
@@ -958,31 +961,26 @@ function BlenderToolbar(props: {
   );
   // The file Blender has open, which File > Open can have changed since it started.
   const name = blendFileName(quitFileOf(props.state), gt("Untitled scene"));
-  // Narrow, a working copy shows its master's name: the switch beside it says which copy it is.
-  const narrowName =
-    props.switcher != null && !props.master ? name.replace(/\.wip-[^/.]+(?=\.blend$)/i, "") : name;
   const { canOperate, controller } = props.control;
   const quit = props.quit;
   return (
-    // A container, so a narrow pane drops the buttons' words before anything leaves its edge.
+    // A container, so a narrow pane drops the buttons' words before anything leaves its edge,
+    // and wraps the row: the file's name takes a line of its own under the buttons, rather than
+    // being squeezed between them.
     <div className="@container/blender-toolbar shrink-0 border-b border-border">
-      <div className="flex h-9 items-center gap-2 px-3 @max-[30rem]/blender-toolbar:gap-1.5 @max-[30rem]/blender-toolbar:px-2">
+      <div className="flex h-9 items-center gap-2 px-3 @max-[30rem]/blender-toolbar:h-auto @max-[30rem]/blender-toolbar:flex-wrap @max-[30rem]/blender-toolbar:gap-x-1.5 @max-[30rem]/blender-toolbar:gap-y-0.5 @max-[30rem]/blender-toolbar:px-2 @max-[30rem]/blender-toolbar:py-1.5">
         {props.switcher}
         <Tooltip>
           <TooltipTrigger
-            render={<span className="min-w-14 flex-1 truncate font-mono text-xs font-semibold" />}
+            render={
+              <span className="min-w-14 flex-1 truncate font-mono text-xs font-semibold @max-[30rem]/blender-toolbar:order-last @max-[30rem]/blender-toolbar:basis-full" />
+            }
           >
-            {narrowName === name ? (
-              name
-            ) : (
-              <>
-                <span className="@max-[30rem]/blender-toolbar:hidden">{name}</span>
-                <span className="hidden @max-[30rem]/blender-toolbar:inline">{narrowName}</span>
-              </>
-            )}
+            {name}
           </TooltipTrigger>
           <TooltipPopup side="bottom">{name}</TooltipPopup>
         </Tooltip>
+        <span className="hidden flex-1 @max-[30rem]/blender-toolbar:block" />
         <Tooltip>
           <TooltipTrigger
             render={

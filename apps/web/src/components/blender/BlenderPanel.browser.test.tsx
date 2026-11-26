@@ -42,6 +42,8 @@ const stream = vi.hoisted(() => ({
   setup: null as unknown,
   /** Unsaved image edits hold any quit that isn't a discard. */
   imagesHold: false,
+  /** Blender has another file open than the quit named, so the next quit is refused. */
+  openFileChanged: false,
   // The annotation tests: the real canvas sink, one grey frame, and Blender's answers.
   annotating: false,
   target: "window" as "window" | "output",
@@ -101,6 +103,15 @@ vi.mock(import("~/state/use-atom-command"), () => ({
   useAtomCommand: ((command: { readonly label: string }) => async (value: unknown) => {
     stream.commands.push({ label: command.label, value });
     const input = (value as { readonly input?: { readonly discard?: boolean } }).input;
+    if (stream.openFileChanged && command.label.endsWith(":quit")) {
+      stream.openFileChanged = false;
+      const { HostedBlenderError } = await import("@t3tools/contracts");
+      const Cause = await import("effect/Cause");
+      return {
+        _tag: "Failure",
+        cause: Cause.fail(new HostedBlenderError({ reason: "openFileChanged" })),
+      };
+    }
     if (stream.imagesHold && command.label.endsWith(":quit") && input?.discard !== true) {
       const { HostedBlenderError } = await import("@t3tools/contracts");
       const Cause = await import("effect/Cause");
@@ -169,6 +180,7 @@ const startup = (): Disposable => {
   stream.targets = [];
   stream.commands = [];
   stream.imagesHold = false;
+  stream.openFileChanged = false;
   useBlenderRoleStore.setState({ roles: {} });
   useKeptCopySelection.setState({ byThread: {}, dismissedReloads: {} });
   stream.master = { status: "none" };
@@ -798,7 +810,66 @@ it("asks with the quit dialog when image edits hold a quit, and says so in the p
   });
 });
 
-it("fits its toolbar in a 360 px pane with a master, the menu still in reach and the name readable", async () => {
+it("keeps the quit dialog on the file it asked about, asking afresh once Blender has another open", async () => {
+  using _app = startup();
+  const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
+  const { Atom } = await import("effect/reactivity");
+  using _quit = vi
+    .spyOn(hostedBlenderEnvironment.quit, "permissionAtom")
+    .mockReturnValue(Atom.make(true) as never);
+  const running = stream.state;
+  const hero = { kind: "workspace", relativePath: "models/hero.blend" } as const;
+  const other = { kind: "workspace", relativePath: "models/other.blend" } as const;
+  const opened = (openFile: typeof hero | typeof other) => ({
+    status: "running",
+    relativePath: "models/hero.blend",
+    dirty: true,
+    openFile,
+  });
+  const ui = () => (
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>
+  );
+  const quits = () =>
+    stream.commands.filter((command) => command.label.endsWith(":quit")).map(({ value }) => value);
+  try {
+    stream.state = opened(hero);
+    await using screen = await render(ui());
+    await control({ canOperate: true, controller: "unclaimed" });
+    await screen.getByRole("button", { name: "Blender menu" }).click();
+    await screen.getByRole("menuitem", { name: "Quit Blender" }).click();
+    await expect
+      .element(screen.getByText("Save changes to hero.blend before quitting?"))
+      .toBeVisible();
+    // Another device opens other.blend while the dialog is up: what it asked is void.
+    stream.state = opened(other);
+    await screen.rerender(ui());
+    await expect
+      .element(screen.getByText("Blender has other.blend open now.", { exact: false }))
+      .toBeVisible();
+    await expect
+      .element(screen.getByText("Save changes to other.blend before quitting?"))
+      .toBeVisible();
+    expect(quits()).toEqual([]);
+    // Blender opened yet another before the save reached it: refused, and the dialog asks again.
+    stream.openFileChanged = true;
+    await screen.getByRole("button", { name: "Save and quit" }).click();
+    await vi.waitFor(() => expect(quits()).toHaveLength(1));
+    expect(quits()[0]).toEqual({
+      environmentId: threadRef.environmentId,
+      input: { threadId: threadRef.threadId, save: true, openFile: other },
+    });
+    await expect
+      .element(screen.getByText("Blender has other.blend open now.", { exact: false }))
+      .toBeVisible();
+    await expect.element(screen.getByRole("button", { name: "Save and quit" })).toBeVisible();
+  } finally {
+    stream.state = running;
+  }
+});
+
+it("fits its toolbar in a 360 px pane with a master, the menu still in reach and the name whole on its own line", async () => {
   using _app = startup();
   const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
   const { Atom } = await import("effect/reactivity");
@@ -824,10 +895,15 @@ it("fits its toolbar in a 360 px pane with a master, the menu still in reach and
     expect(box.width).toBeGreaterThan(0);
     expect(box.right).toBeLessThanOrEqual(bounds.right);
   }
-  // The switch says it is the working copy, so the name drops what would be cut off anyway.
-  await expect.element(screen.getByText("hero.wip-a1b2.blend")).not.toBeVisible();
-  const name = screen.getByText("hero.blend", { exact: true }).element().getBoundingClientRect();
-  expect(name.width).toBeGreaterThanOrEqual(56);
+  // The name has a line of its own under the buttons, whole, rather than cut between them.
+  const name = [...screen.container.querySelectorAll("span")].find(
+    (span) => span.textContent === "hero.wip-a1b2.blend" && span.checkVisibility(),
+  )!;
+  const menu = screen.getByRole("button", { name: "Blender menu" }).element();
+  expect(name.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+    menu.getBoundingClientRect().bottom,
+  );
+  expect(name.scrollWidth).toBeLessThanOrEqual(name.clientWidth);
 });
 
 it("points a thread with no Blender running at Files, where .blend files open", async () => {

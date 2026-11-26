@@ -29,7 +29,10 @@ import {
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { Toggle, ToggleGroup } from "~/components/ui/toggle-group";
 import { cn } from "~/lib/utils";
-import { isRestoreReplacingUnsaved } from "@t3tools/client-runtime/state/hosted-blender";
+import {
+  isRestoreReplacingUnsaved,
+  stillSavingText,
+} from "@t3tools/client-runtime/state/hosted-blender";
 import { hostedBlenderEnvironment } from "~/state/hostedBlender";
 import { formatEnvironmentQueryError } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -275,7 +278,8 @@ export function MasterCard(props: {
           type: "error",
           title:
             action === "open" ? gt("Couldn't open the master") : gt("Couldn't move into T3 Code"),
-          description: formatEnvironmentQueryError(result.cause, m),
+          description:
+            stillSavingText(result.cause, name, m) ?? formatEnvironmentQueryError(result.cause, m),
         }),
       );
     }

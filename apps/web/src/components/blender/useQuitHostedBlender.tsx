@@ -26,6 +26,18 @@ import { hostedBlenderEnvironment, isOpenFileChanged } from "~/state/hostedBlend
 import { formatEnvironmentQueryError } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
 
+/** What the dialog asks about: the file Blender had open as it opened, and which Blender. */
+interface Asked {
+  readonly openFile: HostedBlenderKeptFile | undefined;
+  readonly relativePath: string;
+  readonly target: { readonly role?: "master"; readonly master?: string };
+  /** It changed while the dialog was open, or a choice found Blender had another file open. */
+  readonly changed?: true;
+}
+
+const askedKey = (asked: Asked) =>
+  JSON.stringify([quitFileOf(asked), asked.target.role ?? null, asked.target.master ?? null]);
+
 export const fileName = (relativePath: string) =>
   relativePath.slice(relativePath.lastIndexOf("/") + 1);
 
@@ -50,16 +62,25 @@ export function useQuitHostedBlender(
   const gt = useGT();
   const m = useMessages();
   const quit = useAtomCommand(hostedBlenderEnvironment.quit, { reportFailure: false });
-  const [confirming, setConfirming] = useState(false);
+  // The file and target the dialog opened for: a choice acts on these, never on what is live.
+  const [asked, setAsked] = useState<Asked | null>(null);
+  const live: Asked = { openFile: file.openFile, relativePath: file.relativePath, target };
   // What held the last quit asked here; the running state's word stands in before one.
   const [held, setHeld] = useState<HeldQuit | null>(null);
+  // Another file opened, or another Blender targeted, while it was open: it asks afresh.
+  if (asked !== null && askedKey(asked) !== askedKey(live)) {
+    setAsked({ ...live, changed: true });
+    setHeld(null);
+  }
+  const confirming = asked !== null;
+  const setConfirming = (open: boolean) => setAsked(open ? live : null);
   const shownHeld =
     held ?? (file.quitHeld === undefined ? null : { edits: file.quitHeld, images: [] });
   const [saving, setSaving] = useState(false);
   const [discarding, setDiscarding] = useState(false);
   // Chosen while a Save and quit waited in a busy Blender, which the discard then ended.
   const discarded = useRef(false);
-  const name = blendFileName(quitFileOf(file), gt("Untitled scene"));
+  const name = blendFileName(quitFileOf(asked ?? live), gt("Untitled scene"));
   const report = (cause: Cause.Cause<unknown>) =>
     toastManager.add(
       stackedThreadToast({
@@ -77,18 +98,23 @@ export function useQuitHostedBlender(
       }),
     );
   // Either choice names the file the dialog showed, and is refused once Blender has another open.
-  const named = file.openFile === undefined ? {} : { openFile: file.openFile };
+  const chosen = asked ?? live;
+  const named = chosen.openFile === undefined ? {} : { openFile: chosen.openFile };
+  // Blender has another file open by then: the dialog stays, asking afresh for that one.
+  const askAgain = () => {
+    setHeld(null);
+    setAsked((current) => (current === null ? null : { ...current, changed: true }));
+  };
   const saveAndQuit = async () => {
     setSaving(true);
     discarded.current = false;
     const result = await quit({
       environmentId: threadRef.environmentId,
-      input: { threadId: threadRef.threadId, save: true, ...named, ...target },
+      input: { threadId: threadRef.threadId, save: true, ...named, ...chosen.target },
     });
     setSaving(false);
     if (discarded.current) return;
-    // Blender has another file open now: the dialog stays, naming that one.
-    if (result._tag === "Failure" && isOpenFileChanged(result.cause)) return;
+    if (result._tag === "Failure" && isOpenFileChanged(result.cause)) return askAgain();
     // Images it couldn't save: the dialog stays, naming them, with Quit without saving.
     const heldBy = result._tag === "Failure" ? heldQuitOf(result.cause) : null;
     if (heldBy !== null) return setHeld(heldBy);
@@ -106,14 +132,13 @@ export function useQuitHostedBlender(
         threadId: threadRef.threadId,
         save: false,
         ...(discard ? { discard, ...named } : {}),
-        ...target,
+        ...chosen.target,
       },
     });
     setDiscarding(false);
-    // Blender has another file open now: the dialog stays, naming that one.
     if (result._tag === "Failure" && isOpenFileChanged(result.cause)) {
       discarded.current = false;
-      return;
+      return askAgain();
     }
     // Held for edits a recovery copy can't keep: the dialog says which, one click from discarding.
     const heldBy = result._tag === "Failure" && !discard ? heldQuitOf(result.cause) : null;
@@ -140,6 +165,9 @@ export function useQuitHostedBlender(
               {gt("Save changes to {name} before quitting?", { name })}
             </AlertDialogTitle>
             <AlertDialogDescription>
+              {asked?.changed === true ? (
+                <>{gt("Blender has {name} open now.", { name })} </>
+              ) : null}
               {shownHeld === null ? (
                 <T>Changes Blender hasn't saved are lost if you quit without saving.</T>
               ) : shownHeld.edits === "catalogs" ? (
