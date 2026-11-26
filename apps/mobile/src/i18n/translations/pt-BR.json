@@ -5697,6 +5697,8 @@
   "472ca1deae1a19f5": "Materiais",
   "6116c7ae71bc7d05": "Arquivos vinculados",
   "3286ce5553d9f505": "Tamanho",
+  "8067b4bf490c4ab7": "Conteúdo",
+  "a31ec23f4b06db7d": "Não lido em um arquivo tão grande",
   "119259d2fa66fadf": "Não foi possível fechar o Blender",
   "65c73c884114dcf8": "O Blender não respondeu, então continua aberto com suas alterações. Se ele continuar sem responder, escolher “Sair sem salvar” de novo o interrompe e mantém o que o Blender salvou automaticamente por último.",
   "b75a2837e20ac029": "Não foi possível restaurar as alterações",

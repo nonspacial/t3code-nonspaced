@@ -1,7 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
-import type { BlendConversionStatus } from "@t3tools/contracts";
+import { BLEND_LARGE_FILE_BYTES, type BlendConversionStatus } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -520,6 +520,21 @@ describe("BlendConversion", () => {
         const once = yield* startConversion({ ...input, once: true }, "watch");
         expect((yield* Queue.take(once.progress)).status).toBe("ready");
         yield* Fiber.join(once.fiber);
+      }).pipe(Effect.provide(layerFor({ run: writeGlb }))),
+  );
+
+  it.effect(
+    "converts a file saved past the size limit only when asked, judged by its size now",
+    () =>
+      Effect.gen(function* () {
+        const { root, path, fileSystem } = yield* workspace;
+        const byteLength = BLEND_LARGE_FILE_BYTES + 1;
+        yield* fileSystem.truncate(path.join(root, "bracket.blend"), byteLength);
+        const input = { cwd: root, relativePath: "bracket.blend" };
+        const watched = yield* startConversion(input, "watch");
+        expect(yield* Queue.take(watched.progress)).toEqual({ status: "large", byteLength });
+        yield* Fiber.join(watched.fiber);
+        expect(yield* convertAll(input)).toEqual(["converting", "ready"]);
       }).pipe(Effect.provide(layerFor({ run: writeGlb }))),
   );
 
