@@ -567,7 +567,7 @@ describe("hosted Blender MCP tools", () => {
         master,
       } satisfies LayerInput,
       check: (opened: {
-        readonly isError?: boolean;
+        readonly isError?: boolean | undefined;
         readonly structuredContent?: unknown;
         readonly content: unknown;
       }) =>
@@ -581,13 +581,13 @@ describe("hosted Blender MCP tools", () => {
     {
       name: "tells the agent when the master Blender doesn't take its calls",
       given: { state: running, listener: "off" } satisfies LayerInput,
-      check: (opened: { readonly isError?: boolean; readonly content: unknown }) =>
+      check: (opened: { readonly isError?: boolean | undefined; readonly content: unknown }) =>
         expect(opened.isError).toBe(true),
     },
     {
       name: "tells the agent an untested Blender Lab version refused its master access",
       given: { state: running, listener: "untested" } satisfies LayerInput,
-      check: (opened: { readonly isError?: boolean; readonly content: unknown }) => {
+      check: (opened: { readonly isError?: boolean | undefined; readonly content: unknown }) => {
         expect(opened.isError).toBe(true);
         const text = JSON.stringify(opened.content);
         expect(text).toContain("blender_master_open");

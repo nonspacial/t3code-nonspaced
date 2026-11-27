@@ -178,7 +178,15 @@ describe("HostedBlenderAgents.sessionLaunch", () => {
     Effect.gen(function* () {
       const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
       assert.isUndefined(yield* agents.sessionLaunch({ threadId, driver: claude }));
-    }).pipe(Effect.provide(layerFor({ enabled, allowAgents, readiness }))),
+    }).pipe(
+      Effect.provide(
+        layerFor({
+          ...(enabled === undefined ? {} : { enabled }),
+          ...(allowAgents === undefined ? {} : { allowAgents }),
+          ...(readiness === undefined ? {} : { readiness }),
+        }),
+      ),
+    ),
   );
 
   it.effect(
