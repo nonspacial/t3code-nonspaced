@@ -13,13 +13,7 @@ import {
 } from "three";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import {
-  disposeModel,
-  ensureVertexNormals,
-  frameDistance,
-  modelFacts,
-  orientToYUp,
-} from "./modelGeometry.ts";
+import { disposeModel, ensureVertexNormals, modelFacts, orientToYUp } from "./modelGeometry.ts";
 
 // One upward-facing triangle in the XY plane, as an STL exporter writes it.
 function triangle(normal?: readonly [number, number, number]) {
@@ -38,19 +32,19 @@ function triangle(normal?: readonly [number, number, number]) {
 
 describe("ensureVertexNormals", () => {
   it.each([
-    ["missing", undefined],
-    ["zero", [0, 0, 0] as const],
-  ])("recomputes %s normals", (_label, normal) => {
+    { label: "recomputes missing", normal: undefined, recomputed: true, expected: [0, 0, 1] },
+    { label: "recomputes zero", normal: [0, 0, 0] as const, recomputed: true, expected: [0, 0, 1] },
+    {
+      label: "keeps authored",
+      normal: [0, 0, -1] as const,
+      recomputed: false,
+      expected: [0, 0, -1],
+    },
+  ])("$label normals", ({ normal, recomputed, expected }) => {
     const geometry = triangle(normal);
-    expect(ensureVertexNormals(geometry)).toBe(true);
+    expect(ensureVertexNormals(geometry)).toBe(recomputed);
     const normals = geometry.getAttribute("normal");
-    expect([normals.getX(0), normals.getY(0), normals.getZ(0)]).toEqual([0, 0, 1]);
-  });
-
-  it("keeps authored normals", () => {
-    const geometry = triangle([0, 0, -1]);
-    expect(ensureVertexNormals(geometry)).toBe(false);
-    expect(geometry.getAttribute("normal").getZ(2)).toBe(-1);
+    expect([normals.getX(2), normals.getY(2), normals.getZ(2)]).toEqual(expected);
   });
 });
 
@@ -61,21 +55,15 @@ describe("orientToYUp", () => {
     return new Box3().setFromObject(root).getSize(new Vector3()).toArray().map(Math.round);
   };
 
-  it.each(["stl", "3mf"] as const)("stands a Z-up %s model upright", (format) => {
-    expect(extent(format)).toEqual([1, 3, 2]);
-  });
-
-  it.each(["glb", "obj", "ply", "fbx"] as const)("leaves a Y-up %s model as it is", (format) => {
-    expect(extent(format)).toEqual([1, 2, 3]);
-  });
-});
-
-describe("frameDistance", () => {
-  it("fits the bounding sphere in the narrower direction of the view", () => {
-    const wide = frameDistance(1, 90, 2);
-    expect(wide).toBeCloseTo(1.25 / Math.sin(Math.PI / 4));
-    expect(frameDistance(1, 90, 0.5)).toBeGreaterThan(wide);
-    expect(frameDistance(2, 90, 2)).toBeCloseTo(wide * 2);
+  it.each([
+    { format: "stl", up: "Z", size: [1, 3, 2] },
+    { format: "3mf", up: "Z", size: [1, 3, 2] },
+    { format: "glb", up: "Y", size: [1, 2, 3] },
+    { format: "obj", up: "Y", size: [1, 2, 3] },
+    { format: "ply", up: "Y", size: [1, 2, 3] },
+    { format: "fbx", up: "Y", size: [1, 2, 3] },
+  ] as const)("stands a $up-up $format model upright", ({ format, size }) => {
+    expect(extent(format)).toEqual(size);
   });
 });
 

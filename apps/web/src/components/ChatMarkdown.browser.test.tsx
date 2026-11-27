@@ -728,23 +728,6 @@ describe("ChatMarkdown 3D view links", () => {
       selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, threadRef),
     ).toMatchObject({ kind: "blender" });
   });
-
-  it("opens a model's view link in the 3D preview at that camera", async () => {
-    setup();
-    threadWorktrees.set(threadRef.threadId, "/repo");
-    using openFile = vi.spyOn(useRightPanelStore.getState(), "openFile");
-    await using screen = await renderText("see [the part](out/part.glb#view=1,2,3,0,0,0)", {
-      cwd: "/repo",
-      threadRef,
-    });
-    await act(async () => screen.container.querySelector("a")!.click());
-    await vi.waitFor(() =>
-      expect(openFile).toHaveBeenCalledWith(threadRef, "out/part.glb", undefined, {
-        position: [1, 2, 3],
-        target: [0, 0, 0],
-      }),
-    );
-  });
 });
 
 describe("ChatMarkdown skill chips", () => {

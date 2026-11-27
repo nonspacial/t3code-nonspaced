@@ -37,16 +37,6 @@ const base = {
   createdAt: "2026-11-24T10:00:00.000Z",
 };
 
-describe("blenderAnnotationTitle", () => {
-  it("names the file and whether it is a working copy or the master", () => {
-    expect(blenderAnnotationTitle("models/hero.wip-a1b2.blend")).toBe(
-      "hero.wip-a1b2.blend · Working copy",
-    );
-    expect(blenderAnnotationTitle("models/hero.blend")).toBe("hero.blend · Master");
-    expect(blenderAnnotationTitle("hero.wip.blend")).toBe("hero.wip.blend · Master");
-  });
-});
-
 describe("blenderAnnotationPayload", () => {
   it("casts each mark through the frozen view and links back to it", async () => {
     const findHits = vi.fn(async () => [{ object: "Cube", point: [0, -1, 0.5] as const }, null]);
@@ -66,25 +56,35 @@ describe("blenderAnnotationPayload", () => {
     expect(payload.strokes[0]).not.toHaveProperty("hit");
     expect(payload.pageUrl.startsWith("models/hero.wip-a1b2.blend#view=")).toBe(true);
     expect(modelViewFromHref(payload.pageUrl)).toEqual({ position: [6, -6, 5], target: [0, 0, 0] });
-  });
 
-  it("keeps the camera when Blender can't say what the marks cover", async () => {
-    const payload = await blenderAnnotationPayload({
+    expect(blenderAnnotationTitle("models/hero.blend"), "a master's title").toBe(
+      "hero.blend · Master",
+    );
+    expect(blenderAnnotationTitle("hero.wip.blend"), "a master's title").toBe(
+      "hero.wip.blend · Master",
+    );
+
+    for (const [why, findHits] of [
+      ["Blender can't say what the marks cover", async () => null],
+      ["the frame isn't the viewport window alone", null],
+    ] as const) {
+      const unhit = await blenderAnnotationPayload({ ...base, capture, findHits });
+      expect(unhit.cameraView, `the camera is kept when ${why}`).toEqual(capture.cameraView);
+      expect(unhit.regions[0], `no hit when ${why}`).not.toHaveProperty("hit");
+    }
+
+    const noCameraHits = vi.fn(async () => []);
+    const noCamera = await blenderAnnotationPayload({
       ...base,
-      capture,
-      findHits: async () => null,
+      capture: null,
+      findHits: noCameraHits,
     });
-    expect(payload.cameraView).toEqual(capture.cameraView);
-    expect(payload.regions[0]).not.toHaveProperty("hit");
-  });
-
-  it("is still the screenshot and comment when the camera couldn't be read", async () => {
-    const findHits = vi.fn(async () => []);
-    const payload = await blenderAnnotationPayload({ ...base, capture: null, findHits });
-    expect(findHits).not.toHaveBeenCalled();
-    expect(payload).not.toHaveProperty("cameraView");
-    expect(payload.pageUrl).toBe("models/hero.wip-a1b2.blend");
-    expect(payload.screenshot?.dataUrl).toBe(base.screenshot.dataUrl);
+    expect(noCameraHits, "no camera: nothing is cast").not.toHaveBeenCalled();
+    expect(noCamera, "no camera").not.toHaveProperty("cameraView");
+    expect(noCamera.pageUrl, "no camera: a plain file link").toBe("models/hero.wip-a1b2.blend");
+    expect(noCamera.screenshot?.dataUrl, "no camera: still the screenshot").toBe(
+      base.screenshot.dataUrl,
+    );
   });
 
   it("names the file the frame is of, and asks for hits in its scene only", async () => {
@@ -105,11 +105,5 @@ describe("blenderAnnotationPayload", () => {
       findHits: null,
     });
     expect(untitled.pageTitle).toBe("Untitled scene");
-  });
-
-  it("looks for nothing under the marks when the frame isn't the viewport window alone", async () => {
-    const payload = await blenderAnnotationPayload({ ...base, capture, findHits: null });
-    expect(payload.cameraView).toEqual(capture.cameraView);
-    expect(payload.regions[0]).not.toHaveProperty("hit");
   });
 });

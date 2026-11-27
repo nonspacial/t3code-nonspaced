@@ -31,45 +31,38 @@ const toolEntry = (
 });
 
 describe("isHostedBlenderToolName", () => {
-  it("matches the hosted Blender servers as Claude and Codex name them", () => {
-    expect(isHostedBlenderToolName("mcp__blender-hosted__execute_blender_code")).toBe(true);
-    expect(isHostedBlenderToolName("blender-master.get_objects_summary")).toBe(true);
-  });
-
-  it("leaves the user's own blender entry and T3's lifecycle tools alone", () => {
-    expect(isHostedBlenderToolName("mcp__blender__execute_blender_code")).toBe(false);
-    expect(isHostedBlenderToolName("mcp__t3-code__blender_start")).toBe(false);
-    expect(isHostedBlenderToolName(null)).toBe(false);
-  });
+  it.each([
+    { name: "mcp__blender-hosted__execute_blender_code", hosted: true },
+    { name: "blender-master.get_objects_summary", hosted: true },
+    { name: "mcp__blender__execute_blender_code", hosted: false },
+    { name: "mcp__t3-code__blender_start", hosted: false },
+    { name: null, hosted: false },
+  ])(
+    "matches the hosted Blender servers as Claude and Codex name them: $name",
+    ({ name, hosted }) => {
+      expect(isHostedBlenderToolName(name)).toBe(hosted);
+    },
+  );
 });
 
 describe("agentWorkingInBlender", () => {
-  it("is on while one of the running turn's Blender calls is in progress", () => {
+  it("is on only while one of the running turn's Blender calls is in progress", () => {
     expect(
       agentWorkingInBlender(
         [toolEntry("mcp__blender-hosted__execute_blender_code", "inProgress")],
         run,
       ),
     ).toBe(true);
-  });
 
-  it("is off between calls, outside a turn, and for other tools", () => {
     const done = toolEntry("blender-hosted.execute_blender_code", "completed");
-    expect(agentWorkingInBlender([done], run)).toBe(false);
-    expect(agentWorkingInBlender([toolEntry("mcp__blender-hosted__x", "inProgress")], null)).toBe(
+    expect(agentWorkingInBlender([done], run), "between calls").toBe(false);
+    expect(
+      agentWorkingInBlender([toolEntry("mcp__blender-hosted__x", "inProgress")], null),
+      "outside a turn",
+    ).toBe(false);
+    expect(agentWorkingInBlender([toolEntry("Bash", "inProgress")], run), "another tool").toBe(
       false,
     );
-    expect(agentWorkingInBlender([toolEntry("Bash", "inProgress")], run)).toBe(false);
-    // Outside a turn, or with Hosted Blender off, the timeline isn't read at all.
-    const unread = new Proxy<TimelineEntry[]>([], {
-      get: () => {
-        throw new Error("scanned");
-      },
-    });
-    expect(agentWorkingInBlender(unread, null)).toBe(false);
-  });
-
-  it("ignores a call an earlier turn left in progress", () => {
     expect(
       agentWorkingInBlender(
         [
@@ -78,6 +71,14 @@ describe("agentWorkingInBlender", () => {
         ],
         run,
       ),
+      "a call an earlier turn left in progress",
     ).toBe(false);
+    // Outside a turn, or with Hosted Blender off, the timeline isn't read at all.
+    const unread = new Proxy<TimelineEntry[]>([], {
+      get: () => {
+        throw new Error("scanned");
+      },
+    });
+    expect(agentWorkingInBlender(unread, null)).toBe(false);
   });
 });

@@ -127,33 +127,22 @@ describe("mobile Blender stream", () => {
     vi.stubGlobal("innerHeight", 400);
     window.dispatchEvent(new Event("resize"));
     expect(fixture.resizes().at(-1)).toEqual({ type: "resize", width: 1600, height: 800 });
-  });
 
-  it("measures the viewer again when granted control, even without a resize event", () => {
-    using fixture = viewer();
-    // The WebView had no size yet when the page started; it was laid out without an event.
+    // Granted control, it measures again, even laid out without a resize event.
     vi.stubGlobal("innerWidth", 398);
     vi.stubGlobal("innerHeight", 763);
     fixture.socket.serverSays({ type: "control", canOperate: true, controller: "you" });
-    expect(fixture.resizes().at(-1)).toEqual({ type: "resize", width: 796, height: 1526 });
-  });
-
-  it("fits the frame inside the viewer and centres it", () => {
-    using fixture = viewer();
-    // An 800×400 frame in a 400×800 viewer: full width, centred vertically.
-    window.dispatchEvent(new Event("resize"));
-    const { style } = fixture.canvas;
-    expect([style.width, style.height, style.left, style.top]).toEqual([
-      "400px",
-      "200px",
-      "0px",
-      "300px",
-    ]);
+    expect(fixture.resizes().at(-1), "measured on the grant").toEqual({
+      type: "resize",
+      width: 796,
+      height: 1526,
+    });
   });
 
   it("resizes the canvas to each new frame size and fits it again, while watching", async () => {
     using fixture = viewer();
     const size = { width: 1280, height: 720 };
+    let configured = Promise.withResolvers<void>();
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
       drawImage: () => undefined,
     } as unknown as RenderingContext);
@@ -171,6 +160,7 @@ describe("mobile Blender stream", () => {
         configure() {
           this.state = "configured";
           this.frameSize = { ...size };
+          configured.resolve();
         }
         decode() {
           this.init.output({
@@ -223,17 +213,22 @@ describe("mobile Blender stream", () => {
     fixture.socket.serverSays({ type: "control", canOperate: true, controller: "another-viewer" });
     const { canvas } = fixture;
     keyframe(0x1f);
-    await vi.waitFor(() => expect([canvas.width, canvas.height]).toEqual([1280, 720]));
-    expect([canvas.style.width, canvas.style.height, canvas.style.top]).toEqual([
+    await configured.promise;
+    expect([canvas.width, canvas.height]).toEqual([1280, 720]);
+    // Fitted inside the viewer: full width, centred vertically.
+    expect([canvas.style.width, canvas.style.height, canvas.style.left, canvas.style.top]).toEqual([
       "400px",
       "225px",
+      "0px",
       "287.5px",
     ]);
     // The display followed a portrait controller: the next keyframe is 1046×2004.
     size.width = 1046;
     size.height = 2004;
+    configured = Promise.withResolvers();
     keyframe(0x28);
-    await vi.waitFor(() => expect([canvas.width, canvas.height]).toEqual([1046, 2004]));
+    await configured.promise;
+    expect([canvas.width, canvas.height]).toEqual([1046, 2004]);
     // The status strip shows the frame size, as on the web.
     expect(fixture.posted).toContainEqual({ type: "frameSize", width: 1046, height: 2004 });
     expect(Number.parseFloat(canvas.style.width)).toBeCloseTo(400);
@@ -241,13 +236,26 @@ describe("mobile Blender stream", () => {
     expect(Number.parseFloat(canvas.style.top)).toBeCloseTo((800 - (2004 * 400) / 1046) / 2);
   });
 
-  it("takes control on the first tap without clicking in Blender", () => {
+  it("takes control on the first tap without clicking in Blender, then orbits in stream pixels", () => {
     using fixture = viewer();
     const { socket, touch, input } = fixture;
     socket.serverSays({ type: "control", canOperate: true, controller: "unclaimed" });
     touch("pointerdown", 1, 10, 10);
     touch("pointerup", 1, 10, 10);
     expect(input()).toEqual([{ type: "takeControl", takeOver: false }]);
+
+    // In control, a drag orbits in stream pixels.
+    socket.serverSays({ type: "control", canOperate: true, controller: "you" });
+    touch("pointerdown", 1, 100, 50);
+    touch("pointermove", 1, 150, 60);
+    touch("pointerup", 1, 150, 60);
+    expect(input().slice(1), "an orbit once in control").toEqual([
+      { type: "keymap", layout: "us", variant: "" },
+      { type: "pointer", x: 200, y: 100 },
+      { type: "button", button: 274, pressed: true },
+      { type: "pointer", x: 300, y: 120 },
+      { type: "button", button: 274, pressed: false },
+    ]);
   });
 
   it("sends nothing from touches when this device may only watch", () => {
@@ -259,22 +267,6 @@ describe("mobile Blender stream", () => {
     touch("pointerup", 1, 100, 100);
     command({ type: "shadingPie" });
     expect(input()).toEqual([]);
-  });
-
-  it("orbits in stream pixels while in control", () => {
-    using fixture = viewer();
-    const { socket, touch, input } = fixture;
-    socket.serverSays({ type: "control", canOperate: true, controller: "you" });
-    touch("pointerdown", 1, 100, 50);
-    touch("pointermove", 1, 150, 60);
-    touch("pointerup", 1, 150, 60);
-    expect(input()).toEqual([
-      { type: "keymap", layout: "us", variant: "" },
-      { type: "pointer", x: 200, y: 100 },
-      { type: "button", button: 274, pressed: true },
-      { type: "pointer", x: 300, y: 120 },
-      { type: "button", button: 274, pressed: false },
-    ]);
   });
 
   it("opens the shading pie with Z, takes over and gives control back on command", () => {

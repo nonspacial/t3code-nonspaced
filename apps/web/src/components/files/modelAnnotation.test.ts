@@ -24,68 +24,61 @@ describe("modelFileLink", () => {
 });
 
 describe("markSamples", () => {
-  it("tries a region's centre first, then the rest of it", () => {
-    const samples = markSamples({ x: 100, y: 60, width: 200, height: 120 }, size);
-    expect(samples[0]).toEqual({ x: 0.5, y: 0.4 });
-    expect(samples.length).toBeGreaterThan(1);
-    for (const sample of samples) {
-      expect(sample.x).toBeGreaterThanOrEqual(0.25);
-      expect(sample.x).toBeLessThanOrEqual(0.75);
+  it("tries where the person meant first: a region's centre, a loop's middle, then along the drawn curve", () => {
+    const inRegion = markSamples({ x: 100, y: 60, width: 200, height: 120 }, size);
+    expect(inRegion[0], "a region's centre first").toEqual({ x: 0.5, y: 0.4 });
+    expect(inRegion.length, "then the rest of the region").toBeGreaterThan(1);
+    for (const sample of inRegion) {
+      expect(sample.x, "inside the region").toBeGreaterThanOrEqual(0.25);
+      expect(sample.x, "inside the region").toBeLessThanOrEqual(0.75);
     }
-  });
 
-  it("tries a closed loop's middle first, for a circle around something", () => {
-    const points = [
+    const loop = [
       { x: 100, y: 150 },
       { x: 200, y: 50 },
       { x: 300, y: 150 },
       { x: 200, y: 250 },
       { x: 105, y: 155 },
     ];
-    const samples = markSamples({ x: 100, y: 50, width: 200, height: 200 }, size, points);
-    expect(samples[0]).toEqual({ x: 0.5, y: 0.5 });
-    // Then the drawn line itself, across the top of its curve.
+    const inLoop = markSamples({ x: 100, y: 50, width: 200, height: 200 }, size, loop);
+    expect(inLoop[0], "a closed loop's middle first").toEqual({ x: 0.5, y: 0.5 });
     expect(
-      samples.some(
+      inLoop.some(
         (sample) => Math.abs(sample.x - 0.5) <= 0.01 && Math.abs(sample.y - 75 / 300) <= 0.01,
       ),
+      "then the loop's line itself, across the top of its curve",
     ).toBe(true);
-  });
 
-  it("tries the whole of an open line, so a part it crossed between pointer events counts", () => {
     // A fast stroke recorded only its ends; a small part sits halfway along it.
-    const points = [
+    const fast = markSamples({ x: 0, y: 0, width: 400, height: 300 }, size, [
       { x: 0, y: 0 },
       { x: 400, y: 300 },
-    ];
-    const samples = markSamples({ x: 0, y: 0, width: 400, height: 300 }, size, points);
-    const onPart = (sample: { x: number; y: number }) =>
-      Math.abs(sample.x - 0.5) <= 0.01 && Math.abs(sample.y - 0.5) <= 0.01;
-    expect(samples.some(onPart)).toBe(true);
-    expect(samples[0]).toEqual({ x: 0, y: 0 });
-    expect(samples.at(-1)).toEqual({ x: 1, y: 1 });
-    // Every sample lies on the line, never in the empty middle of its box off the line.
-    for (const sample of samples) expect(sample.y).toBeCloseTo(sample.x, 6);
-  });
+    ]);
+    expect(
+      fast.some((sample) => Math.abs(sample.x - 0.5) <= 0.01 && Math.abs(sample.y - 0.5) <= 0.01),
+      "the whole of an open line, between its pointer events",
+    ).toBe(true);
+    expect(fast[0], "an open line from its start").toEqual({ x: 0, y: 0 });
+    expect(fast.at(-1), "an open line to its end").toEqual({ x: 1, y: 1 });
+    for (const sample of fast)
+      expect(sample.y, "on the line, not its box").toBeCloseTo(sample.x, 6);
 
-  it("follows the curve the stroke is drawn as, not the straight lines between its points", () => {
     // A sharp turn at (300, 100): the drawn curve turns back at x = 250, short of the point.
-    const points = [
+    const turn = markSamples({ x: 93, y: 93, width: 214, height: 24 }, size, [
       { x: 100, y: 100 },
       { x: 300, y: 100 },
       { x: 100, y: 110 },
-    ];
-    const samples = markSamples({ x: 93, y: 93, width: 214, height: 24 }, size, points);
-    const furthest = Math.max(...samples.map((sample) => sample.x * size.width));
-    expect(furthest).toBeGreaterThan(245);
-    expect(furthest).toBeLessThanOrEqual(250.5);
-    expect(samples.at(-1)).toEqual({ x: 0.25, y: 110 / 300 });
-  });
+    ]);
+    const furthest = Math.max(...turn.map((sample) => sample.x * size.width));
+    expect(furthest, "the drawn curve, not the straight lines").toBeGreaterThan(245);
+    expect(furthest, "the drawn curve, not the straight lines").toBeLessThanOrEqual(250.5);
+    expect(turn.at(-1)).toEqual({ x: 0.25, y: 110 / 300 });
 
-  it("caps the samples on a very long line", () => {
-    const points = Array.from({ length: 2000 }, (_unused, index) => ({ x: index % 400, y: 150 }));
-    const samples = markSamples({ x: 0, y: 140, width: 400, height: 20 }, size, points);
-    expect(samples.length).toBeLessThanOrEqual(130);
+    const long = Array.from({ length: 2000 }, (_unused, index) => ({ x: index % 400, y: 150 }));
+    expect(
+      markSamples({ x: 0, y: 140, width: 400, height: 20 }, size, long).length,
+      "a very long line's samples are capped",
+    ).toBeLessThanOrEqual(130);
   });
 });
 
@@ -128,6 +121,13 @@ describe("modelAnnotationPayload", () => {
     });
     expect(annotation.regions[0]?.hit).toEqual(flange);
     expect(annotation.strokes[0]).not.toHaveProperty("hit");
+
+    const hitAt = vi.fn(() => null);
+    const attachment = build({ linkPath: null, hitAt });
+    expect(attachment.pageUrl, "an attachment, with no path to link to, is named").toBe(
+      "hinge (v3).stl",
+    );
+    expect(hitAt, "an attachment's marks are still cast").toHaveBeenCalled();
   });
 
   it("stops looking for hits once its time budget is spent, keeping the hits it found", () => {
@@ -143,12 +143,5 @@ describe("modelAnnotationPayload", () => {
     expect(annotation.regions[0]?.hit).toEqual(flange);
     expect(annotation.strokes[0]).not.toHaveProperty("hit");
     expect(casts).toBe(2);
-  });
-
-  it("names an attachment, which has no path to link to", () => {
-    const hitAt = vi.fn(() => null);
-    const annotation = build({ linkPath: null, hitAt });
-    expect(annotation.pageUrl).toBe("hinge (v3).stl");
-    expect(hitAt).toHaveBeenCalled();
   });
 });

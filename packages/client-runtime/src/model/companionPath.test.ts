@@ -4,71 +4,73 @@ import { resolveModelCompanionPath } from "./companionPath.ts";
 
 const workspaceRoot = "/work/project";
 const modelPath = "/work/project/models/crate/crate.gltf";
-const resolve = (reference: string) =>
-  resolveModelCompanionPath({ reference, modelPath, workspaceRoot });
+const inCrate = (name: string) => ({
+  _tag: "file",
+  path: `/work/project/models/crate/${name}`,
+  name,
+});
 
 describe("resolveModelCompanionPath", () => {
   it.each([
-    ["crate.bin", "crate.bin"],
-    ["./textures/crate_diffuse.png", "textures/crate_diffuse.png"],
-    ["textures\\wood.jpg", "textures/wood.jpg"],
-    ["textures/../crate.bin", "crate.bin"],
-    ["My%20Crate%20%231.png", "My Crate #1.png"],
-    ["100%.png", "100%.png"],
-  ])("resolves %s inside the model's folder", (reference, name) => {
-    expect(resolve(reference)).toEqual({
-      _tag: "file",
-      path: `/work/project/models/crate/${name}`,
-      name,
-    });
-  });
+    { reference: "crate.bin", expected: inCrate("crate.bin") },
+    { reference: "./textures/crate_diffuse.png", expected: inCrate("textures/crate_diffuse.png") },
+    { reference: "textures\\wood.jpg", expected: inCrate("textures/wood.jpg") },
+    { reference: "textures/../crate.bin", expected: inCrate("crate.bin") },
+    { reference: "My%20Crate%20%231.png", expected: inCrate("My Crate #1.png") },
+    { reference: "100%.png", expected: inCrate("100%.png") },
+    { reference: "data:image/png;base64,AAAA", expected: { _tag: "embedded" } },
+    { reference: "blob:http://localhost/1234", expected: { _tag: "embedded" } },
+    {
+      reference: "textures/wood.png",
+      modelPath: "C:\\Projects\\shop\\models\\chair.obj",
+      workspaceRoot: "C:\\Projects\\shop",
+      expected: {
+        _tag: "file",
+        path: "C:\\Projects\\shop\\models\\textures\\wood.png",
+        name: "textures/wood.png",
+      },
+    },
+  ])(
+    "resolves $reference inside the model's folder, leaving embedded data to the loader",
+    ({ expected, ...input }) => {
+      expect(resolveModelCompanionPath({ modelPath, workspaceRoot, ...input })).toEqual(expected);
+    },
+  );
 
   it.each([
-    ["a sibling folder", "../truck/wood.png"],
-    ["a .. escape", "../../../etc/passwd"],
-    ["an encoded .. escape", "%2e%2e/%2E%2E/secret.png"],
-    ["an absolute path", "/etc/passwd"],
-    ["a Windows absolute path", "C:\\Users\\sam\\Desktop\\wood.png"],
-    ["a UNC share", "\\\\server\\share\\wood.png"],
-    ["a protocol-relative URL", "//example.com/wood.png"],
-    ["a remote URL", "https://example.com/wood.png"],
-    ["a file URL", "file:///etc/passwd"],
-    ["the model's own folder", "textures/.."],
-  ])("rejects %s", (_label, reference) => {
-    expect(resolve(reference)._tag).toBe("rejected");
-  });
-
-  it("names a rejected reference as the model wrote it", () => {
-    expect(resolve("..\\shared\\wood%20grain.png")).toEqual({
-      _tag: "rejected",
+    { label: "a sibling folder", reference: "../truck/wood.png" },
+    { label: "a .. escape", reference: "../../../etc/passwd" },
+    { label: "an encoded .. escape", reference: "%2e%2e/%2E%2E/secret.png" },
+    { label: "an absolute path", reference: "/etc/passwd" },
+    { label: "a Windows absolute path", reference: "C:\\Users\\sam\\Desktop\\wood.png" },
+    { label: "a UNC share", reference: "\\\\server\\share\\wood.png" },
+    { label: "a protocol-relative URL", reference: "//example.com/wood.png" },
+    { label: "a remote URL", reference: "https://example.com/wood.png" },
+    { label: "a file URL", reference: "file:///etc/passwd" },
+    { label: "the model's own folder", reference: "textures/.." },
+    {
+      label: "a backslash escape, named as the model wrote it",
+      reference: "..\\shared\\wood%20grain.png",
       name: "../shared/wood grain.png",
-    });
-  });
-
-  it("leaves embedded data to the loader", () => {
-    expect(resolve("data:image/png;base64,AAAA")).toEqual({ _tag: "embedded" });
-    expect(resolve("blob:http://localhost/1234")).toEqual({ _tag: "embedded" });
-  });
-
-  it("rejects every file a model outside the workspace references", () => {
-    for (const workspace of [null, "/work/other"]) {
-      expect(
-        resolveModelCompanionPath({ reference: "crate.bin", modelPath, workspaceRoot: workspace }),
-      ).toEqual({ _tag: "rejected", name: "crate.bin" });
-    }
-  });
-
-  it("joins Windows host paths with the model's separator", () => {
-    expect(
-      resolveModelCompanionPath({
-        reference: "textures/wood.png",
-        modelPath: "C:\\Projects\\shop\\models\\chair.obj",
-        workspaceRoot: "C:\\Projects\\shop",
-      }),
-    ).toEqual({
-      _tag: "file",
-      path: "C:\\Projects\\shop\\models\\textures\\wood.png",
-      name: "textures/wood.png",
-    });
+    },
+    {
+      label: "any file of a model with no workspace",
+      reference: "crate.bin",
+      workspaceRoot: null,
+      name: "crate.bin",
+    },
+    {
+      label: "any file of a model outside the workspace",
+      reference: "crate.bin",
+      workspaceRoot: "/work/other",
+      name: "crate.bin",
+    },
+  ])("rejects $label", ({ label: _label, name, ...input }) => {
+    const result = resolveModelCompanionPath({ modelPath, workspaceRoot, ...input });
+    expect(result).toEqual(
+      name === undefined
+        ? expect.objectContaining({ _tag: "rejected" })
+        : { _tag: "rejected", name },
+    );
   });
 });

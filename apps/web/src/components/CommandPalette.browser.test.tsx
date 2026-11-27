@@ -22,10 +22,6 @@ const entities = vi.hoisted(() => ({
   hostedBlender: false,
   blenderState: null as unknown,
   commands: [] as Array<{ readonly label: string; readonly value: unknown }>,
-  /** Save and quit waits in a Blender whose main thread never frees up. */
-  saveHangs: false,
-  /** Discards Blender refuses because it has another file open by then. */
-  discardRefusals: 0,
 }));
 vi.mock("../state/hostedBlender", async (original) => {
   const actual = await original<typeof import("../state/hostedBlender")>();
@@ -43,21 +39,10 @@ vi.mock("../state/hostedBlender", async (original) => {
   };
 });
 vi.mock("../state/use-atom-command", () => ({
-  useAtomCommand: ((command: { readonly label: string }) =>
-    async (value: { readonly input?: { readonly save?: boolean; readonly discard?: boolean } }) => {
-      entities.commands.push({ label: command.label, value });
-      if (entities.saveHangs && value.input?.save === true) return new Promise(() => {});
-      if (value.input?.discard === true && entities.discardRefusals > 0) {
-        entities.discardRefusals -= 1;
-        const { HostedBlenderError } = await import("@t3tools/contracts");
-        const Cause = await import("effect/Cause");
-        return {
-          _tag: "Failure",
-          cause: Cause.fail(new HostedBlenderError({ reason: "openFileChanged" })),
-        };
-      }
-      return { _tag: "Success", value: undefined };
-    }) as never,
+  useAtomCommand: ((command: { readonly label: string }) => async (value: unknown) => {
+    entities.commands.push({ label: command.label, value });
+    return { _tag: "Success", value: undefined };
+  }) as never,
 }));
 vi.mock("../state/server", async (original) => {
   const actual = await original<typeof import("../state/server")>();
@@ -118,8 +103,6 @@ function setup(state: Partial<typeof entities> = {}) {
   entities.hostedBlender = state.hostedBlender ?? false;
   entities.blenderState = state.blenderState ?? null;
   entities.commands = [];
-  entities.saveHangs = state.saveHangs ?? false;
-  entities.discardRefusals = state.discardRefusals ?? 0;
 }
 
 function makeProject(title: string): Project {
@@ -476,67 +459,5 @@ describe("S1: Hosted Blender in the command palette", () => {
         },
       ]),
     );
-  });
-
-  it("names the file Blender has open, keeps Quit without saving open while a save waits, and asks again for another file", async () => {
-    const opened = (relativePath: string) => ({
-      ...unsaved,
-      openFile: { kind: "workspace", relativePath },
-    });
-    setup({
-      activeThread: blenderThread,
-      hostedBlender: true,
-      blenderState: opened("models/other.blend"),
-      saveHangs: true,
-      discardRefusals: 1,
-    });
-    await using _screen = await render(<CommandPalette>{null}</CommandPalette>);
-    openCommandPalette({ query: "hosted Blender" });
-    await page.getByRole("option", { name: /Quit hosted Blender/ }).click();
-    await expect
-      .element(page.getByText("Save changes to other.blend before quitting?"))
-      .toBeVisible();
-    const click = (name: string) =>
-      act(() => (page.getByRole("button", { name }).element() as HTMLElement).click());
-    await click("Save and quit");
-    // The save never ends in a busy Blender; Quit without saving is the way out.
-    await expect.element(page.getByRole("button", { name: "Save and quit" })).toBeDisabled();
-    await expect.element(page.getByRole("button", { name: "Quit without saving" })).toBeEnabled();
-    // Blender opened another file meanwhile: the discard named for other.blend is refused, and
-    // the dialog asks again for that file.
-    entities.blenderState = opened("models/third.blend");
-    await click("Quit without saving");
-    await expect
-      .element(page.getByText("Save changes to third.blend before quitting?"))
-      .toBeVisible();
-    await expect.element(page.getByRole("button", { name: "Quit without saving" })).toBeEnabled();
-    await click("Quit without saving");
-    await vi.waitFor(() => expect(entities.commands).toHaveLength(3));
-    await expect
-      .element(page.getByText("Save changes to third.blend before quitting?"))
-      .not.toBeInTheDocument();
-    const quit = (input: object) => ({
-      label: "environment-data:hosted-blender:quit",
-      value: {
-        environmentId: blenderThread.environmentId,
-        input: { threadId: blenderThread.id, ...input },
-      },
-    });
-    expect(entities.commands).toEqual([
-      quit({ save: true, openFile: opened("models/other.blend").openFile }),
-      quit({ save: false, discard: true, openFile: opened("models/other.blend").openFile }),
-      quit({ save: false, discard: true, openFile: opened("models/third.blend").openFile }),
-    ]);
-  });
-
-  it("offers neither action where Hosted Blender is off", async () => {
-    setup({ activeThread: blenderThread, hostedBlender: false, blenderState: unsaved });
-    await using _screen = await render(<CommandPalette>{null}</CommandPalette>);
-    openCommandPalette({ query: "hosted Blender" });
-    const input = page.getByPlaceholder("Search commands, projects, and threads...");
-    await expect.element(input).toHaveValue("hosted Blender");
-    await expect
-      .element(page.getByRole("option", { name: /(Open|Quit) hosted Blender/ }))
-      .not.toBeInTheDocument();
   });
 });

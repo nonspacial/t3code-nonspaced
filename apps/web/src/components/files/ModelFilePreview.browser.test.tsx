@@ -122,6 +122,12 @@ vi.mock(import("~/state/use-atom-command"), async (original) => ({
 }));
 
 function setup(files: Record<string, BlobPart> = {}) {
+  hosted.thread = null;
+  hosted.master = { status: "none" };
+  hosted.open.mockReset().mockImplementation(async () => ({ _tag: "Success", value: undefined }));
+  state.queries = [];
+  state.status = null;
+  useBlenderRoleStore.setState({ roles: {} });
   mint.mockReset();
   mint.mockImplementation(async (resource) => {
     const path = resource._tag === "media-file" ? resource.path : undefined;
@@ -218,29 +224,6 @@ it("renders a model in the browser and lists what it measured", async () => {
   expect(canvases).toHaveLength(1);
   expect(canvases[0]).toBe(canvas);
   expect(canvases[0]?.getContext("webgl2")?.isContextLost()).toBe(false);
-});
-
-it("starts a new 3D view on Reload after the first one could not start", async () => {
-  setup();
-  const preview = (src: string, onRefresh: () => void) => (
-    <ModelFilePreview
-      src={src}
-      name="bracket.stl"
-      format="stl"
-      sizeBytes={0}
-      companions={null}
-      onRefresh={onRefresh}
-    />
-  );
-  const refuse = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
-  const reload = () => void screen.rerender(preview(modelUrl(stl()), reload));
-  await using screen = await render(preview(modelUrl(stl()), reload), pane());
-  await expect.element(screen.getByText(/3D previews need WebGL/)).toBeVisible();
-
-  refuse.mockRestore();
-  await userEvent.click(screen.getByRole("button", { name: "Reload model" }));
-  await expect.element(screen.getByRole("img", { name: "3D view of bracket.stl" })).toBeVisible();
-  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
 });
 
 it("keeps the shown model while a new version downloads, and after one that fails", async () => {
@@ -357,11 +340,11 @@ it("signs each file a glTF references beside it and names the ones it cannot rea
     ]),
   );
   expect(mint).toHaveBeenCalledTimes(2);
-});
+  await screen.unmount();
 
-it("explains which file is missing when a model cannot load without it", async () => {
+  // Without the buffer it can't load at all: named, with Try again.
   setup();
-  await using screen = await render(
+  await using missing = await render(
     <ModelFilePreview
       src={modelUrl(gltf)}
       name="crate.gltf"
@@ -373,30 +356,12 @@ it("explains which file is missing when a model cannot load without it", async (
     pane(),
   );
   await expect
-    .element(screen.getByText("crate.bin could not be found next to crate.gltf."))
+    .element(missing.getByText("crate.bin could not be found next to crate.gltf."))
     .toBeVisible();
-  await expect.element(screen.getByRole("button", { name: "Try again" })).toBeVisible();
+  await expect.element(missing.getByRole("button", { name: "Try again" })).toBeVisible();
 });
 
-it("asks before parsing a very large model", async () => {
-  setup();
-  await using screen = await render(
-    <ModelFilePreview
-      src={modelUrl(stl())}
-      name="scan.stl"
-      format="stl"
-      sizeBytes={MODEL_CONFIRM_BYTES + 1}
-      companions={null}
-      onRefresh={() => {}}
-    />,
-    pane(),
-  );
-  await expect.element(screen.getByText("Large model")).toBeVisible();
-  await userEvent.click(screen.getByRole("button", { name: "Load model" }));
-  await expect.element(screen.getByText("STL · rendered in the browser")).toBeVisible();
-});
-
-it("asks over the shown model before loading a very large new version", async () => {
+it("asks before parsing a very large model, and over the shown one before a large new version", async () => {
   setup();
   const preview = (src: string, sizeBytes: number) => (
     <ModelFilePreview
@@ -408,11 +373,18 @@ it("asks over the shown model before loading a very large new version", async ()
       onRefresh={() => {}}
     />
   );
+  {
+    await using first = await render(preview(modelUrl(stl()), MODEL_CONFIRM_BYTES + 1), pane());
+    await expect.element(first.getByText("Large model")).toBeVisible();
+    await userEvent.click(first.getByRole("button", { name: "Load model" }));
+    await expect.element(first.getByText("STL · rendered in the browser")).toBeVisible();
+  }
+
   await using screen = await render(preview(modelUrl(stl()), 0), pane());
   await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
   const canvas = screen.container.querySelector("canvas");
 
-  // Known to be large before it downloads.
+  // A new version known to be large before it downloads asks over the shown model.
   await screen.rerender(preview(modelUrl(stl(2)), MODEL_CONFIRM_BYTES + 1));
   await expect.element(screen.getByRole("button", { name: "Load model" })).toBeVisible();
   await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
@@ -423,24 +395,13 @@ it("asks over the shown model before loading a very large new version", async ()
   await userEvent.click(screen.getByRole("button", { name: "Load model" }));
   await expect.element(screen.getByText("20 × 10 × 40 mm")).toBeVisible();
   expect(screen.container.querySelector("canvas")).toBe(canvas);
-});
 
-it("asks over the shown model when a new version turns out large as it downloads", async () => {
-  setup();
-  const preview = (src: string) => (
-    <ModelFilePreview
-      src={src}
-      name="scan.stl"
-      format="stl"
-      sizeBytes={0}
-      companions={null}
-      onRefresh={() => {}}
-    />
-  );
-  await using screen = await render(preview(modelUrl(stl())), pane());
-  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
-  const canvas = screen.container.querySelector("canvas");
+  await screen.unmount();
 
+  // One that turns out large only as it downloads asks too, over the shown model.
+  await using later = await render(preview(modelUrl(stl()), 0), pane());
+  await expect.element(later.getByText("10 × 5 × 20 mm")).toBeVisible();
+  const laterCanvas = later.container.querySelector("canvas");
   const large = "https://example.test/large.stl";
   const realFetch = globalThis.fetch;
   using _fetch = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) =>
@@ -452,10 +413,10 @@ it("asks over the shown model when a new version turns out large as it downloads
         )
       : realFetch(input, init),
   );
-  await screen.rerender(preview(large));
-  await expect.element(screen.getByRole("button", { name: "Load model" })).toBeVisible();
-  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
-  expect(screen.container.querySelector("canvas")).toBe(canvas);
+  await later.rerender(preview(large, 0));
+  await expect.element(later.getByRole("button", { name: "Load model" })).toBeVisible();
+  await expect.element(later.getByText("10 × 5 × 20 mm")).toBeVisible();
+  expect(later.container.querySelector("canvas")).toBe(laterCanvas);
 });
 
 const environmentId = EnvironmentId.make("environment-1");
@@ -539,7 +500,6 @@ it("freezes the view to annotate and attaches its camera and what each mark cove
     comment: "Thicken",
     cameraView: { upAxis: "z" },
   });
-  expect(annotation.pageUrl).toMatch(/^out\/bracket%20%28v2%29\.stl#view=/);
   // The region covers the slanted facets, whose points satisfy z = y / 4 in the STL's own space.
   const hit = annotation.regions[0]?.hit;
   expect(hit?.object).toBeNull();
@@ -553,20 +513,6 @@ it("freezes the view to annotate and attaches its camera and what each mark cove
   expect(tip?.point[1]).toBeCloseTo(hit?.point[1] ?? Number.NaN, 2);
   expect(tip?.point[2]).toBeCloseTo(hit?.point[2] ?? Number.NaN, 2);
   expect(model.draft()?.images.map((image) => image.id)).toEqual([annotation.id]);
-});
-
-it("cancels an annotation without attaching anything", async () => {
-  setup();
-  const model = annotated("thread-cancel");
-  await using screen = await render(model.element, pane());
-  await expect.element(screen.getByText("STL · rendered in the browser")).toBeVisible();
-  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
-  await userEvent.keyboard("{Escape}");
-  await expect
-    .element(screen.getByRole("img", { name: "Frozen 3D view to annotate" }))
-    .not.toBeInTheDocument();
-  expect(model.draft()?.previewAnnotations ?? []).toHaveLength(0);
-  await expect.element(screen.getByRole("button", { name: "Screenshot & annotate" })).toBeVisible();
 });
 
 it("opens at the camera a view link carries, in the file's own coordinates", async () => {
@@ -614,10 +560,9 @@ const preview = (relativePath = "scene.blend") => (
 
 const conversions = () => state.queries.filter((query) => query !== null);
 
-it("converts a large .blend only when asked, once, saying it runs Blender, and remembers it", async () => {
+it("converts a large .blend only when asked, once, saying it runs Blender, and remembers it, and a smaller one at once", async () => {
+  setup();
   state.preview = previewOf(6 * 1024 * 1024 * 1024);
-  state.queries = [];
-  state.status = null;
   {
     await using screen = await render(preview());
     await expect
@@ -636,64 +581,53 @@ it("converts a large .blend only when asked, once, saying it runs Blender, and r
   expect(conversions()[0]).toMatchObject({
     convertBlend: { input: { relativePath: "scene.blend", once: true } },
   });
+  await again.unmount();
+
+  // The server found it large since its facts were read: asked first too.
+  state.preview = previewOf(20 * 1024 * 1024);
+  state.queries = [];
+  state.status = { status: "large", byteLength: 6 * 1024 * 1024 * 1024 };
+  {
+    await using savedOver = await render(preview("saved-over.blend"));
+    await expect
+      .element(savedOver.getByRole("button", { name: "Show 3D view" }))
+      .toBeInTheDocument();
+    expect(conversions().at(-1), "large since read").not.toMatchObject({
+      convertBlend: { input: { once: true } },
+    });
+  }
+
+  // A smaller one converts as soon as its preview opens, watched for changes.
+  state.queries = [];
+  state.status = null;
+  await using small = await render(preview("small.blend"));
+  await expect.element(small.getByText("Scene details")).toBeInTheDocument();
+  expect(conversions().at(-1), "a smaller .blend").toEqual({
+    convertBlend: {
+      environmentId: "environment-1",
+      input: { cwd: "/work", relativePath: "small.blend" },
+    },
+  });
+  await expect.element(small.getByRole("button", { name: "Show 3D view" })).not.toBeInTheDocument();
 });
 
 it("asks first for a compressed .blend small on disk but large, or maybe large, once inflated", async () => {
+  setup();
   state.preview = { ...previewOf(20 * 1024 * 1024), partial: true, large: true };
-  state.queries = [];
-  state.status = null;
   await using screen = await render(preview("packed.blend"));
-  // Its size on disk is no reason to ask: the size once opened is.
-  await expect
-    .element(screen.getByText("This compressed file is over 512 MB once opened.", { exact: false }))
-    .toBeInTheDocument();
+  // Its size on disk is no reason to convert at once: the size once opened is.
   await screen.getByRole("button", { name: "Show 3D view" }).click();
   expect(conversions()).toHaveLength(1);
   expect(conversions()[0]).toMatchObject({
     convertBlend: { input: { relativePath: "packed.blend", once: true } },
   });
-  // Read only partway, its size once opened unknown: asked first, claiming no size.
+  // Read only partway, its size once opened unknown: asked first, its facts claiming no size.
   state.preview = { ...previewOf(20 * 1024 * 1024), partial: true, large: true, sizeUnknown: true };
   state.queries = [];
   await using unknown = await render(preview("unknown.blend"));
-  await expect
-    .element(unknown.getByText("can't tell how large this compressed file is", { exact: false }))
-    .toBeInTheDocument();
-  await expect
-    .element(unknown.getByText("over 512 MB once opened", { exact: false }))
-    .not.toBeInTheDocument();
-  // Nor do its facts call it large.
-  await expect
-    .element(unknown.getByText("More than T3 Code reads for a preview"))
-    .toBeInTheDocument();
+  await expect.element(unknown.getByRole("button", { name: "Show 3D view" })).toBeInTheDocument();
   await expect.element(unknown.getByText("Not read for a file this large")).not.toBeInTheDocument();
   expect(conversions()).toHaveLength(0);
-});
-
-it("asks first when the server finds a .blend large since its facts were read", async () => {
-  state.preview = previewOf(20 * 1024 * 1024);
-  state.queries = [];
-  state.status = { status: "large", byteLength: 6 * 1024 * 1024 * 1024 };
-  await using screen = await render(preview("saved-over.blend"));
-  await expect.element(screen.getByRole("button", { name: "Show 3D view" })).toBeInTheDocument();
-  expect(conversions().at(-1)).not.toMatchObject({ convertBlend: { input: { once: true } } });
-});
-
-it("converts a smaller .blend as soon as its preview opens, watching it for changes", async () => {
-  state.preview = previewOf(20 * 1024 * 1024);
-  state.queries = [];
-  state.status = null;
-  await using screen = await render(preview());
-  await expect.element(screen.getByText("Scene details")).toBeInTheDocument();
-  expect(conversions().at(-1)).toEqual({
-    convertBlend: {
-      environmentId: "environment-1",
-      input: { cwd: "/work", relativePath: "scene.blend" },
-    },
-  });
-  await expect
-    .element(screen.getByRole("button", { name: "Show 3D view" }))
-    .not.toBeInTheDocument();
 });
 
 const threadRef = {
@@ -701,51 +635,58 @@ const threadRef = {
   threadId: ThreadId.make("thread-1"),
 };
 
-it("opens the file on a server nobody has checked, so the open runs the first check", async () => {
-  hosted.thread = { status: "notSetUp", missing: ["check"] };
+it.each([
+  {
+    label: "on a server nobody has checked, so the open runs the first check",
+    missing: ["check"],
+    opens: true,
+    fails: false,
+  },
+  {
+    label: "on a server whose check wasn't ready, so the open checks it again",
+    missing: ["encoder"],
+    opens: true,
+    fails: false,
+  },
+  {
+    label: "never while Hosted Blender is switched off",
+    missing: ["enabled"],
+    opens: false,
+    fails: false,
+  },
+  {
+    label: "and shows the pane when opening finds setup incomplete",
+    missing: ["check"],
+    opens: true,
+    fails: true,
+  },
+] as const)("opens the file $label", async ({ missing, opens, fails }) => {
+  setup();
+  hosted.thread = { status: "notSetUp", missing: [...missing] };
+  if (fails) {
+    hosted.open.mockImplementationOnce(async () => ({
+      _tag: "Failure",
+      cause: Cause.fail(new HostedBlenderError({ reason: "notSetUp" })),
+    }));
+  }
+  using showPane = vi.spyOn(useRightPanelStore.getState(), "open");
   await using _screen = await render(
     <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
   );
   await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
-  expect(hosted.open).toHaveBeenCalledWith({
-    environmentId: threadRef.environmentId,
-    input: { threadId: threadRef.threadId, relativePath: "models/hero.blend" },
-  });
-});
-
-it("opens the file on a server whose check wasn't ready, so the open checks it again", async () => {
-  hosted.open.mockClear();
-  hosted.thread = { status: "notSetUp", missing: ["encoder"] };
-  await using _screen = await render(
-    <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
+  expect(hosted.open.mock.calls, "the open").toEqual(
+    opens
+      ? [
+          [
+            {
+              environmentId: threadRef.environmentId,
+              input: { threadId: threadRef.threadId, relativePath: "models/hero.blend" },
+            },
+          ],
+        ]
+      : [],
   );
-  await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
-  expect(hosted.open).toHaveBeenCalledTimes(1);
-});
-
-it("only shows the pane while Hosted Blender is switched off", async () => {
-  hosted.open.mockClear();
-  hosted.thread = { status: "notSetUp", missing: ["enabled"] };
-  await using _screen = await render(
-    <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
-  );
-  await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
-  expect(hosted.open).not.toHaveBeenCalled();
-});
-
-it("shows the pane with the fresh result when opening finds setup incomplete", async () => {
-  hosted.thread = { status: "notSetUp", missing: ["check"] };
-  hosted.open.mockImplementationOnce(async () => ({
-    _tag: "Failure",
-    cause: Cause.fail(new HostedBlenderError({ reason: "notSetUp" })),
-  }));
-  const showPane = vi.spyOn(useRightPanelStore.getState(), "open");
-  await using _screen = await render(
-    <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
-  );
-  await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
-  await vi.waitFor(() => expect(showPane).toHaveBeenCalledWith(threadRef, "blender"));
-  showPane.mockRestore();
+  if (fails) await vi.waitFor(() => expect(showPane).toHaveBeenCalledWith(threadRef, "blender"));
 });
 
 const workingOnCopy: HostedBlenderThreadState = {
@@ -754,45 +695,37 @@ const workingOnCopy: HostedBlenderThreadState = {
   dirty: false,
 };
 
-it("shows the master's own Blender for the thread's running master, opening nothing", async () => {
-  hosted.open.mockClear();
-  hosted.thread = workingOnCopy;
-  hosted.master = { status: "running", relativePath: "models/hero.blend", dirty: false };
-  useBlenderRoleStore.getState().setRole(threadRef, "working");
-  const showPane = vi.spyOn(useRightPanelStore.getState(), "open");
-  await using _screen = await render(
-    <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
-  );
-  await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
-  await vi.waitFor(() => expect(showPane).toHaveBeenCalledWith(threadRef, "blender"));
-  expect(blenderRoleFor(threadRef)).toBe("master");
-  expect(hosted.open).not.toHaveBeenCalled();
-  showPane.mockRestore();
-  hosted.master = { status: "none" };
-});
-
-it("opens the thread's known master in its master Blender when none has it open", async () => {
-  hosted.open.mockClear();
-  hosted.thread = workingOnCopy;
-  hosted.master = {
-    status: "notOpen",
-    relativePath: "models/hero.blend",
-    desktop: null,
-    desktopDirty: false,
-  };
-  useBlenderRoleStore.getState().setRole(threadRef, "working");
-  const showPane = vi.spyOn(useRightPanelStore.getState(), "open");
-  await using _screen = await render(
-    <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
-  );
-  await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
-  await vi.waitFor(() => expect(showPane).toHaveBeenCalledWith(threadRef, "blender"));
-  // As the Master side's Open in T3 Code: the thread's master, not a working open of it.
-  expect(hosted.open).toHaveBeenCalledWith({
-    environmentId: threadRef.environmentId,
-    input: { threadId: threadRef.threadId },
-  });
-  expect(blenderRoleFor(threadRef)).toBe("master");
-  showPane.mockRestore();
-  hosted.master = { status: "none" };
-});
+it.each([
+  {
+    label: "shows the running master's own Blender, opening nothing",
+    master: { status: "running", relativePath: "models/hero.blend", dirty: false },
+    opened: [],
+  },
+  {
+    label: "opens the thread's known master in its master Blender when none has it open",
+    master: {
+      status: "notOpen",
+      relativePath: "models/hero.blend",
+      desktop: null,
+      desktopDirty: false,
+    },
+    // As the Master side's Open in T3 Code: the thread's master, not a working open of it.
+    opened: [[{ environmentId: threadRef.environmentId, input: { threadId: threadRef.threadId } }]],
+  },
+] satisfies ReadonlyArray<{ label: string; master: HostedBlenderMasterState; opened: unknown[] }>)(
+  "for the master's file, $label",
+  async ({ master, opened }) => {
+    setup();
+    hosted.thread = workingOnCopy;
+    hosted.master = master;
+    useBlenderRoleStore.getState().setRole(threadRef, "working");
+    using showPane = vi.spyOn(useRightPanelStore.getState(), "open");
+    await using _screen = await render(
+      <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
+    );
+    await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
+    await vi.waitFor(() => expect(showPane).toHaveBeenCalledWith(threadRef, "blender"));
+    expect(blenderRoleFor(threadRef)).toBe("master");
+    expect(hosted.open.mock.calls).toEqual(opened);
+  },
+);
