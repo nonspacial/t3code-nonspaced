@@ -35,35 +35,35 @@ function box(name = "", at: readonly [number, number, number] = [0, 0, 0]) {
   return mesh;
 }
 
-const close = (actual: readonly number[], expected: readonly number[]) =>
-  actual.forEach((value, index) => expect(value).toBeCloseTo(expected[index]!, 5));
+const close = (actual: readonly number[], expected: readonly number[], label?: string) =>
+  actual.forEach((value, index) => expect(value, label).toBeCloseTo(expected[index]!, 5));
 
 describe("model file space", () => {
-  it("reports an STL's own Z-up coordinates, not the centred Y-up scene", () => {
-    const root = placed(box("", [10, 4, 5]), "stl");
-    const space = modelSpace(root, { format: "stl", blenderSource: false });
-    expect(space.upAxis).toBe("z");
-    close(space.toFile(space.fromFile([10, 4, 5])), [10, 4, 5]);
-    close(space.toFile(new Vector3(0, 0, 0)), [10, 4, 5]);
+  it("reports a model's points in the file's own coordinates, not the centred Y-up scene", () => {
+    const stlRoot = placed(box("", [10, 4, 5]), "stl");
+    const stl = modelSpace(stlRoot, { format: "stl", blenderSource: false });
+    expect(stl.upAxis, "STL").toBe("z");
+    close(stl.toFile(stl.fromFile([10, 4, 5])), [10, 4, 5], "STL round trip");
+    close(stl.toFile(new Vector3(0, 0, 0)), [10, 4, 5], "STL centre");
     // Up on screen is up in the file.
-    const up = space.fromFile([10, 4, 6]).sub(space.fromFile([10, 4, 5]));
-    close(up.toArray(), [0, 1, 0]);
-  });
+    const up = stl.fromFile([10, 4, 6]).sub(stl.fromFile([10, 4, 5]));
+    close(up.toArray(), [0, 1, 0], "STL up");
 
-  it("keeps a glTF's Y-up coordinates", () => {
-    const root = placed(box("", [1, 2, 3]), "glb");
-    const space = modelSpace(root, { format: "glb", blenderSource: false });
-    expect(space.upAxis).toBe("y");
-    close(space.toFile(new Vector3(0, 0, 0)), [1, 2, 3]);
-  });
+    const gltf = modelSpace(placed(box("", [1, 2, 3]), "glb"), {
+      format: "glb",
+      blenderSource: false,
+    });
+    expect(gltf.upAxis, "glTF keeps Y-up").toBe("y");
+    close(gltf.toFile(new Vector3(0, 0, 0)), [1, 2, 3], "glTF centre");
 
-  it("converts a GLB made from a .blend back to Blender's Z-up coordinates", () => {
-    const root = placed(box("", [1, 2, 3]), "glb");
-    const space = modelSpace(root, { format: "glb", blenderSource: true });
-    expect(space.upAxis).toBe("z");
+    const fromBlend = modelSpace(placed(box("", [1, 2, 3]), "glb"), {
+      format: "glb",
+      blenderSource: true,
+    });
+    expect(fromBlend.upAxis, "a GLB made from a .blend").toBe("z");
     // Blender's exporter writes (x, y, z) as glTF (x, z, -y).
-    close(space.toFile(new Vector3(0, 0, 0)), [1, -3, 2]);
-    close(space.toFile(space.fromFile([4, 5, 6])), [4, 5, 6]);
+    close(fromBlend.toFile(new Vector3(0, 0, 0)), [1, -3, 2], "a GLB made from a .blend, centre");
+    close(fromBlend.toFile(fromBlend.fromFile([4, 5, 6])), [4, 5, 6], "a GLB made from a .blend");
   });
 });
 
@@ -76,8 +76,9 @@ describe("hitUnderMark", () => {
     camera.updateMatrixWorld(true);
     return { root, camera, space: modelSpace(root, { format: "glb", blenderSource: false }) };
   }
+  const centre = [{ x: 0.5, y: 0.5 }];
 
-  it("names the first object any sample lands on and where", () => {
+  it("names the first object any sample lands on and where, as the file names it", () => {
     const { root, camera, space } = scene(box("Flange"));
     const hit = hitUnderMark({
       root,
@@ -90,51 +91,47 @@ describe("hitUnderMark", () => {
     });
     expect(hit?.object).toBe("Flange");
     close(hit?.point ?? [], [0, 0, 0.5]);
-  });
 
-  it("falls back to the nearest named parent, then to no name", () => {
     const group = new Group();
     group.name = "Bracket";
     group.add(box());
-    expect(hitUnderMark({ ...scene(group), samples: [{ x: 0.5, y: 0.5 }] })?.object).toBe(
+    expect(hitUnderMark({ ...scene(group), samples: centre })?.object, "named parent").toBe(
       "Bracket",
     );
-    expect(hitUnderMark({ ...scene(box()), samples: [{ x: 0.5, y: 0.5 }] })?.object).toBeNull();
-  });
+    expect(hitUnderMark({ ...scene(box()), samples: centre })?.object, "no name").toBeNull();
 
-  it("lands on a point cloud, which has no faces to hit", () => {
+    const mesh = box("Mount_Plate001");
+    mesh.userData.name = "Mount Plate.001";
+    expect(
+      hitUnderMark({ ...scene(mesh), samples: centre })?.object,
+      "a glTF node's original name, which three.js sanitizes",
+    ).toBe("Mount Plate.001");
+
     const cloud = new Points(new BoxGeometry(1, 1, 1, 8, 8, 8), new PointsMaterial());
     cloud.name = "Scan";
-    expect(hitUnderMark({ ...scene(cloud), samples: [{ x: 0.5, y: 0.5 }] })?.object).toBe("Scan");
-  });
+    expect(hitUnderMark({ ...scene(cloud), samples: centre })?.object, "a point cloud").toBe(
+      "Scan",
+    );
 
-  it("reports the point cloud's vertex itself, not the nearest spot on the ray", () => {
     const geometry = new BufferGeometry();
     geometry.setAttribute(
       "position",
       new BufferAttribute(new Float32Array([0.003, 0.004, 0, -1, -1, 0]), 3),
     );
-    const root = new Group();
-    root.add(new Points(geometry, new PointsMaterial()));
-    root.updateMatrixWorld(true);
-    const camera = new PerspectiveCamera(35, 1, 0.1, 100);
-    camera.position.set(0, 0, 10);
-    camera.lookAt(0, 0, 0);
-    camera.updateMatrixWorld(true);
-    const space = modelSpace(root, { format: "ply", blenderSource: false });
-    const hit = hitUnderMark({ root, camera, space, samples: [{ x: 0.5, y: 0.5 }] });
-    close(hit?.point ?? [], [0.003, 0.004, 0]);
-  });
+    const points = new Group();
+    points.add(new Points(geometry, new PointsMaterial()));
+    points.updateMatrixWorld(true);
+    const vertexHit = hitUnderMark({
+      root: points,
+      camera,
+      space: modelSpace(points, { format: "ply", blenderSource: false }),
+      samples: centre,
+    });
+    close(vertexHit?.point ?? [], [0.003, 0.004, 0], "a point cloud's vertex, not the ray");
 
-  it("keeps a glTF node's original name, which three.js sanitizes", () => {
-    const mesh = box("Mount_Plate001");
-    mesh.userData.name = "Mount Plate.001";
-    expect(hitUnderMark({ ...scene(mesh), samples: [{ x: 0.5, y: 0.5 }] })?.object).toBe(
-      "Mount Plate.001",
-    );
-  });
-
-  it("returns nothing when every sample misses", () => {
-    expect(hitUnderMark({ ...scene(box("Flange")), samples: [{ x: 0.05, y: 0.95 }] })).toBeNull();
+    expect(
+      hitUnderMark({ ...scene(box("Flange")), samples: [{ x: 0.05, y: 0.95 }] }),
+      "every sample misses",
+    ).toBeNull();
   });
 });
