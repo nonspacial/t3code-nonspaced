@@ -77,13 +77,11 @@ describe("HelperPacketReader", () => {
         { _tag: "event", event: { type: "exited", process: "blender", code: 0, signal: null } },
       ]);
     }
-  });
 
-  it("rejects a corrupt length instead of buffering forever", () => {
-    const reader = new HelperPacketReader();
-    expect(() => reader.push(new Uint8Array([0xff, 0xff, 0xff, 0xff, 1]))).toThrow(
-      "malformed packet",
-    );
+    // A corrupt length is rejected instead of buffered forever.
+    expect(() =>
+      new HelperPacketReader().push(new Uint8Array([0xff, 0xff, 0xff, 0xff, 1])),
+    ).toThrow("malformed packet");
   });
 });
 
