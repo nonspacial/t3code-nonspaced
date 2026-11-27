@@ -47,9 +47,7 @@ describe("parsers", () => {
       ),
     ).toBe("1.24.2");
     expect(parseGstreamerVersion("")).toBeNull();
-  });
-
-  it("reads os-release, quoted or not", () => {
+    // os-release, quoted or not.
     expect(
       parseOsRelease(
         '# comment\nID=ubuntu\nID_LIKE=debian\nVERSION_ID="24.04"\nPRETTY_NAME="Ubuntu 24.04.1 LTS"\n',
@@ -65,23 +63,111 @@ describe("parsers", () => {
 });
 
 describe("evaluateSetup", () => {
-  it("is ready with everything installed, and remembers the capture path and encoder", () => {
-    const result = checked(complete);
-    expect(result.ready).toBe(true);
-    expect(result.capture).toBe("ext-image-copy-capture");
-    expect(result.packageManager).toBe("pacman");
-    expect(result.distro).toBe("Arch Linux");
-    expect(result.checks.find((check) => check.item === "encoder")).toEqual({
-      item: "encoder",
-      status: "ok",
-      found: "vah264enc",
-    });
-    // glupload is only asked of NVIDIA hosts.
-    expect(result.checks.some((check) => check.item === "glupload")).toBe(false);
-    expect(result.commands).toEqual([]);
+  it.each([
+    [
+      "everything installed is ready, with its capture path and encoder",
+      () => {
+        const result = checked(complete);
+        expect(result.ready).toBe(true);
+        expect(result.capture).toBe("ext-image-copy-capture");
+        expect(result.packageManager).toBe("pacman");
+        expect(result.distro).toBe("Arch Linux");
+        expect(result.checks.find((check) => check.item === "encoder")).toEqual({
+          item: "encoder",
+          status: "ok",
+          found: "vah264enc",
+        });
+        // glupload is only asked of NVIDIA hosts.
+        expect(result.checks.some((check) => check.item === "glupload")).toBe(false);
+        expect(result.commands).toEqual([]);
+      },
+    ],
+    [
+      "Blender must still be in long-term support, or newer",
+      () => {
+        const blender = (version: string) => ({
+          ...complete,
+          blender: { path: "/usr/bin/blender", realPath: "/usr/bin/blender", version },
+        });
+        expect(statusOf(blender("4.2.9"), "blender")).toBe("outdated");
+        expect(checked(blender("4.2.9")).ready).toBe(false);
+        expect(statusOf(blender("4.5.0"), "blender")).toBe("ok");
+        expect(statusOf({ ...complete, blender: null }, "blender")).toBe("missing");
+      },
+    ],
+    [
+      "labwc older than 0.9 uses wlr-screencopy",
+      () => {
+        const result = checked({ ...complete, labwcVersion: "0.8.4" });
+        expect(result.ready).toBe(true);
+        expect(result.capture).toBe("wlr-screencopy");
+        expect(checked({ ...complete, labwcVersion: null }).capture).toBeNull();
+      },
+    ],
+    [
+      "GStreamer must be 1.24 or later, with a working encoder",
+      () => {
+        expect(statusOf({ ...complete, gstreamerVersion: "1.22.0" }, "gstreamer")).toBe("outdated");
+        expect(checked({ ...complete, gstreamerVersion: "1.22.0" }).ready).toBe(false);
+        const none = { ...complete, encoder: null, encoderInstalled: false };
+        expect(statusOf(none, "encoder")).toBe("missing");
+        expect(checked(none).ready).toBe(false);
+        // Installed, but none passed the test encode (a busy GPU): not ready, nothing to install.
+        const failing = { ...complete, encoder: null };
+        expect(statusOf(failing, "encoder")).toBe("failed");
+        expect(checked(failing).ready).toBe(false);
+        expect(needsInstall(checked(failing))).toBe(false);
+        expect(needsInstall(checked(none))).toBe(true);
+      },
+    ],
+    [
+      "NVIDIA needs glupload",
+      () => {
+        expect(statusOf({ ...complete, nvidia: true, glupload: false }, "glupload")).toBe(
+          "missing",
+        );
+        expect(checked({ ...complete, nvidia: true, glupload: false }).ready).toBe(false);
+        expect(checked({ ...complete, nvidia: true, glupload: true }).ready).toBe(true);
+      },
+    ],
+    [
+      "the GPU and the Blender MCP only warn, since the pane can do without",
+      () => {
+        const noGpu = checked({ ...complete, renderNodes: { total: 0, accessible: 0 } });
+        expect(noGpu.ready).toBe(true);
+        expect(noGpu.checks.find((check) => check.item === "gpu")?.status).toBe("warning");
+        const noAccess = checked({ ...complete, renderNodes: { total: 2, accessible: 0 } });
+        expect(noAccess.ready).toBe(true);
+        expect(noAccess.checks.find((check) => check.item === "gpu")?.status).toBe("missing");
+        const lookalike = checked({
+          ...complete,
+          blenderMcp: { path: "/usr/bin/blender-mcp", official: false },
+        });
+        expect(lookalike.checks.find((check) => check.item === "blenderMcp")).toEqual({
+          item: "blenderMcp",
+          status: "unrecognized",
+          found: "/usr/bin/blender-mcp",
+        });
+        expect(lookalike.commands.join("\n")).toContain("blender_mcp.git");
+        // Found but silent when T3 started it to read its tools: agents get no Blender servers.
+        const silent = checked({
+          ...complete,
+          blenderMcp: { path: "/home/me/.local/bin/blender-mcp", official: true, answered: false },
+        });
+        expect(silent.ready).toBe(true);
+        expect(silent.checks.find((check) => check.item === "blenderMcp")?.status).toBe("failed");
+        expect(silent.commands.join("\n")).toContain("uv tool install");
+        const noMcp = checked({ ...complete, blenderMcp: null });
+        expect(noMcp.ready).toBe(true);
+        expect(noMcp.checks.find((check) => check.item === "blenderMcp")?.status).toBe("missing");
+      },
+    ],
+  ] as const)("evaluates setup facts: %s", (_, check) => {
+    check();
   });
 
-  it("is not available on macOS and Windows, or where the helper isn't built", () => {
+  it("is not available on Ubuntu 22.04 or Debian 12, but is on their next releases", () => {
+    // macOS and Windows, or where the helper isn't built.
     for (const platform of ["darwin", "win32"] as const) {
       expect(evaluateSetup({ ...complete, platform })).toEqual({
         status: "unavailable",
@@ -93,9 +179,6 @@ describe("evaluateSetup", () => {
       status: "unavailable",
       reason: "platform",
     });
-  });
-
-  it("is not available on Ubuntu 22.04 or Debian 12, but is on their next releases", () => {
     const release = (text: string) => ({ ...complete, osRelease: parseOsRelease(text) });
     expect(
       evaluateSetup(release('ID=ubuntu\nVERSION_ID="22.04"\nPRETTY_NAME="Ubuntu 22.04.5 LTS"')),
@@ -141,74 +224,6 @@ describe("evaluateSetup", () => {
         reason: "sandboxedBlender",
       });
     }
-  });
-
-  it("needs a Blender that is still in long-term support, or newer", () => {
-    const blender = (version: string) => ({
-      ...complete,
-      blender: { path: "/usr/bin/blender", realPath: "/usr/bin/blender", version },
-    });
-    expect(statusOf(blender("4.2.9"), "blender")).toBe("outdated");
-    expect(checked(blender("4.2.9")).ready).toBe(false);
-    expect(statusOf(blender("4.5.0"), "blender")).toBe("ok");
-    expect(statusOf({ ...complete, blender: null }, "blender")).toBe("missing");
-  });
-
-  it("uses wlr-screencopy with labwc older than 0.9", () => {
-    const result = checked({ ...complete, labwcVersion: "0.8.4" });
-    expect(result.ready).toBe(true);
-    expect(result.capture).toBe("wlr-screencopy");
-    expect(checked({ ...complete, labwcVersion: null }).capture).toBeNull();
-  });
-
-  it("needs GStreamer 1.24 or later and a working encoder", () => {
-    expect(statusOf({ ...complete, gstreamerVersion: "1.22.0" }, "gstreamer")).toBe("outdated");
-    expect(checked({ ...complete, gstreamerVersion: "1.22.0" }).ready).toBe(false);
-    const none = { ...complete, encoder: null, encoderInstalled: false };
-    expect(statusOf(none, "encoder")).toBe("missing");
-    expect(checked(none).ready).toBe(false);
-    // Installed, but none passed the test encode (a busy GPU): not ready, nothing to install.
-    const failing = { ...complete, encoder: null };
-    expect(statusOf(failing, "encoder")).toBe("failed");
-    expect(checked(failing).ready).toBe(false);
-    expect(needsInstall(checked(failing))).toBe(false);
-    expect(needsInstall(checked(none))).toBe(true);
-  });
-
-  it("asks for glupload on NVIDIA", () => {
-    expect(statusOf({ ...complete, nvidia: true, glupload: false }, "glupload")).toBe("missing");
-    expect(checked({ ...complete, nvidia: true, glupload: false }).ready).toBe(false);
-    expect(checked({ ...complete, nvidia: true, glupload: true }).ready).toBe(true);
-  });
-
-  it("only warns about the GPU and the Blender MCP, which the pane can do without", () => {
-    const noGpu = checked({ ...complete, renderNodes: { total: 0, accessible: 0 } });
-    expect(noGpu.ready).toBe(true);
-    expect(noGpu.checks.find((check) => check.item === "gpu")?.status).toBe("warning");
-    const noAccess = checked({ ...complete, renderNodes: { total: 2, accessible: 0 } });
-    expect(noAccess.ready).toBe(true);
-    expect(noAccess.checks.find((check) => check.item === "gpu")?.status).toBe("missing");
-    const lookalike = checked({
-      ...complete,
-      blenderMcp: { path: "/usr/bin/blender-mcp", official: false },
-    });
-    expect(lookalike.checks.find((check) => check.item === "blenderMcp")).toEqual({
-      item: "blenderMcp",
-      status: "unrecognized",
-      found: "/usr/bin/blender-mcp",
-    });
-    expect(lookalike.commands.join("\n")).toContain("blender_mcp.git");
-    // Found but silent when T3 started it to read its tools: agents get no Blender servers.
-    const silent = checked({
-      ...complete,
-      blenderMcp: { path: "/home/me/.local/bin/blender-mcp", official: true, answered: false },
-    });
-    expect(silent.ready).toBe(true);
-    expect(silent.checks.find((check) => check.item === "blenderMcp")?.status).toBe("failed");
-    expect(silent.commands.join("\n")).toContain("uv tool install");
-    const noMcp = checked({ ...complete, blenderMcp: null });
-    expect(noMcp.ready).toBe(true);
-    expect(noMcp.checks.find((check) => check.item === "blenderMcp")?.status).toBe("missing");
   });
 
   it("gives install commands for each package manager, never running them itself", () => {
@@ -258,12 +273,10 @@ describe("evaluateSetup", () => {
     expect(checked({ ...missing, osRelease: parseOsRelease("ID=gentoo") }).packageManager).toBe(
       null,
     );
-  });
-
-  it("never offers to install T3 Code's own helper with the system's package manager", () => {
-    const commands = checked({ ...complete, helper: null }).commands.join("\n");
-    expect(commands).not.toContain("sudo");
-    expect(commands).toContain("hidden display helper");
+    // T3 Code's own helper is never offered through the system's package manager.
+    const helperCommands = checked({ ...complete, helper: null }).commands.join("\n");
+    expect(helperCommands).not.toContain("sudo");
+    expect(helperCommands).toContain("hidden display helper");
   });
 });
 
@@ -287,16 +300,6 @@ describe("installPrompt", () => {
     expect(prompt).toContain("9876");
     // A provider without T3's secret card never gets a password through chat.
     expect(prompt).toContain("If you don't have `request_secret`, don't run sudo");
-  });
-
-  it("names an official Blender MCP that didn't answer as something to reinstall", () => {
-    const result = checked({
-      ...complete,
-      blenderMcp: { path: "/home/me/.local/bin/blender-mcp", official: true, answered: false },
-    });
-    expect(installPrompt(result, null)).toContain(
-      "the `blender-mcp` installed didn't answer when T3 Code started it",
-    );
   });
 
   it("names the distro only from os-release's checked ID and VERSION_ID", () => {
