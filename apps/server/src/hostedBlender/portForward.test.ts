@@ -79,29 +79,22 @@ describe("forwardLoopbackPort", () => {
       yield* Scope.close(scope, Exit.void);
       yield* Effect.promise(() => open.closed);
       expect(yield* exchange(listenPort, "again")).toBe("error:ECONNREFUSED");
-    }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
-  );
 
-  it.live("closes a forwarded connection whose target refuses it", () =>
-    Effect.gen(function* () {
-      const net = yield* NetService.NetService;
-      const listenPort = yield* net.reserveLoopbackPort();
+      // A target that refuses: the forwarded connection closes.
+      const refusingPort = yield* net.reserveLoopbackPort();
       const nobody = yield* net.reserveLoopbackPort();
-      yield* forwardLoopbackPort({ listenPort, targetPort: nobody });
+      yield* forwardLoopbackPort({ listenPort: refusingPort, targetPort: nobody });
       // Closed with bytes unread, the kernel may reset the connection rather than end it.
-      expect(["closed", "error:ECONNRESET"]).toContain(yield* exchange(listenPort, "hello"));
-    }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
-  );
+      expect(["closed", "error:ECONNRESET"], "a target that refuses").toContain(
+        yield* exchange(refusingPort, "hello"),
+      );
 
-  it.live("fails when its port is taken", () =>
-    Effect.gen(function* () {
-      const target = yield* echoServer;
-      const result = yield* forwardLoopbackPort({
+      const taken = yield* forwardLoopbackPort({
         listenPort: target.port,
         targetPort: target.port,
       }).pipe(Effect.flip);
-      expect(result._tag).toBe("PortForwardError");
-    }).pipe(Effect.scoped),
+      expect(taken._tag, "its port taken").toBe("PortForwardError");
+    }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
   );
 
   it.live("closes a connection its check refuses before anything reaches the target", () =>
@@ -121,17 +114,12 @@ describe("forwardLoopbackPort", () => {
       expect(["closed", "error:ECONNRESET"]).toContain(yield* exchange(listenPort, "hello"));
       expect(checked).toHaveLength(1);
       expect(target.connections.count).toBe(0);
-    }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
-  );
 
-  it.live("closes a connection whose check throws, and keeps relaying others", () =>
-    Effect.gen(function* () {
-      const target = yield* echoServer;
-      const net = yield* NetService.NetService;
-      const listenPort = yield* net.reserveLoopbackPort();
+      // A check that throws closes that connection, and the relay keeps serving others.
+      const throwingPort = yield* net.reserveLoopbackPort();
       let calls = 0;
       yield* forwardLoopbackPort({
-        listenPort,
+        listenPort: throwingPort,
         targetPort: target.port,
         accept: () => {
           calls += 1;
@@ -139,8 +127,12 @@ describe("forwardLoopbackPort", () => {
           return true;
         },
       });
-      expect(["closed", "error:ECONNRESET"]).toContain(yield* exchange(listenPort, "hello"));
-      expect(yield* exchange(listenPort, "again")).toBe("echo:again");
+      expect(["closed", "error:ECONNRESET"], "a check that throws").toContain(
+        yield* exchange(throwingPort, "hello"),
+      );
+      expect(yield* exchange(throwingPort, "again"), "the next connection is relayed").toBe(
+        "echo:again",
+      );
     }).pipe(Effect.scoped, Effect.provide(NetService.layer)),
   );
 });
