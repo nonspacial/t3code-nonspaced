@@ -26,7 +26,11 @@ export function blendFactRows(
     return [
       row(
         resolve(msg("Contents", { $context: "what a Blender file holds" })),
-        resolve(msg("Not read for a file this large")),
+        // A compressed file can stop being read before its size is known, and a small one with
+        // many blocks can pass a read limit: neither is known to be large.
+        preview.large === true && preview.sizeUnknown !== true
+          ? resolve(msg("Not read for a file this large"))
+          : resolve(msg("More than T3 Code reads for a preview")),
       ),
       size,
     ];

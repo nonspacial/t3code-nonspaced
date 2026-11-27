@@ -23,19 +23,17 @@ export const workspaceRootOf = (record: WorkingCopyRecord) =>
     : null;
 
 /**
- * Whether the workspace's held folder, as far as it exists, stays inside the workspace: a `.t3`
- * or `held-working-copies` that is a symlink out of it holds nothing there.
+ * Whether the workspace's held folder, as far as it exists, is its own: a `.t3` or
+ * `held-working-copies` that is a symlink at all holds nothing there, so a held file is always
+ * under the folder the guards against opening one compare with.
  */
 export const heldFolderInside = Effect.fnUntraced(function* (root: string) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const realRoot = yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root));
   for (const folder of [path.join(root, ".t3"), path.join(root, HELD_FOLDER)]) {
     const info = yield* fileSystem.lstat(folder).pipe(Effect.option);
     if (Option.isNone(info)) return true;
-    if (info.value.type !== "SymbolicLink") continue;
-    const real = yield* fileSystem.realPath(folder).pipe(Effect.option);
-    if (Option.isNone(real) || !real.value.startsWith(`${realRoot}${path.sep}`)) return false;
+    if (info.value.type === "SymbolicLink") return false;
   }
   return true;
 });
@@ -222,6 +220,68 @@ export const takeCopied = Effect.fnUntraced(function* (from: string, copied: Cop
   return yield* restoreAside(from, aside);
 });
 
+const isAlreadyExists = (error: PlatformError.PlatformError) =>
+  error.reason._tag === "AlreadyExists";
+
+const sameFile = (a: FileSystem.File.Info, b: FileSystem.File.Info) =>
+  Option.isSome(a.ino) && Option.isSome(b.ino) && a.dev === b.dev && a.ino.value === b.ino.value;
+
+/**
+ * Gives `source` the name `to`, never over a file there (`inTheWay`): a hard link, or with none
+ * (exFAT, FAT32, SMB) an empty file made only if the name is free, the source renamed over it. Its
+ * own name may be left: the caller removes it. A file renamed onto `to` between the last check
+ * and the rename is lost.
+ */
+export const publishAt = Effect.fnUntraced(function* (source: string, to: string) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const linked = yield* fileSystem.link(source, to).pipe(
+    Effect.as("published" as const),
+    Effect.catchIf(isAlreadyExists, () => Effect.succeed("inTheWay" as const)),
+    Effect.orElseSucceed(() => null),
+  );
+  if (linked !== null) return linked;
+  const claimed = yield* Effect.scoped(
+    fileSystem.open(to, { flag: "wx" }).pipe(Effect.flatMap((file) => file.stat)),
+  ).pipe(
+    Effect.asSome,
+    Effect.catchIf(isAlreadyExists, () => Effect.succeedNone),
+  );
+  if (Option.isNone(claimed)) return "inTheWay" as const;
+  const stillOurs = fileSystem.lstat(to).pipe(
+    Effect.map((info) => sameFile(info, claimed.value)),
+    Effect.orElseSucceed(() => false),
+  );
+  if (!(yield* stillOurs)) return "inTheWay" as const;
+  yield* fileSystem.rename(source, to).pipe(
+    Effect.tapError(() =>
+      Effect.gen(function* () {
+        if (yield* stillOurs) yield* fileSystem.remove(to).pipe(Effect.ignore);
+      }),
+    ),
+  );
+  return "published" as const;
+});
+
+/**
+ * Removes the empty file `publishAt` claims a name with, left by a crash before its rename, and
+ * says whether the name is free. An empty file is never anyone's work, so one there is taken as
+ * T3's: nothing is lost by removing it.
+ */
+export const clearPlaceholder = Effect.fnUntraced(function* (to: string) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const info = yield* fileSystem.lstat(to).pipe(Effect.option);
+  if (Option.isNone(info)) return true;
+  if (
+    info.value.type !== "File" ||
+    Number(info.value.size) !== 0 ||
+    Option.getOrElse(info.value.nlink, () => 2n) !== 1n
+  ) {
+    return false;
+  }
+  yield* fileSystem.remove(to);
+  return true;
+});
+
 /**
  * Puts the file a hold set `aside` (as its record names) back at `to`, never over a file there
  * by then: `setAside`, the file left aside, when one is. `restored` once it is back, or when
@@ -229,49 +289,32 @@ export const takeCopied = Effect.fnUntraced(function* (from: string, copied: Cop
  */
 export const restoreAside = Effect.fnUntraced(function* (to: string, aside: string) {
   const fileSystem = yield* FileSystem.FileSystem;
-  const [asideFile, there] = yield* Effect.all([
-    sizeAndTime(fileSystem, aside),
-    sizeAndTime(fileSystem, to),
-  ]);
+  const asideFile = yield* sizeAndTime(fileSystem, aside);
   if (asideFile === null) return "restored" as const;
+  yield* clearPlaceholder(to);
+  const there = yield* sizeAndTime(fileSystem, to);
   if (there === null) {
-    const linked = yield* fileSystem.link(aside, to).pipe(
-      Effect.as(true),
-      Effect.catchIf(
-        (error) => error.reason._tag === "AlreadyExists",
-        () => Effect.succeed(false),
-      ),
-    );
-    if (!linked) return "setAside" as const;
+    if ((yield* publishAt(aside, to)) === "inTheWay") return "setAside" as const;
     // Linked back before a crash: the same file has both names.
   } else if (there.file === "" || there.file !== asideFile.file) {
     return "setAside" as const;
   }
-  yield* fileSystem.remove(aside);
+  yield* fileSystem.remove(aside, { force: true });
   return "restored" as const;
 });
 
 /**
- * Puts a copy held on the project's drive back at `to` by a hard link, which never replaces a
- * file there (`inTheWay`); the caller then removes the held name. A drive with no hard links
- * copies it back instead.
+ * Puts a copy held on the project's drive back at `to` with `publishAt`, which never replaces a
+ * file there and copies nothing; the caller then removes the held name if it is still there. Only
+ * a held folder that has come to be on another drive than `to` copies it back instead.
  */
 export const linkBack = Effect.fnUntraced(function* (held: string, to: string) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const linked = yield* fileSystem.link(held, to).pipe(
-    Effect.as("linked" as const),
-    Effect.catchIf(
-      (error) => error.reason._tag === "AlreadyExists",
-      () => Effect.succeed("inTheWay" as const),
-    ),
-    Effect.orElseSucceed(() => null),
-  );
-  return linked ?? (yield* copyBack(held, to));
+  return yield* publishAt(held, to).pipe(Effect.catchIf(isCrossDevice, () => copyBack(held, to)));
 });
 
 /**
- * Puts a held copy back at `to`, never over anything there: staged whole beside it, then
- * hard-linked into place, which fails if a file has the name by then.
+ * Puts a held copy back at `to`, never over anything there: staged whole beside it, then given
+ * its name with `publishAt`.
  */
 export const copyBack = Effect.fnUntraced(function* (held: string, to: string) {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -292,8 +335,7 @@ export const copyBack = Effect.fnUntraced(function* (held: string, to: string) {
       if (source === null || staged === null || source.size !== staged.size) {
         return "incomplete" as const;
       }
-      const linked = yield* fileSystem.link(partial, to).pipe(Effect.isSuccess);
-      return linked ? ("linked" as const) : ("inTheWay" as const);
+      return yield* publishAt(partial, to);
     }),
   );
 });

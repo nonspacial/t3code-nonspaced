@@ -716,7 +716,8 @@ const inBlender = (script: string) =>
       "--python-expr",
       `import bpy\n${script}`,
     ],
-    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    // A sync call blocks the test's own timeout, so a stuck Blender would hang the whole run.
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 },
   );
 
 /** The GLB's JSON chunk, read as glTF's binary container lays it out. */

@@ -662,6 +662,11 @@ it("asks first for a compressed .blend small on disk but large, or maybe large, 
   await expect
     .element(unknown.getByText("over 512 MB once opened", { exact: false }))
     .not.toBeInTheDocument();
+  // Nor do its facts call it large.
+  await expect
+    .element(unknown.getByText("More than T3 Code reads for a preview"))
+    .toBeInTheDocument();
+  await expect.element(unknown.getByText("Not read for a file this large")).not.toBeInTheDocument();
   expect(conversions()).toHaveLength(0);
 });
 

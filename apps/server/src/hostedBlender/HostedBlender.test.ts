@@ -2255,6 +2255,17 @@ describe("B19: a finished thread's working copy is held", () => {
       expect(NodeFS.readdirSync(elsewhere)).toEqual([]);
       yield* service.putBackHeld({ threadId, path: at(COPY) });
       expect(NodeFS.readFileSync(at(COPY), "utf8")).toBe("working copy");
+
+      // A symlink to a folder inside the workspace holds nothing there either: a held file
+      // there would be named by a path the guards against opening it don't know.
+      const inside = at("assets");
+      NodeFS.mkdirSync(inside);
+      NodeFS.rmSync(NodePath.join(workspace, ".t3"));
+      NodeFS.symlinkSync(inside, NodePath.join(workspace, ".t3"));
+      yield* service.closeOnSettle({ threadId });
+      yield* heldWhen(service, (list) => list.length === 1 && list[0]!.heldAt > held!.heldAt);
+      expect(NodeFS.readFileSync(stateFile(held!.id), "utf8")).toBe("working copy");
+      expect(NodeFS.readdirSync(inside)).toEqual([]);
     }).pipe(Effect.scoped),
   );
 
@@ -2492,6 +2503,120 @@ describe("B19: a finished thread's working copy is held", () => {
       expect(NodeFS.existsSync(at(COPY))).toBe(false);
     }).pipe(Effect.scoped);
   });
+
+  it.live(
+    "on a drive with no hard links a held copy goes back as it left, never over a file there",
+    () =>
+      Effect.gen(function* () {
+        // exFAT, FAT32 and many SMB mounts: every link fails, and a test may act just before.
+        let beforeLink: ((to: string) => void) | null = null;
+        const copied: Array<string> = [];
+        const { at, record, heldWhen, heldFile, recordDir, recordOf, stateFile, start } =
+          yield* heldHost("held-no-links", {
+            fileSystem: (base) => ({
+              ...base,
+              link: (from, to) =>
+                Effect.sync(() => beforeLink?.(to)).pipe(
+                  Effect.andThen(Effect.fail(systemError("link", from, "EPERM"))),
+                ),
+              copyFile: (from, to) =>
+                Effect.sync(() => copied.push(to)).pipe(Effect.andThen(base.copyFile(from, to))),
+            }),
+          });
+        const withService = <A, E>(
+          use: (service: HostedBlender.HostedBlender["Service"]) => Effect.Effect<A, E>,
+        ) => Effect.scoped(start.pipe(Effect.flatMap(use)));
+        const isHeld = (list: HostedBlenderHeldList) =>
+          list.length === 1 && list[0]!.leftInProject !== true && recordOf()?.state === "held";
+        const inode = NodeFS.statSync(at(COPY)).ino;
+        const held = yield* withService((service) =>
+          Effect.gen(function* () {
+            yield* record(service);
+            yield* service.closeOnSettle({ threadId });
+            const [first] = yield* heldWhen(service, isHeld);
+
+            // A file that takes the copy's name as it goes back is never replaced.
+            beforeLink = (to) => {
+              beforeLink = null;
+              NodeFS.writeFileSync(to, "the person's own");
+            };
+            const refused = yield* service
+              .putBackHeld({ threadId, path: at(COPY) })
+              .pipe(Effect.flip);
+            expect(refused.reason).toBe("heldCopyInTheWay");
+            expect(NodeFS.readFileSync(at(COPY), "utf8")).toBe("the person's own");
+            expect(NodeFS.readFileSync(heldFile(first!.id), "utf8")).toBe("working copy");
+            expect(recordOf()).toMatchObject({ state: "held" });
+
+            // Once it is gone the copy goes back by a rename, the same file, nothing copied.
+            NodeFS.rmSync(at(COPY));
+            expect(yield* service.putBackHeld({ threadId, path: at(COPY) })).toEqual({
+              masterChanged: false,
+            });
+            expect(NodeFS.statSync(at(COPY)).ino).toBe(inode);
+            expect(NodeFS.statSync(at(COPY)).nlink).toBe(1);
+            expect(NodeFS.existsSync(heldFile(first!.id))).toBe(false);
+            expect(copied).toEqual([]);
+            expect(recordOf()).toMatchObject({ state: "live" });
+            // And it can be held again.
+            yield* service.closeOnSettle({ threadId });
+            yield* heldWhen(service, (list) => isHeld(list) && list[0]!.heldAt > first!.heldAt);
+            expect(NodeFS.existsSync(at(COPY))).toBe(false);
+            return first!;
+          }),
+        );
+
+        // T3 stopped after claiming the name with an empty file, before the rename: the empty
+        // file is T3's, so the copy stays held, never in the way, and the next Reopen has it.
+        const recordPath = NodePath.join(recordDir(held.id), "record.json");
+        const rewrite = (change: object) =>
+          NodeFS.writeFileSync(
+            recordPath,
+            JSON.stringify({ ...JSON.parse(NodeFS.readFileSync(recordPath, "utf8")), ...change }),
+          );
+        rewrite({ state: "returning" });
+        NodeFS.writeFileSync(at(COPY), "");
+        yield* withService((service) =>
+          Effect.gen(function* () {
+            yield* heldWhen(service, isHeld);
+            expect(NodeFS.existsSync(at(COPY))).toBe(false);
+            yield* service.putBackHeld({ threadId, path: at(COPY) });
+            expect(NodeFS.readFileSync(at(COPY), "utf8")).toBe("working copy");
+            yield* service.closeOnSettle({ threadId });
+            yield* heldWhen(service, (list) => list.length === 1 && !NodeFS.existsSync(at(COPY)));
+          }),
+        );
+
+        // A file a hold across drives set aside goes back the same way, over its empty claim,
+        // and the pass at start holds it again.
+        const aside = NodePath.join(NodePath.dirname(at(COPY)), `.${COPY}.t3-hold`);
+        NodeFS.writeFileSync(aside, "set aside");
+        NodeFS.writeFileSync(at(COPY), "");
+        rewrite({ state: "holding", aside });
+        yield* withService((service) =>
+          heldWhen(service, (list) => isHeld(list) && !NodeFS.existsSync(at(COPY))),
+        );
+        expect(NodeFS.existsSync(aside)).toBe(false);
+        expect(NodeFS.readFileSync(heldFile(held.id), "utf8")).toBe("set aside");
+
+        // Held in T3's state by an earlier build: copied back whole, then renamed into place.
+        const {
+          heldFile: _,
+          aside: __,
+          ...earlier
+        } = JSON.parse(NodeFS.readFileSync(recordPath, "utf8"));
+        NodeFS.writeFileSync(recordPath, JSON.stringify(earlier));
+        NodeFS.renameSync(heldFile(held.id), stateFile(held.id));
+        yield* withService((service) => service.putBackHeld({ threadId, path: at(COPY) }));
+        expect(NodeFS.readFileSync(at(COPY), "utf8")).toBe("set aside");
+        expect(NodeFS.existsSync(stateFile(held.id))).toBe(false);
+        expect(
+          NodeFS.readdirSync(NodePath.dirname(at(COPY))).filter((name) =>
+            name.startsWith(".t3-wip-"),
+          ),
+        ).toEqual([]);
+      }).pipe(Effect.scoped),
+  );
 
   it.live("leaves a file it can't prove is its own copy, and says so", () =>
     Effect.gen(function* () {

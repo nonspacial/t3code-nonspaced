@@ -5709,6 +5709,7 @@
   "3286ce5553d9f505": "Taille",
   "8067b4bf490c4ab7": "Contenu",
   "a31ec23f4b06db7d": "Non lu pour un fichier aussi volumineux",
+  "f9eea88cb00b1f4f": "Plus que ce que T3 Code lit pour un aperçu",
   "119259d2fa66fadf": "Impossible de quitter Blender",
   "65c73c884114dcf8": "Blender n’a pas répondu ; il reste donc ouvert avec ses modifications. S’il ne répond toujours pas, choisir à nouveau « Quitter sans enregistrer » l’arrête et conserve la dernière sauvegarde automatique de Blender.",
   "d679c8479ec344e8": "Blender n’a pas répondu : il reste ouvert, et la fermeture ne se fera pas plus tard d’elle-même. Réessayez une fois que Blender aura fini ce qu’il est en train de faire.",

@@ -5709,6 +5709,7 @@
   "3286ce5553d9f505": "Tamaño",
   "8067b4bf490c4ab7": "Contenido",
   "a31ec23f4b06db7d": "No se lee en un archivo tan grande",
+  "f9eea88cb00b1f4f": "Más de lo que T3 Code lee para una vista previa",
   "119259d2fa66fadf": "No se pudo cerrar Blender",
   "65c73c884114dcf8": "Blender no respondió, así que sigue abierto con sus cambios. Si sigue sin responder, volver a elegir «Salir sin guardar» lo detiene y conserva lo último que Blender guardó automáticamente.",
   "d679c8479ec344e8": "Blender no respondió, así que sigue abierto y la salida no se hará más tarde por sí sola. Vuelve a intentarlo cuando Blender termine lo que está haciendo.",
