@@ -4894,7 +4894,8 @@ scene.frame_set(1)`;
               layout.render.startsWith(`${shownEngine} `) &&
               layout.windows[0]?.areas[0]?.shading === shading,
           );
-          const shot = yield* service.captureView(threadId).pipe(
+          // EEVEE compiles its shaders on its first render, which can outlast one reply.
+          const shot = yield* firstCapture(service).pipe(
             Effect.as(true),
             Effect.catchIf(
               (error) => error.reason === "noScreenshot",
@@ -5058,11 +5059,10 @@ scene.frame_set(1)`;
 
         // Save and quit with unsaved edits and the frame picked in the strip ends saved,
         // keeping nothing, with the edit on disk.
+        // Already unsaved from the moves above: two of Blender's ticks see the edit made.
         command("edit T3Edit");
-        yield* service.threadState(threadId).pipe(
-          Stream.filter((state) => state.status === "running" && state.dirty),
-          Stream.runHead,
-        );
+        yield* tick;
+        yield* tick;
         yield* operator.input({ type: "releaseControl" });
         yield* service.quit({ threadId, save: true });
         const ended = yield* service.threadState(threadId).pipe(
