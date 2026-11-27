@@ -5831,7 +5831,8 @@ describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
         const startup = NodePath.join(configHome, "blender", "5.3", "scripts", "startup");
         NodeFS.mkdirSync(startup, { recursive: true });
         NodeFS.writeFileSync(NodePath.join(startup, "t3_test_open.py"), OPENING_STARTUP_SCRIPT);
-        const switches = yield* Queue.unbounded<HostedBlenderSetup.HostedBlenderReadiness>();
+        // Every reader of setup's readiness hears each switch, as Settings' changes reach them.
+        const switches = yield* PubSub.unbounded<HostedBlenderSetup.HostedBlenderReadiness>();
         const host = {
           env: {
             PATH: hostEnvironment.PATH,
@@ -5842,7 +5843,7 @@ describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
           helper: helperBuild,
           workspaceRoot: workspace,
           baseDir: dir,
-          readinessChanges: Stream.fromQueue(switches),
+          readinessChanges: Stream.fromPubSub(switches),
         };
         const service = yield* serviceFor(layerFor(host));
         const states = yield* Queue.unbounded<HostedBlenderThreadState>();
@@ -5935,13 +5936,13 @@ describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
           Stream.filter((state) => state.status === "running" && state.dirty),
           Stream.runHead,
         );
-        yield* Queue.offer(switches, { status: "notSetUp", missing: ["enabled"] });
+        yield* PubSub.publish(switches, { status: "notSetUp", missing: ["enabled"] });
         const closed = yield* service.masterState(threadId).pipe(
           Stream.filter((state) => state.status === "closed"),
           Stream.runHead,
           Effect.map(Option.getOrThrow),
         );
-        yield* Queue.offer(switches, readinessFor(host));
+        yield* PubSub.publish(switches, readinessFor(host));
         const key = "copies" in closed ? closed.copies[0].key : "";
         yield* service.reopen({ threadId, key, restore: true, role: "master" });
         expect(yield* settledSize(Effect.void, "master"), "a master's Reopen").toBe("1046x1336");
