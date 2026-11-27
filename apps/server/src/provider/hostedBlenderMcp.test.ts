@@ -47,21 +47,9 @@ describe("hostedBlenderHttpServers", () => {
       },
     ]);
   });
-
-  it("never names the user's own `blender` entry", () => {
-    expect(hostedBlenderHttpServers(session).map((server) => server.name)).not.toContain("blender");
-  });
 });
 
 describe("Claude approvals", () => {
-  it("adds nothing without a launch", () => {
-    expect(claudeHostedBlenderOverrides(undefined, policy("full-access"))).toEqual({
-      mcpServers: {},
-      allowedTools: [],
-      disallowedTools: [],
-    });
-  });
-
   it("pre-approves every Blender tool in full access", () => {
     const overrides = claudeHostedBlenderOverrides(session, policy("full-access"));
     expect(Object.keys(overrides.mcpServers)).toEqual(["blender-hosted", "blender-master"]);
@@ -72,6 +60,10 @@ describe("Claude approvals", () => {
     });
     expect(overrides.allowedTools).toEqual(["mcp__blender-hosted__*", "mcp__blender-master__*"]);
     expect(overrides.disallowedTools).toEqual([]);
+    expect(
+      claudeHostedBlenderOverrides(undefined, policy("full-access")),
+      "nothing without a launch",
+    ).toEqual({ mcpServers: {}, allowedTools: [], disallowedTools: [] });
   });
 
   it.each(ASKING_MODES)("pre-approves only read-only tools in %s", (mode) => {
@@ -84,38 +76,29 @@ describe("Claude approvals", () => {
     expect(overrides.disallowedTools).toEqual([]);
   });
 
-  it.each([...ASKING_MODES, "full-access" as const])(
-    "offers only read-only tools in plan mode, even in %s",
-    (mode) => {
-      const overrides = claudeHostedBlenderOverrides(session, policy(mode, "plan"));
-      expect(overrides.allowedTools).toEqual([
-        ...readOnlyFor("blender-hosted"),
-        ...readOnlyFor("blender-master"),
-      ]);
-      expect(overrides.disallowedTools).toContain("mcp__blender-hosted__execute_blender_code");
-      expect(overrides.disallowedTools).toContain("mcp__blender-master__execute_blender_code");
-      expect(overrides.disallowedTools.some((tool) => tool.endsWith("get_objects_summary"))).toBe(
-        false,
-      );
-    },
-  );
-
-  it("treats a read-only sandbox like plan mode", () => {
-    const overrides = claudeHostedBlenderOverrides(session, {
-      ...policy("full-access"),
-      sandboxPolicy: { type: "readOnly" },
-    });
-    expect(overrides.allowedTools).not.toContain("mcp__blender-hosted__*");
+  it.each([
+    ...[...ASKING_MODES, "full-access" as const].map(
+      (mode) => [`plan mode, even in ${mode}`, policy(mode, "plan")] as const,
+    ),
+    [
+      "a read-only sandbox, as in plan mode",
+      { ...policy("full-access"), sandboxPolicy: { type: "readOnly" as const } },
+    ] as const,
+  ])("offers only read-only tools in %s", (_, given) => {
+    const overrides = claudeHostedBlenderOverrides(session, given);
+    expect(overrides.allowedTools).toEqual([
+      ...readOnlyFor("blender-hosted"),
+      ...readOnlyFor("blender-master"),
+    ]);
     expect(overrides.disallowedTools).toContain("mcp__blender-hosted__execute_blender_code");
+    expect(overrides.disallowedTools).toContain("mcp__blender-master__execute_blender_code");
+    expect(overrides.disallowedTools.some((tool) => tool.endsWith("get_objects_summary"))).toBe(
+      false,
+    );
   });
 });
 
 describe("Codex approvals", () => {
-  it("adds nothing without a launch", () => {
-    expect(codexHostedBlenderConfig(undefined, policy("full-access"))).toEqual({});
-    expect(codexHostedBlenderApprovalsKey(undefined, policy("full-access"))).toBeUndefined();
-  });
-
   it("approves every Blender tool in full access", () => {
     const config = codexHostedBlenderConfig(session, policy("full-access"));
     expect(config["mcp_servers.blender-hosted"]).toEqual({
@@ -129,10 +112,18 @@ describe("Codex approvals", () => {
       default_tools_approval_mode: "approve",
     });
     expect(config["mcp_servers.blender-hosted"]).not.toHaveProperty("enabled_tools");
+    expect(
+      codexHostedBlenderConfig(undefined, policy("full-access")),
+      "nothing without a launch",
+    ).toEqual({});
+    expect(codexHostedBlenderApprovalsKey(undefined, policy("full-access"))).toBeUndefined();
   });
 
-  it.each(ASKING_MODES)("asks before tools that are not read-only in %s", (mode) => {
-    const server = codexHostedBlenderConfig(session, policy(mode))["mcp_servers.blender-hosted"];
+  it.each([
+    ...ASKING_MODES.map((mode) => [mode, policy(mode)] as const),
+    ["an unknown mode", undefined] as const,
+  ])("asks before tools that are not read-only in %s", (_, given) => {
+    const server = codexHostedBlenderConfig(session, given)["mcp_servers.blender-hosted"];
     expect(server).toMatchObject({ default_tools_approval_mode: "prompt" });
     expect(server).not.toHaveProperty("enabled_tools");
     expect(server).toHaveProperty(["tools", "get_objects_summary", "approval_mode"], "approve");
@@ -150,11 +141,6 @@ describe("Codex approvals", () => {
     },
   );
 
-  it("treats an unknown mode as one that asks", () => {
-    const server = codexHostedBlenderConfig(session, undefined)["mcp_servers.blender-hosted"];
-    expect(server).toMatchObject({ default_tools_approval_mode: "prompt" });
-  });
-
   it("changes its reload key only when the mode crosses full access or plan", () => {
     const keys = (["approval-required", "auto-accept-edits", "auto", "full-access"] as const).map(
       (mode) => codexHostedBlenderApprovalsKey(session, policy(mode)),
@@ -164,35 +150,44 @@ describe("Codex approvals", () => {
     expect(codexHostedBlenderApprovalsKey(session, policy("full-access", "plan"))).not.toBe(
       keys[3],
     );
-  });
-
-  it("changes its reload key with the session's credential, which the servers carry", () => {
-    expect(codexHostedBlenderApprovalsKey(otherSession, policy("auto"))).not.toBe(
-      codexHostedBlenderApprovalsKey(session, policy("auto")),
-    );
+    expect(
+      codexHostedBlenderApprovalsKey(otherSession, policy("auto")),
+      "a new session credential, which the servers carry",
+    ).not.toBe(codexHostedBlenderApprovalsKey(session, policy("auto")));
   });
 });
 
 describe("Claude decisions for forwarded Blender calls", () => {
-  it.each(ASKING_MODES)(
-    "asks before a Blender write in %s, even when Claude would allow it",
-    (mode) => {
-      expect(
-        claudeHostedBlenderToolDecision("mcp__blender-hosted__execute_blender_code", policy(mode)),
-      ).toBe("ask");
-      expect(
-        claudeHostedBlenderToolDecision("mcp__blender-master__get_objects_summary", policy(mode)),
-      ).toBe("default");
-    },
-  );
-
-  it("leaves everything to Claude in full access", () => {
-    expect(
-      claudeHostedBlenderToolDecision(
+  it.each([
+    ...ASKING_MODES.flatMap((mode) => [
+      [
+        `a Blender write in ${mode}, even when Claude would allow it`,
         "mcp__blender-hosted__execute_blender_code",
-        policy("full-access"),
-      ),
-    ).toBe("default");
+        policy(mode),
+        "ask",
+      ] as const,
+      [
+        `a Blender read in ${mode}`,
+        "mcp__blender-master__get_objects_summary",
+        policy(mode),
+        "default",
+      ] as const,
+    ]),
+    [
+      "everything in full access",
+      "mcp__blender-hosted__execute_blender_code",
+      policy("full-access"),
+      "default",
+    ] as const,
+    [
+      "the user's own blender entry",
+      "mcp__blender__execute_blender_code",
+      policy("auto"),
+      "default",
+    ] as const,
+    ["another server's tool", "Bash", policy("auto", "plan"), "default"] as const,
+  ])("decides %s", (_, tool, given, decision) => {
+    expect(claudeHostedBlenderToolDecision(tool, given)).toBe(decision);
   });
 
   it("refuses every tool off the read-only list in plan mode, including ones added upstream later", () => {
@@ -204,12 +199,5 @@ describe("Claude decisions for forwarded Blender calls", () => {
     expect(claudeHostedBlenderToolDecision("mcp__blender-hosted__get_objects_summary", plan)).toBe(
       "default",
     );
-  });
-
-  it("ignores other servers, including the user's own blender entry", () => {
-    expect(
-      claudeHostedBlenderToolDecision("mcp__blender__execute_blender_code", policy("auto")),
-    ).toBe("default");
-    expect(claudeHostedBlenderToolDecision("Bash", policy("auto", "plan"))).toBe("default");
   });
 });

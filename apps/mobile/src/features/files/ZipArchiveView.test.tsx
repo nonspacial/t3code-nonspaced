@@ -288,11 +288,9 @@ it("opens a .blend attachment's facts, and its file viewer from the menu", async
   expect(screen.container.textContent).not.toContain("native viewer open");
   await act(async () => openViewer()!.click());
   await screen.settle(() => expect(screen.container.textContent).toContain("native viewer open"));
-});
 
-it("does not open an unsent draft .blend labelled application/zip as a ZIP", async () => {
-  const screen = setup();
-  // Readable ZIP bytes, so only the .blend guard keeps the ZIP browser from opening.
+  // An unsent draft labelled the same way. Readable ZIP bytes, so only the .blend guard keeps the
+  // ZIP browser from opening.
   files.set("file:///rig.blend", files.get("file:///first.zip")!);
   appAtomRegistry.set(composerDraftsAtom, {
     "draft-1": {
@@ -312,6 +310,7 @@ it("does not open an unsent draft .blend labelled application/zip as a ZIP", asy
   await act(async () =>
     screen.root.render(
       <AttachmentFileScreen
+        key="draft"
         route={{
           params: {
             attachmentId: "attachment-2",
@@ -325,7 +324,10 @@ it("does not open an unsent draft .blend labelled application/zip as a ZIP", asy
     ),
   );
   await screen.settle(() => {
-    expect(screen.container.querySelector('[aria-label="Filter files in ZIP"]')).toBeNull();
+    expect(
+      screen.container.querySelector('[aria-label="Filter files in ZIP"]'),
+      "a draft .blend opens no ZIP browser",
+    ).toBeNull();
     expect(screen.container.textContent).not.toContain("first.txt");
   });
 });

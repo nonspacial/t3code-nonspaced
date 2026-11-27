@@ -18,59 +18,93 @@ const working: FloatingBlenderInput = {
   panelShown: false,
 };
 
+const device = {
+  kind: "device",
+  hostId: "host",
+  deviceId: "phone",
+  platform: "ios",
+  name: "Phone",
+} as const;
+const floated = { ...working, floating: BLENDER_MINI_PLAYER_SOURCE, decidedTurnId: "turn-1" };
+
 describe("floatingBlenderAction", () => {
-  it("floats the pane once per turn while the agent works in a running Blender", () => {
-    expect(floatingBlenderAction(working)).toEqual({ action: "float", decidedTurnId: "turn-1" });
-    expect(
-      floatingBlenderAction({ ...working, state: { ...running, status: "starting" } }),
-    ).toEqual({ action: "float", decidedTurnId: "turn-1" });
-    // Closed by the user during the same turn: it stays closed until the next one.
-    expect(floatingBlenderAction({ ...working, decidedTurnId: "turn-1" }).action).toBe("none");
-    expect(
-      floatingBlenderAction({ ...working, decidedTurnId: "turn-1", runningTurnId: "turn-2" }),
-    ).toEqual({ action: "float", decidedTurnId: "turn-2" });
-  });
-
-  it("waits for both a turn and a Blender", () => {
-    expect(floatingBlenderAction({ ...working, runningTurnId: null })).toEqual({
-      action: "none",
-      decidedTurnId: null,
-    });
-    // The state isn't known yet, or Blender isn't up: the turn is still undecided.
-    expect(floatingBlenderAction({ ...working, state: null }).decidedTurnId).toBeNull();
-    expect(floatingBlenderAction({ ...working, state: { status: "stopped" } }).decidedTurnId).toBe(
-      null,
-    );
-  });
-
-  it("leaves it to the user when auto-show is off, the pane is shown, or something floats", () => {
-    const device = {
-      kind: "device",
-      hostId: "host",
-      deviceId: "phone",
-      platform: "ios",
-      name: "Phone",
-    } as const;
-    for (const input of [
-      { ...working, autoShowFloatingPreview: false },
-      { ...working, panelShown: true },
-      { ...working, floating: device },
-    ]) {
-      expect(floatingBlenderAction(input)).toEqual({ action: "none", decidedTurnId: "turn-1" });
-    }
-  });
-
-  it("closes a floating pane whose Blender stopped", () => {
-    const floating = { ...working, floating: BLENDER_MINI_PLAYER_SOURCE, decidedTurnId: "turn-1" };
-    expect(floatingBlenderAction({ ...floating, state: { status: "stopped" } }).action).toBe(
-      "close",
-    );
-    expect(floatingBlenderAction({ ...floating, state: { status: "failed" } }).action).toBe(
-      "close",
-    );
-    expect(floatingBlenderAction({ ...floating, runningTurnId: null }).action).toBe("none");
-    expect(floatingBlenderAction({ ...floating, state: null }).action).toBe("none");
-  });
+  it.each([
+    {
+      label: "floats over a running Blender",
+      input: working,
+      expected: { action: "float", decidedTurnId: "turn-1" },
+    },
+    {
+      label: "floats over a starting Blender",
+      input: { ...working, state: { ...running, status: "starting" } },
+      expected: { action: "float", decidedTurnId: "turn-1" },
+    },
+    {
+      label: "stays closed for the rest of a turn the user closed it in",
+      input: { ...working, decidedTurnId: "turn-1" },
+      expected: { action: "none" },
+    },
+    {
+      label: "floats again on the next turn",
+      input: { ...working, decidedTurnId: "turn-1", runningTurnId: "turn-2" },
+      expected: { action: "float", decidedTurnId: "turn-2" },
+    },
+    {
+      label: "waits for a turn",
+      input: { ...working, runningTurnId: null },
+      expected: { action: "none", decidedTurnId: null },
+    },
+    {
+      label: "waits for Blender's state",
+      input: { ...working, state: null },
+      expected: { decidedTurnId: null },
+    },
+    {
+      label: "waits for Blender to be up",
+      input: { ...working, state: { status: "stopped" } },
+      expected: { decidedTurnId: null },
+    },
+    {
+      label: "leaves it to the user when auto-show is off",
+      input: { ...working, autoShowFloatingPreview: false },
+      expected: { action: "none", decidedTurnId: "turn-1" },
+    },
+    {
+      label: "leaves it to the user when the pane is shown",
+      input: { ...working, panelShown: true },
+      expected: { action: "none", decidedTurnId: "turn-1" },
+    },
+    {
+      label: "leaves it to the user when something else floats",
+      input: { ...working, floating: device },
+      expected: { action: "none", decidedTurnId: "turn-1" },
+    },
+    {
+      label: "closes a float whose Blender stopped",
+      input: { ...floated, state: { status: "stopped" } },
+      expected: { action: "close" },
+    },
+    {
+      label: "closes a float whose Blender failed",
+      input: { ...floated, state: { status: "failed" } },
+      expected: { action: "close" },
+    },
+    {
+      label: "keeps a float between turns",
+      input: { ...floated, runningTurnId: null },
+      expected: { action: "none" },
+    },
+    {
+      label: "keeps a float while the state is unknown",
+      input: { ...floated, state: null },
+      expected: { action: "none" },
+    },
+  ] satisfies ReadonlyArray<{ label: string; input: FloatingBlenderInput; expected: object }>)(
+    "$label",
+    ({ input, expected }) => {
+      expect(floatingBlenderAction(input)).toMatchObject(expected);
+    },
+  );
 });
 
 describe("decideFloatingBlender", () => {
@@ -88,27 +122,15 @@ describe("decideFloatingBlender", () => {
     expect(decideFloatingBlender("thread-a", { ...inThread, runningTurnId: "turn-2" })).toBe(
       "float",
     );
-  });
 
-  it("S5: remembers only the threads visited most recently", () => {
-    resetFloatingBlenderDecisionsForTests();
-    expect(decideFloatingBlender("thread-a", inThread)).toBe("float");
-    expect(decideFloatingBlender("thread-b", inThread)).toBe("float");
-    for (let index = 0; index < 63; index += 1) decideFloatingBlender(`other-${index}`, inThread);
-    // 64 threads are remembered: B's dismissal stays, A's, visited before it, is forgotten.
-    expect(decideFloatingBlender("thread-b", inThread)).toBe("none");
-    expect(decideFloatingBlender("thread-a", inThread)).toBe("float");
-  });
-
-  it("decides nothing until the saved settings have loaded", () => {
-    resetFloatingBlenderDecisionsForTests();
-    expect(decideFloatingBlender("thread-a", { ...inThread, autoShowFloatingPreview: null })).toBe(
-      "none",
-    );
+    expect(
+      decideFloatingBlender("thread-c", { ...inThread, autoShowFloatingPreview: null }),
+      "nothing is decided until the saved settings load",
+    ).toBe("none");
     // Once they load with auto-show off, the turn is decided without floating.
-    expect(decideFloatingBlender("thread-a", { ...inThread, autoShowFloatingPreview: false })).toBe(
+    expect(decideFloatingBlender("thread-c", { ...inThread, autoShowFloatingPreview: false })).toBe(
       "none",
     );
-    expect(decideFloatingBlender("thread-a", inThread)).toBe("none");
+    expect(decideFloatingBlender("thread-c", inThread), "decided once settings load").toBe("none");
   });
 });

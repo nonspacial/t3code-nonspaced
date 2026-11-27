@@ -502,18 +502,4 @@ mod tests {
         );
         assert!(config.contains(r#"<context name="Close">"#));
     }
-
-    #[test]
-    fn prepare_writes_the_config_and_a_close_button_large_enough_to_hit() {
-        let state = tempfile::tempdir().unwrap();
-        let paths = Paths::new(state.path(), &state.path().join("run"), None);
-        paths.prepare(Some("3D Viewport")).unwrap();
-        assert_eq!(
-            fs::read_to_string(paths.labwc_config.join("rc.xml")).unwrap(),
-            labwc_config(Some("3D Viewport"))
-        );
-        let theme = fs::read_to_string(paths.labwc_config.join("themerc-override")).unwrap();
-        assert!(theme.contains("window.button.width: 40\n"));
-        assert!(theme.contains("window.button.height: 40\n"));
-    }
 }

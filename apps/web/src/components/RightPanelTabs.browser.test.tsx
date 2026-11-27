@@ -322,10 +322,9 @@ describe("the + menu's Blender entry", () => {
     await userEvent.click(screen.getByRole("button", { name: "Add panel surface" }));
     await userEvent.click(page.getByRole("menuitem", { name: /Blender/ }));
     expect(openPane).toHaveBeenCalledWith(threadRef, "blender");
-  });
 
-  it("isn't offered where Hosted Blender is off", async () => {
-    await using screen = await render(panel(DIFF_SURFACE, { blenderThreadRef: null }));
+    // Where Hosted Blender is off, the entry isn't offered.
+    await screen.rerender(panel(DIFF_SURFACE, { blenderThreadRef: null }));
     await userEvent.click(screen.getByRole("button", { name: "Add panel surface" }));
     await expect.element(page.getByRole("menuitem", { name: /Files/ })).toBeInTheDocument();
     await expect.element(page.getByRole("menuitem", { name: /Blender/ })).not.toBeInTheDocument();

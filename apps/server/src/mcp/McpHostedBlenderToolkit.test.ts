@@ -17,6 +17,7 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import type * as Scope from "effect/Scope";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/ai";
@@ -165,12 +166,41 @@ const running: HostedBlenderThreadState = {
   dirty: true,
 };
 
-describe("hosted Blender MCP tools", () => {
-  it.effect("reports the thread's working Blender", () =>
-    Effect.gen(function* () {
-      const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
-      expect(status.isError).toBe(false);
-      expect(status.structuredContent).toEqual({
+type LayerInput = Parameters<typeof layerFor>[0];
+const master = { status: "running", relativePath: "models/hero.blend", dirty: false } as const;
+const blendersOf = (result: { readonly structuredContent?: unknown }) =>
+  (result.structuredContent as { blenders: ReadonlyArray<object> }).blenders;
+
+/** A workspace path reached through a symlinked root, removed with the test's scope. */
+const symlinkedWorkspace = Effect.acquireRelease(
+  Effect.sync(() => {
+    const real = NodeFS.realpathSync(
+      NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-status-")),
+    );
+    const linked = `${real}-link`;
+    NodeFS.symlinkSync(real, linked);
+    return { real, linked };
+  }),
+  ({ real, linked }) =>
+    Effect.sync(() => {
+      NodeFS.rmSync(linked);
+      NodeFS.rmSync(real, { recursive: true, force: true });
+    }),
+);
+
+const statusRows: ReadonlyArray<{
+  readonly name: string;
+  readonly given: Effect.Effect<LayerInput & { readonly linked?: string }, never, Scope.Scope>;
+  readonly check: (
+    result: { readonly structuredContent?: unknown },
+    given: { readonly linked?: string },
+  ) => void;
+}> = [
+  {
+    name: "the thread's working Blender",
+    given: Effect.succeed({ state: running }),
+    check: (result) =>
+      expect(result.structuredContent).toEqual({
         blenders: [
           {
             role: "working",
@@ -180,18 +210,236 @@ describe("hosted Blender MCP tools", () => {
             agentAccess: true,
           },
         ],
-      });
-    }).pipe(Effect.provide(layerFor({ state: running }))),
-  );
+      }),
+  },
+  {
+    name: "no agent access until Blender Lab's listener is ready",
+    given: Effect.succeed({ state: running, listener: "starting" }),
+    check: (result) => {
+      expect(result.structuredContent).toMatchObject({ blenders: [{ agentAccess: false }] });
+      // Nothing to do yet but wait.
+      expect(JSON.stringify(result.structuredContent)).not.toContain("agentAccessHelp");
+    },
+  },
+  {
+    name: "no agent access, and why, while setup has no current read of the server",
+    given: Effect.succeed({ state: running, master, unavailable: "No current read." }),
+    check: (result) =>
+      expect(result.structuredContent).toMatchObject({
+        blenders: [
+          { role: "working", agentAccess: false, agentAccessHelp: "No current read." },
+          { role: "master", agentAccess: false, agentAccessHelp: "No current read." },
+        ],
+      }),
+  },
+  {
+    name: "a working copy held outside the project, which blender_start puts back",
+    given: Effect.succeed({
+      state: { status: "stopped" },
+      held: [`${workspace}/models/hero.wip-3c4d5e6f.blend`],
+    }),
+    check: (result) =>
+      expect(result.structuredContent).toEqual({
+        blenders: [
+          { role: "working", status: "held", file: `${workspace}/models/hero.wip-3c4d5e6f.blend` },
+        ],
+      }),
+  },
+  {
+    name: "the file Blender has open and why access ended",
+    given: Effect.succeed({
+      state: running,
+      listener: "off",
+      ended: "otherFile",
+      openFile: "/home/user/acme/app/models/bracket-4.blend",
+    }),
+    check: (result) =>
+      expect(result.structuredContent).toMatchObject({
+        blenders: [
+          {
+            file: "/home/user/acme/app/models/bracket-4.blend",
+            agentAccess: false,
+            agentAccessEnded: "otherFile",
+            // What blender_start would say, so an agent that only asks for status knows the way back.
+            agentAccessHelp: expect.stringContaining(
+              "call blender_quit with save: true, then blender_start",
+            ),
+          },
+        ],
+      }),
+  },
+  ...(["crashed", "closed"] as const).map((status) => ({
+    name: `a ${status} working Blender, and whether its recovery copy can be restored`,
+    given: Effect.succeed({
+      state: {
+        status,
+        copies: [
+          {
+            key: "workspace:models/hero.wip-41cbc0de.blend",
+            kind: status,
+            file: { kind: "workspace", relativePath: "models/hero.wip-41cbc0de.blend" },
+            recovery: true,
+          },
+        ],
+      },
+    } satisfies LayerInput),
+    check: (result: { readonly structuredContent?: unknown }) =>
+      expect(result.structuredContent).toEqual({
+        blenders: [
+          {
+            role: "working",
+            status,
+            file: `${workspace}/models/hero.wip-41cbc0de.blend`,
+            recovery: true,
+          },
+        ],
+      }),
+  })),
+  {
+    name: "the master's one copy under the master role, and working copies under theirs",
+    given: Effect.succeed({
+      state: {
+        status: "closed",
+        copies: [
+          {
+            key: "workspace:models/part.blend",
+            kind: "closed",
+            file: { kind: "workspace", relativePath: "models/part.blend" },
+            recovery: true,
+          },
+        ],
+      },
+      master: {
+        status: "crashed",
+        relativePath: "models/hero.blend",
+        copies: [
+          {
+            key: "outside:/real/models/hero.blend",
+            kind: "crashed",
+            file: { kind: "workspace", relativePath: "models/hero.blend" },
+            recovery: true,
+          },
+        ],
+      },
+    }),
+    check: (result) =>
+      expect(blendersOf(result)).toEqual([
+        {
+          role: "working",
+          status: "closed",
+          file: `${workspace}/models/part.blend`,
+          recovery: true,
+        },
+        {
+          role: "master",
+          status: "crashed",
+          file: `${workspace}/models/hero.blend`,
+          recovery: true,
+        },
+      ]),
+  },
+  {
+    name: "each file's waiting copy under its own file, beside the running Blender",
+    given: Effect.succeed({
+      state: running,
+      copies: [
+        {
+          key: "workspace:models/other.blend",
+          kind: "crashed",
+          file: { kind: "workspace", relativePath: "models/other.blend" },
+          recovery: true,
+        },
+        {
+          key: "outside:/elsewhere/outside.blend",
+          kind: "closed",
+          file: { kind: "outside", path: "/elsewhere/outside.blend" },
+          recovery: true,
+          copyPath: "/state/copy.blend",
+        },
+        { key: "untitled", kind: "closed", file: { kind: "untitled" }, recovery: false },
+      ],
+    }),
+    check: (result) =>
+      expect(blendersOf(result).slice(1)).toEqual([
+        {
+          role: "working",
+          status: "crashed",
+          file: `${workspace}/models/other.blend`,
+          recovery: true,
+        },
+        { role: "working", status: "closed", file: "/elsewhere/outside.blend", recovery: true },
+        { role: "working", status: "closed", recovery: false },
+      ]),
+  },
+  {
+    name: "no file for an untitled scene",
+    given: Effect.succeed({ state: running, listener: "off", openFile: null }),
+    check: (result) => expect(blendersOf(result)[0]).not.toHaveProperty("file"),
+  },
+  {
+    name: "Blender's file under the workspace as configured, through a symlinked root",
+    given: Effect.map(symlinkedWorkspace, ({ real, linked }) => ({
+      state: running,
+      openFile: NodePath.join(real, "models", "hero.wip-41cbc0de.blend"),
+      workspace: linked,
+      linked,
+    })),
+    check: (result, { linked }) =>
+      expect(result.structuredContent).toMatchObject({
+        blenders: [{ file: NodePath.join(linked!, "models", "hero.wip-41cbc0de.blend") }],
+      }),
+  },
+  {
+    name: "an untested Blender Lab version's refusal",
+    given: Effect.succeed({ state: running, listener: "untested", master }),
+    check: (result) =>
+      expect(result.structuredContent).toMatchObject({
+        blenders: [
+          {
+            role: "working",
+            agentAccess: false,
+            agentAccessRefused: "untestedBlenderLab",
+            agentAccessHelp: expect.stringContaining("blender_start"),
+          },
+          {
+            role: "master",
+            agentAccess: false,
+            agentAccessRefused: "untestedBlenderLab",
+            agentAccessHelp: expect.stringContaining("blender_master_open again"),
+          },
+        ],
+      }),
+  },
+  {
+    name: "the master Blender beside the working one",
+    given: Effect.succeed({ state: running, master: { ...master, dirty: true } }),
+    check: (result) =>
+      expect(result.structuredContent).toMatchObject({
+        blenders: [
+          { role: "working", status: "running" },
+          {
+            role: "master",
+            status: "running",
+            file: `${workspace}/models/hero.blend`,
+            unsavedChanges: true,
+            agentAccess: true,
+          },
+        ],
+      }),
+  },
+];
 
-  it.effect("quits the working Blender, saving first when asked", () => {
-    const quits: Array<HostedBlenderQuitInput> = [];
-    return Effect.gen(function* () {
-      const quit = yield* call("blender_quit", { save: true }, threadCaller(["hosted-blender"]));
-      expect(quit.isError).toBe(false);
-      expect(quits).toEqual([{ threadId, save: true }]);
-    }).pipe(Effect.provide(layerFor({ state: running, quits })));
-  });
+describe("hosted Blender MCP tools", () => {
+  it.effect.each(statusRows)("blender_status reports $name", ({ given, check }) =>
+    Effect.gen(function* () {
+      const input = yield* given;
+      const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"])).pipe(
+        Effect.provide(layerFor(input)),
+      );
+      expect(status.isError).toBe(false);
+      check(status, input);
+    }).pipe(Effect.scoped),
+  );
 
   it.effect.each(["blender_start", "blender_master_open", "blender_status", "blender_quit"])(
     "refuses %s to an MCP client from outside a thread, and to a thread without the MCP",
@@ -239,6 +487,32 @@ describe("hosted Blender MCP tools", () => {
       }).pipe(Effect.provide(layerFor({ state: running }))),
   );
 
+  it.effect(
+    "shows its four tools only to threads with the hosted Blender MCP, never to outside clients",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* McpServer.McpServer;
+        // EnabledWhen reads the caller from the fiber, as it does for each /mcp request.
+        const visibleTo = (scope: McpInvocationContext.McpInvocationScope) =>
+          Effect.sync(() =>
+            server.tools
+              .filter(({ annotations }) => {
+                const enabledWhen = Context.getOrUndefined(annotations, McpSchema.EnabledWhen);
+                return enabledWhen?.({ protocolVersion: "", capabilities: {} }) ?? true;
+              })
+              .map(({ tool }) => tool.name),
+          ).pipe(Effect.provideService(McpInvocationContext.McpInvocationContext, scope));
+        expect((yield* visibleTo(threadCaller(["hosted-blender"]))).toSorted()).toEqual([
+          "blender_master_open",
+          "blender_quit",
+          "blender_start",
+          "blender_status",
+        ]);
+        expect(yield* visibleTo(threadCaller(["orchestration"]))).toEqual([]);
+        expect(yield* visibleTo(outsideClient)).toEqual([]);
+      }).pipe(Effect.provide(layerFor({ state: running }))),
+  );
+
   it.effect("stops once the user switches agents off", () =>
     Effect.gen(function* () {
       const result = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
@@ -247,454 +521,123 @@ describe("hosted Blender MCP tools", () => {
     }).pipe(Effect.provide(layerFor({ state: running, allowed: false }))),
   );
 
-  it.effect("reports no agent access until Blender Lab's listener is ready", () =>
-    Effect.gen(function* () {
-      const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
-      expect(status.structuredContent).toMatchObject({ blenders: [{ agentAccess: false }] });
-      // Nothing to do yet but wait.
-      expect(JSON.stringify(status.structuredContent)).not.toContain("agentAccessHelp");
-    }).pipe(Effect.provide(layerFor({ state: running, listener: "starting" }))),
-  );
-
-  it.effect("reports no agent access, and why, while setup has no current read of the server", () =>
-    Effect.gen(function* () {
-      const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
-      const reason =
-        "T3 Code has not read Blender Lab's MCP server's tools. Ask the user to press Check again in Settings → Blender.";
-      expect(status.structuredContent).toMatchObject({
-        blenders: [
-          { role: "working", agentAccess: false, agentAccessHelp: reason },
-          { role: "master", agentAccess: false, agentAccessHelp: reason },
-        ],
-      });
-    }).pipe(
-      Effect.provide(
-        layerFor({
-          state: running,
-          listener: "ready",
-          master: { status: "running", relativePath: "models/hero.blend", dirty: false },
-          unavailable:
-            "T3 Code has not read Blender Lab's MCP server's tools. Ask the user to press Check again in Settings → Blender.",
-        }),
-      ),
-    ),
-  );
-
   it.effect(
     "keeps Plan mode read-only: status works; start, master open and quit are refused",
     () => {
       const quits: Array<HostedBlenderQuitInput> = [];
+      const shellReads = { count: 0 };
       return Effect.gen(function* () {
-        const scope = threadCaller(["hosted-blender"]);
-        expect((yield* call("blender_status", {}, scope)).isError).toBe(false);
-        for (const [name, args] of [
-          ["blender_start", { path: "hero.blend" }],
-          ["blender_master_open", { path: "hero.blend" }],
-          ["blender_quit", { save: true }],
-        ] as const) {
-          const refused = yield* call(name, args, scope);
-          expect(refused.isError).toBe(true);
-          expect(JSON.stringify(refused.content)).toContain("Plan mode is read-only");
-        }
+        yield* Effect.gen(function* () {
+          const scope = threadCaller(["hosted-blender"]);
+          expect((yield* call("blender_status", {}, scope)).isError).toBe(false);
+          for (const [name, args] of [
+            ["blender_start", { path: "hero.blend" }],
+            ["blender_master_open", { path: "hero.blend" }],
+            ["blender_quit", { save: true }],
+          ] as const) {
+            const refused = yield* call(name, args, scope);
+            expect(refused.isError, `${name} in Plan`).toBe(true);
+            expect(JSON.stringify(refused.content)).toContain("Plan mode is read-only");
+          }
+        }).pipe(Effect.provide(layerFor({ state: running, quits, plan: true })));
+
+        // Fails closed: with the thread's mode unreadable, start and quit are refused too.
+        yield* Effect.gen(function* () {
+          for (const [name, args] of [
+            ["blender_start", { path: "hero.blend" }],
+            ["blender_quit", { save: true }],
+          ] as const) {
+            shellReads.count = 0;
+            const refused = yield* call(name, args, threadCaller(["hosted-blender"]));
+            expect(refused.isError, `${name} with the mode unreadable`).toBe(true);
+            expect(JSON.stringify(refused.content)).toContain("could not read");
+          }
+        }).pipe(Effect.provide(layerFor({ state: running, quits, shellReads })));
         expect(quits).toEqual([]);
-      }).pipe(Effect.provide(layerFor({ state: running, quits, plan: true })));
+      });
     },
   );
 
-  it.effect("refuses start and quit when the thread's mode can't be read", () => {
-    const quits: Array<HostedBlenderQuitInput> = [];
-    const shellReads = { count: 0 };
-    return Effect.gen(function* () {
-      for (const [name, args] of [
-        ["blender_start", { path: "hero.blend" }],
-        ["blender_quit", { save: true }],
-      ] as const) {
-        shellReads.count = 0;
-        const refused = yield* call(name, args, threadCaller(["hosted-blender"]));
-        expect(refused.isError).toBe(true);
-        expect(JSON.stringify(refused.content)).toContain("could not read");
-      }
-      expect(quits).toEqual([]);
-    }).pipe(Effect.provide(layerFor({ state: running, quits, shellReads })));
-  });
-
-  it.effect("lists a working copy held outside the project, which blender_start puts back", () =>
-    Effect.gen(function* () {
-      const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
-      expect(status.structuredContent).toEqual({
-        blenders: [
-          { role: "working", status: "held", file: `${workspace}/models/hero.wip-3c4d5e6f.blend` },
-        ],
-      });
-    }).pipe(
-      Effect.provide(
-        layerFor({
-          state: { status: "stopped" },
-          held: [`${workspace}/models/hero.wip-3c4d5e6f.blend`],
-        }),
-      ),
-    ),
-  );
-
-  it.effect("reports the file Blender has open and why access ended", () =>
-    Effect.gen(function* () {
-      const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
-      expect(status.structuredContent).toMatchObject({
-        blenders: [
-          {
-            file: "/home/user/acme/app/models/bracket-4.blend",
-            agentAccess: false,
-            agentAccessEnded: "otherFile",
-            // What blender_start would say, so an agent that only asks for status knows the way back.
-            agentAccessHelp: expect.stringContaining(
-              "call blender_quit with save: true, then blender_start",
-            ),
-          },
-        ],
-      });
-    }).pipe(
-      Effect.provide(
-        layerFor({
-          state: running,
-          listener: "off",
-          ended: "otherFile",
-          openFile: "/home/user/acme/app/models/bracket-4.blend",
-        }),
-      ),
-    ),
-  );
-
-  it.effect.each(["crashed", "closed"] as const)(
-    "reports a %s working Blender, and whether its recovery copy can be restored",
-    (status) =>
-      Effect.gen(function* () {
-        const result = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
-        expect(result.structuredContent).toEqual({
-          blenders: [
-            {
-              role: "working",
-              status,
-              file: `${workspace}/models/hero.wip-41cbc0de.blend`,
-              recovery: true,
-            },
-          ],
-        });
-      }).pipe(
-        Effect.provide(
-          layerFor({
-            state: {
-              status,
-              copies: [
-                {
-                  key: "workspace:models/hero.wip-41cbc0de.blend",
-                  kind: status,
-                  file: { kind: "workspace", relativePath: "models/hero.wip-41cbc0de.blend" },
-                  recovery: true,
-                },
-              ],
-            },
-          }),
-        ),
-      ),
-  );
-
-  it.effect(
-    "lists the master's one copy under the master role, and working copies under theirs",
-    () =>
-      Effect.gen(function* () {
-        const result = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
-        expect((result.structuredContent as { blenders: ReadonlyArray<object> }).blenders).toEqual([
-          {
-            role: "working",
-            status: "closed",
-            file: `${workspace}/models/part.blend`,
-            recovery: true,
-          },
-          {
-            role: "master",
-            status: "crashed",
-            file: `${workspace}/models/hero.blend`,
-            recovery: true,
-          },
-        ]);
-      }).pipe(
-        Effect.provide(
-          layerFor({
-            state: {
-              status: "closed",
-              copies: [
-                {
-                  key: "workspace:models/part.blend",
-                  kind: "closed",
-                  file: { kind: "workspace", relativePath: "models/part.blend" },
-                  recovery: true,
-                },
-              ],
-            },
-            master: {
-              status: "crashed",
-              relativePath: "models/hero.blend",
-              copies: [
-                {
-                  key: "outside:/real/models/hero.blend",
-                  kind: "crashed",
-                  file: { kind: "workspace", relativePath: "models/hero.blend" },
-                  recovery: true,
-                },
-              ],
-            },
-          }),
-        ),
-      ),
-  );
-
-  it.effect("lists each file's waiting copy under its own file, beside the running Blender", () =>
-    Effect.gen(function* () {
-      const result = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
-      const blenders = (result.structuredContent as { blenders: ReadonlyArray<object> }).blenders;
-      expect(blenders.slice(1)).toEqual([
-        {
-          role: "working",
-          status: "crashed",
-          file: `${workspace}/models/other.blend`,
-          recovery: true,
-        },
-        { role: "working", status: "closed", file: "/elsewhere/outside.blend", recovery: true },
-        { role: "working", status: "closed", recovery: false },
-      ]);
-    }).pipe(
-      Effect.provide(
-        layerFor({
-          state: running,
-          copies: [
-            {
-              key: "workspace:models/other.blend",
-              kind: "crashed",
-              file: { kind: "workspace", relativePath: "models/other.blend" },
-              recovery: true,
-            },
-            {
-              key: "outside:/elsewhere/outside.blend",
-              kind: "closed",
-              file: { kind: "outside", path: "/elsewhere/outside.blend" },
-              recovery: true,
-              copyPath: "/state/copy.blend",
-            },
-            { key: "untitled", kind: "closed", file: { kind: "untitled" }, recovery: false },
-          ],
-        }),
-      ),
-    ),
-  );
-
-  it.effect("leaves the file out for an untitled scene", () =>
-    Effect.gen(function* () {
-      const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
-      const [blender] = (status.structuredContent as { blenders: ReadonlyArray<object> }).blenders;
-      expect(blender).not.toHaveProperty("file");
-    }).pipe(Effect.provide(layerFor({ state: running, listener: "off", openFile: null }))),
-  );
-
-  it.effect(
-    "reports Blender's file under the workspace as configured, through a symlinked root",
-    () =>
-      Effect.gen(function* () {
-        const real = NodeFS.realpathSync(
-          NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-status-")),
-        );
-        const linked = `${real}-link`;
-        NodeFS.symlinkSync(real, linked);
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            NodeFS.rmSync(linked);
-            NodeFS.rmSync(real, { recursive: true, force: true });
-          }),
-        );
-        const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"])).pipe(
-          Effect.provide(
-            layerFor({
-              state: running,
-              openFile: NodePath.join(real, "models", "hero.wip-41cbc0de.blend"),
-              workspace: linked,
-            }),
-          ),
-        );
-        expect(status.structuredContent).toMatchObject({
-          blenders: [{ file: NodePath.join(linked, "models", "hero.wip-41cbc0de.blend") }],
-        });
-      }).pipe(Effect.scoped),
-  );
-
-  it.effect(
-    "copies back through the desktop Blender's own entry when it has the master open",
-    () => {
-      const opens: Array<readonly [HostedBlenderOpenInput, unknown]> = [];
-      return Effect.gen(function* () {
-        const opened = yield* call(
-          "blender_master_open",
-          { path: `${workspace}/models/hero.blend` },
-          threadCaller(["hosted-blender"]),
-        );
-        expect(opened.structuredContent).toEqual({
-          master: `${workspace}/models/hero.blend`,
-          status: "desktop",
-          mcpServer: "blender",
-        });
-        // Tied to the session that asked, so its access ends with it.
-        expect(opens).toEqual([
-          [
-            { threadId, relativePath: "models/hero.blend" },
-            { agentSession: "provider-session-hosted-blender-test" },
-          ],
-        ]);
-      }).pipe(Effect.provide(layerFor({ state: running, opens, opened: { _tag: "desktop" } })));
-    },
-  );
-
-  it.effect(
-    "names blender-master for a master Blender, and a desktop Blender it couldn't ask",
-    () =>
-      Effect.gen(function* () {
-        const opened = yield* call(
-          "blender_master_open",
-          { path: "models/hero.blend" },
-          threadCaller(["hosted-blender"]),
-        );
+  it.effect.each([
+    {
+      name: "names blender-master for a master Blender, and a desktop Blender it couldn't ask",
+      given: {
+        state: running,
+        opened: { _tag: "hosted", desktopUnchecked: true },
+        master,
+      } satisfies LayerInput,
+      check: (opened: {
+        readonly isError?: boolean | undefined;
+        readonly structuredContent?: unknown;
+        readonly content: unknown;
+      }) =>
         expect(opened.structuredContent).toEqual({
           master: `${workspace}/models/hero.blend`,
           status: "running",
           mcpServer: "blender-master",
           desktopUnchecked: true,
-        });
-      }).pipe(
-        Effect.provide(
-          layerFor({
-            state: running,
-            opened: { _tag: "hosted", desktopUnchecked: true },
-            master: { status: "running", relativePath: "models/hero.blend", dirty: false },
-          }),
-        ),
-      ),
-  );
-
-  it.effect("refuses to open the agent's working copy as a master", () => {
-    const opens: Array<readonly [HostedBlenderOpenInput, unknown]> = [];
-    return Effect.gen(function* () {
-      const refused = yield* call(
-        "blender_master_open",
-        { path: "models/hero.wip-ndertest.blend" },
-        threadCaller(["hosted-blender"]),
-      );
-      expect(refused.isError).toBe(true);
-      expect(JSON.stringify(refused.content)).toContain("working copy");
-      expect(opens).toEqual([]);
-    }).pipe(Effect.provide(layerFor({ state: running, opens })));
-  });
-
-  it.effect("tells the agent when the master Blender doesn't take its calls", () =>
+        }),
+    },
+    {
+      name: "tells the agent when the master Blender doesn't take its calls",
+      given: { state: running, listener: "off" } satisfies LayerInput,
+      check: (opened: { readonly isError?: boolean | undefined; readonly content: unknown }) =>
+        expect(opened.isError).toBe(true),
+    },
+    {
+      name: "tells the agent an untested Blender Lab version refused its master access",
+      given: { state: running, listener: "untested" } satisfies LayerInput,
+      check: (opened: { readonly isError?: boolean | undefined; readonly content: unknown }) => {
+        expect(opened.isError).toBe(true);
+        const text = JSON.stringify(opened.content);
+        expect(text).toContain("blender_master_open");
+        expect(text).not.toContain("blender_start");
+      },
+    },
+  ])("blender_master_open $name", ({ given, check }) =>
     Effect.gen(function* () {
-      const refused = yield* call(
+      const opened = yield* call(
         "blender_master_open",
         { path: "models/hero.blend" },
         threadCaller(["hosted-blender"]),
       );
-      expect(refused.isError).toBe(true);
-      expect(JSON.stringify(refused.content)).toContain("quit it from the Blender pane");
-    }).pipe(Effect.provide(layerFor({ state: running, listener: "off" }))),
+      check(opened);
+    }).pipe(Effect.provide(layerFor(given))),
   );
 
-  it.effect("tells the agent an untested Blender Lab version refused its master access", () =>
-    Effect.gen(function* () {
-      const refused = yield* call(
-        "blender_master_open",
-        { path: "models/hero.blend" },
-        threadCaller(["hosted-blender"]),
-      );
-      expect(refused.isError).toBe(true);
-      const text = JSON.stringify(refused.content);
-      expect(text).toContain("refused you access");
-      expect(text).toContain("blender_master_open again");
-      expect(text).not.toContain("blender_start");
-    }).pipe(Effect.provide(layerFor({ state: running, listener: "untested" }))),
-  );
+  it.effect(
+    "refuses to open the agent's working copy as a master, or a link that leads to it",
+    () => {
+      const opens: Array<readonly [HostedBlenderOpenInput, unknown]> = [];
+      return Effect.gen(function* () {
+        const refused = yield* call(
+          "blender_master_open",
+          { path: "models/hero.wip-ndertest.blend" },
+          threadCaller(["hosted-blender"]),
+        ).pipe(Effect.provide(layerFor({ state: running, opens })));
+        expect(refused.isError, "the working copy itself").toBe(true);
+        expect(JSON.stringify(refused.content)).toContain("working copy");
 
-  it.effect("reports an untested Blender Lab version's refusal in blender_status", () =>
-    Effect.gen(function* () {
-      const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
-      expect(status.structuredContent).toMatchObject({
-        blenders: [
-          {
-            role: "working",
-            agentAccess: false,
-            agentAccessRefused: "untestedBlenderLab",
-            agentAccessHelp: expect.stringContaining("blender_start"),
-          },
-          {
-            role: "master",
-            agentAccess: false,
-            agentAccessRefused: "untestedBlenderLab",
-            agentAccessHelp: expect.stringContaining("blender_master_open again"),
-          },
-        ],
-      });
-    }).pipe(
-      Effect.provide(
-        layerFor({
-          state: running,
-          listener: "untested",
-          master: { status: "running", relativePath: "models/hero.blend", dirty: false },
-        }),
-      ),
-    ),
+        const root = NodeFS.realpathSync(
+          NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-master-link-")),
+        );
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => NodeFS.rmSync(root, { recursive: true, force: true })),
+        );
+        NodeFS.writeFileSync(NodePath.join(root, "hero.wip-ndertest.blend"), "");
+        NodeFS.symlinkSync(
+          NodePath.join(root, "hero.wip-ndertest.blend"),
+          NodePath.join(root, "master.blend"),
+        );
+        const linked = yield* call(
+          "blender_master_open",
+          { path: "master.blend" },
+          threadCaller(["hosted-blender"]),
+        ).pipe(Effect.provide(layerFor({ state: running, opens, workspace: root })));
+        expect(linked.isError, "a link to the working copy").toBe(true);
+        expect(JSON.stringify(linked.content)).toContain("working copy");
+        expect(opens).toEqual([]);
+      }).pipe(Effect.scoped);
+    },
   );
-
-  it.effect("lists the master Blender beside the working one", () =>
-    Effect.gen(function* () {
-      const status = yield* call("blender_status", {}, threadCaller(["hosted-blender"]));
-      expect(status.structuredContent).toMatchObject({
-        blenders: [
-          { role: "working", status: "running" },
-          {
-            role: "master",
-            status: "running",
-            file: `${workspace}/models/hero.blend`,
-            unsavedChanges: true,
-            agentAccess: true,
-          },
-        ],
-      });
-    }).pipe(
-      Effect.provide(
-        layerFor({
-          state: running,
-          master: { status: "running", relativePath: "models/hero.blend", dirty: true },
-        }),
-      ),
-    ),
-  );
-
-  it.effect("refuses a link that leads to the agent's working copy as a master", () => {
-    const opens: Array<readonly [HostedBlenderOpenInput, unknown]> = [];
-    return Effect.gen(function* () {
-      const root = NodeFS.realpathSync(
-        NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-master-link-")),
-      );
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => NodeFS.rmSync(root, { recursive: true, force: true })),
-      );
-      NodeFS.writeFileSync(NodePath.join(root, "hero.wip-ndertest.blend"), "");
-      NodeFS.symlinkSync(
-        NodePath.join(root, "hero.wip-ndertest.blend"),
-        NodePath.join(root, "master.blend"),
-      );
-      const refused = yield* call(
-        "blender_master_open",
-        { path: "master.blend" },
-        threadCaller(["hosted-blender"]),
-      ).pipe(Effect.provide(layerFor({ state: running, opens, workspace: root })));
-      expect(refused.isError).toBe(true);
-      expect(JSON.stringify(refused.content)).toContain("working copy");
-      expect(opens).toEqual([]);
-    }).pipe(Effect.scoped);
-  });
 });

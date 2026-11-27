@@ -68,8 +68,9 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.hostedBlenderSubscribeHeld,
       WS_METHODS.hostedBlenderCaptureView,
       WS_METHODS.hostedBlenderFindHits,
+      WS_METHODS.hostedBlenderSubscribeSetup,
     ]) {
-      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+      expect(requiredScopeForRpcMethod(method), method).toBe(AuthOrchestrationReadScope);
     }
     for (const method of [
       WS_METHODS.hostedBlenderOpen,
@@ -81,21 +82,11 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.hostedBlenderSetView,
       // The Timeline strip is part of the Blender window every viewer shares.
       WS_METHODS.hostedBlenderSetTimeline,
-    ]) {
-      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
-    }
-  });
-
-  it("lets readers see hosted Blender's setup, and only operators check again or install", () => {
-    expect(requiredScopeForRpcMethod(WS_METHODS.hostedBlenderSubscribeSetup)).toBe(
-      AuthOrchestrationReadScope,
-    );
-    // Both run programs on the host; installing also starts an agent thread.
-    for (const method of [
+      // Both run programs on the host; installing also starts an agent thread.
       WS_METHODS.hostedBlenderCheckSetup,
       WS_METHODS.hostedBlenderInstallWithAgent,
     ]) {
-      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+      expect(requiredScopeForRpcMethod(method), method).toBe(AuthOrchestrationOperateScope);
     }
   });
 

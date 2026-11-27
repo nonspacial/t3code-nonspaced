@@ -9,6 +9,7 @@ import {
 import type { HostedBlenderMcpLaunch } from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as NetService from "@t3tools/shared/Net";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -70,6 +71,7 @@ const layerFor = (input: {
   readonly checking?: boolean;
   readonly progressChanges?: Queue.Queue<HostedBlenderSetup.HostedBlenderSetupProgress>;
   readonly checks?: Array<"check">;
+  readonly checked?: Deferred.Deferred<void>;
   /** What the loopback probe answers, in turn, instead of real free ports. */
   readonly probes?: Array<number>;
 }) =>
@@ -88,7 +90,13 @@ const layerFor = (input: {
             check: Effect.void,
             ensureChecked: Effect.sync(() => {
               input.checks?.push("check");
-            }),
+            }).pipe(
+              Effect.andThen(
+                input.checked === undefined
+                  ? Effect.void
+                  : Deferred.succeed(input.checked, undefined),
+              ),
+            ),
             ensureCheckedForOpen: Effect.void,
             installWithAgent: Effect.die("not used"),
             readiness: Stream.never,
@@ -149,15 +157,11 @@ describe("HostedBlenderAgents.sessionLaunch", () => {
         driver: claude,
       });
       assert.notEqual(other?.masterPort, forClaude.masterPort);
-    }).pipe(Effect.provide(layerFor({}))),
-  );
 
-  it.effect("gives other providers nothing yet", () =>
-    Effect.gen(function* () {
-      const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
       for (const driver of ["pi", "cursor", "opencode", "acp"]) {
         assert.isUndefined(
           yield* agents.sessionLaunch({ threadId, driver: ProviderDriverKind.make(driver) }),
+          `${driver} gets nothing yet`,
         );
       }
     }).pipe(Effect.provide(layerFor({}))),
@@ -166,21 +170,20 @@ describe("HostedBlenderAgents.sessionLaunch", () => {
   it.effect.each([
     { name: "Hosted Blender is off", enabled: false, allowAgents: true },
     { name: "agents are not allowed", enabled: true, allowAgents: false },
-  ])("gives nothing when $name", ({ enabled, allowAgents }) =>
-    Effect.gen(function* () {
-      const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
-      assert.isUndefined(yield* agents.sessionLaunch({ threadId, driver: claude }));
-    }).pipe(Effect.provide(layerFor({ enabled, allowAgents }))),
-  );
-
-  it.effect("gives nothing without setup's official Blender MCP", () =>
+    {
+      name: "setup found no official Blender MCP",
+      readiness: { ...READY, blenderMcp: null } as HostedBlenderSetup.HostedBlenderReadiness,
+    },
+  ])("gives nothing when $name", ({ enabled, allowAgents, readiness }) =>
     Effect.gen(function* () {
       const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
       assert.isUndefined(yield* agents.sessionLaunch({ threadId, driver: claude }));
     }).pipe(
       Effect.provide(
         layerFor({
-          readiness: { ...READY, blenderMcp: null } as HostedBlenderSetup.HostedBlenderReadiness,
+          ...(enabled === undefined ? {} : { enabled }),
+          ...(allowAgents === undefined ? {} : { allowAgents }),
+          ...(readiness === undefined ? {} : { readiness }),
         }),
       ),
     ),
@@ -254,12 +257,19 @@ describe("HostedBlenderAgents.listenerPort", () => {
   it.effect("keeps the listener off once agents are no longer allowed", () =>
     Effect.gen(function* () {
       const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
+      assert.isNull(yield* agents.currentSession(threadId), "no session holds it yet");
       yield* startSession(yield* agents.sessionLaunch({ threadId, driver: claude }));
+      assert.equal(
+        yield* agents.currentSession(threadId),
+        "provider-session-hosted-blender",
+        "the session holding the thread's Blender MCP, while agents are allowed",
+      );
       yield* (yield* ServerSettings.ServerSettingsService).updateSettings({
         hostedBlenderAllowAgents: false,
       });
       assert.isNull(yield* agents.listenerPort(threadId));
       assert.isNull(yield* agents.masterListenerPort(threadId));
+      assert.isNull(yield* agents.currentSession(threadId), "no holder once agents aren't allowed");
     }).pipe(Effect.provide(layerFor({}))),
   );
 
@@ -272,7 +282,16 @@ describe("HostedBlenderAgents.listenerPort", () => {
         driver: codex,
       });
       assert.deepEqual([first?.masterPort, second?.masterPort], [41000, 41001]);
-    }).pipe(Effect.provide(layerFor({ probes: [41000, 41000, 41001] }))),
+
+      // The probe keeps offering the threads' ports, idle since their sessions took them.
+      const privatePort = yield* agents.reservePrivatePort;
+      assert.notInclude(
+        [first?.masterPort, second?.masterPort],
+        privatePort,
+        "a thread's port is never handed out as a master's private one",
+      );
+      assert.equal(privatePort, 41002);
+    }).pipe(Effect.provide(layerFor({ probes: [41000, 41000, 41001, 41000, 41001, 41002] }))),
   );
 });
 
@@ -280,8 +299,11 @@ describe("HostedBlenderAgents.revocations", () => {
   it.effect("revokes every thread when Allow agents is switched off", () =>
     Effect.gen(function* () {
       const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
-      const next = yield* agents.revocations.pipe(Stream.runHead, Effect.forkScoped);
-      yield* Effect.yieldNow;
+      // Started at once, so it subscribes before the change below.
+      const next = yield* agents.revocations.pipe(
+        Stream.runHead,
+        Effect.forkScoped({ startImmediately: true }),
+      );
       yield* (yield* ServerSettings.ServerSettingsService).updateSettings({
         hostedBlenderAllowAgents: false,
       });
@@ -292,8 +314,11 @@ describe("HostedBlenderAgents.revocations", () => {
   it.effect("revokes a thread whose session ended", () =>
     Effect.gen(function* () {
       const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
-      const next = yield* agents.revocations.pipe(Stream.runHead, Effect.forkScoped);
-      yield* Effect.yieldNow;
+      // Started at once, so it subscribes before the change below.
+      const next = yield* agents.revocations.pipe(
+        Stream.runHead,
+        Effect.forkScoped({ startImmediately: true }),
+      );
       yield* agents.sessionEnded(threadId, "provider-session-1");
       // Scoped to the credential that ended, so a newer session keeps what it was granted.
       assert.deepEqual(
@@ -366,43 +391,20 @@ describe("HostedBlenderAgents.layerFollowSetup", () => {
     { allowAgents: false, checks: [] },
   ])(
     "checks setup after a restart only with agents allowed ($allowAgents)",
-    ({ allowAgents, checks: expected }) => {
-      const checks: Array<"check"> = [];
-      return Effect.gen(function* () {
-        yield* HostedBlenderAgents.HostedBlenderAgents;
-        yield* Effect.yieldNow;
-        assert.deepEqual(checks, expected);
-      }).pipe(Effect.provide(layerFor({ allowAgents, checks })));
-    },
-  );
-});
-
-describe("HostedBlenderAgents private ports", () => {
-  it.effect("never hands a master's private port out as a thread's, or a thread's as one", () =>
-    Effect.gen(function* () {
-      const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
-      const launch = yield* agents.sessionLaunch({ threadId, driver: claude });
-      // The probe keeps offering the thread's ports, idle since the session took them.
-      const own = yield* agents.reservePrivatePort;
-      assert.notEqual(launch?.masterPort, own);
-      assert.equal(own, 41001);
-    }).pipe(Effect.provide(layerFor({ probes: [41000, 41000, 41001] }))),
-  );
-});
-
-describe("HostedBlenderAgents.currentSession", () => {
-  it.effect(
-    "names the agent session holding the thread's Blender MCP, while agents are allowed",
-    () =>
+    ({ allowAgents, checks: expected }) =>
       Effect.gen(function* () {
-        const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
-        assert.isNull(yield* agents.currentSession(threadId));
-        yield* startSession(yield* agents.sessionLaunch({ threadId, driver: claude }));
-        assert.equal(yield* agents.currentSession(threadId), "provider-session-hosted-blender");
-        yield* (yield* ServerSettings.ServerSettingsService).updateSettings({
-          hostedBlenderAllowAgents: false,
-        });
-        assert.isNull(yield* agents.currentSession(threadId));
-      }).pipe(Effect.provide(layerFor({}))),
+        const checked = yield* Deferred.make<void>();
+        const checks: Array<"check"> = [];
+        yield* Effect.gen(function* () {
+          yield* HostedBlenderAgents.HostedBlenderAgents;
+          const answered = yield* Deferred.await(checked).pipe(
+            Effect.timeoutOption("1 second"),
+            Effect.forkChild,
+          );
+          yield* TestClock.adjust("1 second");
+          yield* Fiber.join(answered);
+          assert.deepEqual(checks, expected);
+        }).pipe(Effect.provide(layerFor({ allowAgents, checks, checked })));
+      }),
   );
 });

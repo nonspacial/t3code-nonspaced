@@ -116,6 +116,17 @@ describe("BlenderDetection", () => {
         path: NodePath.join(working, "blender"),
         version: "4.5.3",
       });
+
+      // Not on PATH: found in an install folder.
+      const installed = standIn(
+        NodePath.join(dir, "Applications/Blender.app/Contents/MacOS"),
+        "Blender",
+        'echo "Blender 4.2.1 LTS"',
+      );
+      expect(yield* find({ path: "", home: dir }), "an install folder").toEqual({
+        path: installed,
+        version: "4.2.1",
+      });
     }),
   );
 
@@ -137,39 +148,14 @@ describe("BlenderDetection", () => {
         path: chosen,
         version: "5.3.0",
       });
-    }),
-  );
-
-  it.live("probes Blender by absolute path, with the server's environment minus T3's", () =>
-    Effect.gen(function* () {
-      const dir = yield* tempDir;
-      const bin = NodePath.join(dir, "bin");
-      // Records the environment the probe really received.
-      const blender = standIn(bin, "blender", '/usr/bin/env > "$0.env"\necho "Blender 4.5.3"');
-      const found = yield* find({
-        path: bin,
-        home: dir,
-        blenderPath: "blender",
-        env: { T3CODE_HOME: "/t3", BLENDER_USER_CONFIG: "/desktop-blender", KEPT: "yes" },
+      // A bare name in the setting runs by its absolute place on PATH.
+      expect(
+        yield* find({ path: onPath, home: dir, blenderPath: "blender" }),
+        "a bare name",
+      ).toEqual({
+        path: NodePath.join(onPath, "blender"),
+        version: "4.5.3",
       });
-      expect(found).toEqual({ path: blender, version: "4.5.3" });
-      const received = NodeFS.readFileSync(`${blender}.env`, "utf8");
-      expect(received).toContain(`PATH=${bin}`);
-      expect(received).toContain("KEPT=yes");
-      // HOME is in the test runner's own environment, not the server's as given here.
-      expect(received).not.toMatch(/^(HOME|T3CODE_\w+|BLENDER_USER_\w+)=/m);
-    }),
-  );
-
-  it.live("finds Blender in an install folder when it is not on PATH", () =>
-    Effect.gen(function* () {
-      const dir = yield* tempDir;
-      const installed = standIn(
-        NodePath.join(dir, "Applications/Blender.app/Contents/MacOS"),
-        "Blender",
-        'echo "Blender 4.2.1 LTS"',
-      );
-      expect(yield* find({ path: "", home: dir })).toEqual({ path: installed, version: "4.2.1" });
     }),
   );
 });

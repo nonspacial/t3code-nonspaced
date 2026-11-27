@@ -115,7 +115,7 @@ it("acks a frame only once the decoder has taken it, and sizes the display", asy
   socket.receive(keyframe);
   expect(acks()).toBe(0);
   expect((await configured.promise).codec).toBe("avc1.64001f");
-  await vi.waitFor(() => expect(acks()).toBe(1));
+  expect(acks()).toBe(1);
   expect(decoded).toEqual(["key"]);
 
   // A decoder that falls behind holds the ack until it catches up.
@@ -134,6 +134,20 @@ it("acks a frame only once the decoder has taken it, and sizes the display", asy
   expect(statuses).toEqual(["connecting", "live", "stopped"]);
   expect(FakeSocket.instances).toHaveLength(1);
   client.stop();
+
+  // Asked for the thread's master Blender, it watches that one.
+  createHostedBlenderStreamClient(
+    {
+      access: { httpBase: "https://t3", wsBase: "wss://t3/blender", credentials: false, query: {} },
+      threadId: "thread-1",
+      master: true,
+    },
+    { present },
+    { onStatus: vi.fn(), onStats: vi.fn(), onFrameRate: vi.fn(), onUnauthorized: vi.fn() },
+  ).stop();
+  expect(FakeSocket.instances.at(-1)!.url, "the master").toBe(
+    "wss://t3/blender/ws?threadId=thread-1&role=master",
+  );
 });
 
 it("reports who controls Blender and whether it holds the mouse, and sends input while open", () => {
@@ -185,15 +199,37 @@ it("tells the server when the pane leaves the screen and comes back, across reco
   vi.stubGlobal("WebSocket", FakeSocket);
   vi.stubGlobal("EncodedVideoChunk", vi.fn());
   vi.stubGlobal("VideoDecoder", vi.fn());
-  const client = createHostedBlenderStreamClient(
-    {
-      access: { httpBase: "https://t3", wsBase: "wss://t3/blender", credentials: false, query: {} },
-      threadId: "thread-1",
-    },
+  const events = {
+    onStatus: vi.fn(),
+    onStats: vi.fn(),
+    onFrameRate: vi.fn(),
+    onUnauthorized: vi.fn(),
+  };
+  const access = {
+    httpBase: "https://t3",
+    wsBase: "wss://t3/blender",
+    credentials: false,
+    query: {},
+  };
+
+  // A pane mounted off screen connects hidden, so the server never attaches it as visible.
+  const offScreen = createHostedBlenderStreamClient(
+    { access, threadId: "thread-1", visible: false },
     { present: vi.fn(() => true) },
-    { onStatus: vi.fn(), onStats: vi.fn(), onFrameRate: vi.fn(), onUnauthorized: vi.fn() },
+    events,
   );
-  const first = FakeSocket.instances[0]!;
+  const hidden = FakeSocket.instances[0]!;
+  expect(hidden.url, "mounted off screen").toBe("wss://t3/blender/ws?threadId=thread-1&hidden=1");
+  hidden.open();
+  expect(hidden.sent, "mounted off screen").toEqual([]);
+  offScreen.stop();
+
+  const client = createHostedBlenderStreamClient(
+    { access, threadId: "thread-1" },
+    { present: vi.fn(() => true) },
+    events,
+  );
+  const first = FakeSocket.instances[1]!;
   // A viewer starts visible, so an on-screen pane says nothing.
   first.open();
   client.setVisible(true);
@@ -210,43 +246,27 @@ it("tells the server when the pane leaves the screen and comes back, across reco
   client.setVisible(false);
   first.closeWith(1012);
   vi.runAllTimers();
-  const second = FakeSocket.instances[1]!;
+  const second = FakeSocket.instances[2]!;
   expect(second.url).toBe("wss://t3/blender/ws?threadId=thread-1&hidden=1");
   second.open();
   expect(second.sent).toEqual([]);
   // Shown again before the next connection opens, it says so once open.
   second.closeWith(1012);
   vi.runAllTimers();
-  const third = FakeSocket.instances[2]!;
+  const third = FakeSocket.instances[3]!;
   client.setVisible(true);
   third.open();
   expect(third.sent).toEqual([JSON.stringify({ type: "visibility", visible: true })]);
   client.stop();
 });
-it("S5: a pane mounted off screen connects hidden, so the server never attaches it as visible", () => {
-  FakeSocket.instances = [];
-  vi.stubGlobal("WebSocket", FakeSocket);
-  vi.stubGlobal("EncodedVideoChunk", vi.fn());
-  vi.stubGlobal("VideoDecoder", vi.fn());
-  const client = createHostedBlenderStreamClient(
-    {
-      access: { httpBase: "https://t3", wsBase: "wss://t3/blender", credentials: false, query: {} },
-      threadId: "thread-1",
-      visible: false,
-    },
-    { present: vi.fn(() => true) },
-    { onStatus: vi.fn(), onStats: vi.fn(), onFrameRate: vi.fn(), onUnauthorized: vi.fn() },
-  );
-  const first = FakeSocket.instances[0]!;
-  expect(first.url).toBe("wss://t3/blender/ws?threadId=thread-1&hidden=1");
-  first.open();
-  expect(first.sent).toEqual([]);
-  client.stop();
-});
-
 it("starts a new decoder when a keyframe brings a new frame size, and keeps it otherwise", async () => {
   FakeSocket.instances = [];
-  const decoders: Array<{ codec: string | null; decoded: string[]; state: string }> = [];
+  const decoders: Array<{
+    config: VideoDecoderConfig | null;
+    decoded: string[];
+    state: string;
+  }> = [];
+  let configured = Promise.withResolvers<void>();
   vi.stubGlobal("WebSocket", FakeSocket);
   vi.stubGlobal(
     "EncodedVideoChunk",
@@ -262,7 +282,7 @@ it("starts a new decoder when a keyframe brings a new frame size, and keeps it o
     class extends EventTarget {
       static isConfigSupported = async () => ({ supported: true });
       readonly record = {
-        codec: null as string | null,
+        config: null as VideoDecoderConfig | null,
         decoded: [] as string[],
         state: "unconfigured",
       };
@@ -276,7 +296,8 @@ it("starts a new decoder when a keyframe brings a new frame size, and keeps it o
       }
       configure(config: VideoDecoderConfig) {
         this.record.state = "configured";
-        this.record.codec = config.codec;
+        this.record.config = config;
+        configured.resolve();
       }
       decode(chunk: { init: EncodedVideoChunkInit }) {
         this.record.decoded.push(chunk.init.type);
@@ -297,17 +318,32 @@ it("starts a new decoder when a keyframe brings a new frame size, and keeps it o
   const socket = FakeSocket.instances[0]!;
   socket.open();
   socket.receive(keyframe);
-  await vi.waitFor(() => expect(decoders[0]?.decoded).toEqual(["key"]));
+  await configured.promise;
+  expect(decoders[0]?.decoded).toEqual(["key"]);
   // The same SPS again, with a different slice: the same decoder carries on.
   socket.receive(semu(true, [0, 0, 0, 1, 0x67, 0x64, 0x00, 0x1f, 0, 0, 0, 1, 0x65, 0x99]));
   expect(decoders).toHaveLength(1);
   expect(decoders[0]!.decoded).toEqual(["key", "key"]);
   // The display resized: a different SPS (here level 4.0) starts a decoder of its own, since some
   // decoders (Android's WebView) keep the first frame size.
+  configured = Promise.withResolvers();
   socket.receive(semu(true, [0, 0, 0, 1, 0x67, 0x64, 0x00, 0x28, 0, 0, 0, 1, 0x65, 0x88]));
-  await vi.waitFor(() => expect(decoders[1]?.decoded).toEqual(["key"]));
+  await configured.promise;
+  expect(decoders[1]?.decoded).toEqual(["key"]);
   expect(decoders[0]!.state).toBe("closed");
-  expect(decoders[1]!.codec).toBe("avc1.640028");
+  expect(decoders[1]!.config?.codec).toBe("avc1.640028");
+
+  // The decoder is told the frame size, which Android's WebView needs to show it uncropped.
+  configured = Promise.withResolvers();
+  socket.receive(
+    semu(true, [0, 0, 0, 1, ...SPS["nvh264enc high 1044x2002"], 0, 0, 0, 1, 0x65, 0x88]),
+  );
+  await configured.promise;
+  expect(decoders[2]?.config, "the frame size").toMatchObject({
+    codec: "avc1.64002a",
+    codedWidth: 1044,
+    codedHeight: 2002,
+  });
   client.stop();
 });
 
@@ -375,65 +411,6 @@ const SPS = {
 it.each(Object.entries(SPS))("reads the cropped frame size from the SPS (%s)", (name, bytes) => {
   const [width, height] = name.split(" ").at(-1)!.split("x").map(Number);
   expect(avcFrameSize(new Uint8Array(bytes))).toEqual({ width, height });
-});
-
-it("tells the decoder the frame size, which Android's WebView needs to show it uncropped", async () => {
-  FakeSocket.instances = [];
-  const configured = Promise.withResolvers<VideoDecoderConfig>();
-  vi.stubGlobal("WebSocket", FakeSocket);
-  vi.stubGlobal("EncodedVideoChunk", vi.fn());
-  vi.stubGlobal(
-    "VideoDecoder",
-    class extends EventTarget {
-      static isConfigSupported = async () => ({ supported: true });
-      state = "unconfigured";
-      decodeQueueSize = 0;
-      configure(config: VideoDecoderConfig) {
-        this.state = "configured";
-        configured.resolve(config);
-      }
-      decode() {}
-      close() {}
-    },
-  );
-  const client = createHostedBlenderStreamClient(
-    {
-      access: { httpBase: "https://t3", wsBase: "wss://t3/blender", credentials: false, query: {} },
-      threadId: "thread-1",
-    },
-    { present: vi.fn(() => true) },
-    { onStatus: vi.fn(), onStats: vi.fn(), onFrameRate: vi.fn(), onUnauthorized: vi.fn() },
-  );
-  const socket = FakeSocket.instances[0]!;
-  socket.open();
-  socket.receive(
-    semu(true, [0, 0, 0, 1, ...SPS["nvh264enc high 1044x2002"], 0, 0, 0, 1, 0x65, 0x88]),
-  );
-  expect(await configured.promise).toMatchObject({
-    codec: "avc1.64002a",
-    codedWidth: 1044,
-    codedHeight: 2002,
-  });
-  client.stop();
-});
-
-it("watches the thread's master Blender when asked", () => {
-  FakeSocket.instances = [];
-  vi.stubGlobal("WebSocket", FakeSocket);
-  vi.stubGlobal("EncodedVideoChunk", vi.fn());
-  vi.stubGlobal("VideoDecoder", vi.fn());
-  createHostedBlenderStreamClient(
-    {
-      access: { httpBase: "https://t3", wsBase: "wss://t3/blender", credentials: false, query: {} },
-      threadId: "thread-1",
-      master: true,
-    },
-    { present: vi.fn(() => true) },
-    { onStatus: vi.fn(), onStats: vi.fn(), onFrameRate: vi.fn(), onUnauthorized: vi.fn() },
-  ).stop();
-  expect(FakeSocket.instances.at(-1)!.url).toBe(
-    "wss://t3/blender/ws?threadId=thread-1&role=master",
-  );
 });
 
 // Blender at 60 fps through the real ViewerFlow to the real stream client, over a link with
@@ -598,31 +575,26 @@ describe("the stream client against the server's ViewerFlow", () => {
   const fps = (presentedAt: ReadonlyArray<number>, from: number, to: number) =>
     (presentedAt.filter((at) => at >= from && at < to).length * 1000) / (to - from);
 
-  it.each([20, 50, 100])(
-    "R1: starts, resizes six times and keeps 60 fps over a %i ms round trip",
-    async (roundTripMs) => {
-      vi.useFakeTimers({ now: 0 });
-      const run = await simulateStream({
-        roundTripMs,
-        configureMs: 40,
-        resizesAt: [1500, 3000, 4500, 6000, 7500, 9000],
-        decodeMs: () => 2,
-      });
-      expectWhole(run);
-      expect(fps(run.presentedAt, 1000, 10_000)).toBeGreaterThanOrEqual(59);
-      expect(run.presentedAt.at(-1)).toBeGreaterThanOrEqual(10_000 - 100 + roundTripMs / 2);
-    },
-  );
-
-  it("R1: a decoder that falls behind for two seconds loses no slot and recovers", async () => {
-    vi.useFakeTimers({ now: 0 });
-    const run = await simulateStream({
+  it.each([
+    ...[20, 50, 100].map((roundTripMs) => ({
+      label: `starts, resizes six times and keeps 60 fps over a ${roundTripMs} ms round trip`,
+      roundTripMs,
+      resizesAt: [1500, 3000, 4500, 6000, 7500, 9000],
+      decodeMs: () => 2,
+      steadyFrom: 1000,
+    })),
+    {
+      label: "a decoder that falls behind for two seconds loses no slot and recovers",
       roundTripMs: 50,
-      configureMs: 40,
       resizesAt: [],
-      decodeMs: (now) => (now >= 3000 && now < 5000 ? 30 : 2),
-    });
+      decodeMs: (now: number) => (now >= 3000 && now < 5000 ? 30 : 2),
+      steadyFrom: 6000,
+    },
+  ])("R1: $label", async ({ roundTripMs, resizesAt, decodeMs, steadyFrom }) => {
+    vi.useFakeTimers({ now: 0 });
+    const run = await simulateStream({ roundTripMs, configureMs: 40, resizesAt, decodeMs });
     expectWhole(run);
-    expect(fps(run.presentedAt, 6000, 10_000)).toBeGreaterThanOrEqual(59);
+    expect(fps(run.presentedAt, steadyFrom, 10_000)).toBeGreaterThanOrEqual(59);
+    expect(run.presentedAt.at(-1)).toBeGreaterThanOrEqual(10_000 - 100 + roundTripMs / 2);
   });
 });

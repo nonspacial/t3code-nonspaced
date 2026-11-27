@@ -26,23 +26,6 @@ describe("helperArguments", () => {
     expect(helperArguments({ ...launch, autoRun: false })).toContain("--disable-autoexec");
   });
 
-  it("asks the control add-on to start the agent listener only when told to", () => {
-    expect(helperArguments({ ...launch, mcpListen: true }).slice(-3)).toEqual([
-      "--t3-mcp-port",
-      "41234",
-      "--t3-mcp-listen",
-    ]);
-    expect(helperArguments(launch)).not.toContain("--t3-mcp-listen");
-  });
-
-  it("hands the control add-on the launch's Blender Lab snapshot only when there is one", () => {
-    expect(helperArguments({ ...launch, mcpSnapshot: "/state/blender-lab" }).slice(-2)).toEqual([
-      "--t3-mcp-snapshot",
-      "/state/blender-lab",
-    ]);
-    expect(helperArguments(launch)).not.toContain("--t3-mcp-snapshot");
-  });
-
   it("runs Blender online, without embedded scripts, with the control add-on and its own ports", () => {
     expect(
       helperArguments({
@@ -82,24 +65,31 @@ describe("helperArguments", () => {
       "--t3-mcp-port",
       "41234",
     ]);
-  });
 
-  it("asks the control add-on to restore a recovery copy over the file it opens", () => {
-    const argv = helperArguments({
-      stateDir: "/state/thread-1",
-      userResources: "/state/user-resources",
-      blender: "/usr/bin/blender",
-      addonPath: "/state/thread-1/t3_control.py",
-      blendPath: "/work/models/hero.blend",
-      controlSocket: "/run/user/1000/t3hb-1/control.sock",
-      mcpPort: 41234,
+    expect(
+      helperArguments({ ...launch, mcpListen: true }).slice(-3),
+      "the agent listener starts only when told to",
+    ).toEqual(["--t3-mcp-port", "41234", "--t3-mcp-listen"]);
+    expect(helperArguments(launch)).not.toContain("--t3-mcp-listen");
+
+    expect(
+      helperArguments({ ...launch, mcpSnapshot: "/state/blender-lab" }).slice(-2),
+      "the launch's Blender Lab snapshot goes only when there is one",
+    ).toEqual(["--t3-mcp-snapshot", "/state/blender-lab"]);
+    expect(helperArguments(launch)).not.toContain("--t3-mcp-snapshot");
+
+    const recovering = helperArguments({
+      ...launch,
       recover: "/state/recovery/thread-1/session.blend",
-      width: 1280,
-      height: 720,
     });
     // Blender still opens the user's file, so that stays the file it saves to.
-    expect(argv).toContain("/work/models/hero.blend");
-    expect(argv.slice(-2)).toEqual(["--t3-recover", "/state/recovery/thread-1/session.blend"]);
+    expect(recovering, "a recovery copy keeps the user's file open").toContain(
+      "/work/models/hero.blend",
+    );
+    expect(recovering.slice(-2), "a recovery copy is restored over it").toEqual([
+      "--t3-recover",
+      "/state/recovery/thread-1/session.blend",
+    ]);
   });
 });
 

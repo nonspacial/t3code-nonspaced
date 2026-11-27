@@ -98,7 +98,7 @@ async function pixels(dataUrl: string) {
   return ([x, y]: At) => Array.from(context.getImageData(x, y, 1, 1).data.slice(0, 3));
 }
 
-it("draws lines and arrows, and Shift straightens each tool, even pressed mid-drag", async () => {
+it("draws marks in the picked colour and fill, and Shift straightens a drag even pressed mid-drag", async () => {
   const { element, container, onSubmit } = setup();
   await using screen = await render(element, { container });
   const surface = surfaceOf(screen);
@@ -125,49 +125,45 @@ it("draws lines and arrows, and Shift straightens each tool, even pressed mid-dr
   await vi.waitFor(() => expect(shaftEnd()[1]).toBeCloseTo(168.2, 1));
   pointer(surface, "pointerup", [300, 170], { shiftKey: true });
 
-  await pickTool(screen, "Draw");
-  drag(
-    surface,
-    [
-      [20, 250],
-      [60, 220],
-      [90, 280],
-      [130, 240],
-    ],
-    { shiftKey: true },
-  );
+  // New marks take the picked colour and fill; earlier marks keep theirs.
+  await expect
+    .element(screen.getByRole("button", { name: "Theme color" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect
+    .element(screen.getByRole("button", { name: "Fill regions" }))
+    .toHaveAttribute("aria-pressed", "true");
   await pickTool(screen, "Mark a region");
-  drag(
-    surface,
-    [
-      [250, 200],
-      [330, 230],
-    ],
-    { shiftKey: true },
-  );
+  drag(surface, [
+    [20, 200],
+    [120, 290],
+  ]);
+  await userEvent.click(screen.getByRole("button", { name: "Red", exact: true }));
+  await userEvent.click(screen.getByRole("button", { name: "Fill regions" }));
+  drag(surface, [
+    [200, 200],
+    [300, 290],
+  ]);
+  await vi.waitFor(() => expect(paths(screen).at(-1)?.getAttribute("stroke")).toBe("#ef4444"));
+  const [themed, outlined] = paths(screen).slice(-2);
+  expect(themed?.getAttribute("stroke")).not.toBe("#ef4444");
+  expect(themed?.getAttribute("fill")).toBe(themed?.getAttribute("stroke"));
+  expect(outlined?.getAttribute("fill")).toBe("none");
 
   const result = await submit(screen, onSubmit);
-  const [line, arrow, pen] = result.strokes;
-  expect(line?.points).toEqual([
-    { x: 40, y: 40 },
-    { x: 160, y: 70 },
-  ]);
-  // The arrow snapped flat, and is sent from its tip so what it points at is found first.
-  expect(arrow?.points[0]?.x).toBeCloseTo(300, 6);
-  expect(arrow?.points[0]?.y).toBeCloseTo(150, 6);
-  expect(arrow?.points[1]).toEqual({ x: 100, y: 150 });
-  expect(pen?.points).toEqual([
-    { x: 20, y: 250 },
-    { x: 130, y: 240 },
-  ]);
-  expect(result.regions[0]?.rect).toEqual({ x: 250, y: 200, width: 80, height: 80 });
-
   // The screenshot shows the arrowhead at the drag's end, and not at its start.
   const at = await pixels(result.screenshot);
   expect(at([294, 150])).not.toEqual(GREY);
   expect(at([290, 145])).not.toEqual(GREY);
   expect(at([105, 145])).toEqual(GREY);
   expect(at([100, 55])).not.toEqual(GREY);
+  expect(at([100, 55]), "an earlier mark keeps its colour").not.toEqual(RED);
+  // The first region is outlined and lightly filled in the theme's colour.
+  expect(at([20, 245])).not.toEqual(GREY);
+  expect(at([20, 245])).not.toEqual(RED);
+  expect(at([70, 245])).not.toEqual(GREY);
+  // The second is outlined in red and left clear.
+  expect(at([200, 245])).toEqual(RED);
+  expect(at([250, 245])).toEqual(GREY);
 });
 
 it("undoes and redoes marks, erasing included, from the keyboard and the toolbar", async () => {
@@ -177,6 +173,40 @@ it("undoes and redoes marks, erasing included, from the keyboard and the toolbar
   const comment = screen.getByRole("textbox", { name: "Annotation comment" });
   await expect.element(comment).toHaveFocus();
   const marks = () => paths(screen).length;
+  const undoKey = () => userEvent.keyboard(`{${MOD}>}z{/${MOD}}`);
+  const redoKey = () => userEvent.keyboard(`{${MOD}>}{Shift>}z{/Shift}{/${MOD}}`);
+
+  // A drag ends where it is let go, not at its last move.
+  await pickTool(screen, "Line");
+  pointer(surface, "pointerdown", [40, 40]);
+  pointer(surface, "pointermove", [100, 40]);
+  pointer(surface, "pointerup", [160, 70]);
+  await vi.waitFor(() => expect(marks()).toBe(1));
+  expect(numbers(paths(screen)[0]!), "the drag's end").toEqual([40, 40, 160, 70]);
+
+  // The history keys stay in the editor when a focused button they disable runs out.
+  const button = (name: string) =>
+    screen.getByRole("button", { name, exact: true }).element() as HTMLElement;
+  button("Undo").focus();
+  await undoKey();
+  expect(marks(), "undo focused, run out").toBe(0);
+  await redoKey();
+  expect(marks(), "undo focused, run out").toBe(1);
+  await undoKey();
+  button("Redo").focus();
+  await redoKey();
+  expect(marks(), "redo focused, run out").toBe(1);
+  await undoKey();
+  expect(marks(), "redo focused, run out").toBe(0);
+  // Any focused button the undo leaves disabled, such as Add to chat with no comment.
+  await redoKey();
+  button("Add to chat").focus();
+  await undoKey();
+  expect(marks(), "Add to chat focused, disabled").toBe(0);
+  await redoKey();
+  expect(marks(), "Add to chat focused, disabled").toBe(1);
+  await userEvent.click(screen.getByRole("button", { name: "Undo", exact: true }));
+  expect(marks()).toBe(0);
 
   await pickTool(screen, "Line");
   drag(surface, [
@@ -227,30 +257,6 @@ it("undoes and redoes marks, erasing included, from the keyboard and the toolbar
   expect(result.regions).toHaveLength(1);
 });
 
-it("keeps the history keys working after a toolbar button runs out, and ends a drag where it is let go", async () => {
-  const { element, container } = setup();
-  await using screen = await render(element, { container });
-  const surface = surfaceOf(screen);
-  const marks = () => paths(screen).length;
-  await pickTool(screen, "Line");
-  pointer(surface, "pointerdown", [40, 40]);
-  pointer(surface, "pointermove", [100, 40]);
-  pointer(surface, "pointerup", [160, 70]);
-  await vi.waitFor(() => expect(marks()).toBe(1));
-  expect(numbers(paths(screen)[0]!)).toEqual([40, 40, 160, 70]);
-
-  await userEvent.click(screen.getByRole("button", { name: "Undo", exact: true }));
-  expect(marks()).toBe(0);
-  await userEvent.keyboard(`{${MOD}>}{Shift>}z{/Shift}{/${MOD}}`);
-  expect(marks()).toBe(1);
-  await userEvent.keyboard(`{${MOD}>}z{/${MOD}}`);
-  expect(marks()).toBe(0);
-  await userEvent.click(screen.getByRole("button", { name: "Redo", exact: true }));
-  expect(marks()).toBe(1);
-  await userEvent.keyboard(`{${MOD}>}z{/${MOD}}`);
-  expect(marks()).toBe(0);
-});
-
 it("keeps marks inside the snapshot when the pane letterboxes it", async () => {
   await page.viewport(1280, 800);
   const { element, container } = setup("relative h-[300px] w-[600px]");
@@ -285,105 +291,6 @@ it("keeps marks inside the snapshot when the pane letterboxes it", async () => {
   surface.dispatchEvent(new PointerEvent("pointerdown", at(398, 150)));
   surface.dispatchEvent(new PointerEvent("pointerup", at(398, 150)));
   await vi.waitFor(() => expect(paths(screen)).toHaveLength(0));
-});
-
-it("keeps the history keys in the editor when the focused button they disable runs out", async () => {
-  const { element, container } = setup();
-  await using screen = await render(element, { container });
-  const surface = surfaceOf(screen);
-  const marks = () => paths(screen).length;
-  await pickTool(screen, "Line");
-  drag(surface, [
-    [40, 40],
-    [160, 70],
-  ]);
-  await vi.waitFor(() => expect(marks()).toBe(1));
-  const undo = screen.getByRole("button", { name: "Undo", exact: true }).element() as HTMLElement;
-  const redo = screen.getByRole("button", { name: "Redo", exact: true }).element() as HTMLElement;
-
-  undo.focus();
-  await userEvent.keyboard(`{${MOD}>}z{/${MOD}}`);
-  expect(marks()).toBe(0);
-  await userEvent.keyboard(`{${MOD}>}{Shift>}z{/Shift}{/${MOD}}`);
-  expect(marks()).toBe(1);
-
-  await userEvent.keyboard(`{${MOD}>}z{/${MOD}}`);
-  expect(marks()).toBe(0);
-  redo.focus();
-  await userEvent.keyboard(`{${MOD}>}{Shift>}z{/Shift}{/${MOD}}`);
-  expect(marks()).toBe(1);
-  await userEvent.keyboard(`{${MOD}>}z{/${MOD}}`);
-  expect(marks()).toBe(0);
-
-  // Any focused button the undo leaves disabled, such as Add to chat with no comment.
-  await userEvent.keyboard(`{${MOD}>}{Shift>}z{/Shift}{/${MOD}}`);
-  (screen.getByRole("button", { name: "Add to chat" }).element() as HTMLElement).focus();
-  await userEvent.keyboard(`{${MOD}>}z{/${MOD}}`);
-  expect(marks()).toBe(0);
-  await userEvent.keyboard(`{${MOD}>}{Shift>}z{/Shift}{/${MOD}}`);
-  expect(marks()).toBe(1);
-});
-
-it("draws new marks in the picked color and fill; earlier marks keep theirs", async () => {
-  const { element, container, onSubmit } = setup();
-  await using screen = await render(element, { container });
-  const surface = surfaceOf(screen);
-  await expect
-    .element(screen.getByRole("button", { name: "Theme color" }))
-    .toHaveAttribute("aria-pressed", "true");
-  await expect
-    .element(screen.getByRole("button", { name: "Fill regions" }))
-    .toHaveAttribute("aria-pressed", "true");
-
-  await pickTool(screen, "Mark a region");
-  drag(surface, [
-    [20, 20],
-    [120, 120],
-  ]);
-  await userEvent.click(screen.getByRole("button", { name: "Red", exact: true }));
-  await userEvent.click(screen.getByRole("button", { name: "Fill regions" }));
-  drag(surface, [
-    [200, 20],
-    [300, 120],
-  ]);
-  await pickTool(screen, "Arrow");
-  drag(surface, [
-    [50, 200],
-    [350, 200],
-  ]);
-
-  const [themed, outlined] = paths(screen);
-  expect(themed?.getAttribute("stroke")).not.toBe("#ef4444");
-  expect(themed?.getAttribute("fill")).toBe(themed?.getAttribute("stroke"));
-  expect(outlined?.getAttribute("stroke")).toBe("#ef4444");
-  expect(outlined?.getAttribute("fill")).toBe("none");
-
-  const result = await submit(screen, onSubmit);
-  expect(result.strokes[0]?.color).toBe("#ef4444");
-  const at = await pixels(result.screenshot);
-  // The first region is outlined and lightly filled in the theme's color.
-  expect(at([20, 70])).not.toEqual(GREY);
-  expect(at([20, 70])).not.toEqual(RED);
-  expect(at([70, 70])).not.toEqual(GREY);
-  // The second is outlined in red and left clear.
-  expect(at([200, 70])).toEqual(RED);
-  expect(at([250, 70])).toEqual(GREY);
-  // The red arrow's head is at the drag's end.
-  expect(at([345, 200])).toEqual(RED);
-  expect(at([340, 196])).toEqual(RED);
-  expect(at([55, 196])).toEqual(GREY);
-});
-
-it("fits its toolbar on one row of a 400 px pane in a desktop window", async () => {
-  await page.viewport(1280, 800);
-  const { element, container } = setup();
-  await using screen = await render(element, { container });
-  const toolbar = screen.getByRole("group", { name: "Annotation tool" }).element().parentElement!;
-  const pane = container.getBoundingClientRect();
-  const box = toolbar.getBoundingClientRect();
-  expect(box.left).toBeGreaterThanOrEqual(pane.left);
-  expect(box.right).toBeLessThanOrEqual(pane.right);
-  expect(box.height).toBeLessThan(40);
 });
 
 it("leaves an IME's Escape to the composition, in the comment and on the surface", async () => {

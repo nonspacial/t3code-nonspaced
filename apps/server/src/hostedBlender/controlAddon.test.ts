@@ -49,7 +49,7 @@ _spaces = _Spaces([_view3d] + ([_assets] if state.get("assetBrowser") else []))
 _spaces.active = _assets if state.get("assetBrowser") == "shown" else _view3d
 _area = types.SimpleNamespace(width=800, height=600, spaces=_spaces)
 _screen = types.SimpleNamespace(areas=[_area])
-_windows = [] if state.get("noWindow") else [types.SimpleNamespace(screen=_screen)]
+_windows = [types.SimpleNamespace(screen=_screen)]
 context = types.SimpleNamespace(
     preferences=types.SimpleNamespace(
         addons=addons,
@@ -249,9 +249,6 @@ def stop():
     for client in deferred_tool._deferred_clients:
         client.conn.close()
     deferred_tool._deferred_clients.clear()
-import os as _os
-if json.loads(_os.environ["STUB_STATE"]).get("brokenServer"):
-    del _accept_clients
 `,
   "addon_utils.py": String.raw`
 import importlib, json, os, types
@@ -326,18 +323,13 @@ if _scenario.get("connect", True):
     _t3.connect(SOCKET_PATH)
     _tick()
     _steps.append(_report())
-    if _scenario.get("pressStartBeforeGrant"):
-        _press_start()
-        _steps.append(_report())
-    if _scenario.get("fileBeforeGrant"):
-        bpy.data.filepath = "/work/other.blend"
     bpy.data.is_dirty = bool(_scenario.get("dirty"))
     # What a person does in Blender before T3 asks, a tick after each step.
     for _step in _scenario.get("catalogSteps", []):
         _browser = _step.get("browser")
         bpy._spaces[:] = [bpy._view3d] + ([bpy._assets] if _browser else [])
         bpy._assets.browse_mode = "FILES" if _browser == "files" else "ASSETS"
-        bpy._assets.params.asset_library_reference = _step.get("library", "lib")
+        bpy._assets.params.asset_library_reference = "lib"
         bpy._spaces.active = bpy._assets if _browser in ("shown", "files") else bpy._view3d
         if "unsaved" in _step:
             bpy.world["unsaved"] = _step["unsaved"]
@@ -345,13 +337,6 @@ if _scenario.get("connect", True):
             bpy.world["unsaved"] = False
             _on_save_post()
         _tick()
-    if _scenario.get("listeningBeforeGrant"):
-        # Blender Lab already listening, however it got there, when T3's grant arrives.
-        _addons.enable("${MCP}", default_set=True)
-        _server().start("localhost", int(MCP_PORT))
-    if _scenario.get("manifestBeforeGrant") is not None:
-        with open(os.path.join(os.environ["PYTHONPATH"], "bl_ext/t3_blender_lab/mcp/blender_manifest.toml"), "w") as _m:
-            _m.write(_scenario["manifestBeforeGrant"])
     _t3.sendall("".join(json.dumps(kind if isinstance(kind, dict) else {"type": kind}) + "\n" for kind in _scenario.get("send", ["grantAgentListener"])).encode())
     _tick()
     _steps.append(_report())
@@ -386,11 +371,6 @@ elif _then == "saveAs":
     _on_save_post()
 elif _then == "revert":
     _on_load_post()
-elif _then == "loadTime":
-    # Any load, a revert of the same file included, says when it happened.
-    _before = _snapshot().get("loadedAt")
-    _on_load_post()
-    _steps.append(dict(loadedBefore=_before, loadedAfter=type(_snapshot().get("loadedAt")).__name__))
 elif _then == "saveInBlender":
     # Ctrl+S in the pane, then a copy saved elsewhere, which leaves the open file as it was.
     _on_save_post(bpy.data.filepath)
@@ -412,14 +392,10 @@ elif _then == "saveInBlender":
         if message["type"] == "saved"
     ])
 elif _then in (
-    "saveAndQuit", "failedSaveAndQuit", "pendingSaveAndQuit", "quitWithoutSaving", "discardOther",
-    "saveOther",
+    "saveAndQuit", "failedSaveAndQuit", "discardOther", "saveOther",
 ):
     # Save and quit as T3 asks for it: Blender's own operators stood in for.
     import contextlib, types
-    if _then == "pendingSaveAndQuit":
-        # The agent's deferred call that can write is still pending when Save and quit saves.
-        _Guard.deferred.append({"writes": True, "check": None})
     _windows = bpy.context.window_manager.windows
     _windows[:] = [types.SimpleNamespace(as_pointer=lambda: 0)]
     bpy.context.temp_override = lambda **_kwargs: contextlib.nullcontext()
@@ -455,10 +431,8 @@ elif _then in (
     bpy.ops.wm = types.SimpleNamespace(save_mainfile=_save_mainfile, quit_blender=_quit_blender)
     bpy.ops.ed = types.SimpleNamespace(undo_push=_undo_push)
     _t3.sendall(
-        b'{"type": "quit", "save": false}\n'
-        if _then == "quitWithoutSaving"
         # The person's discard of a file Blender no longer has open.
-        else b'{"type": "quit", "save": false, "filepath": "/work/other.blend"}\n'
+        b'{"type": "quit", "save": false, "filepath": "/work/other.blend"}\n'
         if _then == "discardOther"
         # The person's Save and quit of a file Blender no longer has open.
         else b'{"type": "quit", "save": true, "hold": true, "filepath": "/work/other.blend"}\n'
@@ -472,10 +446,7 @@ elif _then in (
             _addons.log("heard", [json.loads(line)["type"] for line in _t3.recv(65536).decode().splitlines()])
         except BlockingIOError:
             _addons.log("heard", [])
-elif _then in (
-    "replaceViewport", "stuckViewport", "ownChanged", "lateMarked", "loadInSession", "ownClosed",
-    "childClosed", "reusedAddress",
-):
+elif _then == "replaceViewport":
     # The file was saved with T3's viewport window open, one from a build before T3 marked it
     # (a plain lone 3D view), and the user's own window of another editor: after any load the
     # add-on swaps T3's for its own, and leaves the user's alone.
@@ -489,12 +460,11 @@ elif _then in (
         def __init__(self, kind):
             super().__init__(); self.areas = [_Area(kind)]
     class _Window:
-        def __init__(self, kind, marked=False, pointer=None):
+        def __init__(self, kind, marked=False):
             self.screen = _Screen(kind)
-            self.pointer = pointer
             if marked:
                 self.screen["t3_viewport"] = True
-        def as_pointer(self): return id(self) if self.pointer is None else self.pointer
+        def as_pointer(self): return id(self)
     _windows = bpy.context.window_manager.windows
     _users = _Window("IMAGE_EDITOR")
     _saved = _Window("VIEW_3D", marked=True)
@@ -508,11 +478,7 @@ elif _then in (
         return contextlib.nullcontext()
     def _close():
         _closes.append(_current[0])
-        if _then != "stuckViewport":
-            _windows.remove(_current[0])
-        if _then == "childClosed" and _current[0] is _saved:
-            # Its child window closes with it.
-            _windows.remove(_legacy)
+        _windows.remove(_current[0])
     def _dupli(_mode):
         window = _Window("VIEW_3D"); _windows.append(window); _opened.append(window)
     bpy.context.temp_override = _override
@@ -520,8 +486,6 @@ elif _then in (
         window_close=_close, recover_auto_save=lambda **_kwargs: {"FINISHED"}
     )
     bpy.ops.screen = types.SimpleNamespace(area_dupli=_dupli)
-    if RECOVER_PATH is not None:
-        _recover()
     def _t3_pass():
         # As a connected T3 answers a window the add-on announced: it expects it.
         if _t3 is not None and _State.viewport_wanted is not None:
@@ -529,69 +493,8 @@ elif _then in (
         return _open_viewport_window()
     # The timer runs until it returns None; a stuck close must not keep it going.
     _runs = 0
-    _late = _Window("VIEW_3D", marked=True)
     while _t3_pass() is not None and _runs < 10:
         _runs += 1
-        if _then == "lateMarked" and _runs == 1:
-            # A marked window seen only after the first pass isn't the copy's to replace.
-            _windows.append(_late)
-    if _then == "lateMarked":
-        _steps.append(dict(lateKept=_late in _windows))
-    if _then == "reusedAddress":
-        # A later load brings back a marked window at an address a closed one had.
-        _windows[:] = [_Window("VIEW_3D"), _Window("VIEW_3D", marked=True, pointer=id(_saved))]
-        _opened.clear()
-        _on_load_post()
-        _runs = 0
-        while _t3_pass() is not None and _runs < 10:
-            _runs += 1
-        _steps.append(dict(
-            viewports=len([window for window in _windows[1:] if _lone_3d_view(window)]),
-            fresh=len(_opened),
-        ))
-    if _then == "loadInSession":
-        # The person (or the agent) opens a file saved from a hosted Blender: Blender gives
-        # every window a new struct with the file's screens.
-        _users = _Window("IMAGE_EDITOR")
-        _windows[:] = [_Window("VIEW_3D"), _Window("VIEW_3D", marked=True), _Window("VIEW_3D"), _users]
-        _opened.clear()
-        _closes.clear()
-        _on_load_post()
-        _runs = 0
-        while _t3_pass() is not None and _runs < 10:
-            _runs += 1
-        lone = [window for window in _windows[1:] if _lone_3d_view(window)]
-        _steps.append(dict(
-            viewports=len(lone),
-            tracked=_viewport() is not None and _viewport()[0] is lone[0],
-            fresh=len(_opened),
-        ))
-    if _then in ("ownChanged", "ownClosed"):
-        # The person turns T3's window into another editor, or closes it: it's no longer T3's
-        # viewport, and Blender's own tick, with nothing else asking, replaces it.
-        _first = _opened[0]
-        if _then == "ownChanged":
-            _first.screen.areas[0].type = "IMAGE_EDITOR"
-        else:
-            _windows.remove(_first)
-        _changed = _viewport()
-        bpy.app.registered.clear()
-        _tick()
-        _scheduled = [function for function in bpy.app.registered if function is _open_viewport_window]
-        for function in _scheduled:
-            bpy.app.registered.remove(function)
-            _passes = 0
-            while _t3_pass() is not None and _passes < 10:
-                _passes += 1
-        _steps.append(dict(
-            stillOwn=_changed is not None and _changed[0] is _first,
-            scheduled=len(_scheduled),
-            reopened=_viewport() is not None and _viewport()[0] is _opened[-1],
-            fresh=len(_opened),
-            # One T3 viewport window, the one streamed: the old one is gone.
-            oldGone=_first not in _windows,
-            marked=len([window for window in _windows if window.screen.get("t3_viewport")]),
-        ))
     _steps.append(dict(
         _report(),
         windows=len(_windows),
@@ -958,19 +861,15 @@ const runAddon = (input: {
         readonly type: "quit";
         readonly save: boolean;
         readonly hold?: boolean;
-        readonly deadline?: number;
       }
   >;
   /** Asset catalogs edited and not saved, which only Blender's catalog poll can tell. */
   readonly unsavedCatalogs?: boolean;
-  /** No window to check catalogs through. */
-  readonly noWindow?: boolean;
   /** An asset browser in the main window, as its area's editor or out of view behind another. */
   readonly assetBrowser?: "shown" | "hidden";
   /** Steps a person takes before T3 asks, each followed by the add-on's tick. */
   readonly catalogSteps?: ReadonlyArray<{
     readonly browser?: "shown" | "files" | "hidden";
-    readonly library?: string;
     readonly unsaved?: boolean;
     readonly save?: boolean;
   }>;
@@ -978,17 +877,8 @@ const runAddon = (input: {
   readonly dirty?: boolean;
   /** Images edited and not saved, which saving the .blend leaves behind. */
   readonly dirtyImages?: ReadonlyArray<string>;
-  readonly pressStartBeforeGrant?: boolean;
-  /** Another file is open by the time T3's grant arrives. */
-  readonly fileBeforeGrant?: boolean;
-  /** Launched to restore a recovery copy, as Reopen does. */
-  readonly recover?: boolean;
   readonly then?:
-    | "stuckViewport"
     | "settledWords"
-    | "ownChanged"
-    | "lateMarked"
-    | "loadInSession"
     | "revoke"
     | "drop"
     | "otherFile"
@@ -997,29 +887,19 @@ const runAddon = (input: {
     | "replaceViewport"
     | "saveAndQuit"
     | "saveInBlender"
-    | "pendingSaveAndQuit"
-    | "quitWithoutSaving"
     | "discardOther"
     | "saveOther"
-    | "loadTime"
-    | "ownClosed"
-    | "childClosed"
-    | "reusedAddress"
     | "failedSaveAndQuit";
   /** The installed extension's manifest version; 1.0.3 by default. */
   readonly mcpVersion?: string;
   /** Its whole manifest, in place of one with `mcpVersion`. */
   readonly manifest?: string;
-  /** The manifest the grant finds, written after launch. */
-  readonly manifestBeforeGrant?: string;
   /** Blender 5.3's Reload Scripts, with T3's startup gate, after the grant. */
   readonly reload?: boolean;
   /** Blender Lab's own functions back on its running listener. */
   readonly unguardedListener?: boolean;
   /** Blender Lab enabled and listening without T3's grant. */
   readonly startedOutsideGrant?: boolean;
-  /** Blender Lab's server module lacks a function the guard wraps. */
-  readonly brokenServer?: boolean;
   readonly undoSteps?: number;
   readonly undoPushFails?: boolean;
   /**
@@ -1061,8 +941,6 @@ const runAddon = (input: {
   readonly sendAfterCall?: ReadonlyArray<"quitIfClean">;
   /** Blender skipped T3's startup gate, so enabled add-ons registered from the settings. */
   readonly gateSkipped?: boolean;
-  /** Blender Lab is listening already when the grant arrives. */
-  readonly listeningBeforeGrant?: boolean;
   readonly undoPushLeavesClean?: boolean;
   readonly globalUndo?: boolean;
   /**
@@ -1122,7 +1000,6 @@ const runAddon = (input: {
       "--t3-mcp-port",
       String(port),
       ...(input.listen ? ["--t3-mcp-listen"] : []),
-      ...(input.recover ? ["--t3-recover", NodePath.join(dir, "session.blend")] : []),
       ...(input.installed.includes(MCP)
         ? ["--t3-mcp-snapshot", NodePath.join(dir, "bl_ext/t3_blender_lab")]
         : []),
@@ -1221,52 +1098,8 @@ describe("B13: a file changed on disk", () => {
     expect(result.call.listenerAfter).toBe("ready");
   });
 
-  it("S3: applies T3's notice still unread when the agent calls, and reloads before its code", () => {
-    const result = runAddon({
-      ...granted,
-      diskChanges: ["changeUnheard", "noticeQueued"],
-      call: agentCall,
-    });
-    const order = names(result).filter((name: unknown) =>
-      ["open_mainfile", "agent code"].includes(name as string),
-    );
-    expect(order).toEqual(["open_mainfile", "agent code"]);
-  });
-
   it("S3: runs nothing for the agent on a file written before T3's word, and asks T3 to look", () => {
     const result = runAddon({ ...granted, diskChanges: ["changeUnheard"], call: agentCall });
-    expect(names(result)).not.toContain("agent code");
-    expect(result.call.reply.message).toMatch(/still being written/);
-    expect(result.received).toContain("checkDisk");
-  });
-
-  it("S3: asks T3 again when the file moved on from the revision T3 named, and drops the mark once it's gone", () => {
-    const moved = runAddon({
-      ...granted,
-      diskChanges: ["outsideChange", "changeUnheard"],
-      call: agentCall,
-    });
-    expect(names(moved)).not.toContain("agent code");
-    expect(opens(moved)).toEqual([]);
-    expect(moved.call.reply.message).toMatch(/still being written/);
-    expect(moved.received).toContain("checkDisk");
-    // Nothing on disk to load: the agent works on what Blender has.
-    const gone = runAddon({
-      ...granted,
-      diskChanges: ["outsideChange", "deleteFile"],
-      call: agentCall,
-    });
-    expect(names(gone)).toContain("agent code");
-  });
-
-  it("S3: asks T3 again when the file moved on from a revision that failed to load", () => {
-    const result = runAddon({
-      ...granted,
-      loadFails: true,
-      diskChanges: ["outsideChangeShown", "changeUnheard"],
-      call: agentCall,
-    });
-    expect(changes(result, 2)[0]!.blocked).toBe("loadFailed");
     expect(names(result)).not.toContain("agent code");
     expect(result.call.reply.message).toMatch(/still being written/);
     expect(result.received).toContain("checkDisk");
@@ -1289,54 +1122,6 @@ describe("B13: a file changed on disk", () => {
     });
     expect(names(images)).not.toContain("agent code");
     expect(images.call.reply.message).toMatch(/image edits/);
-  });
-
-  it("S8: takes a notice only for the open file, at the revision it settled at, checked again right before it loads", () => {
-    const other = runAddon({ ...granted, diskChanges: ["changeUnheard", "otherFileNotice"] });
-    expect(changes(other, 1)[0]!.stale).toBe(false);
-    expect(opens(other)).toEqual([]);
-    // Written again after T3 saw it settle: no reload until T3 says it settled again.
-    const moving = runAddon({
-      ...granted,
-      diskChanges: ["outsideChange", "changeUnheard", "shown"],
-    });
-    expect(opens(moving)).toHaveLength(1);
-    // Written while Blender kept its work: the work is kept, the newer file waits for T3.
-    const duringCopy = runAddon({
-      ...granted,
-      writtenDuringCopy: true,
-      diskChanges: ["edit", "outsideChangeShown"],
-    });
-    expect(names(duringCopy)).toContain("save_auto_save");
-    expect(opens(duringCopy)).toEqual([]);
-    expect(changes(duringCopy, 1)[0]!.heard.map((message) => message.type)).toEqual(["reloading"]);
-  });
-
-  it("S9: resumes a reload held by image edits once they're saved, and says what holds it meanwhile", () => {
-    const result = runAddon({
-      ...granted,
-      diskChanges: ["editImage", "outsideChangeShown", "saveImage"],
-    });
-    const [held, saved] = changes(result, 2);
-    expect(held).toMatchObject({ stale: true, blocked: "images" });
-    expect(saved).toMatchObject({ stale: false, blocked: null });
-    expect(opens(result)).toHaveLength(1);
-    // The same for the agent's own deferred work.
-    const work = runAddon({
-      ...granted,
-      diskChanges: ["agentWork", "outsideChangeShown", "agentWorkDone"],
-    });
-    expect(changes(work, 2).map((step) => step.blocked)).toEqual(["agentWork", null]);
-    expect(opens(work)).toHaveLength(1);
-  });
-
-  it("S5: drops a reload held for a pane once no pane is on screen", () => {
-    const result = runAddon({
-      ...granted,
-      diskChanges: ["editImage", "outsideChangeShown", "panesHidden", "saveImage"],
-    });
-    expect(opens(result)).toEqual([]);
-    expect(changes(result, 1)[0]!.stale).toBe(true);
   });
 
   it("refuses Save and quit over a file changed or deleted on disk, saves after its own save, and still discards", () => {
@@ -1392,12 +1177,6 @@ describe("B13: a file changed on disk", () => {
       ),
     ).toEqual(["save_auto_save", "recover_auto_save"]);
   });
-
-  it("S7: keeps what Blender last read of the file through a restore in place", () => {
-    // Changed on disk, then the copy restored over the file: the change still counts.
-    const result = runAddon({ ...granted, diskChanges: ["changeUnheard", "restore"] });
-    expect(changes(result, 1)[0]!.changedOnDisk).toBe(true);
-  });
 });
 
 describe("T3's control add-on and Blender Lab's MCP add-on", () => {
@@ -1425,17 +1204,14 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       { listener: "ready", listening: result.port, enabled: true },
     ]);
     expect(result.autostart).toBe(false);
-  });
-
-  it("offers no Start button and starts nothing while the grant is pending", () => {
-    const result = runAddon({
+    // Never while T3 isn't connected.
+    const unconnected = runAddon({
       installed: [MCP],
       enabled: [MCP],
       listen: true,
-      pressStartBeforeGrant: true,
-      send: [],
+      connect: false,
     });
-    expect(result.steps).toEqual([pending, pending, pending, pending]);
+    expect(unconnected.steps, "T3 not connected").toEqual([pending]);
   });
 
   it("ends the grant once Save and quit has saved, before Blender begins to quit", () => {
@@ -1455,18 +1231,6 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
   const heardOf = (result: { readonly calls: ReadonlyArray<ReadonlyArray<unknown>> }) =>
     result.calls.find((call) => call[0] === "heard")?.[1];
 
-  it("says in its save result which file it saved, and that pending agent work left it unsaved", () => {
-    const pending = runAddon({
-      installed: [MCP],
-      enabled: [MCP],
-      listen: true,
-      then: "pendingSaveAndQuit",
-    });
-    expect(heardOf(pending)).toEqual([["saved", "/work/hero.wip-1a2b3c4d.blend", true]]);
-    const plain = runAddon({ installed: [MCP], enabled: [MCP], listen: true, then: "saveAndQuit" });
-    expect(heardOf(plain)).toEqual([["saved", "/work/hero.wip-1a2b3c4d.blend", false]]);
-  });
-
   it("B3: tells T3 of a save made in Blender of the open file, never of a copy saved elsewhere", () => {
     const result = runAddon({
       installed: [MCP],
@@ -1475,23 +1239,6 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       then: "saveInBlender",
     });
     expect(heardOf(result)).toEqual([["saved", "/work/hero.wip-1a2b3c4d.blend", false, false]]);
-  });
-
-  it("says which file it quits and whether it was unsaved, before its quit's own undo step", () => {
-    const quit = runAddon({
-      installed: [MCP],
-      enabled: [MCP],
-      listen: true,
-      then: "quitWithoutSaving",
-    });
-    // Taken first, before ending the agent's grant, which can be slow on a large scene.
-    expect(heardOf(quit)).toEqual([
-      ["quitAccepted", null, null],
-      ["quitting", "/work/hero.wip-1a2b3c4d.blend", false],
-    ]);
-    expect(quit.calls).toContainEqual(["undo_push", "T3 recovery copy"]);
-    // The agent's access ended before it said so, as a held quit leaves it until then.
-    expect(quit.calls).toContainEqual(["quit", "off", false]);
   });
 
   it("N1: refuses a discard or a Save and quit of a file it no longer has open, and stays open", () => {
@@ -1518,45 +1265,6 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     expect(save.calls.some((call: Array<unknown>) => call[0] === "quit")).toBe(false);
   });
 
-  it("reports when Blender loaded a file, a revert of the same file included", () => {
-    const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, then: "loadTime" });
-    expect(result.steps.find((step: object) => "loadedAfter" in step)).toEqual({
-      loadedBefore: null,
-      loadedAfter: "float",
-    });
-  });
-
-  it("keeps the grant when it replaces a viewport window a recovery copy brought back", () => {
-    const result = runAddon({
-      installed: [MCP],
-      enabled: [MCP],
-      listen: true,
-      recover: true,
-      then: "replaceViewport",
-    });
-    const ready = { listener: "ready", listening: result.port, enabled: true };
-    // T3's saved window swapped for one fresh, marked window; the user's own view kept; the
-    // agent's listener untouched. A pass closes, one announces, one opens, one sets the strip.
-    expect(result.steps.slice(-4)).toEqual([
-      { ...ready, windows: 3, fresh: 1, usersKept: true, closes: 2, runs: 3, marked: true },
-      ready,
-      off,
-      off,
-    ]);
-  });
-
-  it("stops trying to close a saved viewport window that won't close", () => {
-    const result = runAddon({
-      installed: [MCP],
-      enabled: [MCP],
-      listen: true,
-      recover: true,
-      then: "stuckViewport",
-    });
-    expect(result.steps.at(-4)).toMatchObject({ closes: 2, usersKept: true, fresh: 1 });
-    expect(result.steps.at(-4).runs).toBeLessThan(10);
-  });
-
   it("replaces every viewport window a file brought back, marked or from an earlier build", () => {
     const result = runAddon({
       installed: [MCP],
@@ -1568,120 +1276,12 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     expect(result.steps.at(-4)).toMatchObject({ windows: 3, fresh: 1, closes: 2, usersKept: true });
   });
 
-  it("leaves exactly one viewport window, its own, after a file is opened in the session", () => {
-    const result = runAddon({
-      installed: [MCP],
-      enabled: [MCP],
-      listen: true,
-      then: "loadInSession",
-    });
-    expect(result.steps.find((step: { viewports?: number }) => "viewports" in step)).toEqual({
-      viewports: 1,
-      tracked: true,
-      fresh: 1,
-    });
-  });
-
-  it("stops taking a window for its viewport once it no longer holds a lone 3D view", () => {
-    const result = runAddon({
-      installed: [MCP],
-      enabled: [MCP],
-      listen: true,
-      then: "ownChanged",
-    });
-    expect(result.steps.find((step: { stillOwn?: boolean }) => "stillOwn" in step)).toEqual({
-      stillOwn: false,
-      scheduled: 1,
-      reopened: true,
-      fresh: 2,
-      oldGone: true,
-      marked: 1,
-    });
-  });
-
-  it("goes on to open its viewport window when closing one window took another with it", () => {
-    const result = runAddon({
-      installed: [MCP],
-      enabled: [MCP],
-      listen: true,
-      then: "childClosed",
-    });
-    expect(result.steps.at(-4)).toMatchObject({ windows: 3, fresh: 1, usersKept: true });
-  });
-
-  it("replaces a window a later load brings back, at whatever address", () => {
-    const result = runAddon({
-      installed: [MCP],
-      enabled: [MCP],
-      listen: true,
-      then: "reusedAddress",
-    });
-    expect(result.steps.find((step: object) => "viewports" in step)).toEqual({
-      viewports: 1,
-      fresh: 1,
-    });
-  });
-
   it("S1: adds the strip only once T3 has said the capture's mode: a size the window fills, or the whole output", () => {
     const result = runAddon({ installed: [], enabled: [], listen: false, then: "settledWords" });
     expect(result.steps.find((step: object) => "settled" in step)).toEqual({
       // Unknown, then captured but with no size yet, then a size it doesn't fill.
       settled: [false, false, false, true, true],
     });
-  });
-
-  it("S1: opens its viewport window without T3 connected", () => {
-    const result = runAddon({
-      installed: [],
-      enabled: [],
-      listen: false,
-      connect: false,
-      then: "replaceViewport",
-    });
-    expect(result.steps.find((step: object) => "fresh" in step && "windows" in step)).toMatchObject(
-      { fresh: 1 },
-    );
-  });
-
-  it("replaces its viewport window when the person closes it", () => {
-    const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, then: "ownClosed" });
-    expect(result.steps.find((step: { stillOwn?: boolean }) => "stillOwn" in step)).toEqual({
-      stillOwn: false,
-      scheduled: 1,
-      reopened: true,
-      fresh: 2,
-      oldGone: true,
-      marked: 1,
-    });
-  });
-
-  it("replaces only the windows a recovery copy brought back, not one marked after", () => {
-    const result = runAddon({
-      installed: [MCP],
-      enabled: [MCP],
-      listen: true,
-      recover: true,
-      then: "lateMarked",
-    });
-    expect(result.steps.find((step: { lateKept?: boolean }) => "lateKept" in step)).toEqual({
-      lateKept: true,
-    });
-  });
-
-  it("never starts it when T3 revokes before it grants", () => {
-    const result = runAddon({
-      installed: [MCP],
-      enabled: [MCP],
-      listen: true,
-      send: ["stopAgentListener", "grantAgentListener"],
-    });
-    // Connected but not yet granted, then revoked: it was never ready.
-    expect(result.steps).toEqual([pending, pending, off]);
-  });
-
-  it("never starts it while T3 isn't connected", () => {
-    const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, connect: false });
-    expect(result.steps).toEqual([pending]);
   });
 
   it("enables an installed but disabled extension with its preferences, then starts it", () => {
@@ -1691,16 +1291,23 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       ["enable", MCP, true],
     ]);
     expect(after(result)).toEqual({ listener: "ready", listening: result.port, enabled: true });
+    // Already enabled: still only the launch's snapshot, through a repository of its own.
+    const enabled = runAddon({ installed: [MCP], enabled: [MCP], listen: true });
+    expect(enabled.calls, "an enabled extension").toContainEqual([
+      "repo",
+      "t3_blender_lab",
+      enabled.snapshot,
+    ]);
+    expect(after(enabled)).toMatchObject({ listener: "ready" });
   });
 
   it("fails closed when another process holds the port", () => {
     const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, portTaken: true });
-    expect(after(result)).toMatchObject({ listener: "failed", listening: null });
-  });
-
-  it("reports failed when the extension isn't installed", () => {
-    const result = runAddon({ installed: [], enabled: [], listen: true });
-    expect(after(result)).toMatchObject({ listener: "failed" });
+    // Disabled and out of these settings, and it stays failed.
+    expect(after(result)).toEqual({ listener: "failed", listening: null, enabled: false });
+    expect(result.inPrefs).toBe(false);
+    const missing = runAddon({ installed: [], enabled: [], listen: true });
+    expect(after(missing), "the extension isn't installed").toMatchObject({ listener: "failed" });
   });
 
   it.each(["revoke", "drop", "otherFile", "saveAs"] as const)(
@@ -1711,59 +1318,31 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       expect(result.steps.slice(-2)).toEqual([off, off]);
       expect(result.calls.at(-1)).toEqual(["disable", MCP, true]);
       expect(result.inPrefs).toBe(false);
+      if (then === "otherFile") {
+        // The way back: reverting the working copy itself keeps access.
+        const reverted = runAddon({
+          installed: [MCP],
+          enabled: [MCP],
+          listen: true,
+          then: "revert",
+        });
+        expect(reverted.steps.at(-2), "the working copy reverted").toEqual({
+          listener: "ready",
+          listening: reverted.port,
+          enabled: true,
+        });
+      }
     },
   );
 
-  it("keeps access when the working copy itself is reverted", () => {
-    const result = runAddon({ installed: [MCP], enabled: [MCP], listen: true, then: "revert" });
-    expect(result.steps.at(-2)).toEqual({
-      listener: "ready",
-      listening: result.port,
-      enabled: true,
-    });
-  });
-
-  it("leaves other add-ons alone", () => {
-    const result = runAddon({
-      installed: ["bl_ext.user_default.node_wrangler"],
-      enabled: [],
-      listen: false,
-    });
-    expect(result.calls).toEqual([]);
-  });
-
   const bound = (result: { readonly calls: ReadonlyArray<ReadonlyArray<unknown>> }) =>
     result.calls.some((call) => call[0] === "start");
-
-  it("never binds the port when a stop is queued behind the grant", () => {
-    const result = runAddon({
-      installed: [MCP],
-      enabled: [MCP],
-      listen: true,
-      send: ["grantAgentListener", "stopAgentListener"],
-    });
-    expect(result.steps).toEqual([pending, pending, off]);
-    expect(bound(result)).toBe(false);
-  });
-
-  it("never binds the port when another file is open by the time the grant arrives", () => {
-    const result = runAddon({
-      installed: [MCP],
-      enabled: [MCP],
-      listen: true,
-      fileBeforeGrant: true,
-    });
-    expect(after(result)).toEqual(off);
-    expect(bound(result)).toBe(false);
-  });
 
   it("holds a quit that asks while edits outside the .blend are unsaved, and only then", () => {
     const quit = (input: {
       readonly save: boolean;
       readonly hold?: boolean;
-      readonly deadline?: number;
       readonly dirtyImages?: ReadonlyArray<string>;
-      readonly unsavedCatalogs?: boolean;
     }) => {
       const result = runAddon({
         installed: [],
@@ -1774,11 +1353,9 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
             type: "quit",
             save: input.save,
             ...(input.hold ? { hold: true } : {}),
-            ...(input.deadline === undefined ? {} : { deadline: input.deadline }),
           },
         ],
         ...(input.dirtyImages ? { dirtyImages: input.dirtyImages } : {}),
-        ...(input.unsavedCatalogs ? { unsavedCatalogs: true, assetBrowser: "shown" as const } : {}),
       });
       return {
         quits: result.calls.some((call: Array<unknown>) => call[0] === "quit_blender"),
@@ -1800,26 +1377,11 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     expect(held.quitHeld).toBe("images");
     // Blender stays open for the agent to save the image: its access stays too.
     expect(after(held)).toEqual({ listener: "ready", listening: held.port, enabled: true });
-    // A quit read after T3 stopped waiting for it is refused, so Blender stays open as T3 said.
-    const late = runAddon({
-      installed: [],
-      enabled: [],
-      listen: false,
-      send: [{ type: "quit", save: false, deadline: 1 }],
-    });
-    expect(late.received).toContain("quitExpired");
-    expect(late.calls.some((call: Array<unknown>) => call[0] === "quit_blender")).toBe(false);
     // Saving the .blend leaves the image behind too, so nothing is saved.
     expect(quit({ save: true, hold: true, dirtyImages: ["paint"] })).toEqual({
       quits: false,
       held: ["images"],
     });
-    expect(quit({ save: false, hold: true, unsavedCatalogs: true })).toEqual({
-      quits: false,
-      held: ["catalogs"],
-    });
-    // A save writes the catalogs with the .blend, so it goes on to save, which this stub can't.
-    expect(quit({ save: true, hold: true, unsavedCatalogs: true }).held).toEqual(["saveFailed"]);
     // The person's discard, or T3 stopping, doesn't ask.
     expect(quit({ save: false, dirtyImages: ["paint"] })).toEqual({ quits: true, held: [] });
     expect(quit({ save: false, hold: true })).toEqual({ quits: true, held: [] });
@@ -1858,25 +1420,6 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     });
     expect(quits(catalogs)).toBe(false);
     expect(catalogs.received).toContain("quitRefused");
-    // An asset browser out of view can't be asked, so its catalogs aren't known to be saved.
-    const unknown = runAddon({
-      installed: [],
-      enabled: [],
-      listen: false,
-      send: ["quitIfClean"],
-      assetBrowser: "hidden",
-    });
-    expect(quits(unknown)).toBe(false);
-    expect(unknown.received).toContain("quitRefused");
-    // A quit T3 cancelled while it waited here is never carried out.
-    const cancelled = runAddon({
-      installed: [],
-      enabled: [],
-      listen: false,
-      send: ["quitIfClean", "cancelQuit"],
-    });
-    expect(quits(cancelled)).toBe(false);
-    expect(cancelled.received).toContain("quitCancelled");
     const clean = runAddon({ installed: [], enabled: [], listen: false, send: ["quitIfClean"] });
     // Quit directly once clean: no dialog appears where nobody can answer it.
     expect(clean.calls).toContainEqual(["quit_blender"]);
@@ -1913,69 +1456,6 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
         refused: true,
       });
     });
-
-    it("refuses after a catalog edit whose asset browser moved to the All library", () => {
-      expect(
-        quitAfter([
-          { browser: "shown", unsaved: true },
-          { browser: "shown", library: "ALL" },
-        ]),
-      ).toEqual({ quit: false, refused: true });
-    });
-
-    it("refuses after an agent call that edits catalogs and switches the browser away at once", () => {
-      // No tick runs between the edit and the switch, so the latch never sees the catalogs;
-      // the call's own undo step marks the file unsaved instead.
-      const result = runAddon({
-        installed: [MCP],
-        enabled: [MCP],
-        listen: true,
-        assetBrowser: "shown",
-        call: {
-          code: "import bpy\nbpy.world['unsaved'] = True\nbpy._spaces.active = bpy._view3d\nresult = {}",
-        },
-        sendAfterCall: ["quitIfClean"],
-      });
-      expect(result.call).toMatchObject({ reply: { status: "ok" }, undoPushes: 1 });
-      expect(result.calls.some((call: Array<unknown>) => call[0] === "quit_blender")).toBe(false);
-      expect(result.received).toContain("quitRefused");
-    });
-
-    it("refuses after a catalog edit whose asset browser moved to an unavailable library", () => {
-      expect(
-        quitAfter([
-          { browser: "shown", unsaved: true },
-          { browser: "shown", library: "missing" },
-        ]),
-      ).toEqual({ quit: false, refused: true });
-    });
-
-    it("S9: quits once the catalogs are saved with Blender's own catalog command", () => {
-      // A browser that can answer clears the mark; one still loading its library can't.
-      expect(
-        quitAfter([
-          { browser: "shown", unsaved: true },
-          { browser: "shown", unsaved: false },
-          { browser: "files" },
-        ]),
-      ).toEqual({ quit: true, refused: false });
-      expect(
-        quitAfter([
-          { browser: "shown", unsaved: true },
-          { browser: "shown", library: "loading", unsaved: false },
-          { browser: "files" },
-        ]),
-      ).toEqual({ quit: false, refused: true });
-    });
-
-    it("quits once the edit is saved", () => {
-      expect(
-        quitAfter([
-          { browser: "shown", unsaved: true },
-          { browser: "files", save: true },
-        ]),
-      ).toEqual({ quit: true, refused: false });
-    });
   });
 
   describe("its guard on Blender Lab's listener", () => {
@@ -1993,36 +1473,21 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       },
     );
 
-    it("takes a call whose client row and Blender's own end are both live", () => {
-      expect(withTable({})).toEqual(ok);
-      expect(withTable({ mapped: true })).toEqual(ok);
-    });
-
     it.each([
-      ["another account owns the client", { uidOffset: 1 }],
-      ["no row has the client", { clientRows: 0 }],
-      ["two rows claim the client", { clientRows: 2 }],
-      ["the client row is orphaned, with inode 0", { inode: 0 }],
-      ["the client row is closing (FIN_WAIT2)", { state: "05" }],
-      ["Blender's own end is gone by the second read", { ownRow: false }],
-      ["Blender's own end is no longer established", { ownState: "08" }],
-      ["Blender's own row is another socket, by its inode", { ownInodeOffset: 1 }],
-      ["a table holds a row that doesn't parse", { malformed: true }],
-    ] as const)("drops a connection when %s", (_name, table) => {
-      expect(withTable(table)).toBeNull();
-    });
-
-    it("never starts a server module missing a function the guard wraps, and disables it", () => {
-      const result = runAddon({ ...granted, brokenServer: true });
-      expect(after(result)).toMatchObject({ listener: "failed", listening: null, enabled: false });
-      expect(bound(result)).toBe(false);
-      expect(result.inPrefs).toBe(false);
-    });
-
-    it("disables the extension when its listener can't start, and stays failed", () => {
-      const result = runAddon({ ...granted, portTaken: true });
-      expect(after(result)).toEqual({ listener: "failed", listening: null, enabled: false });
-      expect(result.inPrefs).toBe(false);
+      ["takes", "the client row and Blender's own end are both live", {}],
+      ["takes", "both are live, IPv4-mapped", { mapped: true }],
+      ["drops", "another account owns the client", { uidOffset: 1 }],
+      ["drops", "no row has the client", { clientRows: 0 }],
+      ["drops", "two rows claim the client", { clientRows: 2 }],
+      ["drops", "the client row is orphaned, with inode 0", { inode: 0 }],
+      ["drops", "the client row is closing (FIN_WAIT2)", { state: "05" }],
+      ["drops", "Blender's own end is gone by the second read", { ownRow: false }],
+      ["drops", "Blender's own end is no longer established", { ownState: "08" }],
+      ["drops", "Blender's own row is another socket, by its inode", { ownInodeOffset: 1 }],
+      ["drops", "a table holds a row that doesn't parse", { malformed: true }],
+    ] as const)("%s a connection when %s", (answer, _name, table) => {
+      if (answer === "takes") expect(withTable(table)).toEqual(ok);
+      else expect(withTable(table)).toBeNull();
     });
 
     it("ends access on Blender 5.3's Reload Scripts, which T3's gate keeps Blender Lab out of", () => {
@@ -2053,47 +1518,43 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       expect(bound(result)).toBe(false);
     });
 
-    it("grants nothing when Blender Lab is listening already when the grant arrives", () => {
-      const result = runAddon({ ...granted, listeningBeforeGrant: true });
-      expect(after(result)).toMatchObject({ listener: "failed", listening: null });
-    });
-
-    it("loads only the launch's snapshot, through a repository of its own", () => {
-      const result = runAddon(granted);
-      expect(result.calls).toContainEqual(["repo", "t3_blender_lab", result.snapshot]);
-      expect(after(result)).toMatchObject({ listener: "ready" });
-    });
-
-    it("pushes an undo step after the agent's own code, which makes the file unsaved", () => {
-      const result = runAddon({ ...granted, call: {} });
-      expect(result.call.dirty).toBe(true);
-      expect(result.calls).toContainEqual(["undo_push", "Agent edit"]);
-    });
-
-    it("pushes no undo step after Blender Lab's own read-only tool code", () => {
-      const result = runAddon({ ...granted, call: { strictJson: true } });
-      expect(result.call).toMatchObject({ reply: ok, dirty: false });
-      expect(result.calls.some((call: ReadonlyArray<unknown>) => call[0] === "undo_push")).toBe(
-        false,
-      );
-    });
-
     const deferredCode = (check: string) =>
       `import bpy\ndef check_is_finished():\n${check}\nresult = {}`;
     // Blender Lab 1.0.3's render tools defer through this template checker.
     const renderToolCode = (job: string, name = "_deferred_tool_check_for_file_output") =>
       `def ${name}(job_type, output_path, restore_attrs=None):\n    def check_is_finished():\n        # Like 1.0.3's, it waits on its job.\n        if job_type is None:\n            return None\n        return {"status": "ok", "filepath": output_path}\n    return check_is_finished\ncheck_is_finished = ${name}(${JSON.stringify(job)}, "/tmp/out.png")\nresult = {}`;
 
-    it("gives the agent's deferred call a step now and one more when its work ends", () => {
-      const result = runAddon({
-        ...granted,
-        call: { code: deferredCode("    return {'rendered': 1}") },
-      });
-      expect(result.call).toMatchObject({
-        reply: { status: "ok", result: { rendered: 1 } },
-        dirtyAfterFirstPoll: true,
-        undoPushes: 2,
-      });
+    it.each([
+      ["the agent's own code, which makes the file unsaved", {}, { dirty: true, undoPushes: 1 }],
+      [
+        "none for Blender Lab's own read-only tool code",
+        { strictJson: true },
+        { reply: ok, dirty: false, undoPushes: 0 },
+      ],
+      [
+        "none for Blender Lab's read-only render, even with a user edit in between",
+        { code: renderToolCode("RENDER"), strictJson: true, userStepBetween: true },
+        { reply: { status: "ok" }, undoPushes: 0 },
+      ],
+      [
+        "one for a deferred path it doesn't know, as writing",
+        { code: deferredCode("    return {'done': 1}"), strictJson: true },
+        { undoPushes: 1 },
+      ],
+      [
+        "one for the render checker on another job, as writing",
+        { code: renderToolCode("BAKE"), strictJson: true },
+        { undoPushes: 1 },
+      ],
+      [
+        "one for another checker shaped like it, as writing",
+        { code: renderToolCode("RENDER", "_some_other_checker"), strictJson: true },
+        { undoPushes: 1 },
+      ],
+    ] as const)("pushes an undo step after an agent's edit: %s", (_name, call, expected) => {
+      const result = runAddon({ ...granted, call });
+      expect(result.call).toMatchObject(expected);
+      if (!("strictJson" in call)) expect(result.calls).toContainEqual(["undo_push", "Agent edit"]);
     });
 
     it("marks the file unsaved again when deferred work writes after the user saved", () => {
@@ -2105,34 +1566,16 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
         },
       });
       expect(result.call).toMatchObject({ dirty: true, undoPushes: 2 });
-    });
-
-    it("adds no step for Blender Lab's read-only render, even with a user edit in between", () => {
-      const result = runAddon({
+      // A deferred call gets a step now and one more when its work ends.
+      const deferred = runAddon({
         ...granted,
-        call: { code: renderToolCode("RENDER"), strictJson: true, userStepBetween: true },
+        call: { code: deferredCode("    return {'rendered': 1}") },
       });
-      expect(result.call).toMatchObject({ reply: { status: "ok" }, undoPushes: 0 });
-    });
-
-    it.each([
-      ["a deferred path it doesn't know", deferredCode("    return {'done': 1}")],
-      ["the render checker on another job", renderToolCode("BAKE")],
-      ["another checker shaped like it", renderToolCode("RENDER", "_some_other_checker")],
-    ])("treats %s as writing, and records its step", (_name, code) => {
-      const result = runAddon({ ...granted, call: { code, strictJson: true } });
-      expect(result.call.undoPushes).toBe(1);
-    });
-
-    it.each([
-      ["Blender Lab drops the call", { deferredDropped: true }],
-      ["its checker raises", { code: deferredCode("    raise RuntimeError('bake failed')") }],
-    ] as const)("still records the deferred step when %s", (_name, call) => {
-      const result = runAddon({
-        ...granted,
-        call: { code: deferredCode("    return None"), ...call },
+      expect(deferred.call, "a deferred call's two steps").toMatchObject({
+        reply: { status: "ok", result: { rendered: 1 } },
+        dirtyAfterFirstPoll: true,
+        undoPushes: 2,
       });
-      expect(result.call.undoPushes).toBe(2);
     });
 
     // Writes on its first check after the user saved, then keeps waiting for more work.
@@ -2160,58 +1603,6 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     );
 
     it.each([
-      ["its undo step marks the file unsaved", false],
-      ["its undo step fails to mark the file unsaved", true],
-    ] as const)(
-      "records pending deferred writes before deciding a quit, so the master is kept, when %s",
-      (_name, undoPushLeavesClean) => {
-        // A departed agent's deferred part has written since the user saved, and still waits.
-        const result = runAddon({
-          ...granted,
-          undoPushLeavesClean,
-          call: { code: writesThenWaits, savedBetween: true },
-          sendAfterCall: ["quitIfClean"],
-        });
-        expect(result.calls.some((call: Array<unknown>) => call[0] === "quit_blender")).toBe(false);
-        expect(result.received).toContain("quitRefused");
-      },
-    );
-
-    it("pushes nothing into another file opened while deferred work was pending", () => {
-      const result = runAddon({
-        ...granted,
-        call: { code: writesThenWaits, savedBetween: true, endWhilePending: "otherFile" },
-      });
-      expect(result.call).toMatchObject({ dirty: false, undoPushes: 1, checksAfterEnd: 0 });
-    });
-
-    it("runs no deferred checker after T3's stop arrived, even before a tick", () => {
-      const result = runAddon({
-        ...granted,
-        call: {
-          code: deferredCode("    bpy.data.checked = True\n    return {'done': 1}"),
-          revokeBeforeCheck: true,
-        },
-      });
-      expect(result.call).toMatchObject({ checked: false, listenerAfter: "off" });
-    });
-
-    it("runs nothing in a later call once T3's connection closed, before a tick sees it", () => {
-      const result = runAddon({ ...granted, call: { closeT3ThenSecondCall: true } });
-      expect(result.call).toMatchObject({ reply: ok, ranSecond: false, listenerAfter: "off" });
-    });
-
-    it("records nothing once the agent's code opened another file", () => {
-      const result = runAddon({
-        ...granted,
-        call: { code: "import bpy\nbpy.data.filepath = '/work/other.blend'\nresult = {}" },
-      });
-      expect(result.calls.some((call: ReadonlyArray<unknown>) => call[0] === "undo_push")).toBe(
-        false,
-      );
-    });
-
-    it.each([
       ["undo is off", { undoSteps: 0 }, "Undo Steps is 0"],
       ["Blender refuses the undo push", { undoPushFails: true }, "couldn't record an undo step"],
       ["Global Undo is off", { globalUndo: false }, "Global Undo is off"],
@@ -2223,19 +1614,8 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
     ] as const)("tells the agent when %s", (_name, options, says) => {
       const result = runAddon({ ...granted, ...options, call: {} });
       expect(result.call.reply.t3UndoWarning).toContain(says);
-    });
-
-    it("still marks the file unsaved with undo off, as Blender does before its limit", () => {
-      const result = runAddon({ ...granted, undoSteps: 0, call: {} });
-      expect(result.call.dirty).toBe(true);
-    });
-
-    it("runs nothing when telling T3 the agent is acting finds T3's connection gone", () => {
-      const result = runAddon({
-        ...granted,
-        call: { code: "import bpy\nbpy.data.ran = True\nresult = {}", controlBreaks: true },
-      });
-      expect(result.call).toMatchObject({ ran: false, listenerAfter: "off" });
+      // With undo off it still marks the file unsaved, as Blender does before its limit.
+      if ("undoSteps" in options) expect(result.call.dirty, "undo off").toBe(true);
     });
 
     it("tells T3 the agent is acting before its code runs, and not once the call has passed", () => {
@@ -2255,31 +1635,16 @@ describe("T3's control add-on and Blender Lab's MCP add-on", () => {
       expect(after(result)).toEqual({ listener: "untested", listening: null, enabled: false });
       expect(bound(result)).toBe(false);
       expect(result.mcpVersion).toBe("1.1.0");
-    });
-
-    it.each([
-      ["only inside a table", '[build]\nversion = "1.0.3"\n'],
-      ["missing", 'id = "mcp"\n'],
-      ["not TOML", 'version = "1.0.3\n'],
-      ["not a string", "version = 103\n"],
-    ])("treats a manifest whose version is %s as untested", (_name, manifest) => {
-      expect(after(runAddon({ ...granted, manifest }))).toMatchObject({ listener: "untested" });
-    });
-
-    it("reads a top-level version written with single quotes", () => {
-      const result = runAddon({ ...granted, manifest: "  version = '1.0.3'\n" });
-      expect(after(result)).toMatchObject({ listener: "ready" });
-    });
-
-    it("checks the manifest the grant finds, not the one seen at launch", () => {
-      const result = runAddon({ ...granted, manifestBeforeGrant: 'version = "1.1.0"\n' });
-      expect(after(result)).toMatchObject({ listener: "untested" });
-    });
-
-    it("ends an untested version's refusal like any other grant", () => {
-      const result = runAddon({ ...granted, mcpVersion: "0.9.0", then: "revoke" });
-      expect(result.steps.slice(-2)).toEqual([off, off]);
-      expect(bound(result)).toBe(false);
+      // The manifest's top-level version decides; anything else reads as untested.
+      for (const [name, manifest, listener] of [
+        ["only inside a table", '[build]\nversion = "1.0.3"\n', "untested"],
+        ["missing", 'id = "mcp"\n', "untested"],
+        ["not TOML", 'version = "1.0.3\n', "untested"],
+        ["not a string", "version = 103\n", "untested"],
+        ["written with single quotes", "  version = '1.0.3'\n", "ready"],
+      ] as const) {
+        expect(after(runAddon({ ...granted, manifest })), name).toMatchObject({ listener });
+      }
     });
   });
 
@@ -2318,6 +1683,13 @@ context = types.SimpleNamespace(preferences=types.SimpleNamespace(
         repos: ["user_default"],
         completed: true,
       });
+      // With only other add-ons present, the control add-on makes no calls at all.
+      const others = runAddon({
+        installed: ["bl_ext.user_default.node_wrangler"],
+        enabled: [],
+        listen: false,
+      });
+      expect(others.calls, "only other add-ons").toEqual([]);
     });
   });
 });

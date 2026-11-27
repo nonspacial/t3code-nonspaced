@@ -17,7 +17,7 @@ describe("keyboard layout", () => {
   const layout = (keys: Record<string, string>) => new Map(Object.entries(keys));
   const us = { KeyQ: "q", KeyW: "w", KeyY: "y", Semicolon: ";", Quote: "'", Backslash: "\\" };
 
-  it("recognizes common layouts from the keys they print", () => {
+  it("recognizes common layouts from the keys they print, leaving any other to the device's setting", () => {
     expect(detectKeymap(layout(us))).toEqual({ layout: "us", variant: "" });
     expect(detectKeymap(layout({ ...us, Backslash: "#" }))).toEqual({ layout: "gb", variant: "" });
     expect(detectKeymap(layout({ ...us, KeyY: "z", Minus: "ß" }))).toEqual({
@@ -34,17 +34,18 @@ describe("keyboard layout", () => {
       variant: "dvorak",
     });
     expect(detectKeymap(layout({ ...us, KeyQ: "й" }))).toEqual({ layout: "ru", variant: "" });
-  });
 
-  it("gives up on a layout it doesn't know, so the device's setting decides", () => {
-    expect(detectKeymap(undefined)).toBeNull();
-    expect(detectKeymap(layout({}))).toBeNull();
-    expect(detectKeymap(layout({ ...us, KeyQ: "ק" }))).toBeNull();
-  });
-
-  it("turns a chosen layout into an xkb keymap", () => {
-    expect(keymapForLayout("us-colemak")).toEqual({ layout: "us", variant: "colemak" });
-    expect(keymapForLayout("se")).toEqual({ layout: "se", variant: "" });
+    expect(detectKeymap(undefined), "no layout map").toBeNull();
+    expect(detectKeymap(layout({})), "an empty layout map").toBeNull();
+    expect(detectKeymap(layout({ ...us, KeyQ: "ק" })), "an unknown layout").toBeNull();
+    expect(keymapForLayout("us-colemak"), "the device's chosen variant").toEqual({
+      layout: "us",
+      variant: "colemak",
+    });
+    expect(keymapForLayout("se"), "the device's chosen layout").toEqual({
+      layout: "se",
+      variant: "",
+    });
   });
 });
 
@@ -52,7 +53,7 @@ describe("scrolling", () => {
   const wheel = { deltaMode: 0, deltaX: 0, deltaY: 100, wheelDeltaX: 0, wheelDeltaY: -120 };
   const trackpad = { deltaMode: 0, deltaX: 1.5, deltaY: 6.25, wheelDeltaX: -4, wheelDeltaY: -18 };
 
-  it("tells a mouse wheel from a trackpad by the shape of its scroll", () => {
+  it("tells a mouse wheel from a trackpad by the shape of its scroll, unless the device says", () => {
     expect(scrollKind(wheel, "auto")).toBe("wheel");
     // Firefox scrolls wheels in lines.
     expect(scrollKind({ deltaMode: 1, deltaX: 0, deltaY: 3 }, "auto")).toBe("wheel");
@@ -60,11 +61,8 @@ describe("scrolling", () => {
     // A zoomed page scales a wheel's pixels, but not its notches.
     expect(scrollKind({ ...wheel, deltaY: 133.33 }, "auto")).toBe("wheel");
     expect(scrollKind({ deltaMode: 0, deltaX: 0, deltaY: 4 }, "auto")).toBe("trackpad");
-  });
-
-  it("lets the device's setting override the guess", () => {
-    expect(scrollKind(trackpad, "wheel")).toBe("wheel");
-    expect(scrollKind(wheel, "trackpad")).toBe("trackpad");
+    expect(scrollKind(trackpad, "wheel"), "the device's setting overrides").toBe("wheel");
+    expect(scrollKind(wheel, "trackpad"), "the device's setting overrides").toBe("trackpad");
   });
 
   it("sends a wheel's notches and a trackpad's pixels", () => {

@@ -95,16 +95,10 @@ describe("readBlendFile", () => {
     }).filter((value) => value !== null);
     // The camera looks down on a cube, so its lit top face is the first thing in the image.
     expect(opaqueRows.at(0)).toBeGreaterThan((opaqueRows.at(-1) ?? 0) + 15);
-  });
-
-  it.each([
-    // Saved with thumbnails turned off.
-    "parts-5.blend",
-    // Blender 4.5 cannot render a thumbnail in background mode, so it saves none.
-    "bracket-4.blend",
-  ])("has no thumbnail when %s was saved without one", async (file) => {
-    const facts = await readBlendFile(fixture(file));
-    expect(facts.thumbnail).toBeNull();
+    // Saved with thumbnails turned off, and Blender 4.5, which renders none in background mode.
+    for (const file of ["parts-5.blend", "bracket-4.blend"]) {
+      expect((await readBlendFile(fixture(file))).thumbnail, `${file} has none`).toBeNull();
+    }
   });
 
   it.each(["4", "5"])(
@@ -173,6 +167,19 @@ describe("readBlendFile", () => {
       expect(stopped).toMatchObject({ partial: true });
       expect(stopped).not.toHaveProperty("large");
     });
+    // Each kept block costs a fixed amount, so a thousand empty ones still reach the kept-byte
+    // limit and millions can't pile up.
+    const empty = new Uint8Array(24);
+    empty.set(new TextEncoder().encode("ID"));
+    const end = new Uint8Array(24);
+    end.set(new TextEncoder().encode("ENDB"));
+    const emptyBlocks = Buffer.concat([header, ...Array.from({ length: 1000 }, () => empty), end]);
+    await withTempFile(emptyBlocks, async (path) => {
+      await expect(
+        readBlendFile(path, { maxKeptBytes: 10_000 }),
+        "empty kept blocks",
+      ).resolves.toMatchObject({ partial: true });
+    });
   });
 
   it("reads a file past its whole-file limit only as far as its thumbnail", async () => {
@@ -190,6 +197,28 @@ describe("readBlendFile", () => {
         partial: true,
       });
     }
+
+    // Compressed: never inflated past what the read may walk.
+    // Header, then one 64 MiB block of zeros that gzip packs small.
+    const head = new Uint8Array(12 + 24);
+    head.set(new TextEncoder().encode("BLENDER-v405"));
+    head.set(new TextEncoder().encode("DATA"), 12);
+    new DataView(head.buffer).setInt32(16, 64 * 1024 * 1024, true);
+    const compressed = NodeZlib.gzipSync(Buffer.concat([head, new Uint8Array(64 * 1024 * 1024)]), {
+      level: 1,
+    });
+    await withTempFile(compressed, async (path) => {
+      // A large file's thumbnail read, whose block would end past its budget.
+      inflation.produced = 0;
+      await expect(readBlendFile(path, { wholeUpTo: 0 })).resolves.toMatchObject({ partial: true });
+      expect(inflation.produced).toBeLessThan(4 * 1024 * 1024);
+      // A small file that inflates past the large-file size is read as a large one.
+      inflation.produced = 0;
+      await expect(readBlendFile(path, { wholeUpTo: 1024 * 1024 })).resolves.toMatchObject({
+        partial: true,
+      });
+      expect(inflation.produced).toBeLessThan(4 * 1024 * 1024);
+    });
   });
 
   it("refuses struct layouts whose counts or indices do not fit the block", async () => {
@@ -218,20 +247,8 @@ describe("readBlendFile", () => {
     ).rejects.toThrow("too large");
   });
 
-  it("charges each kept block a fixed cost, so millions of empty ones cannot pile up", async () => {
-    const header = new TextEncoder().encode("BLENDER-v405");
-    const empty = new Uint8Array(24);
-    empty.set(new TextEncoder().encode("ID"));
-    const end = new Uint8Array(24);
-    end.set(new TextEncoder().encode("ENDB"));
-    const bytes = Buffer.concat([header, ...Array.from({ length: 1000 }, () => empty), end]);
-    await withTempFile(bytes, async (path) => {
-      await expect(readBlendFile(path, { maxKeptBytes: 10_000 })).resolves.toMatchObject({
-        partial: true,
-      });
-    });
-  });
-
+  // Parked by the trim, but kept: it is the only use of the exported `streamSource`, and
+  // unexporting it would change production code.
   it("copies what it keeps out of a compressed stream, so the rest of a chunk can be freed", async () => {
     const chunk = new Uint8Array(1024 * 1024);
     const source = streamSource(NodeStream.Readable.from([chunk]), chunk.byteLength);
@@ -299,11 +316,10 @@ describe("P1: reading a large .blend", () => {
     );
     setImmediate(() => controller.abort());
     await expect(reading).rejects.toMatchObject({ name: "AbortError" });
-  });
 
-  it("N4: an abort stops a compressed skip at once, not once the skip is done", async () => {
-    // One 512 MiB block of zeros, which gzip packs into well under a megabyte, for the walk to skip.
-    const blockBytes = 512 * 1024 * 1024;
+    // Compressed: an abort stops a skip at once, not once it is done. One 192 MiB block of zeros,
+    // which gzip packs small, for the walk to skip.
+    const blockBytes = 192 * 1024 * 1024;
     const head = new Uint8Array(12 + 24);
     head.set(new TextEncoder().encode("BLENDER-v405"));
     head.set(new TextEncoder().encode("DATA"), 12);
@@ -319,15 +335,15 @@ describe("P1: reading a large .blend", () => {
         .pipe(NodeZlib.createGzip({ level: 1 }))
         .toArray(),
     );
-    const controller = new AbortController();
+    const compressedController = new AbortController();
     inflation.produced = 0;
     inflation.abortAt = 32 * 1024 * 1024;
-    inflation.onPast = () => controller.abort();
+    inflation.onPast = () => compressedController.abort();
     try {
       // A conversion's read, which walks a compressed file past the large-file size.
       await withTempFile(compressed, (path) =>
         expect(
-          readBlendFile(path, { wholeUpTo: Infinity }, controller.signal),
+          readBlendFile(path, { wholeUpTo: Infinity }, compressedController.signal),
         ).rejects.toMatchObject({
           name: "AbortError",
         }),
@@ -336,29 +352,6 @@ describe("P1: reading a large .blend", () => {
     } finally {
       inflation.abortAt = Infinity;
     }
-  });
-
-  it("never inflates a compressed file past what its read may walk", async () => {
-    // Header, then one 64 MiB block of zeros that gzip packs small.
-    const head = new Uint8Array(12 + 24);
-    head.set(new TextEncoder().encode("BLENDER-v405"));
-    head.set(new TextEncoder().encode("DATA"), 12);
-    new DataView(head.buffer).setInt32(16, 64 * 1024 * 1024, true);
-    const compressed = NodeZlib.gzipSync(Buffer.concat([head, new Uint8Array(64 * 1024 * 1024)]), {
-      level: 1,
-    });
-    await withTempFile(compressed, async (path) => {
-      // A large file's thumbnail read, whose block would end past its budget.
-      inflation.produced = 0;
-      await expect(readBlendFile(path, { wholeUpTo: 0 })).resolves.toMatchObject({ partial: true });
-      expect(inflation.produced).toBeLessThan(4 * 1024 * 1024);
-      // A small file that inflates past the large-file size is read as a large one.
-      inflation.produced = 0;
-      await expect(readBlendFile(path, { wholeUpTo: 1024 * 1024 })).resolves.toMatchObject({
-        partial: true,
-      });
-      expect(inflation.produced).toBeLessThan(4 * 1024 * 1024);
-    });
   });
 
   it("keeps a compressed file that inflates past the large-file size large after a whole read", async () => {

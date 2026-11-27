@@ -2538,48 +2538,17 @@ describe("ThreadSettlementServiceV2 terminals", () => {
           );
           // Archived threads come back with their copies; a deleted one's are removed.
           assert.strictEqual(yield* Queue.take(fixture.forgottenBlenders), deleted.id);
+          assert.deepStrictEqual(
+            [
+              yield* Queue.take(fixture.releasedMasters),
+              yield* Queue.take(fixture.releasedMasters),
+              yield* Queue.take(fixture.releasedMasters),
+            ],
+            [settled.id, archived.id, deleted.id],
+            "each also releases its master Blender",
+          );
         }).pipe(Effect.provide(fixture.layer));
       }),
-  );
-
-  it.effect("releases the master Blender of a thread that settles, is archived or is deleted", () =>
-    Effect.gen(function* () {
-      const settled = appThread("master-settled", "settled");
-      const archived = appThread("master-archived", "settled");
-      const deleted = appThread("master-deleted", "settled");
-      const fixture = yield* makeHarness({
-        snapshot: makeSnapshot([]),
-        currentThreads: [settled, archived, deleted],
-      });
-
-      yield* Effect.gen(function* () {
-        const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
-        yield* startHarness(service, fixture.activation, fixture.snapshotReads);
-        yield* fixture.publishEvent(settledEvent(settled));
-        yield* fixture.publishEvent({
-          type: "thread.archived",
-          id: EventId.make("event:master-archived"),
-          threadId: archived.id,
-          occurredAt: DateTime.makeUnsafe(NOW),
-          payload: archived,
-        });
-        yield* fixture.publishEvent({
-          type: "thread.deleted",
-          id: EventId.make("event:master-deleted"),
-          threadId: deleted.id,
-          occurredAt: DateTime.makeUnsafe(NOW),
-          payload: deleted,
-        });
-        assert.deepStrictEqual(
-          [
-            yield* Queue.take(fixture.releasedMasters),
-            yield* Queue.take(fixture.releasedMasters),
-            yield* Queue.take(fixture.releasedMasters),
-          ],
-          [settled.id, archived.id, deleted.id],
-        );
-      }).pipe(Effect.provide(fixture.layer));
-    }),
   );
 
   it.effect("settles other threads while one master Blender is still busy settling", () =>

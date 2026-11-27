@@ -31,19 +31,15 @@ const harness = Effect.gen(function* () {
 });
 
 describe("awaitAgentListener", () => {
-  it.effect("answers what the listener settled on before the deadline", () =>
-    Effect.gen(function* () {
-      const listener = yield* harness;
-      const waiting = yield* listener.wait.pipe(Effect.forkChild);
-      yield* TestClock.adjust("30 seconds");
-      yield* listener.settle("ready");
-      assert.equal(yield* Fiber.join(waiting), "ready");
-      assert.equal(listener.revoked(), 0);
-    }),
-  );
-
   it.effect("revokes a listener still starting at the deadline, then answers failed", () =>
     Effect.gen(function* () {
+      const settledInTime = yield* harness;
+      const answered = yield* settledInTime.wait.pipe(Effect.forkChild);
+      yield* TestClock.adjust("30 seconds");
+      yield* settledInTime.settle("ready");
+      assert.equal(yield* Fiber.join(answered), "ready", "settled before the deadline");
+      assert.equal(settledInTime.revoked(), 0, "nothing revoked before the deadline");
+
       const listener = yield* harness;
       const waiting = yield* listener.wait.pipe(Effect.forkChild);
       yield* TestClock.adjust("106 seconds");

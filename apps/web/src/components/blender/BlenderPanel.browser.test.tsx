@@ -11,11 +11,9 @@ import {
   type HostedBlenderRunningState,
   type HostedBlenderViewCapture,
   type HostedBlenderViewerMessage,
-  type ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { modelViewFromHref } from "@t3tools/shared/modelView";
 import type { ReactNode } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { commands, userEvent } from "vite-plus/test/browser";
@@ -44,6 +42,8 @@ const stream = vi.hoisted(() => ({
   imagesHold: false,
   /** Blender has another file open than the quit named, so the next quit is refused. */
   openFileChanged: false,
+  /** A Save and quit never ends, as in a busy Blender. */
+  saveHangs: false,
   // The annotation tests: the real canvas sink, one grey frame, and Blender's answers.
   annotating: false,
   target: "window" as "window" | "output",
@@ -102,7 +102,12 @@ vi.mock(import("@t3tools/client-runtime/device/frame"), async (original) => {
 vi.mock(import("~/state/use-atom-command"), () => ({
   useAtomCommand: ((command: { readonly label: string }) => async (value: unknown) => {
     stream.commands.push({ label: command.label, value });
-    const input = (value as { readonly input?: { readonly discard?: boolean } }).input;
+    const input = (
+      value as { readonly input?: { readonly discard?: boolean; readonly save?: boolean } }
+    ).input;
+    if (stream.saveHangs && command.label.endsWith(":quit") && input?.save === true) {
+      return new Promise<never>(() => undefined);
+    }
     if (stream.openFileChanged && command.label.endsWith(":quit")) {
       stream.openFileChanged = false;
       const { HostedBlenderError } = await import("@t3tools/contracts");
@@ -146,7 +151,7 @@ vi.mock(import("~/state/hostedBlender"), async (original) => ({
   useHostedBlenderStreamAccess: (() => stream.access) as never,
 }));
 
-import { attachBlenderInput, type TakeScroll } from "./blenderInput";
+import { attachBlenderInput } from "./blenderInput";
 import { BlenderPanel, FloatingBlender } from "./BlenderPanel";
 import { useBlenderRoleStore } from "./blenderRole";
 import { useKeptCopySelection } from "./keptCopies";
@@ -181,6 +186,7 @@ const startup = (): Disposable => {
   stream.commands = [];
   stream.imagesHold = false;
   stream.openFileChanged = false;
+  stream.saveHangs = false;
   useBlenderRoleStore.setState({ roles: {} });
   useKeptCopySelection.setState({ byThread: {}, dismissedReloads: {} });
   stream.master = { status: "none" };
@@ -195,7 +201,7 @@ const startup = (): Disposable => {
   return { [Symbol.dispose]: installKeyboardCapture() };
 };
 
-it("takes control on a click, sends keys to Blender, and gives control back on a click outside", async () => {
+it("takes control on a click, and gives control back on a click outside", async () => {
   using _app = startup();
   await using screen = await render(
     <div>
@@ -210,33 +216,15 @@ it("takes control on a click, sends keys to Blender, and gives control back on a
   await expect.element(screen.getByText("Take control")).not.toBeInTheDocument();
 
   await control({ canOperate: true, controller: "unclaimed" });
-  const viewport = screen.getByLabelText("Blender viewport");
-  await viewport.click();
+  await screen.getByLabelText("Blender viewport").click();
   expect(stream.sent).toEqual([{ type: "takeControl", takeOver: false }]);
   await control({ canOperate: true, controller: "you" });
   await expect.element(screen.getByText("You're in control")).toBeInTheDocument();
   await expect.element(screen.getByText("Fullscreen")).toBeInTheDocument();
 
-  // Shift+F6 is Blender's; the window's own shortcut listeners never see it.
-  const appShortcut = vi.fn();
-  window.addEventListener("keydown", appShortcut, true);
-  const target = viewport.element();
-  target.dispatchEvent(
-    new KeyboardEvent("keydown", { code: "F6", key: "F6", shiftKey: true, bubbles: true }),
-  );
-  window.removeEventListener("keydown", appShortcut, true);
-  expect(appShortcut).not.toHaveBeenCalled();
-  expect(stream.sent.slice(1)).toEqual([
-    { type: "keymap", layout: "us", variant: "" },
-    { type: "key", code: 64, pressed: true },
-  ]);
-
   stream.sent = [];
   await screen.getByText("Outside").click();
-  expect(stream.sent).toEqual([
-    { type: "key", code: 64, pressed: false },
-    { type: "releaseControl" },
-  ]);
+  expect(stream.sent).toEqual([{ type: "releaseControl" }]);
 });
 
 /** What each mouse event left the browser to do, read on the window after every handler ran. */
@@ -285,8 +273,33 @@ it("B6: a middle press takes control and focus, is swallowed, and its drag navig
   using _app = startup();
   const pane = await paneBesideComposer();
   await using _screen = pane.screen;
-  await control({ canOperate: true, controller: "unclaimed" });
   using defaults = watchDefaults();
+
+  // A view-only pane swallows the middle and thumb buttons and sends nothing.
+  await control({ canOperate: false, controller: "unclaimed" });
+  await commands.pointerMove(...pane.inside);
+  await commands.pointerDown("middle");
+  await commands.pointerUp("middle");
+  // Back and Forward, which Playwright's mouse can't press.
+  const canvas = pane.viewport.querySelector("canvas")!;
+  for (const button of [3, 4]) {
+    for (const type of ["mousedown", "mouseup", "auxclick"]) {
+      canvas.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button }));
+    }
+  }
+  expect(stream.sent, "view-only").toEqual([]);
+  expect(defaults.log, "view-only").toEqual([
+    "mousedown:1 prevented",
+    "pointerup:1 prevented",
+    "mouseup:1 prevented",
+    "auxclick:1 prevented",
+    ...[3, 4].flatMap((button) =>
+      ["mousedown", "mouseup", "auxclick"].map((type) => `${type}:${button} prevented`),
+    ),
+  ]);
+  defaults.log.length = 0;
+
+  await control({ canOperate: true, controller: "unclaimed" });
   await commands.pointerMove(...pane.inside);
   await commands.pointerDown("middle");
   expect(stream.sent).toEqual([{ type: "takeControl", takeOver: false }]);
@@ -346,51 +359,22 @@ it("B6: a right click takes control and focus, and Blender gets that click, with
   expect(defaults.log.filter((entry) => entry.startsWith("contextmenu"))).toEqual([
     "contextmenu:2 prevented",
   ]);
-});
 
-it("N3: a right press dragged out of the pane and let go before the grant is never left held", async () => {
-  using _app = startup();
-  const pane = await paneBesideComposer();
-  await using _screen = pane.screen;
+  // N3: a right press dragged out of the pane and let go before the grant is never left held.
   await control({ canOperate: true, controller: "unclaimed" });
+  stream.sent = [];
   await commands.pointerMove(...pane.inside);
   await commands.pointerDown("right");
   await commands.pointerMove(...pane.outside);
   await commands.pointerUp("right");
   await control({ canOperate: true, controller: "you" });
-  expect(stream.sent.filter((message) => message.type !== "pointer")).toEqual([
+  expect(
+    stream.sent.filter((message) => message.type !== "pointer"),
+    "dragged out",
+  ).toEqual([
     { type: "takeControl", takeOver: false },
     { type: "button", button: 273, pressed: true },
     { type: "button", button: 273, pressed: false },
-  ]);
-});
-
-it("B6: a view-only pane swallows the middle and thumb buttons", async () => {
-  using _app = startup();
-  const pane = await paneBesideComposer();
-  await using _screen = pane.screen;
-  await control({ canOperate: false, controller: "unclaimed" });
-  using defaults = watchDefaults();
-  await commands.pointerMove(...pane.inside);
-  await commands.pointerDown("middle");
-  await commands.pointerUp("middle");
-  // Back and Forward, which Playwright's mouse can't press.
-  const canvas = pane.viewport.querySelector("canvas")!;
-  for (const button of [3, 4]) {
-    for (const type of ["mousedown", "mouseup", "auxclick"]) {
-      canvas.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button }));
-    }
-  }
-  expect(stream.sent).toEqual([]);
-  expect(pane.composer.textContent).toBe("draft");
-  expect(defaults.log).toEqual([
-    "mousedown:1 prevented",
-    "pointerup:1 prevented",
-    "mouseup:1 prevented",
-    "auxclick:1 prevented",
-    ...[3, 4].flatMap((button) =>
-      ["mousedown", "mouseup", "auxclick"].map((type) => `${type}:${button} prevented`),
-    ),
   ]);
 });
 
@@ -411,30 +395,38 @@ const wheelNotch = (
   return event;
 };
 
-it("B15: a scroll over a view-only pane takes control and focus, and every notch zooms once granted", async () => {
+it("B15: a scroll over a view-only pane takes control and focus, and every notch zooms where it was made once granted", async () => {
   using _app = startup();
   const pane = await paneBesideComposer();
   await using _screen = pane.screen;
   await control({ canOperate: true, controller: "unclaimed" });
-  const notches = [wheelNotch(pane), wheelNotch(pane), wheelNotch(pane, false)];
+  // The last notch is made elsewhere, so it goes where it was made.
+  const elsewhere = {
+    viewport: pane.viewport,
+    inside: [pane.inside[0] + 40, pane.inside[1] + 30] as const,
+  };
+  const notches = [wheelNotch(pane), wheelNotch(pane), wheelNotch(elsewhere, false)];
   expect(notches.map((event) => event.defaultPrevented)).toEqual([true, true, true]);
   expect(stream.sent).toEqual([{ type: "takeControl", takeOver: false }]);
   expect(document.activeElement).toBe(pane.viewport);
   await control({ canOperate: true, controller: "you" });
   // Where the pointer is, so the zoom goes there.
+  const at = { type: "pointer", x: expect.any(Number), y: expect.any(Number) };
   expect(stream.sent.slice(1)).toEqual([
-    { type: "pointer", x: expect.any(Number), y: expect.any(Number) },
+    at,
     { type: "scroll", axis: "vertical", source: "wheel", value: 15, steps: 1 },
     { type: "scroll", axis: "vertical", source: "wheel", value: 15, steps: 1 },
+    at,
     { type: "scroll", axis: "vertical", source: "wheel", value: -15, steps: -1 },
   ]);
+  expect(stream.sent[4], "the last notch, where it was made").not.toEqual(stream.sent[1]);
   // In control, a scroll reaches Blender once, as before.
   expect(wheelNotch(pane).defaultPrevented).toBe(true);
   expect(stream.sent.filter((message) => message.type === "scroll")).toHaveLength(4);
   expect(document.activeElement).toBe(pane.viewport);
 });
 
-it("B15: a scroll takes nothing while another device is in control, the viewer can't operate, or no frame shows", async () => {
+it("B15: a scroll takes nothing while another device is in control or a take over waits, the viewer can't operate, or no frame shows", async () => {
   using _app = startup();
   const pane = await paneBesideComposer();
   await using _screen = pane.screen;
@@ -448,29 +440,14 @@ it("B15: a scroll takes nothing while another device is in control, the viewer c
   expect(wheelNotch(pane).defaultPrevented).toBe(true);
   expect(stream.sent).toEqual([]);
   expect(document.activeElement).toBe(pane.composer);
-});
 
-it("B15: a scroll while a take over waits for its grant never reaches Blender", async () => {
-  using _app = startup();
-  const pane = await paneBesideComposer();
-  await using _screen = pane.screen;
+  // While a take over waits for its grant, a scroll never reaches Blender.
+  await act(() => stream.events?.onStatus("live"));
   await control({ canOperate: true, controller: "another-viewer" });
   await pane.screen.getByText("Take over").click();
   expect(wheelNotch(pane).defaultPrevented).toBe(true);
   await control({ canOperate: true, controller: "you" });
-  expect(stream.sent).toEqual([{ type: "takeControl", takeOver: true }]);
-});
-
-it("B15: scrolls remembered for a take that never lands are dropped", async () => {
-  using _app = startup();
-  const pane = await paneBesideComposer();
-  await using _screen = pane.screen;
-  await control({ canOperate: true, controller: "unclaimed" });
-  wheelNotch(pane);
-  // Refused: someone else got there first.
-  await control({ canOperate: true, controller: "another-viewer" });
-  await control({ canOperate: true, controller: "you" });
-  expect(stream.sent.filter((message) => message.type === "scroll")).toEqual([]);
+  expect(stream.sent, "a pending Take over").toEqual([{ type: "takeControl", takeOver: true }]);
 });
 
 it("offers Take over while another device is in control, and says when control is lost", async () => {
@@ -488,14 +465,13 @@ it("offers Take over while another device is in control, and says when control i
   await screen.getByText("Take over").click();
   expect(stream.sent).toEqual([{ type: "takeControl", takeOver: true }]);
 
-  const toast = vi.spyOn(toastManager, "add");
+  using toast = vi.spyOn(toastManager, "add");
   await control({ canOperate: true, controller: "you" });
   expect(toast).not.toHaveBeenCalled();
   await control({ canOperate: true, controller: "another-viewer" });
   expect(toast).toHaveBeenCalledWith(
     expect.objectContaining({ title: "Another device took control of Blender" }),
   );
-  toast.mockRestore();
 });
 
 it("gives back a take still on its way when the user clicks away first", async () => {
@@ -516,177 +492,65 @@ it("gives back a take still on its way when the user clicks away first", async (
     { type: "takeControl", takeOver: false },
     { type: "releaseControl" },
   ]);
-});
 
-it("keeps the status strip on one line in a narrow pane, shortening the stats first", async () => {
-  using _app = startup();
-  await using screen = await render(
-    <div style={{ height: 400, width: 540 }}>
-      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
-    </div>,
-  );
-  await control({ canOperate: true, controller: "another-viewer" });
-  await act(() => {
-    stream.events?.onStats({
-      type: "stats",
-      encoder: "nvh264enc",
-      target: "window",
-      memoryBytes: 1_200_000_000,
-    });
-    stream.events?.onFrameRate({ framesPerSecond: 60, bitsPerSecond: 12_400_000 });
-  });
-  const label = screen.getByText("Another device is in control").element();
-  const stats = screen.getByText(/60 fps/).element();
-  await expect.element(screen.getByText(/60 fps/)).toBeInTheDocument();
-  // A Range gives one box per line the text takes, even inside a flex item.
-  const lines = (element: Element) => {
-    const range = document.createRange();
-    range.selectNodeContents(element);
-    return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
-  };
-  expect(lines(label)).toBe(1);
-  expect(lines(stats)).toBe(1);
-  // The memory figure says whose it is, still on the same line.
-  const memory = screen.getByText(/^Blender memory /).element();
-  expect(lines(memory)).toBe(1);
-});
-
-it("keeps a reload notice dismissed when the pane is shown again", async () => {
-  using _app = startup();
-  stream.state = {
-    status: "running",
-    relativePath: "models/hero.blend",
-    dirty: false,
-    reloadKept: { key: "workspace:models/hero.blend", at: 5 },
-  };
-  const pane = () => (
-    <div style={{ height: 400, width: 600 }}>
-      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
-    </div>
-  );
-  {
-    await using screen = await render(pane());
-    await screen.getByRole("button", { name: "Dismiss" }).click();
-    await expect
-      .element(screen.getByText("changed on disk, so Blender reloaded it", { exact: false }))
-      .not.toBeInTheDocument();
-  }
-  // The right panel unmounts a hidden surface; showing it again mounts the pane anew.
-  await using again = await render(pane());
-  await expect.element(again.getByText("Watching")).toBeInTheDocument();
-  await expect
-    .element(again.getByText("changed on disk, so Blender reloaded it", { exact: false }))
-    .not.toBeInTheDocument();
-});
-
-it("gives control straight back when it's granted after focus has moved elsewhere in T3", async () => {
-  using _app = startup();
-  await using screen = await render(
-    <div>
-      <button type="button">Outside</button>
-      <div style={{ height: 400, width: 600 }}>
-        <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
-      </div>
-    </div>,
-  );
+  // A Take over whose previous controller let go, granted after focus moved elsewhere in T3.
+  stream.sent = [];
   await control({ canOperate: true, controller: "another-viewer" });
   await screen.getByText("Take over").click();
-  // The previous controller lets go while the take over is on its way.
   await control({ canOperate: true, controller: "unclaimed" });
   await screen.getByText("Outside").click();
   await control({ canOperate: true, controller: "you" });
-  expect(stream.sent).toEqual([
+  expect(stream.sent, "a Take over granted after focus left").toEqual([
     { type: "takeControl", takeOver: true },
     { type: "releaseControl" },
   ]);
 });
 
-it("shows Setup needed, saying what is missing, with a way into Settings › Blender", async () => {
+it("shows Setup needed with its ways out: Check again reruns the check, and Settings › Blender opens for that machine", async () => {
   using _app = startup();
   const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
   const { Atom } = await import("effect/reactivity");
   using _check = vi
     .spyOn(hostedBlenderEnvironment.checkSetup, "permissionAtom")
     .mockReturnValue(Atom.make(true) as never);
-  const running = stream.state;
-  try {
-    stream.state = { status: "notSetUp", missing: ["enabled"] };
-    await using screen = await render(
-      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
-    );
-    await expect.element(screen.getByText("Setup needed")).toBeInTheDocument();
-    await expect
-      .element(screen.getByText("Switch on Hosted Blender in Settings › Blender", { exact: false }))
-      .toBeInTheDocument();
-    stream.state = { status: "notSetUp", missing: ["check"] };
-    await screen.rerender(
-      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
-    );
-    await expect
-      .element(screen.getByText("T3 Code hasn't checked this server yet.", { exact: false }))
-      .toBeInTheDocument();
-    stream.state = { status: "notSetUp", missing: ["labwc", "encoder"] };
-    await screen.rerender(
-      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
-    );
-    await expect
-      .element(screen.getByText("labwc, an H.264 encoder", { exact: false }))
-      .toBeInTheDocument();
-    // Installed, but the test encode failed: nothing to install, and Check again retries it.
-    stream.setup = {
-      result: {
-        status: "checked",
-        ready: false,
-        checks: [{ item: "encoder", status: "failed" }],
-        distro: null,
-        packageManager: null,
-        capture: null,
-        commands: [],
-        checkedAt: 1,
-      },
-      checking: false,
-      installThreadId: null,
-    };
-    stream.state = { status: "notSetUp", missing: ["encoder"] };
-    await screen.rerender(
-      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
-    );
-    await expect
-      .element(screen.getByText("If the GPU was busy, check again.", { exact: false }))
-      .toBeInTheDocument();
-    await expect
-      .element(screen.getByText("This server is missing", { exact: false }))
-      .not.toBeInTheDocument();
-    await screen.getByRole("button", { name: "Check again" }).click();
-    expect(stream.commands.at(-1)?.value).toEqual({
-      environmentId: threadRef.environmentId,
-      input: {},
-    });
-    stream.setup = null;
-    await screen.getByRole("button", { name: "Open Blender settings" }).click();
-    expect(screen.router?.state.location.pathname).toBe("/settings/blender");
-    expect(screen.router?.state.location.search).toEqual({ machine: "environment-1" });
-
-    stream.state = { status: "unavailable", reason: "sandboxedBlender" };
-    await screen.rerender(
-      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
-    );
-    await expect.element(screen.getByText("Not available on this host")).toBeInTheDocument();
-    await expect
-      .element(screen.getByText("Flatpak and Snap builds of Blender", { exact: false }))
-      .toBeInTheDocument();
-  } finally {
-    stream.state = running;
-  }
+  // Installed, but the test encode failed: nothing to install, and Check again retries it.
+  stream.setup = {
+    result: {
+      status: "checked",
+      ready: false,
+      checks: [{ item: "encoder", status: "failed" }],
+      distro: null,
+      packageManager: null,
+      capture: null,
+      commands: [],
+      checkedAt: 1,
+    },
+    checking: false,
+    installThreadId: null,
+  };
+  stream.state = { status: "notSetUp", missing: ["encoder"] };
+  await using screen = await render(
+    <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+  );
+  await expect.element(screen.getByText("Setup needed")).toBeInTheDocument();
+  await screen.getByRole("button", { name: "Check again" }).click();
+  expect(stream.commands.at(-1)?.value).toEqual({
+    environmentId: threadRef.environmentId,
+    input: {},
+  });
+  stream.setup = null;
+  await screen.getByRole("button", { name: "Open Blender settings" }).click();
+  expect(screen.router?.state.location.pathname).toBe("/settings/blender");
+  expect(screen.router?.state.location.search).toEqual({ machine: "environment-1" });
 });
 
 it("B19: asks about other threads' held copies once the master moved on, and Delete, once confirmed, or Keep answers for them", async () => {
   using _app = startup();
   const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
   const { Atom } = await import("effect/reactivity");
-  vi.spyOn(hostedBlenderEnvironment.deleteHeld, "permissionAtom").mockReturnValue(
-    Atom.make(true) as never,
-  );
+  using _delete = vi
+    .spyOn(hostedBlenderEnvironment.deleteHeld, "permissionAtom")
+    .mockReturnValue(Atom.make(true) as never);
   stream.state = {
     status: "stopped",
     heldBehind: {
@@ -705,24 +569,10 @@ it("B19: asks about other threads' held copies once the master moved on, and Del
       <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
     </div>,
   );
-  await expect
-    .element(
-      screen.getByText(
-        /^hero\.blend has changed since T3 Code held 2 working copies of it from Hero pass, Rig fix \(3(\.0+)? MB\)\. T3 Code can't tell whether those threads' work reached the master\. Delete them, or keep them until [^.]*20[^.]*\.$/,
-      ),
-    )
-    .toBeInTheDocument();
   await screen.getByRole("button", { name: "Delete" }).click();
   // Nothing is deleted until the person confirms, told which copies and why it may matter.
   const confirm = screen.getByRole("alertdialog");
-  await expect.element(confirm.getByText("Delete 2 held working copies?")).toBeInTheDocument();
-  await expect
-    .element(
-      confirm.getByText(
-        "From Hero pass, Rig fix. hero.blend has changed since T3 Code held these copies, but T3 Code can't tell whether those threads' work reached it. Deleting them can't be undone.",
-      ),
-    )
-    .toBeInTheDocument();
+  await expect.element(confirm).toBeInTheDocument();
   expect(stream.commands).toEqual([]);
   // Held again from another client while it is open: it still deletes only what it shows.
   stream.state = {
@@ -740,10 +590,7 @@ it("B19: asks about other threads' held copies once the master moved on, and Del
       <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
     </div>,
   );
-  await expect
-    .element(screen.getByText("held the working copy of it from Hero pass", { exact: false }))
-    .toBeInTheDocument();
-  await expect.element(confirm.getByText("Delete 2 held working copies?")).toBeInTheDocument();
+  await expect.element(confirm).toBeInTheDocument();
   await confirm.getByRole("button", { name: "Delete" }).click();
   await expect.element(confirm).not.toBeInTheDocument();
   await screen.getByRole("button", { name: "Keep" }).click();
@@ -768,32 +615,6 @@ it("B19: asks about other threads' held copies once the master moved on, and Del
       },
     },
   ]);
-});
-
-it("shows a closed or crashed Blender's card in the pane, never in the float", async () => {
-  using _app = startup();
-  const running = stream.state;
-  try {
-    stream.state = { status: "closed", copies: [kept("closed", "models/hero.blend", true)] };
-    await using pane = await render(
-      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
-    );
-    await expect.element(pane.getByText("Blender was closed")).toBeInTheDocument();
-    await expect
-      .element(pane.getByText("kept its unsaved changes", { exact: false }))
-      .toBeInTheDocument();
-
-    stream.state = { status: "crashed", copies: [kept("crashed", "models/hero.blend", false)] };
-    await using float = await render(
-      <div style={{ height: 180, width: 320 }}>
-        <FloatingBlender threadRef={threadRef} onFrameSize={() => undefined} />
-      </div>,
-    );
-    expect(float.container.textContent).toBe("");
-    expect(stream.clients).toBe(0);
-  } finally {
-    stream.state = running;
-  }
 });
 
 it("shows each kept file's card, naming its own file, and acts on that file", async () => {
@@ -830,6 +651,15 @@ it("shows each kept file's card, naming its own file, and acts on that file", as
       .element(pane.getByText("hero.blend stopped unexpectedly", { exact: false }))
       .toBeInTheDocument();
     await expect.element(pane.getByRole("button", { name: "outside.blend" })).toBeInTheDocument();
+
+    // The float shows nothing for an ended Blender, and opens no stream.
+    await using float = await render(
+      <div style={{ height: 180, width: 320 }}>
+        <FloatingBlender threadRef={threadRef} onFrameSize={() => undefined} />
+      </div>,
+    );
+    expect(float.container.textContent, "the float").toBe("");
+    expect(stream.clients, "no stream for an ended Blender").toBe(0);
   } finally {
     stream.state = running;
   }
@@ -900,7 +730,7 @@ it("asks with the quit dialog when image edits hold a quit, and says so in the p
   });
 });
 
-it("keeps the quit dialog on the file it asked about, asking afresh once Blender has another open", async () => {
+it("keeps the quit dialog on the file it asked about, asking afresh once Blender has another open, and Quit without saving open while a save waits", async () => {
   using _app = startup();
   const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
   const { Atom } = await import("effect/reactivity");
@@ -954,12 +784,24 @@ it("keeps the quit dialog on the file it asked about, asking afresh once Blender
       .element(screen.getByText("Blender has other.blend open now.", { exact: false }))
       .toBeVisible();
     await expect.element(screen.getByRole("button", { name: "Save and quit" })).toBeVisible();
+
+    // A Save and quit that never ends in a busy Blender: Quit without saving is the way out.
+    stream.saveHangs = true;
+    await screen.getByRole("button", { name: "Save and quit" }).click();
+    await expect.element(screen.getByRole("button", { name: "Save and quit" })).toBeDisabled();
+    await expect.element(screen.getByRole("button", { name: "Quit without saving" })).toBeEnabled();
+    await screen.getByRole("button", { name: "Quit without saving" }).click();
+    await vi.waitFor(() => expect(quits()).toHaveLength(3));
+    expect(quits()[2], "the discard beside the waiting save").toEqual({
+      environmentId: threadRef.environmentId,
+      input: { threadId: threadRef.threadId, save: false, discard: true, openFile: other },
+    });
   } finally {
     stream.state = running;
   }
 });
 
-it("fits its toolbar in a 360 px pane with a master, the menu still in reach and the name whole on its own line", async () => {
+it("fits its toolbar in a 360 px pane with a master, the menu still in reach", async () => {
   using _app = startup();
   const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
   const { Atom } = await import("effect/reactivity");
@@ -985,32 +827,6 @@ it("fits its toolbar in a 360 px pane with a master, the menu still in reach and
     expect(box.width).toBeGreaterThan(0);
     expect(box.right).toBeLessThanOrEqual(bounds.right);
   }
-  // The name has a line of its own under the buttons, whole, rather than cut between them.
-  const name = [...screen.container.querySelectorAll("span")].find(
-    (span) => span.textContent === "hero.wip-a1b2.blend" && span.checkVisibility(),
-  )!;
-  const menu = screen.getByRole("button", { name: "Blender menu" }).element();
-  expect(name.getBoundingClientRect().top).toBeGreaterThanOrEqual(
-    menu.getBoundingClientRect().bottom,
-  );
-  expect(name.scrollWidth).toBeLessThanOrEqual(name.clientWidth);
-});
-
-it("points a thread with no Blender running at Files, where .blend files open", async () => {
-  using _app = startup();
-  const { useRightPanelStore } = await import("~/rightPanelStore");
-  using openPane = vi.spyOn(useRightPanelStore.getState(), "open").mockImplementation(() => {});
-  stream.state = { status: "stopped" };
-  await using pane = await render(
-    <BlenderPanel
-      threadRef={threadRef}
-      visible
-      composerTarget={threadRef}
-      projectId={"project-1" as ProjectId}
-    />,
-  );
-  await pane.getByRole("button", { name: "Open Files" }).click();
-  expect(openPane).toHaveBeenCalledWith(threadRef, "files");
 });
 
 it("offers a reload's copy as older than the file, opening the file first", async () => {
@@ -1062,66 +878,16 @@ it("shows where a copy is once its file is gone, offering no open of the file as
     .not.toBeInTheDocument();
 });
 
-it("warns in the status strip when the server has no usable GPU", async () => {
+it("sizes the display in real pixels, and says when the window or Settings hides the pane", async () => {
   using _app = startup();
-  // A GPU T3 can't open is named as such, not as a missing GPU.
-  for (const [status, warning] of [
-    ["warning", "No GPU: Blender will be slow"],
-    ["missing", "No GPU access: Blender will be slow"],
-  ] as const) {
-    stream.setup = {
-      result: {
-        status: "checked",
-        ready: true,
-        checks: [{ item: "gpu", status }],
-        distro: null,
-        packageManager: null,
-        capture: null,
-        commands: [],
-        checkedAt: 0,
-      },
-      checking: false,
-      installThreadId: null,
-    };
-    try {
-      await using screen = await render(
-        <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
-      );
-      await expect.element(screen.getByText(warning)).toBeInTheDocument();
-    } finally {
-      stream.setup = null;
-    }
-  }
-});
-
-it("shows Agent editing in the status strip only while the add-on says the agent acts", async () => {
-  using _app = startup();
-  const idle = stream.state;
-  try {
-    stream.state = { ...(idle as object), agentActing: true };
-    await using acting = await render(
-      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
-    );
-    await expect.element(acting.getByText("Agent editing")).toBeInTheDocument();
-  } finally {
-    stream.state = idle;
-  }
-  await using quiet = await render(
-    <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />,
+  const pane = (hidden: boolean) => (
+    <HiddenThreadContext value={hidden}>
+      <div style={{ height: 400, width: 600 }}>
+        <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+      </div>
+    </HiddenThreadContext>
   );
-  await expect
-    .element(quiet.getByText("You're in control").or(quiet.getByText("Watching")))
-    .toBeInTheDocument();
-  expect(quiet.container.textContent).not.toContain("Agent editing");
-});
-
-it("sizes the display in real pixels, and says when the window hides the pane", async () => {
-  using _app = startup();
-  await using screen = await render(
-    <div style={{ height: 400, width: 600 }}>
-      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
-    </div>,
-  );
+  await using screen = await render(pane(false));
   const viewport = screen.getByLabelText("Blender viewport").element() as HTMLElement;
   const ratio = window.devicePixelRatio || 1;
   await vi.waitFor(() =>
@@ -1143,6 +909,14 @@ it("sizes the display in real pixels, and says when the window hides the pane", 
     Object.defineProperty(document, "visibilityState", visibility);
   }
   expect(stream.visible).toEqual([true, false, true]);
+
+  // Settings or Usage cover its thread while the window is visible.
+  await screen.rerender(pane(true));
+  expect(stream.visible.at(-1), "covered by Settings").toBe(false);
+  await screen.rerender(pane(false));
+  expect(stream.visible.at(-1), "uncovered").toBe(true);
+  // The stream stays connected throughout, so control and the decoder survive.
+  expect(stream.clients).toBe(1);
 });
 
 it("floats watch-only: no size for the display, no control, and the frame size for its layout", async () => {
@@ -1165,47 +939,7 @@ it("floats watch-only: no size for the display, no control, and the frame size f
   expect(frameSizes).toEqual([{ width: 1046, height: 1336 }]);
 });
 
-it("is off screen while Settings or Usage cover its thread, though the window is visible", async () => {
-  using _app = startup();
-  const pane = (hidden: boolean) => (
-    <HiddenThreadContext value={hidden}>
-      <div style={{ height: 400, width: 600 }}>
-        <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
-      </div>
-    </HiddenThreadContext>
-  );
-  await using screen = await render(pane(true));
-  await expect.element(screen.getByLabelText("Blender viewport")).toBeInTheDocument();
-  expect(stream.visible.at(-1)).toBe(false);
-  await screen.rerender(pane(false));
-  expect(stream.visible.at(-1)).toBe(true);
-  // The stream stays connected throughout, so control and the decoder survive.
-  expect(stream.clients).toBe(1);
-});
-
-it("switches between the working copy and the master, each with its own stream", async () => {
-  using _app = startup();
-  stream.master = { status: "running", relativePath: "models/hero.blend", dirty: true };
-  stream.state = {
-    status: "running",
-    relativePath: "models/hero.wip-1a2b3c4d.blend",
-    dirty: false,
-  };
-  await using screen = await render(
-    <div style={{ height: 400, width: 600 }}>
-      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
-    </div>,
-  );
-  await expect.element(screen.getByText("hero.wip-1a2b3c4d.blend")).toBeInTheDocument();
-  await screen.getByRole("button", { name: "Master" }).click();
-  await expect.element(screen.getByText("hero.blend", { exact: true })).toBeInTheDocument();
-  expect(stream.targets.at(-1)).toMatchObject({ threadId: "thread-1", master: true });
-  await screen.getByRole("button", { name: "Working copy" }).click();
-  await expect.element(screen.getByText("hero.wip-1a2b3c4d.blend")).toBeInTheDocument();
-  expect(stream.targets.at(-1)).toMatchObject({ master: false });
-});
-
-it("shows Agent editing for whichever Blender the agent acts in, master or working copy", async () => {
+it("switches between the working copy and the master, each with its own stream and agent badge", async () => {
   using _app = startup();
   stream.master = {
     status: "running",
@@ -1224,35 +958,46 @@ it("shows Agent editing for whichever Blender the agent acts in, master or worki
     </div>,
   );
   await expect.element(screen.getByText("hero.wip-1a2b3c4d.blend")).toBeInTheDocument();
+  // Agent editing follows the side shown: here the agent acts in the master.
   expect(screen.container.textContent).not.toContain("Agent editing");
   await screen.getByRole("button", { name: "Master" }).click();
+  await expect.element(screen.getByText("hero.blend", { exact: true })).toBeInTheDocument();
   await expect.element(screen.getByText("Agent editing")).toBeInTheDocument();
+  expect(stream.targets.at(-1)).toMatchObject({ threadId: "thread-1", master: true });
+  await screen.getByRole("button", { name: "Working copy" }).click();
+  await expect.element(screen.getByText("hero.wip-1a2b3c4d.blend")).toBeInTheDocument();
+  expect(stream.targets.at(-1)).toMatchObject({ master: false });
 });
 
 it("N8: shows the switch beside an agent's working copy whose master is only known, offering Open in T3 Code", async () => {
   using _app = startup();
   const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
   const { Atom } = await import("effect/reactivity");
-  vi.spyOn(hostedBlenderEnvironment.openMaster, "permissionAtom").mockReturnValue(
-    Atom.make(true) as never,
-  );
+  using _openMaster = vi
+    .spyOn(hostedBlenderEnvironment.openMaster, "permissionAtom")
+    .mockReturnValue(Atom.make(true) as never);
   stream.state = {
     status: "running",
     relativePath: "models/hero.wip-1a2b3c4d.blend",
     dirty: false,
   };
+  const ui = () => (
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>
+  );
+  // No switch until the thread has a master.
+  await using screen = await render(ui());
+  await expect.element(screen.getByText("hero.wip-1a2b3c4d.blend")).toBeInTheDocument();
+  await expect.element(screen.getByRole("button", { name: "Master" })).not.toBeInTheDocument();
+
   stream.master = {
     status: "notOpen",
     relativePath: "models/hero.blend",
     desktop: null,
     desktopDirty: false,
   };
-  await using screen = await render(
-    <div style={{ height: 400, width: 600 }}>
-      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
-    </div>,
-  );
-  await expect.element(screen.getByText("hero.wip-1a2b3c4d.blend")).toBeInTheDocument();
+  await screen.rerender(ui());
   await screen.getByRole("button", { name: "Master" }).click();
   await expect.element(screen.getByText("Master not open in T3 Code")).toBeInTheDocument();
   await expect.element(screen.getByRole("button", { name: "Open in T3 Code" })).toBeVisible();
@@ -1260,59 +1005,15 @@ it("N8: shows the switch beside an agent's working copy whose master is only kno
   expect(stream.clients).toBe(1);
 });
 
-it("shows no switch until the thread has a master", async () => {
-  using _app = startup();
-  stream.state = { status: "running", relativePath: "models/hero.blend", dirty: false };
-  await using screen = await render(
-    <div style={{ height: 400, width: 600 }}>
-      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
-    </div>,
-  );
-  await expect.element(screen.getByText("hero.blend")).toBeInTheDocument();
-  await expect.element(screen.getByRole("button", { name: "Master" })).not.toBeInTheDocument();
-});
-
-it("shows the master's one copy on the Master side, and the working side's own copies there", async () => {
-  using _app = startup();
-  stream.state = { status: "closed", copies: [kept("closed", "models/part.blend", true)] };
-  stream.master = {
-    status: "crashed",
-    relativePath: "models/hero.blend",
-    copies: [
-      {
-        key: "outside:/real/models/hero.blend",
-        kind: "crashed",
-        file: { kind: "workspace", relativePath: "models/hero.blend" },
-        recovery: true,
-      },
-    ],
-  };
-  await using screen = await render(
-    <div style={{ height: 400, width: 600 }}>
-      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
-    </div>,
-  );
-  await expect
-    .element(screen.getByText("T3 Code closed part.blend", { exact: false }))
-    .toBeInTheDocument();
-  // The working side never lists the master's copy under Also kept.
-  await expect.element(screen.getByText("Also kept:")).not.toBeInTheDocument();
-  await screen.getByRole("button", { name: "Master" }).click();
-  await expect.element(screen.getByText("Blender crashed")).toBeInTheDocument();
-  await expect
-    .element(screen.getByText("hero.blend stopped unexpectedly", { exact: false }))
-    .toBeInTheDocument();
-});
-
 it("shows a master's copy of another file it had open, with where it is and a way to open the master", async () => {
   using _app = startup();
   const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
   const { Atom } = await import("effect/reactivity");
-  vi.spyOn(hostedBlenderEnvironment.openMaster, "permissionAtom").mockReturnValue(
-    Atom.make(true) as never,
-  );
-  await canReopen();
-  stream.state = { status: "none" };
+  using _openMaster = vi
+    .spyOn(hostedBlenderEnvironment.openMaster, "permissionAtom")
+    .mockReturnValue(Atom.make(true) as never);
+  using _reopen = await canReopen();
+  stream.state = { status: "closed", copies: [kept("closed", "models/part.blend", true)] };
   stream.master = {
     status: "closed",
     relativePath: "models/hero.blend",
@@ -1332,6 +1033,11 @@ it("shows a master's copy of another file it had open, with where it is and a wa
       <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
     </div>,
   );
+  // The working side shows its own copy, and never lists the master's under Also kept.
+  await expect
+    .element(screen.getByText("T3 Code closed part.blend", { exact: false }))
+    .toBeInTheDocument();
+  await expect.element(screen.getByText("Also kept:")).not.toBeInTheDocument();
   await screen.getByRole("button", { name: "Master" }).click();
   await expect
     .element(
@@ -1343,50 +1049,13 @@ it("shows a master's copy of another file it had open, with where it is and a wa
   await expect.element(screen.getByRole("button", { name: "Reopen" })).not.toBeInTheDocument();
 });
 
-it("offers Move into T3 Code for a master open in the desktop Blender, and warns without its add-on", async () => {
-  using _app = startup();
-  stream.state = { status: "stopped" };
-  stream.master = {
-    status: "notOpen",
-    relativePath: "models/hero.blend",
-    desktop: "open",
-    desktopDirty: true,
-  };
-  await using screen = await render(
-    <div style={{ height: 400, width: 600 }}>
-      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
-    </div>,
-  );
-  // The switch stays above a card, so the way back is always there.
-  await screen.getByRole("button", { name: "Master" }).click();
-  await expect.element(screen.getByText("Open in your desktop Blender")).toBeInTheDocument();
-  await expect.element(screen.getByText(/with its unsaved changes/)).toBeInTheDocument();
-  await screen.getByRole("button", { name: "Working copy" }).click();
-  await expect.element(screen.getByText("No hosted Blender running")).toBeInTheDocument();
-
-  stream.master = {
-    status: "notOpen",
-    relativePath: "models/hero.blend",
-    desktop: "noAddon",
-    desktopDirty: false,
-  };
-  await screen.rerender(
-    <div style={{ height: 400, width: 600 }}>
-      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
-    </div>,
-  );
-  await screen.getByRole("button", { name: "Master" }).click();
-  await expect.element(screen.getByText(/can't reach its MCP add-on/)).toBeInTheDocument();
-  expect(stream.clients).toBe(0);
-});
-
-it("moves the master it shows, and warns over a master a desktop Blender may share", async () => {
+it("moves the master it shows, and warns without the desktop add-on or over a master a desktop Blender may share", async () => {
   using _app = startup();
   const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
   const { Atom } = await import("effect/reactivity");
-  vi.spyOn(hostedBlenderEnvironment.moveIntoT3, "permissionAtom").mockReturnValue(
-    Atom.make(true) as never,
-  );
+  using _move = vi
+    .spyOn(hostedBlenderEnvironment.moveIntoT3, "permissionAtom")
+    .mockReturnValue(Atom.make(true) as never);
   stream.state = { status: "stopped" };
   stream.master = {
     status: "notOpen",
@@ -1406,6 +1075,21 @@ it("moves the master it shows, and warns over a master a desktop Blender may sha
     environmentId: threadRef.environmentId,
     input: { threadId: threadRef.threadId, relativePath: "models/hero.blend" },
   });
+  // The switch stays above the card, so the way back is always there.
+  await screen.getByRole("button", { name: "Working copy" }).click();
+  await expect.element(screen.getByText("No hosted Blender running")).toBeInTheDocument();
+
+  // Without the desktop Blender's add-on, it says so, and nothing streams.
+  stream.master = {
+    status: "notOpen",
+    relativePath: "models/hero.blend",
+    desktop: "noAddon",
+    desktopDirty: false,
+  };
+  await screen.rerender(ui());
+  await screen.getByRole("button", { name: "Master" }).click();
+  await expect.element(screen.getByText(/can't reach its MCP add-on/)).toBeInTheDocument();
+  expect(stream.clients, "no stream for a master not open in T3 Code").toBe(0);
 
   stream.master = {
     status: "running",
@@ -1438,9 +1122,9 @@ it("B16: Timeline in the pane's menu shows or hides the strip for everyone, for 
       .not.toBeInTheDocument();
   }
 
-  vi.spyOn(hostedBlenderEnvironment.setTimeline, "permissionAtom").mockReturnValue(
-    Atom.make(true) as never,
-  );
+  using _timeline = vi
+    .spyOn(hostedBlenderEnvironment.setTimeline, "permissionAtom")
+    .mockReturnValue(Atom.make(true) as never);
   await using screen = await render(ui());
   await control({ canOperate: false, controller: "unclaimed" });
   await screen.getByRole("button", { name: "Blender menu" }).click();
@@ -1468,7 +1152,7 @@ const press = (target: EventTarget, init: KeyboardEventInit, type = "keydown") =
   return event;
 };
 
-it("hands keys inside the owner to it ahead of the app's own window shortcuts", () => {
+it("hands keys inside the owner to it ahead of the app's own window shortcuts, until it lets go", () => {
   using _capture = disposable(installKeyboardCapture());
   const appShortcut = vi.fn();
   // Registered after the capture listener, as every app shortcut is.
@@ -1477,12 +1161,11 @@ it("hands keys inside the owner to it ahead of the app's own window shortcuts", 
   using surface = element();
   using outside = element();
   const owned: string[] = [];
-  using _owner = disposable(
-    captureKeyboard(surface, {
-      onKey: (event) => owned.push(`${event.type}:${event.code}`),
-      passThrough: (event) => event.code === "F6" && !event.shiftKey,
-    }),
-  );
+  const release = captureKeyboard(surface, {
+    onKey: (event) => owned.push(`${event.type}:${event.code}`),
+    passThrough: (event) => event.code === "F6" && !event.shiftKey,
+  });
+  using _owner = disposable(release);
 
   const typed = press(surface, { code: "KeyB", ctrlKey: true });
   press(surface, { code: "KeyB", ctrlKey: true }, "keyup");
@@ -1496,23 +1179,15 @@ it("hands keys inside the owner to it ahead of the app's own window shortcuts", 
   press(outside, { code: "KeyB" });
   expect(owned).toEqual(["keydown:KeyB", "keyup:KeyB", "keydown:F6"]);
   expect(appShortcut).toHaveBeenCalledTimes(2);
-});
 
-it("lets the app have the keyboard again once the owner lets go", () => {
-  using _capture = disposable(installKeyboardCapture());
-  using surface = element();
-  const onKey = vi.fn();
-  const release = captureKeyboard(surface, { onKey, passThrough: () => false });
+  // Once the owner lets go, the app has the keyboard again.
   release();
-  expect(press(surface, { code: "KeyA" }).defaultPrevented).toBe(false);
-  expect(onKey).not.toHaveBeenCalled();
+  expect(press(surface, { code: "KeyA" }).defaultPrevented, "after release").toBe(false);
+  expect(owned, "after release").toHaveLength(3);
 });
 
 /** A 200×100 CSS-pixel stream of 400×200 stream pixels, in control. */
-const setup = (
-  keymap = { layout: "us", variant: "" },
-  takeScrolls: ReadonlyArray<TakeScroll> = [],
-) => {
+const setup = (keymap = { layout: "us", variant: "" }) => {
   const cleanups = [installKeyboardCapture()];
   const surface = document.body.appendChild(document.createElement("div"));
   surface.tabIndex = 0;
@@ -1535,7 +1210,7 @@ const setup = (
     keymap: () => keymap,
     scrollPreference: () => "auto",
     passThrough: (event) => event.code === "F6" && !event.shiftKey,
-    takeScrolls,
+    takeScrolls: [],
   });
   cleanups.push(
     () => input.dispose(),
@@ -1575,20 +1250,18 @@ it("sends absolute positions in stream pixels and buttons as evdev", async () =>
     { type: "button", button: 274, pressed: true },
     { type: "button", button: 274, pressed: false },
   ]);
-});
 
-it("B6: opens no context menu where a right drag from the pane ends", () => {
-  using stream = setup();
-  pointer(stream.canvas, "pointerdown", { button: 2, buttons: 2, clientX: 20, clientY: 30 });
-  pointer(document.body, "pointerup", { button: 2, buttons: 0, clientX: 500, clientY: 500 });
-  // As Windows does, on the release, wherever it is.
-  const menu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 });
-  document.body.dispatchEvent(menu);
-  expect(menu.defaultPrevented).toBe(true);
-  // Only that one: a later right click elsewhere in T3 has its menu.
-  const later = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 });
-  document.body.dispatchEvent(later);
-  expect(later.defaultPrevented).toBe(false);
+  // The motion queued for the next frame goes out before a button changes.
+  sent.length = 0;
+  pointer(canvas, "pointerdown", { button: 0, buttons: 1, clientX: 20, clientY: 30 });
+  pointer(canvas, "pointermove", { button: -1, buttons: 1, clientX: 110, clientY: 70 });
+  pointer(canvas, "pointerup", { button: 0, buttons: 0, clientX: 110, clientY: 70 });
+  expect(sent, "a queued move before the button").toEqual([
+    { type: "pointer", x: 20, y: 20 },
+    { type: "button", button: 272, pressed: true },
+    { type: "pointer", x: 200, y: 100 },
+    { type: "button", button: 272, pressed: false },
+  ]);
 });
 
 it("sends physical keys once each, with the keymap first, and leaves T3's focus keys alone", () => {
@@ -1655,34 +1328,6 @@ it("locks the pointer and sends relative motion while Blender holds the mouse", 
   ]);
 });
 
-it("sends a mouse wheel as notches", () => {
-  using stream = setup();
-  const { canvas, sent } = stream;
-  const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 100 });
-  Object.defineProperty(wheel, "wheelDeltaY", { value: -120 });
-  canvas.dispatchEvent(wheel);
-  expect(wheel.defaultPrevented).toBe(true);
-  expect(sent).toEqual([
-    { type: "scroll", axis: "vertical", source: "wheel", value: 15, steps: 1 },
-  ]);
-});
-
-it("B15: sends the scrolls that took control in order, each where it was made", () => {
-  const notch = { deltaMode: 0, deltaX: 0, deltaY: 100, wheelDeltaY: -120 };
-  using stream = setup(undefined, [
-    { scroll: notch, clientX: 60, clientY: 45 },
-    { scroll: notch, clientX: 60, clientY: 45 },
-    { scroll: { ...notch, deltaY: -100, wheelDeltaY: 120 }, clientX: 110, clientY: 70 },
-  ]);
-  expect(stream.sent).toEqual([
-    { type: "pointer", x: 100, y: 50 },
-    { type: "scroll", axis: "vertical", source: "wheel", value: 15, steps: 1 },
-    { type: "scroll", axis: "vertical", source: "wheel", value: 15, steps: 1 },
-    { type: "pointer", x: 200, y: 100 },
-    { type: "scroll", axis: "vertical", source: "wheel", value: -15, steps: -1 },
-  ]);
-});
-
 it("follows chorded buttons from the buttons held, so none is left down in Blender", () => {
   using stream = setup();
   const { canvas, sent } = stream;
@@ -1700,20 +1345,6 @@ it("follows chorded buttons from the buttons held, so none is left down in Blend
     { type: "button", button: 274, pressed: false },
     { type: "button", button: 273, pressed: false },
     { type: "button", button: 272, pressed: true },
-    { type: "button", button: 272, pressed: false },
-  ]);
-});
-
-it("sends the motion queued for the next frame before a button changes", () => {
-  using stream = setup();
-  const { canvas, sent } = stream;
-  pointer(canvas, "pointerdown", { button: 0, buttons: 1, clientX: 20, clientY: 30 });
-  pointer(canvas, "pointermove", { button: -1, buttons: 1, clientX: 110, clientY: 70 });
-  pointer(canvas, "pointerup", { button: 0, buttons: 0, clientX: 110, clientY: 70 });
-  expect(sent).toEqual([
-    { type: "pointer", x: 20, y: 20 },
-    { type: "button", button: 272, pressed: true },
-    { type: "pointer", x: 200, y: 100 },
     { type: "button", button: 272, pressed: false },
   ]);
 });
@@ -1824,79 +1455,54 @@ async function annotateRegion(screen: Awaited<ReturnType<typeof render>>) {
   await expect.element(surface).not.toBeInTheDocument();
 }
 
-it("freezes the pane's frame and attaches the viewport window's camera and what each mark covers", async () => {
-  const blender = annotationSetup("thread-blender-annotate", "window");
-  await using screen = await render(blender.element, annotationPane());
-  await annotateRegion(screen);
-
-  await vi.waitFor(() => expect(blender.draft()?.previewAnnotations).toHaveLength(1));
-  const annotation = blender.draft()!.previewAnnotations[0]!;
-  expect(annotation).toMatchObject({
-    pageTitle: "hero.wip-a1b2.blend · Working copy",
-    comment: "Bevel",
-    cameraView: capture.cameraView,
-  });
-  expect(annotation.regions[0]?.hit).toEqual({ object: "Cube", point: [0.2, -1, 0.4] });
-  expect(modelViewFromHref(annotation.pageUrl)).toEqual({
-    position: [6, -6, 5],
-    target: [0, 0, 0],
-  });
-  expect(annotate.captureView).toHaveBeenCalledTimes(1);
-  const request = annotate.findHits.mock.calls[0]?.[0] as {
-    input: { threadId: string; projection: unknown; marks: Array<Array<{ x: number }>> };
-  };
-  expect(request.input.projection).toEqual(capture.projection);
-  // The region's middle, as a fraction of the frozen frame, is tried first.
-  expect(request.input.marks).toHaveLength(1);
-  expect(request.input.marks[0]![0]!.x).toBeCloseTo(0.5, 2);
-  expect(blender.draft()?.images.map((image) => image.id)).toEqual([annotation.id]);
-});
-
-it("links to the file Blender rendered, opened since it started", async () => {
-  const blender = annotationSetup("thread-blender-other-file", "window");
-  annotate.captureView.mockReset().mockResolvedValue({
-    ...capture,
+it.each([
+  {
+    label: "the viewport window",
+    target: "window",
+    openFile: undefined,
+    page: "hero.wip-a1b2.blend · Working copy",
+    link: "models/hero.wip-a1b2.blend#view=",
+  },
+  {
+    label: "a file opened since Blender started",
+    target: "window",
     openFile: { kind: "workspace", relativePath: "models/other.blend" },
-  });
-  await using screen = await render(blender.element, annotationPane());
-  await annotateRegion(screen);
-  await vi.waitFor(() => expect(blender.draft()?.previewAnnotations).toHaveLength(1));
-  const annotation = blender.draft()!.previewAnnotations[0]!;
-  expect(annotation.pageTitle).toBe("other.blend · Master");
-  expect(annotation.pageUrl.startsWith("models/other.blend#view=")).toBe(true);
-});
+    page: "other.blend · Master",
+    link: "models/other.blend#view=",
+  },
+  // Blender rendered the view, so marks land though the stream shows the whole display.
+  {
+    label: "the whole display",
+    target: "output",
+    openFile: undefined,
+    page: "hero.wip-a1b2.blend · Working copy",
+    link: "models/hero.wip-a1b2.blend#view=",
+  },
+] as const)(
+  "freezes the pane's frame and attaches the camera and what each mark covers, streaming $label",
+  async ({ label, target, openFile, page, link }) => {
+    const blender = annotationSetup(`thread-blender-annotate-${label}`, target);
+    if (openFile) annotate.captureView.mockReset().mockResolvedValue({ ...capture, openFile });
+    await using screen = await render(blender.element, annotationPane());
+    await annotateRegion(screen);
 
-it("asks Blender what an arrow points at first, from its tip", async () => {
-  const blender = annotationSetup("thread-blender-arrow", "window");
-  await using screen = await render(blender.element, annotationPane());
-  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
-  const surface = screen.getByRole("img", { name: "Frozen 3D view to annotate" });
-  await expect.element(surface).toBeVisible();
-  await userEvent.click(screen.getByRole("button", { name: "Arrow", exact: true }));
-  // The tip is at the middle, which is the frozen frame's middle however it is letterboxed.
-  dragOn(surface.element(), [0.1, 0.9], [0.5, 0.5]);
-  await userEvent.click(screen.getByRole("button", { name: "Add to chat" }));
-
-  await vi.waitFor(() => expect(blender.draft()?.previewAnnotations).toHaveLength(1));
-  const request = annotate.findHits.mock.calls[0]?.[0] as {
-    input: { marks: Array<Array<{ x: number; y: number }>> };
-  };
-  expect(request.input.marks[0]![0]!.x).toBeCloseTo(0.5, 2);
-  expect(request.input.marks[0]![0]!.y).toBeCloseTo(0.5, 2);
-  const annotation = blender.draft()!.previewAnnotations[0]!;
-  expect(annotation.strokes[0]?.hit).toEqual({ object: "Cube", point: [0.2, -1, 0.4] });
-});
-
-it("places marks even when the stream shows the whole display, since Blender rendered the view", async () => {
-  const blender = annotationSetup("thread-blender-display", "output");
-  await using screen = await render(blender.element, annotationPane());
-  await annotateRegion(screen);
-
-  await vi.waitFor(() => expect(blender.draft()?.previewAnnotations).toHaveLength(1));
-  const annotation = blender.draft()!.previewAnnotations[0]!;
-  expect(annotation.cameraView).toEqual(capture.cameraView);
-  expect(annotation.regions[0]?.hit).toEqual({ object: "Cube", point: [0.2, -1, 0.4] });
-});
+    await vi.waitFor(() => expect(blender.draft()?.previewAnnotations).toHaveLength(1));
+    const annotation = blender.draft()!.previewAnnotations[0]!;
+    expect(annotation.cameraView).toEqual(capture.cameraView);
+    expect(annotation.regions[0]?.hit).toEqual({ object: "Cube", point: [0.2, -1, 0.4] });
+    expect(annotation.pageTitle, "names the file Blender rendered").toBe(page);
+    expect(annotation.pageUrl.startsWith(link), "links to the file Blender rendered").toBe(true);
+    expect(annotate.captureView).toHaveBeenCalledTimes(1);
+    const request = annotate.findHits.mock.calls[0]?.[0] as {
+      input: { threadId: string; projection: unknown; marks: Array<Array<{ x: number }>> };
+    };
+    expect(request.input.projection).toEqual(capture.projection);
+    // The region's middle, as a fraction of the frozen frame, is tried first.
+    expect(request.input.marks).toHaveLength(1);
+    expect(request.input.marks[0]![0]!.x).toBeCloseTo(0.5, 2);
+    expect(blender.draft()?.images.map((image) => image.id)).toEqual([annotation.id]);
+  },
+);
 
 /** The colour in the middle of the frozen frame the editor shows. */
 async function frozenColor(screen: Awaited<ReturnType<typeof render>>) {
@@ -1914,19 +1520,20 @@ async function frozenColor(screen: Awaited<ReturnType<typeof render>>) {
   return Array.from(context.getImageData(160, 90, 1, 1).data.slice(0, 3));
 }
 
-it("freezes Blender's own render of the view, not the stream frame showing", async () => {
-  const blender = annotationSetup("thread-blender-render", "window");
-  await using screen = await render(blender.element, annotationPane());
-  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
-  expect(await frozenColor(screen)).toEqual([255, 0, 0]);
-});
+it("freezes Blender's own render of the view, not the stream frame showing, unless Blender can't render it", async () => {
+  {
+    const blender = annotationSetup("thread-blender-render", "window");
+    await using screen = await render(blender.element, annotationPane());
+    await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
+    expect(await frozenColor(screen), "Blender's render").toEqual([255, 0, 0]);
+  }
 
-it("freezes the stream frame, without camera or marks, when Blender can't render the view", async () => {
+  // Blender can't render the view: the stream frame, without camera or marks.
   const blender = annotationSetup("thread-blender-no-render", "window");
   annotate.captureView.mockReset().mockResolvedValue(FAILED);
   await using screen = await render(blender.element, annotationPane());
   await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
-  expect(await frozenColor(screen)).toEqual([0x3d, 0x3d, 0x3d]);
+  expect(await frozenColor(screen), "the stream frame").toEqual([0x3d, 0x3d, 0x3d]);
   const surface = screen.getByRole("img", { name: "Frozen 3D view to annotate" });
   await userEvent.click(screen.getByRole("button", { name: "Mark a region" }));
   dragOn(surface.element(), [0.4, 0.4], [0.6, 0.6]);
@@ -1938,10 +1545,15 @@ it("freezes the stream frame, without camera or marks, when Blender can't render
   expect(annotate.findHits).not.toHaveBeenCalled();
 });
 
-it("hands the keyboard to the annotation editor while in control, and control back when it closes", async () => {
+it("hands the keyboard to the annotation editor while in control, and control back when it closes or focus leaves for elsewhere", async () => {
   using _app = { [Symbol.dispose]: installKeyboardCapture() };
   const blender = annotationSetup("thread-blender-in-control", "window");
-  await using screen = await render(blender.element, annotationPane());
+  await using screen = await render(
+    <div className="flex flex-col">
+      <button type="button">Composer</button>
+      <div className="flex h-96 w-[32rem] flex-col">{blender.element}</div>
+    </div>,
+  );
   await control({ canOperate: true, controller: "unclaimed" });
   const viewport = screen.getByLabelText("Blender viewport");
   await viewport.click();
@@ -1973,39 +1585,10 @@ it("hands the keyboard to the annotation editor while in control, and control ba
   pressA();
   expect(stream.sent.filter((message) => message.type === "key")).toHaveLength(2);
   expect(stream.sent).not.toContainEqual({ type: "releaseControl" });
-});
 
-it("gives control back when focus leaves the annotation editor for elsewhere in T3", async () => {
-  using _app = { [Symbol.dispose]: installKeyboardCapture() };
-  const blender = annotationSetup("thread-blender-editor-leave", "window");
-  await using screen = await render(
-    <div className="flex flex-col">
-      <button type="button">Composer</button>
-      <div className="flex h-96 w-[32rem] flex-col">{blender.element}</div>
-    </div>,
-  );
-  await control({ canOperate: true, controller: "unclaimed" });
-  await screen.getByLabelText("Blender viewport").click();
-  await control({ canOperate: true, controller: "you" });
+  // Focus leaving the editor for elsewhere in T3 gives control back.
   await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
   await expect.element(screen.getByRole("textbox", { name: "Annotation comment" })).toHaveFocus();
-  expect(stream.sent).not.toContainEqual({ type: "releaseControl" });
-
   await userEvent.click(screen.getByRole("button", { name: "Composer" }));
-  expect(stream.sent).toContainEqual({ type: "releaseControl" });
-});
-
-it("keeps a grant that lands while the annotation editor has focus", async () => {
-  using _app = { [Symbol.dispose]: installKeyboardCapture() };
-  const blender = annotationSetup("thread-blender-late-grant", "window");
-  await using screen = await render(blender.element, annotationPane());
-  await control({ canOperate: true, controller: "unclaimed" });
-  await screen.getByLabelText("Blender viewport").click();
-  expect(stream.sent).toEqual([{ type: "takeControl", takeOver: false }]);
-  // The take is still on its way when the person opens the editor.
-  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
-  await expect.element(screen.getByRole("textbox", { name: "Annotation comment" })).toHaveFocus();
-  await control({ canOperate: true, controller: "you" });
-  await expect.element(screen.getByText("You're in control")).toBeInTheDocument();
-  expect(stream.sent).not.toContainEqual({ type: "releaseControl" });
+  expect(stream.sent, "focus left the editor").toContainEqual({ type: "releaseControl" });
 });

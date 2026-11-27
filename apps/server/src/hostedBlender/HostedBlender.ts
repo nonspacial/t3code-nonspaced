@@ -135,7 +135,7 @@ const SHUTDOWN_STOP_TIMEOUT = Duration.millis(400);
 const LEFTOVER_STOP_TIMEOUT = Duration.seconds(7);
 
 /** How startup signals a leftover launch's processes; tests stand in for what the kernel does. */
-export const LeftoverSignal = Context.Reference<(pid: number, signal: NodeJS.Signals) => void>(
+const LeftoverSignal = Context.Reference<(pid: number, signal: NodeJS.Signals) => void>(
   "t3/hostedBlender/LeftoverSignal",
   {
     defaultValue: () => (pid, signal) => {
@@ -152,7 +152,7 @@ export const LeftoverSignal = Context.Reference<(pid: number, signal: NodeJS.Sig
  * How long a Blender released at shutdown may take to finish its copy before the next start
  * counts it as stuck and stops it; tests shorten it.
  */
-export const ReleasedFinishTimeout = Context.Reference<Duration.Input>(
+const ReleasedFinishTimeout = Context.Reference<Duration.Input>(
   "t3/hostedBlender/ReleasedFinishTimeout",
   { defaultValue: () => RELEASED_FINISH_TIMEOUT },
 );
@@ -174,7 +174,7 @@ const CONTROL_RETRY_INTERVAL = Duration.millis(200);
 // The add-on starts the agent listener only once this connection is up, so it waits as long as a
 // start does: a slow file still gets its listener while T3 is listening for it. The ending of a
 // slow Blender also waits on it, to keep its session.
-export const CONTROL_CONNECT_ATTEMPTS = Math.ceil(
+const CONTROL_CONNECT_ATTEMPTS = Math.ceil(
   Duration.toMillis(START_TIMEOUT) / Duration.toMillis(CONTROL_RETRY_INTERVAL),
 );
 const HELPER_QUIT_TIMEOUT = Duration.seconds(10);
@@ -331,7 +331,7 @@ const encodeQuitRequest = Schema.encodeSync(
   ),
 );
 // Blender loads the file and the official add-on before its listener can come up.
-export const AGENT_LISTENER_TIMEOUT = Duration.sum(START_TIMEOUT, Duration.seconds(15));
+const AGENT_LISTENER_TIMEOUT = Duration.sum(START_TIMEOUT, Duration.seconds(15));
 
 export type { AgentListenerState };
 
