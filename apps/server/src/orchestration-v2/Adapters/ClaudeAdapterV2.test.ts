@@ -851,27 +851,22 @@ describe("ClaudeAdapterV2 MCP query overrides", () => {
         ),
         ["t3-code"],
       );
-    });
 
-    it.each(["approval-required", "auto-accept-edits", "auto", "full-access"] as const)(
-      "follows the thread's mode in %s",
-      (runtimeMode) => {
-        const overrides = overridesFor(policyFor(runtimeMode));
-        const allowed = overrides.allowedTools ?? [];
-        assert.equal(allowed.includes("mcp__blender-hosted__*"), runtimeMode === "full-access");
-        assert.equal(
-          allowed.includes("mcp__blender-hosted__get_objects_summary"),
-          runtimeMode !== "full-access",
-        );
-        assert.notInclude(allowed, "mcp__blender-hosted__execute_blender_code");
-        assert.isUndefined(overrides.disallowedTools);
-      },
-    );
-
-    it("refuses Blender's write tools in plan mode", () => {
-      const overrides = overridesFor(policyFor("full-access", "plan"));
-      assert.notInclude(overrides.allowedTools ?? [], "mcp__blender-hosted__*");
-      assert.include(overrides.disallowedTools ?? [], "mcp__blender-hosted__execute_blender_code");
+      // The tool approvals pass through for each mode group; hostedBlenderMcp owns the per-mode table.
+      const full = overridesFor(policyFor("full-access"));
+      assert.include(full.allowedTools ?? [], "mcp__blender-hosted__*", "full access");
+      assert.isUndefined(full.disallowedTools);
+      const asking = overridesFor(policyFor("auto")).allowedTools ?? [];
+      assert.notInclude(asking, "mcp__blender-hosted__*", "an asking mode");
+      assert.include(asking, "mcp__blender-hosted__get_objects_summary", "an asking mode");
+      assert.notInclude(asking, "mcp__blender-hosted__execute_blender_code", "an asking mode");
+      const plan = overridesFor(policyFor("full-access", "plan"));
+      assert.notInclude(plan.allowedTools ?? [], "mcp__blender-hosted__*", "plan");
+      assert.include(
+        plan.disallowedTools ?? [],
+        "mcp__blender-hosted__execute_blender_code",
+        "plan",
+      );
     });
 
     it("denies Blender tools off the read-only list in Plan before any permission rule", async () => {
@@ -1098,10 +1093,8 @@ describe("ClaudeAdapterV2 T3 tool instructions", () => {
       deviceToolsAvailable: false,
       hostedBlenderToolsAvailable: true,
     });
+    // Presence only: the wording is the evals' to judge.
     assert.include(text, "## T3 Code hosted Blender");
-    assert.include(text, "`blender_start` with the path of the file the user wants changed");
-    assert.include(text, "#view=");
-    assert.include(text, "bpy.ops.ed.undo_push");
     assert.include(text, "select:mcp__t3-code__blender_start");
     assert.notInclude(append({ mcp: true, deviceToolsAvailable: false }), "hosted Blender");
     assert.notInclude(

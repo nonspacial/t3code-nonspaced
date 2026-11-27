@@ -64,22 +64,18 @@ describe("HiddenDisplayBinary", () => {
         configPath: desktopPath,
       });
       assert.equal(yield* desktopOnly.resolve, desktopPath);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-  );
 
-  it.effect("rejects a non-executable binary", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-hidden-display-" });
-      const binaryPath = `${baseDir}/t3-hidden-display`;
-      yield* writeBinary(binaryPath, 0o644);
-
-      const service = yield* makeService(process.cwd(), baseDir, {
+      const notExecutable = `${baseDir}/plain/t3-hidden-display`;
+      yield* writeBinary(notExecutable, 0o644);
+      const rejected = yield* makeService(process.cwd(), baseDir, {
         platform: "linux",
-        env: { T3CODE_HIDDEN_DISPLAY_PATH: binaryPath },
+        env: { T3CODE_HIDDEN_DISPLAY_PATH: notExecutable },
       });
-      const error = yield* Effect.flip(service.resolve);
-      assert.instanceOf(error, HiddenDisplayBinary.HiddenDisplayBinaryNotExecutable);
+      assert.instanceOf(
+        yield* Effect.flip(rejected.resolve),
+        HiddenDisplayBinary.HiddenDisplayBinaryNotExecutable,
+        "a non-executable binary is rejected",
+      );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 

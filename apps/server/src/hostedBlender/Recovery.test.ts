@@ -67,71 +67,82 @@ describe("keptFileOf", () => {
 describe("endingOf", () => {
   const running = { wasRunning: true, ending: false, quitting: false, blenderExit: null };
 
-  it("closes a Blender T3 ended for its thread or a shutdown", () => {
-    expect(endingOf({ ...running, ending: true, quitting: true })).toBe("closed");
-    // Even one that died while T3 was ending it: its recovery copy is still kept.
-    expect(
-      endingOf({
-        ...running,
-        ending: true,
-        quitting: true,
-        blenderExit: { code: null, signal: 9 },
-      }),
-    ).toBe("closed");
-  });
-
-  it("stops a Blender someone quit", () => {
-    expect(endingOf({ ...running, quitting: true })).toBe("stopped");
-    // Quitting from Blender's own File menu exits cleanly.
-    expect(endingOf({ ...running, blenderExit: { code: 0, signal: null } })).toBe("stopped");
-  });
-
-  it("treats any other end of a running Blender as a crash", () => {
-    expect(endingOf({ ...running, blenderExit: { code: null, signal: 11 } })).toBe("crashed");
-    expect(endingOf({ ...running, blenderExit: { code: 1, signal: null } })).toBe("crashed");
-    // The helper or labwc died, taking Blender with it.
-    expect(endingOf(running)).toBe("crashed");
-  });
-
-  it("reports a start that never showed Blender as failed", () => {
-    expect(endingOf({ ...running, wasRunning: false })).toBe("failed");
-    expect(endingOf({ ...running, wasRunning: false, quitting: true })).toBe("stopped");
-    expect(endingOf({ ...running, wasRunning: false, ending: true, quitting: true })).toBe(
+  it.each([
+    [
+      "T3 ended it for its thread or a shutdown",
+      { ...running, ending: true, quitting: true },
       "closed",
-    );
+    ],
+    [
+      // Its recovery copy is still kept.
+      "T3 was ending it when it died",
+      { ...running, ending: true, quitting: true, blenderExit: { code: null, signal: 9 } },
+      "closed",
+    ],
+    ["someone quit it", { ...running, quitting: true }, "stopped"],
+    [
+      "File > Quit exited cleanly",
+      { ...running, blenderExit: { code: 0, signal: null } },
+      "stopped",
+    ],
+    ["a signal", { ...running, blenderExit: { code: null, signal: 11 } }, "crashed"],
+    ["a non-zero exit", { ...running, blenderExit: { code: 1, signal: null } }, "crashed"],
+    ["the helper or labwc died, taking Blender with it", running, "crashed"],
+    ["a start that never showed Blender", { ...running, wasRunning: false }, "failed"],
+    ["a start someone quit", { ...running, wasRunning: false, quitting: true }, "stopped"],
+    ["a start T3 ended", { ...running, wasRunning: false, ending: true, quitting: true }, "closed"],
+  ] as const)("names how a run ended when %s", (_, run, ending) => {
+    expect(endingOf(run)).toBe(ending);
   });
 });
 
 describe("cleanupOf", () => {
   const run = { restore: "none", saved: false, ending: "closed", clean: false } as const;
+  const keep = (kind: "closed" | "crashed") => ({ action: "keep", kind });
 
-  it("keeps a closed or crashed run's snapshot of the file it ended on", () => {
-    expect(cleanupOf(run)).toEqual({ action: "keep", kind: "closed" });
-    expect(cleanupOf({ ...run, ending: "crashed" })).toEqual({ action: "keep", kind: "crashed" });
-    expect(cleanupOf({ ...run, restore: "ok" })).toEqual({ action: "keep", kind: "closed" });
-  });
-
-  it("forgets the file's copy once its last word was a confirmed save", () => {
-    expect(cleanupOf({ ...run, saved: true })).toEqual({ action: "forget" });
-    expect(cleanupOf({ ...run, ending: "crashed", saved: true })).toEqual({ action: "forget" });
-  });
-
-  it("keeps nothing new for a file Blender last reported clean, but a crash's autosave", () => {
-    expect(cleanupOf({ ...run, clean: true })).toEqual({ action: "leave" });
-    expect(cleanupOf({ ...run, clean: true, restore: "ok" })).toEqual({ action: "leave" });
-    expect(cleanupOf({ ...run, clean: true, ending: "crashed" })).toEqual({
-      action: "keep",
-      kind: "crashed",
-    });
-    expect(cleanupOf({ ...run, clean: true, saved: true })).toEqual({ action: "forget" });
-  });
-
-  it("leaves every copy alone after a quit, a failed start, or a restore that never succeeded", () => {
-    expect(cleanupOf({ ...run, ending: "stopped" })).toEqual({ action: "leave" });
-    expect(cleanupOf({ ...run, ending: "failed" })).toEqual({ action: "leave" });
-    expect(cleanupOf({ ...run, restore: "failed" })).toEqual({ action: "leave" });
-    expect(cleanupOf({ ...run, restore: "pending", ending: "crashed" })).toEqual({
-      action: "leave",
-    });
+  it.each([
+    ["a closed run keeps its snapshot", run, keep("closed")],
+    ["a crashed run keeps its snapshot", { ...run, ending: "crashed" }, keep("crashed")],
+    ["a run restored from a copy keeps its snapshot", { ...run, restore: "ok" }, keep("closed")],
+    [
+      "a confirmed save as the last word forgets the copy",
+      { ...run, saved: true },
+      { action: "forget" },
+    ],
+    [
+      "a confirmed save forgets the copy after a crash too",
+      { ...run, ending: "crashed", saved: true },
+      { action: "forget" },
+    ],
+    ["a file last reported clean keeps nothing new", { ...run, clean: true }, { action: "leave" }],
+    [
+      "a restored file last reported clean keeps nothing new",
+      { ...run, clean: true, restore: "ok" },
+      { action: "leave" },
+    ],
+    [
+      "a file last reported clean keeps a crash's autosave",
+      { ...run, clean: true, ending: "crashed" },
+      keep("crashed"),
+    ],
+    [
+      "a clean file's confirmed save forgets the copy",
+      { ...run, clean: true, saved: true },
+      { action: "forget" },
+    ],
+    ["a quit leaves every copy alone", { ...run, ending: "stopped" }, { action: "leave" }],
+    ["a failed start leaves every copy alone", { ...run, ending: "failed" }, { action: "leave" }],
+    [
+      "a failed restore leaves every copy alone",
+      { ...run, restore: "failed" },
+      { action: "leave" },
+    ],
+    [
+      "a restore that never succeeded leaves every copy alone",
+      { ...run, restore: "pending", ending: "crashed" },
+      { action: "leave" },
+    ],
+  ] as const)("decides what a run keeps: %s", (_, ended, cleanup) => {
+    expect(cleanupOf(ended)).toEqual(cleanup);
   });
 });

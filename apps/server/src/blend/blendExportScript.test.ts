@@ -13,14 +13,15 @@ it.each([
     '"export_gn_mesh": uses_geometry_nodes,',
     "keeps Geometry Nodes instances, such as Instance on Points",
   ],
-])("asks the exporter for %s, which %s", (option) => {
-  expect(BLEND_EXPORT_SCRIPT).toContain(option);
-});
-
-it("scans for Geometry Nodes instances only when the scene has an enabled Geometry Nodes modifier", () => {
-  // The scan costs seconds per thousand objects, so a scene without Geometry Nodes skips it.
-  expect(BLEND_EXPORT_SCRIPT).not.toContain('"export_gn_mesh": True');
-  expect(BLEND_EXPORT_SCRIPT).toMatch(
+  [
     /uses_geometry_nodes = any\(\s*modifier\.type == "NODES" and modifier\.show_viewport\s*for obj in bpy\.context\.scene\.objects/,
-  );
-});
+    // The scan costs seconds per thousand objects, so a scene without Geometry Nodes skips it.
+    "scans for Geometry Nodes instances only when the scene has an enabled Geometry Nodes modifier",
+  ],
+] as Array<[string | RegExp, string]>)(
+  "asks the exporter for %s, which %s",
+  (option: string | RegExp, _why: string) => {
+    expect(BLEND_EXPORT_SCRIPT).toMatch(option);
+    expect(BLEND_EXPORT_SCRIPT).not.toContain('"export_gn_mesh": True');
+  },
+);

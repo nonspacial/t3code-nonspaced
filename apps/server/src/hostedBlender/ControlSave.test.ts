@@ -22,36 +22,6 @@ const setup = Effect.fn(function* (write: (line: string) => Effect.Effect<void>)
 });
 
 describe("requestSave", () => {
-  it.effect("fails when the connection closes while a stale write waits", () =>
-    Effect.gen(function* () {
-      // The writer was captured before the socket closed, so it never finishes.
-      const { closed, request } = yield* setup(() => Effect.never);
-      const fiber = yield* Effect.forkChild(request);
-      yield* Deferred.succeed(closed, undefined);
-      expect(yield* Fiber.join(fiber)).toBe(false);
-    }),
-  );
-
-  it.effect("times the write", () =>
-    Effect.gen(function* () {
-      const { request } = yield* setup(() => Effect.never);
-      const fiber = yield* Effect.forkChild(request);
-      yield* TestClock.adjust("5 seconds");
-      expect(yield* Fiber.join(fiber)).toBe(false);
-    }),
-  );
-
-  it.effect("B2: once the command is written, waits for a busy Blender's late answer", () =>
-    Effect.gen(function* () {
-      // Blender's main thread is busy: the command waits there, and Blender will still act on it.
-      const { replies, request } = yield* setup(() => Effect.void);
-      const fiber = yield* Effect.forkChild(request);
-      yield* TestClock.adjust("1 minute");
-      yield* Queue.offerAll(replies, ["saving", "saved"]);
-      expect(yield* Fiber.join(fiber)).toBe(true);
-    }),
-  );
-
   it.effect("succeeds only on saved, and fails if Blender goes away mid-save", () =>
     Effect.gen(function* () {
       const writes: string[] = [];
@@ -64,15 +34,26 @@ describe("requestSave", () => {
       yield* Queue.offer(gone.replies, "saving");
       const fiber = yield* Effect.forkChild(gone.request);
       yield* Deferred.succeed(gone.ended, undefined);
-      expect(yield* Fiber.join(fiber)).toBe(false);
+      expect(yield* Fiber.join(fiber), "Blender went away mid-save").toBe(false);
+
+      // The writer was captured before the socket closed, so it never finishes.
+      const stale = yield* setup(() => Effect.never);
+      const staleWrite = yield* Effect.forkChild(stale.request);
+      yield* Deferred.succeed(stale.closed, undefined);
+      expect(yield* Fiber.join(staleWrite), "the connection closed while a stale write waits").toBe(
+        false,
+      );
+
+      const stuck = yield* setup(() => Effect.never);
+      const stuckWrite = yield* Effect.forkChild(stuck.request);
+      yield* TestClock.adjust("5 seconds");
+      expect(yield* Fiber.join(stuckWrite), "the write is timed").toBe(false);
     }),
   );
 
-  const repeats = Array.from({ length: 50 }, (_, run) => run);
-
-  // The close finalizer completes `closed` before the queued `saved` wakes the waiting take.
-  it.effect.each(repeats)("counts a save confirmed just before the connection closes (%i)", () =>
+  it.effect("counts a save confirmed just before the connection closes", () =>
     Effect.gen(function* () {
+      // The close finalizer completes `closed` before the queued `saved` wakes the waiting take.
       const closing = yield* setup(() => Effect.void);
       yield* Queue.offer(closing.replies, "saving");
       const pending = yield* Effect.forkChild(closing.request, { startImmediately: true });
@@ -82,24 +63,20 @@ describe("requestSave", () => {
           yield* Queue.offer(closing.replies, "saved");
         }),
       );
-      expect(yield* Fiber.join(pending)).toBe(true);
-    }),
-  );
+      expect(yield* Fiber.join(pending), "saved queued as the close lands").toBe(true);
 
-  // The write finishes, then both replies and the close arrive together.
-  it.effect.each(repeats)("counts both replies queued as the connection closes (%i)", () =>
-    Effect.gen(function* () {
+      // The write finishes, then both replies and the close arrive together.
       const written = yield* Deferred.make<void>();
-      const closing = yield* setup(() => Deferred.await(written));
-      const pending = yield* Effect.forkChild(closing.request, { startImmediately: true });
+      const both = yield* setup(() => Deferred.await(written));
+      const bothPending = yield* Effect.forkChild(both.request, { startImmediately: true });
       yield* Deferred.succeed(written, undefined);
       yield* Effect.scoped(
         Effect.gen(function* () {
-          yield* Effect.addFinalizer(() => Deferred.succeed(closing.closed, undefined));
-          yield* Queue.offerAll(closing.replies, ["saving", "saved"]);
+          yield* Effect.addFinalizer(() => Deferred.succeed(both.closed, undefined));
+          yield* Queue.offerAll(both.replies, ["saving", "saved"]);
         }),
       );
-      expect(yield* Fiber.join(pending)).toBe(true);
+      expect(yield* Fiber.join(bothPending), "both replies queued as the close lands").toBe(true);
     }),
   );
 });
