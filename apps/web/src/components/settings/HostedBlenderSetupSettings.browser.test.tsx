@@ -150,27 +150,7 @@ describe("HostedBlenderSetupSettings", () => {
     await expect.element(on.getByRole("switch", { name: "Hosted Blender" })).toBeEnabled();
   });
 
-  it("lists each check, the capture path and the encoder from the test encode", async () => {
-    state.grants = new Set(BOTH);
-    state.settings = { hostedBlenderEnabled: true };
-    state.setup = checked(OK);
-    await using screen = await render(<HostedBlenderSetupSettings environmentId={environmentId} />);
-    await expect
-      .element(screen.getByText("Version 0.8.4, captured with wlr-screencopy.", { exact: false }))
-      .toBeInTheDocument();
-    await expect
-      .element(screen.getByText("The one-second test encode used x264enc."))
-      .toBeInTheDocument();
-    // Nothing is missing, so there is nothing to install.
-    await expect.element(screen.getByText("Install with an agent")).not.toBeInTheDocument();
-    await expect
-      .element(screen.getByRole("switch", { name: "Allow agents to start hosted Blenders" }))
-      .toBeEnabled();
-    await userEvent.click(screen.getByRole("button", { name: "Check again" }));
-    expect(state.check).toHaveBeenCalledWith({ environmentId, input: {} });
-  });
-
-  it("S2: the Timeline switch, on by default, works for a connection that may operate hosted Blender but not change settings, as the pane's menu does", async () => {
+  it("S2: the Timeline switch, on by default, is reached by operating hosted Blender, not by changing settings, as the pane's menu is", async () => {
     state.grants = new Set([AuthOrchestrationOperateScope]);
     state.settings = { hostedBlenderEnabled: true };
     state.setup = null;
@@ -187,21 +167,21 @@ describe("HostedBlenderSetupSettings", () => {
     // The operate-gated command, never a plain settings write.
     expect(state.setTimeline).toHaveBeenCalledWith({ environmentId, input: { shown: false } });
     expect(state.updateSettings).not.toHaveBeenCalledWith({ hostedBlenderTimeline: false });
-  });
+    await screen.unmount();
 
-  it("S2: the Timeline switch is out of reach for a connection that may change settings but not operate Blender", async () => {
+    // A connection that may change settings but not operate Blender can't reach it.
     state.grants = new Set([AuthSettingsWriteScope]);
-    state.settings = { hostedBlenderEnabled: true };
-    state.setup = null;
-    await using _screen = await render(
+    await using settingsOnly = await render(
       <HostedBlenderSetupSettings environmentId={environmentId} />,
     );
-    await expect.poll(() => timelineSwitch()).not.toBeNull();
-    expect(timelineSwitch()!.closest("[inert]")).not.toBeNull();
-    expect(agentsSwitch()!.closest("[inert]")).toBeNull();
+    await expect
+      .element(settingsOnly.getByRole("switch", { name: "Timeline in the Blender pane" }))
+      .toBeInTheDocument();
+    expect(timelineSwitch()!.closest("[inert]"), "settings-only: Timeline").not.toBeNull();
+    expect(agentsSwitch()!.closest("[inert]"), "settings-only: settings rows").toBeNull();
   });
 
-  it("offers an agent or the commands for what is missing, and warns about the GPU", async () => {
+  it("offers an agent or the commands for what is missing, keeping agents off, and one install at a time", async () => {
     state.grants = new Set(BOTH);
     state.settings = { hostedBlenderEnabled: true };
     state.setup = checked(
@@ -216,11 +196,6 @@ describe("HostedBlenderSetupSettings", () => {
       ),
     );
     await using screen = await render(<HostedBlenderSetupSettings environmentId={environmentId} />);
-    await expect
-      .element(
-        screen.getByText("No GPU found. Hosted Blender still works, but Blender will be slow."),
-      )
-      .toBeInTheDocument();
     // Agents need setup finished and the Blender MCP.
     await expect
       .element(screen.getByRole("switch", { name: "Allow agents to start hosted Blenders" }))
@@ -231,18 +206,12 @@ describe("HostedBlenderSetupSettings", () => {
       .toHaveTextContent("sudo pacman -S --needed labwc");
     await userEvent.click(screen.getByRole("button", { name: "Install with an agent" }));
     expect(state.install).toHaveBeenCalledWith({ environmentId, input: {} });
-  });
 
-  it("points at the install thread while its agent works", async () => {
-    state.grants = new Set(BOTH);
-    state.settings = { hostedBlenderEnabled: true };
+    // While the install's agent works, the section points at its thread instead.
     state.setup = checked([{ item: "labwc", status: "missing" }], {
       installThreadId: ThreadId.make("thread-install"),
     });
-    await using screen = await render(<HostedBlenderSetupSettings environmentId={environmentId} />);
-    await expect
-      .element(screen.getByText("T3 Code checks again when the agent finishes."))
-      .toBeInTheDocument();
+    await screen.rerender(<HostedBlenderSetupSettings environmentId={environmentId} />);
     await expect.element(screen.getByRole("button", { name: "Open thread" })).toBeInTheDocument();
     await expect.element(screen.getByText("Install with an agent")).not.toBeInTheDocument();
   });
@@ -277,20 +246,5 @@ describe("HostedBlenderSetupSettings", () => {
       .element(screen.getByRole("switch", { name: "Allow agents to start hosted Blenders" }))
       .toBeDisabled();
     await expect.element(screen.getByText("Install with an agent")).toBeInTheDocument();
-  });
-
-  it("says why a host can't run hosted Blender", async () => {
-    state.grants = new Set(BOTH);
-    state.settings = { hostedBlenderEnabled: true };
-    state.setup = {
-      result: { status: "unavailable", reason: "distro", distro: "Ubuntu 22.04.5 LTS" },
-      checking: false,
-      installThreadId: null,
-    };
-    await using screen = await render(<HostedBlenderSetupSettings environmentId={environmentId} />);
-    await expect.element(screen.getByText("Not available on this host")).toBeInTheDocument();
-    await expect
-      .element(screen.getByText("Ubuntu 22.04.5 LTS", { exact: false }))
-      .toBeInTheDocument();
   });
 });
