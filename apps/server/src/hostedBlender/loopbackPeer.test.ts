@@ -70,6 +70,7 @@ interface Table {
   readonly mapped?: boolean;
   readonly ownInodeOffset?: number;
   readonly malformed?: boolean;
+  readonly unreadable?: boolean;
 }
 
 const withTable = (table: Table) =>
@@ -94,7 +95,9 @@ const withTable = (table: Table) =>
     if (table.malformed) rows.push(row("0100007F:ZZZZ", ours, "01", uid, 1));
     const file = NodePath.join(dir, "tcp");
     NodeFS.writeFileSync(file, `${rows.join("\n")}\n`);
-    return yield* isSameAccountPeer(socket, { tables: [file] });
+    return yield* isSameAccountPeer(socket, {
+      tables: [table.unreadable ? NodePath.join(dir, "missing") : file],
+    });
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
 
 const onLinux = HostProcess.Platform.defaultValue() === "linux";
@@ -110,34 +113,23 @@ describe("isSameAccountPeer", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("says yes when the client row and our own end are both live", () =>
-    Effect.gen(function* () {
-      expect(yield* withTable({})).toBe(true);
-      expect(yield* withTable({ mapped: true })).toBe(true);
-    }),
-  );
-
   it.effect.each([
-    ["another account owns the client", { uidOffset: 1 }],
-    ["no row has the client", { clientRows: 0 }],
-    ["two rows claim the client", { clientRows: 2 }],
-    ["the client row is orphaned, with inode 0", { inode: 0 }],
-    ["the client row is closing (FIN_WAIT2)", { state: "05" }],
-    ["our own end is gone by the second read", { ownRow: false }],
-    ["our own end is no longer established", { ownState: "08" }],
-    ["our own row is another socket, by its inode", { ownInodeOffset: 1 }],
-    ["a table holds a row that doesn't parse", { malformed: true }],
-  ] as const)("says no when %s", ([, table]) =>
+    ["yes", "the client row and our own end are both live", {}],
+    ["yes", "both are live, IPv4-mapped", { mapped: true }],
+    ["no", "another account owns the client", { uidOffset: 1 }],
+    ["no", "no row has the client", { clientRows: 0 }],
+    ["no", "two rows claim the client", { clientRows: 2 }],
+    ["no", "the client row is orphaned, with inode 0", { inode: 0 }],
+    ["no", "the client row is closing (FIN_WAIT2)", { state: "05" }],
+    ["no", "our own end is gone by the second read", { ownRow: false }],
+    ["no", "our own end is no longer established", { ownState: "08" }],
+    ["no", "our own row is another socket, by its inode", { ownInodeOffset: 1 }],
+    ["no", "a table holds a row that doesn't parse", { malformed: true }],
+    ["no", "no table can be read", { unreadable: true }],
+  ] as const)("says %s when %s", ([answer, , table]) =>
     Effect.gen(function* () {
-      expect(yield* withTable(table)).toBe(false);
+      expect(yield* withTable(table)).toBe(answer === "yes");
     }),
-  );
-
-  it.effect("says no when no table can be read", () =>
-    Effect.gen(function* () {
-      const { socket } = yield* accepted;
-      expect(yield* isSameAccountPeer(socket, { tables: ["/nonexistent/tcp"] })).toBe(false);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });
 
