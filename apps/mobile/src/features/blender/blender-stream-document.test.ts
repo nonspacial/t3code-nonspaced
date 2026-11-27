@@ -36,15 +36,18 @@ describe("mobile Blender viewer recovery", () => {
     expect(state).toMatchObject({ status: "connecting", viewer: "v5" });
     state = blenderViewerReducer(state, { type: "unauthorized", viewer: "v6" });
     expect(state).toMatchObject({ status: "connecting", viewer: "v6" });
-  });
 
-  it("forgets earlier refusals once the stream is live", () => {
-    let state = initialBlenderViewer("v0");
-    for (const viewer of ["v1", "v2", "v3"]) {
+    // A live stream forgets earlier refusals, so a later one retries again.
+    for (const viewer of ["v7", "v8"]) {
       state = blenderViewerReducer(state, { type: "unauthorized", viewer });
     }
     state = blenderViewerReducer(state, { type: "status", status: "live" });
-    state = blenderViewerReducer(state, { type: "unauthorized", viewer: "v4" });
-    expect(state).toMatchObject({ status: "connecting", viewer: "v4" });
+    for (const viewer of ["v9", "v10", "v11"]) {
+      state = blenderViewerReducer(state, { type: "unauthorized", viewer });
+      expect(state, "retries after the stream was live").toMatchObject({
+        status: "connecting",
+        viewer,
+      });
+    }
   });
 });
