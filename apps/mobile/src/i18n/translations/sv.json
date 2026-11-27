@@ -5715,6 +5715,7 @@
   "3286ce5553d9f505": "Storlek",
   "8067b4bf490c4ab7": "Innehåll",
   "a31ec23f4b06db7d": "Läses inte för en så stor fil",
+  "f9eea88cb00b1f4f": "Mer än T3 Code läser för en förhandsvisning",
   "119259d2fa66fadf": "Det gick inte att avsluta Blender",
   "65c73c884114dcf8": "Blender svarade inte, så det förblir öppet med sina ändringar. Om det fortfarande inte svarar stoppar ett nytt val av ”Avsluta utan att spara” det och behåller det Blender senast sparade automatiskt.",
   "d679c8479ec344e8": "Blender svarade inte, så det förblir öppet, och avslutet sker inte senare av sig självt. Försök igen när Blender är klart med det det håller på med.",

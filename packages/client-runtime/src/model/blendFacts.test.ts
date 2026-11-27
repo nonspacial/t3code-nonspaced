@@ -24,8 +24,17 @@ describe("blendFactRows", () => {
     ]);
   });
 
-  it("counts nothing in a file read only as far as its thumbnail", () => {
-    const rows = blendFactRows({ ...preview, objects: 0, meshes: 0, libraries: [], partial: true });
+  it("counts nothing in a file read only as far as its thumbnail, and says why", () => {
+    const unread = { ...preview, objects: 0, meshes: 0, libraries: [], partial: true };
+    const rows = blendFactRows({ ...unread, large: true });
     expect(rows.map((row) => row.label)).toEqual(["Contents", "Size"]);
+    expect(rows[0]?.values).toEqual(["Not read for a file this large"]);
+    // Neither a compressed file whose size T3 Code can't tell nor a small one past a read limit
+    // is called large.
+    for (const why of [{ large: true, sizeUnknown: true }, {}] as const) {
+      expect(blendFactRows({ ...unread, ...why })[0]?.values).toEqual([
+        "More than T3 Code reads for a preview",
+      ]);
+    }
   });
 });
