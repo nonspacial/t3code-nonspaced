@@ -1102,6 +1102,7 @@ const make = Effect.gen(function* () {
       : withFiles(WorkingCopies.restoreAside(record.path, record.aside));
   const copyBack = (held: string, to: string) => withFiles(WorkingCopies.copyBack(held, to));
   const linkBack = (held: string, to: string) => withFiles(WorkingCopies.linkBack(held, to));
+  const clearPlaceholder = (to: string) => withFiles(WorkingCopies.clearPlaceholder(to));
   const prepareHeldFolder = (root: string, held: string) =>
     withFiles(WorkingCopies.prepareHeldFolder(root, held));
   const heldFolderInside = (root: string) => withFiles(WorkingCopies.heldFolderInside(root));
@@ -1957,19 +1958,35 @@ const make = Effect.gen(function* () {
         Option.isSome(payload.value.ino) &&
         there.value.dev === payload.value.dev &&
         there.value.ino.value === payload.value.ino.value;
+      const held: WorkingCopyRecord = { ...record, state: "held" };
+      // Stopped after claiming the name with an empty file, before renaming the copy over it.
+      if (
+        !linked &&
+        Option.isSome(there) &&
+        Option.isSome(payload) &&
+        Number(payload.value.size) !== 0 &&
+        (yield* clearPlaceholder(record.path))
+      ) {
+        yield* writeWorkingCopy(held);
+        return held;
+      }
+      const live = liveRecord(record);
       if (linked || (Option.isSome(there) && Number(there.value.size) === record.bytes)) {
         // Live only once the held name is gone: a second name would make it no copy of T3's.
         yield* removeHeldFile(id, record);
-        const live = liveRecord(record);
         yield* writeWorkingCopy(live);
         return live;
       }
       if (Option.isNone(payload)) {
+        // Renamed back, which takes the held name with it.
+        if (Option.isSome(there) && !(yield* clearPlaceholder(record.path))) {
+          yield* writeWorkingCopy(live);
+          return live;
+        }
         if (!(yield* filesReachable(record))) return record;
         yield* dropWorkingCopy(id);
         return null;
       }
-      const held: WorkingCopyRecord = { ...record, state: "held" };
       yield* writeWorkingCopy(held);
       return held;
     }
@@ -5905,11 +5922,11 @@ const make = Effect.gen(function* () {
       const revision = yield* readFileRevision(record.master);
       yield* writeWorkingCopy({ ...record, state: "returning" });
       const held = payloadOf(id, record);
-      // On the project's drive it goes back by a link, as it left by a rename: nothing is copied.
+      // On the project's drive it goes back by a link or a rename, as it left: nothing is copied.
       const moved = yield* (
         record.heldFile === undefined ? copyBack(held, record.path) : linkBack(held, record.path)
       ).pipe(Effect.orElseSucceed(() => "incomplete" as const));
-      if (moved !== "linked") {
+      if (moved !== "published") {
         yield* writeWorkingCopy(record);
         return yield* new HostedBlenderError({
           reason: moved === "inTheWay" ? "heldCopyInTheWay" : "restoreFailed",

@@ -49,11 +49,14 @@ that `.gitignore`, under every keep rule, since git status can't see it. A scene
 gigabytes, kept 30 days per finished thread. The record names where it is; one with no place is
 beside the record, as earlier builds held them. T3's lock doesn't stop another program (a
 desktop Blender) saving that path, so the copy is never deleted by name: it is renamed into the
-held folder, which takes whatever is there at that instant, and put back by hard link, the
-record staying `returning` until the held name is gone (a second name would make the copy
-"linked" and never held again). Only across a mount inside the workspace (EXDEV), with no known
-workspace, or with a `.t3` or held folder that is a symlink out of the workspace, is it held in
-T3's state instead: copied through a synced temporary name, then the project's file renamed aside
+held folder, which takes whatever is there at that instant, and put back by hard link or, on a
+drive with none (exFAT, FAT32, many SMB mounts), by claiming the name with an empty file made only
+if nothing has it and renaming the copy over that; the record stays `returning` until the held
+name is gone (a second name would make the copy "linked" and never held again). An empty file a
+crash left at the name is taken as T3's claim and removed: an empty file is no one's work. Only
+across a mount inside the workspace (EXDEV), with no known workspace, or with a `.t3` or held
+folder that is a symlink out of the workspace, is it held in T3's state instead: copied through a synced
+temporary name, then the project's file renamed aside
 in its own folder (the record names the aside, and only a named one is ever put back) and removed
 only if it is still the file that was copied. Removing a held copy removes its file and partial,
 then its folder only if empty. A save that slipped in goes
@@ -65,7 +68,7 @@ project had, and the copy is held again later. Under the copy's lock nothing is 
 state left between two is a write that failed. Each copy's moves run under a lock of its own, by path,
 which every open of a recorded copy takes too, so an open during a move waits for it and acts on
 what it left. Opening the thread's Blender (the pane shows its held copy as a kept one) puts it
-back by hard link, which never replaces a file that took its name. Delete and Keep name a hold
+back the same way, which never replaces a file that took its name. Delete and Keep name a hold
 by when it was held, so an answer to an earlier hold never reaches a later one. The master "moving on" is its revision (as the
 reload watcher reads one) differing from the one recorded at hold, read only when it costs
 nothing (start, a thread opening or saving that master, Settings, the daily pass); nothing
