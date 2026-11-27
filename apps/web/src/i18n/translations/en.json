@@ -13308,7 +13308,10 @@
   "156c7543e861dda6": "No GPU access: Blender will be slow",
   "76351436512c399d": "Couldn't change the held working copies",
   "f924543cf569d79f": "Unknown thread",
-  "11b2e4f89a737c8b": "{count, plural, =1 {{master} has changed since T3 Code held the working copy of it from {threads} ({size}). That copy holds an edition you've moved past. Delete it now, or keep it until {date}.} other {{master} has changed since T3 Code held {count} working copies of it from {threads} ({size}). They hold an edition you've moved past. Delete them now, or keep them until {date}.}}",
+  "c1fbfe9e68ac9f22": "{count, plural, =1 {{master} has changed since T3 Code held the working copy of it from {threads} ({size}). T3 Code can't tell whether that thread's work reached the master. Delete it, or keep it until {date}.} other {{master} has changed since T3 Code held {count} working copies of it from {threads} ({size}). T3 Code can't tell whether those threads' work reached the master. Delete them, or keep them until {date}.}}",
+  "04be6d4bc375f911": "{count, plural, =1 {Delete the working copy from {threads}?} other {Delete {count} working copies from {threads}?}}",
+  "e6503402bdc4c54d": "{count, plural, =1 {{master} has changed since T3 Code held this copy, but T3 Code can't tell whether that thread's work reached it. Deleting the copy can't be undone.} other {{master} has changed since T3 Code held these copies, but T3 Code can't tell whether those threads' work reached it. Deleting them can't be undone.}}",
+  "b84cf4886e5698cb": "The thread can't pick this copy up again once it's deleted. This can't be undone.",
   "8da9cb531d4e4b3f": "Delete",
   "cbe0ad4fb8adfdfa": "Keep",
   "907a0f7ed16a709d": "Couldn't open in hosted Blender",
@@ -13442,7 +13445,7 @@
     },
     ": T3 Code couldn't be sure it is its own working copy, so it didn't move it."
   ],
-  "72f632768d65286c": [
+  "592c50d245b10973": [
     "Copy of ",
     {
       "i": 1,
@@ -13455,7 +13458,7 @@
       "k": "_gt_value_2",
       "v": "v"
     },
-    ". The master has changed since. Deleted on ",
+    ". The master has changed since. Kept until ",
     {
       "i": 3,
       "k": "_gt_value_3",
@@ -13463,7 +13466,7 @@
     },
     "."
   ],
-  "cb54027f77eb65b0": [
+  "e22cf76c96e9f6ef": [
     "Copy of ",
     {
       "i": 1,
@@ -13476,13 +13479,29 @@
       "k": "_gt_value_2",
       "v": "v"
     },
-    ". Deleted on ",
+    ". Kept until ",
     {
       "i": 3,
       "k": "_gt_value_3",
       "v": "v"
     },
     "."
+  ],
+  "1489b5efe3628bf7": [
+    "A newer save came in while T3 Code was moving this working copy, and another file took its place at ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". T3 Code left that save beside it, at",
+    " ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ", and moved neither."
   ],
   "77e2ba01461cdf5f": "Delete",
   "7660bc93bbd673be": "Let T3 Code run its own Blender on this server, on a hidden display, so you can watch and steer it in the Blender pane. Linux only. Your desktop Blender is never touched.",

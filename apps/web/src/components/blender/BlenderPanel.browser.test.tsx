@@ -680,7 +680,7 @@ it("shows Setup needed, saying what is missing, with a way into Settings › Ble
   }
 });
 
-it("B19: asks about other threads' held copies once the master moved on, and Delete or Keep answers for them", async () => {
+it("B19: asks about other threads' held copies once the master moved on, and Delete, once confirmed, or Keep answers for them", async () => {
   using _app = startup();
   const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
   const { Atom } = await import("effect/reactivity");
@@ -708,11 +708,26 @@ it("B19: asks about other threads' held copies once the master moved on, and Del
   await expect
     .element(
       screen.getByText(
-        /^hero\.blend has changed since T3 Code held 2 working copies of it from Hero pass, Rig fix \(3(\.0+)? MB\)\. They hold an edition you've moved past\. Delete them now, or keep them until [^.]*20[^.]*\.$/,
+        /^hero\.blend has changed since T3 Code held 2 working copies of it from Hero pass, Rig fix \(3(\.0+)? MB\)\. T3 Code can't tell whether those threads' work reached the master\. Delete them, or keep them until [^.]*20[^.]*\.$/,
       ),
     )
     .toBeInTheDocument();
   await screen.getByRole("button", { name: "Delete" }).click();
+  // Nothing is deleted until the person confirms, told which copies and why it may matter.
+  const confirm = screen.getByRole("alertdialog");
+  await expect
+    .element(confirm.getByText("Delete 2 working copies from Hero pass, Rig fix?"))
+    .toBeInTheDocument();
+  await expect
+    .element(
+      confirm.getByText(
+        "hero.blend has changed since T3 Code held these copies, but T3 Code can't tell whether those threads' work reached it. Deleting them can't be undone.",
+      ),
+    )
+    .toBeInTheDocument();
+  expect(stream.commands).toEqual([]);
+  await confirm.getByRole("button", { name: "Delete" }).click();
+  await expect.element(confirm).not.toBeInTheDocument();
   await screen.getByRole("button", { name: "Keep" }).click();
   expect(stream.commands).toEqual([
     {

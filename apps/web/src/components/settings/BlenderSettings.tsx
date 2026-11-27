@@ -5,10 +5,11 @@ import type {
   HostedBlenderHeldCopy,
   HostedBlenderRunningBlender,
 } from "@t3tools/contracts";
+import { Link } from "@tanstack/react-router";
 import { T, useGT, useMessages, Var } from "gt-react";
 import { useState } from "react";
 
-import { heldExpiryDate } from "~/components/blender/HeldCopiesNotice";
+import { ConfirmHeldDelete, heldExpiryDate } from "~/components/blender/HeldCopiesNotice";
 import { fileName, useQuitHostedBlender } from "~/components/blender/useQuitHostedBlender";
 import { Button } from "~/components/ui/button";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
@@ -21,6 +22,7 @@ import {
 } from "~/state/hostedBlender";
 import { formatEnvironmentQueryError } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { buildThreadRouteParams } from "~/threadRoutes";
 import { FoldedSettingsSection } from "./FoldedSettingsSection";
 import { HostedBlenderSetupSettings } from "./HostedBlenderSetupSettings";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
@@ -163,6 +165,7 @@ function HeldWorkingCopyRow(props: {
   );
   const deleteHeld = useAtomCommand(hostedBlenderEnvironment.deleteHeld, { reportFailure: false });
   const [pending, setPending] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const remove = async () => {
     setPending(true);
     const result = await deleteHeld({
@@ -170,6 +173,7 @@ function HeldWorkingCopyRow(props: {
       input: { copies: [{ id: copy.id, heldAt: copy.heldAt }] },
     });
     setPending(false);
+    setConfirming(false);
     if (result._tag === "Failure") {
       toastManager.add(
         stackedThreadToast({
@@ -180,11 +184,27 @@ function HeldWorkingCopyRow(props: {
       );
     }
   };
+  const threadTitle = copy.threadTitle === "" ? gt("Unknown thread") : copy.threadTitle;
   return (
     <SettingsRow
-      title={copy.threadTitle === "" ? <T>Unknown thread</T> : copy.threadTitle}
+      title={
+        // The thread is where a held copy comes back from: Reopen in its Blender pane.
+        <Link
+          to="/$environmentId/$threadId"
+          params={buildThreadRouteParams(scopeThreadRef(props.environmentId, copy.threadId))}
+          className="underline underline-offset-2 hover:text-foreground"
+        >
+          {threadTitle}
+        </Link>
+      }
       description={
-        copy.leftInProject === true || copy.expiresAt === undefined ? (
+        copy.setAside !== undefined ? (
+          <T>
+            A newer save came in while T3 Code was moving this working copy, and another file took
+            its place at <Var>{copy.path}</Var>. T3 Code left that save beside it, at{" "}
+            <Var>{copy.setAside}</Var>, and moved neither.
+          </T>
+        ) : copy.leftInProject === true || copy.expiresAt === undefined ? (
           <T>
             Left in the project at <Var>{copy.path}</Var>: T3 Code couldn't be sure it is its own
             working copy, so it didn't move it.
@@ -192,20 +212,37 @@ function HeldWorkingCopyRow(props: {
         ) : copy.behind === true ? (
           <T>
             Copy of <Var>{fileName(copy.master)}</Var>, <Var>{formatBytes(copy.bytes)}</Var>. The
-            master has changed since. Deleted on <Var>{heldExpiryDate(copy.expiresAt)}</Var>.
+            master has changed since. Kept until <Var>{heldExpiryDate(copy.expiresAt)}</Var>.
           </T>
         ) : (
           <T>
-            Copy of <Var>{fileName(copy.master)}</Var>, <Var>{formatBytes(copy.bytes)}</Var>.
-            Deleted on <Var>{heldExpiryDate(copy.expiresAt)}</Var>.
+            Copy of <Var>{fileName(copy.master)}</Var>, <Var>{formatBytes(copy.bytes)}</Var>. Kept
+            until <Var>{heldExpiryDate(copy.expiresAt)}</Var>.
           </T>
         )
       }
       control={
         canDelete && copy.leftInProject !== true ? (
-          <Button variant="outline" size="sm" disabled={pending} onClick={() => void remove()}>
-            <T context="deletes a held working copy">Delete</T>
-          </Button>
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={pending}
+              onClick={() => setConfirming(true)}
+            >
+              <T context="deletes a held working copy">Delete</T>
+            </Button>
+            <ConfirmHeldDelete
+              open={confirming}
+              onOpenChange={setConfirming}
+              count={1}
+              threads={threadTitle}
+              master={fileName(copy.master)}
+              behind={copy.behind === true}
+              pending={pending}
+              onDelete={() => void remove()}
+            />
+          </>
         ) : null
       }
     />

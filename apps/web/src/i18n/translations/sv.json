@@ -13305,7 +13305,10 @@
   "156c7543e861dda6": "Ingen GPU-åtkomst: Blender blir långsam",
   "76351436512c399d": "Det gick inte att ändra de sparade arbetskopiorna",
   "f924543cf569d79f": "Okänd tråd",
-  "11b2e4f89a737c8b": "{count, plural, =1 {{master} har ändrats sedan T3 Code sparade arbetskopian av den från {threads} ({size}). Kopian innehåller en version du har lämnat bakom dig. Radera den nu eller behåll den till {date}.} other {{master} har ändrats sedan T3 Code sparade {count} arbetskopior av den från {threads} ({size}). De innehåller en version du har lämnat bakom dig. Radera dem nu eller behåll dem till {date}.}}",
+  "c1fbfe9e68ac9f22": "{count, plural, =1 {{master} har ändrats sedan T3 Code sparade arbetskopian av den från {threads} ({size}). T3 Code kan inte avgöra om trådens arbete kom in i mastern. Radera den eller behåll den till {date}.} other {{master} har ändrats sedan T3 Code sparade {count} arbetskopior av den från {threads} ({size}). T3 Code kan inte avgöra om trådarnas arbete kom in i mastern. Radera dem eller behåll dem till {date}.}}",
+  "04be6d4bc375f911": "{count, plural, =1 {Radera arbetskopian från {threads}?} other {Radera {count} arbetskopior från {threads}?}}",
+  "e6503402bdc4c54d": "{count, plural, =1 {{master} har ändrats sedan T3 Code sparade den här kopian, men T3 Code kan inte avgöra om trådens arbete kom in i den. Det går inte att ångra när kopian har raderats.} other {{master} har ändrats sedan T3 Code sparade de här kopiorna, men T3 Code kan inte avgöra om trådarnas arbete kom in i den. Det går inte att ångra när de har raderats.}}",
+  "b84cf4886e5698cb": "När kopian har raderats kan tråden inte ta upp den igen. Det går inte att ångra.",
   "8da9cb531d4e4b3f": "Radera",
   "cbe0ad4fb8adfdfa": "Behåll",
   "907a0f7ed16a709d": "Det gick inte att öppna i Hosted Blender",
@@ -13439,7 +13442,7 @@
     },
     ": T3 Code kunde inte vara säkert på att det är dess egen arbetskopia, så den flyttades inte."
   ],
-  "72f632768d65286c": [
+  "592c50d245b10973": [
     "Kopia av ",
     {
       "i": 1,
@@ -13452,7 +13455,7 @@
       "k": "_gt_value_2",
       "v": "v"
     },
-    ". Huvudfilen har ändrats sedan dess. Raderas ",
+    ". Mastern har ändrats sedan dess. Sparas till ",
     {
       "i": 3,
       "k": "_gt_value_3",
@@ -13460,7 +13463,7 @@
     },
     "."
   ],
-  "cb54027f77eb65b0": [
+  "e22cf76c96e9f6ef": [
     "Kopia av ",
     {
       "i": 1,
@@ -13473,13 +13476,29 @@
       "k": "_gt_value_2",
       "v": "v"
     },
-    ". Raderas ",
+    ". Sparas till ",
     {
       "i": 3,
       "k": "_gt_value_3",
       "v": "v"
     },
     "."
+  ],
+  "1489b5efe3628bf7": [
+    "En nyare sparning kom in medan T3 Code flyttade den här arbetskopian, och en annan fil tog dess plats på ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". T3 Code lämnade den sparningen bredvid, på",
+    " ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ", och flyttade ingen av dem."
   ],
   "77e2ba01461cdf5f": "Radera",
   "7660bc93bbd673be": "Låt T3 Code köra en egen Blender på den här servern, på en dold skärm, så att du kan se och styra den i Blender-panelen. Endast Linux. Din Blender på datorn rörs aldrig.",

@@ -13298,7 +13298,10 @@
   "156c7543e861dda6": "Sem acesso à GPU: o Blender ficará lento",
   "76351436512c399d": "Não foi possível alterar as cópias de trabalho guardadas",
   "f924543cf569d79f": "Conversa desconhecida",
-  "11b2e4f89a737c8b": "{count, plural, =1 {{master} mudou desde que o T3 Code guardou a cópia de trabalho dele de {threads} ({size}). Essa cópia tem uma edição que você já deixou para trás. Exclua agora ou guarde até {date}.} other {{master} mudou desde que o T3 Code guardou {count} cópias de trabalho dele de {threads} ({size}). Elas têm uma edição que você já deixou para trás. Exclua agora ou guarde até {date}.}}",
+  "c1fbfe9e68ac9f22": "{count, plural, =1 {{master} mudou desde que o T3 Code guardou a cópia de trabalho dele de {threads} ({size}). O T3 Code não sabe dizer se o trabalho daquela conversa chegou ao arquivo mestre. Exclua-a ou mantenha-a até {date}.} other {{master} mudou desde que o T3 Code guardou {count} cópias de trabalho dele de {threads} ({size}). O T3 Code não sabe dizer se o trabalho daquelas conversas chegou ao arquivo mestre. Exclua-as ou mantenha-as até {date}.}}",
+  "04be6d4bc375f911": "{count, plural, =1 {Excluir a cópia de trabalho de {threads}?} other {Excluir {count} cópias de trabalho de {threads}?}}",
+  "e6503402bdc4c54d": "{count, plural, =1 {{master} mudou desde que o T3 Code guardou esta cópia, mas o T3 Code não sabe dizer se o trabalho daquela conversa chegou até ele. Excluir a cópia não pode ser desfeito.} other {{master} mudou desde que o T3 Code guardou estas cópias, mas o T3 Code não sabe dizer se o trabalho daquelas conversas chegou até ele. Excluí-las não pode ser desfeito.}}",
+  "b84cf4886e5698cb": "Depois de excluída, a conversa não poderá retomar esta cópia. Isso não pode ser desfeito.",
   "8da9cb531d4e4b3f": "Excluir",
   "cbe0ad4fb8adfdfa": "Manter",
   "907a0f7ed16a709d": "Não foi possível abrir no Hosted Blender",
@@ -13432,7 +13435,7 @@
     },
     ": o T3 Code não teve certeza de que é a própria cópia de trabalho dele, então não a moveu."
   ],
-  "72f632768d65286c": [
+  "592c50d245b10973": [
     "Cópia de ",
     {
       "i": 1,
@@ -13445,7 +13448,7 @@
       "k": "_gt_value_2",
       "v": "v"
     },
-    ". O mestre mudou desde então. Excluída em ",
+    ". O arquivo mestre mudou desde então. Mantida até ",
     {
       "i": 3,
       "k": "_gt_value_3",
@@ -13453,7 +13456,7 @@
     },
     "."
   ],
-  "cb54027f77eb65b0": [
+  "e22cf76c96e9f6ef": [
     "Cópia de ",
     {
       "i": 1,
@@ -13466,13 +13469,29 @@
       "k": "_gt_value_2",
       "v": "v"
     },
-    ". Excluída em ",
+    ". Mantida até ",
     {
       "i": 3,
       "k": "_gt_value_3",
       "v": "v"
     },
     "."
+  ],
+  "1489b5efe3628bf7": [
+    "Um salvamento mais recente chegou enquanto o T3 Code movia esta cópia de trabalho, e outro arquivo ocupou o lugar dela em ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". O T3 Code deixou esse salvamento ao lado, em",
+    " ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ", e não moveu nenhum dos dois."
   ],
   "77e2ba01461cdf5f": "Excluir",
   "7660bc93bbd673be": "Deixe o T3 Code executar o próprio Blender neste servidor, em uma tela oculta, para você ver e controlá-lo no painel do Blender. Somente Linux. O Blender do seu desktop nunca é afetado.",
