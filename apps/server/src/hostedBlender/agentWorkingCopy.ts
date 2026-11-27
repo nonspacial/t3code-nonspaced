@@ -14,7 +14,7 @@ import { BLENDER_HOSTED_MCP_SERVER } from "../provider/hostedBlenderMcp.ts";
 import { isWithinRoot } from "../workspace/KnownWorkspaces.ts";
 import * as HostedBlender from "./HostedBlender.ts";
 import { untestedBlenderLabReason } from "./agentGuard.ts";
-import { threadTag, workingCopyName } from "./workingCopies.ts";
+import { HELD_FOLDER, threadTag, workingCopyName } from "./workingCopies.ts";
 
 /**
  * A working copy is opened only as a regular file that isn't its master, so neither a symlink nor
@@ -196,6 +196,11 @@ export const startAgentWorkingCopy = Effect.fn("HostedBlender.startAgentWorkingC
     if (!isWithinRoot(path, master, realRoot)) {
       return yield* new HostedBlenderToolError({
         reason: `T3 opens only files in this thread's workspace, ${root}.`,
+      });
+    }
+    if (isWithinRoot(path, master, path.join(realRoot, HELD_FOLDER))) {
+      return yield* new HostedBlenderToolError({
+        reason: `${input.path} is a working copy T3 holds for a finished thread, not a project file. Don't open it; the user manages held working copies in Settings › Blender.`,
       });
     }
     const info = yield* fileSystem

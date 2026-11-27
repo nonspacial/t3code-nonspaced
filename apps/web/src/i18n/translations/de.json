@@ -13298,7 +13298,8 @@
   "76351436512c399d": "Die aufbewahrten Arbeitskopien konnten nicht geändert werden",
   "f924543cf569d79f": "Unbekannter Thread",
   "c1fbfe9e68ac9f22": "{count, plural, =1 {{master} hat sich geändert, seit T3 Code die Arbeitskopie davon aus {threads} aufbewahrt ({size}). T3 Code kann nicht erkennen, ob die Arbeit dieses Threads im Master angekommen ist. Lösche sie oder behalte sie bis {date}.} other {{master} hat sich geändert, seit T3 Code {count} Arbeitskopien davon aus {threads} aufbewahrt ({size}). T3 Code kann nicht erkennen, ob die Arbeit dieser Threads im Master angekommen ist. Lösche sie oder behalte sie bis {date}.}}",
-  "04be6d4bc375f911": "{count, plural, =1 {Die Arbeitskopie aus {threads} löschen?} other {{count} Arbeitskopien aus {threads} löschen?}}",
+  "6e752599b2d94aad": "{count, plural, =1 {Diese aufbewahrte Arbeitskopie löschen?} other {{count} aufbewahrte Arbeitskopien löschen?}}",
+  "7cec7e14f324f05b": "Aus {threads}.",
   "e6503402bdc4c54d": "{count, plural, =1 {{master} hat sich geändert, seit T3 Code diese Kopie aufbewahrt, aber T3 Code kann nicht erkennen, ob die Arbeit dieses Threads dort angekommen ist. Das Löschen der Kopie lässt sich nicht rückgängig machen.} other {{master} hat sich geändert, seit T3 Code diese Kopien aufbewahrt, aber T3 Code kann nicht erkennen, ob die Arbeit dieser Threads dort angekommen ist. Das Löschen lässt sich nicht rückgängig machen.}}",
   "b84cf4886e5698cb": "Sobald die Kopie gelöscht ist, kann der Thread sie nicht wieder aufnehmen. Das lässt sich nicht rückgängig machen.",
   "8da9cb531d4e4b3f": "Löschen",
@@ -13348,6 +13349,7 @@
     },
     "-Datei mit Blender auf dem Server, der dafür die ganze Szene lädt."
   ],
+  "f64bf8f014087dd3": "T3 Code kann nicht erkennen, wie groß diese komprimierte Datei entpackt ist. Beim Konvertieren mit Blender auf dem Server wird die ganze Szene geladen.",
   "757bc09b09dce86a": [
     "Diese komprimierte Datei ist entpackt größer als ",
     {

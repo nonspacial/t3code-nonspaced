@@ -62,6 +62,11 @@ export const BlendPreview = Schema.Struct({
    * be large in Blender. It converts only when asked.
    */
   large: Schema.optionalKey(Schema.Boolean),
+  /**
+   * A compressed file whose read stopped before its size once inflated was known: `large` too,
+   * as it may be.
+   */
+  sizeUnknown: Schema.optionalKey(Schema.Boolean),
 });
 export type BlendPreview = typeof BlendPreview.Type;
 

@@ -715,17 +715,35 @@ it("B19: asks about other threads' held copies once the master moved on, and Del
   await screen.getByRole("button", { name: "Delete" }).click();
   // Nothing is deleted until the person confirms, told which copies and why it may matter.
   const confirm = screen.getByRole("alertdialog");
-  await expect
-    .element(confirm.getByText("Delete 2 working copies from Hero pass, Rig fix?"))
-    .toBeInTheDocument();
+  await expect.element(confirm.getByText("Delete 2 held working copies?")).toBeInTheDocument();
   await expect
     .element(
       confirm.getByText(
-        "hero.blend has changed since T3 Code held these copies, but T3 Code can't tell whether those threads' work reached it. Deleting them can't be undone.",
+        "From Hero pass, Rig fix. hero.blend has changed since T3 Code held these copies, but T3 Code can't tell whether those threads' work reached it. Deleting them can't be undone.",
       ),
     )
     .toBeInTheDocument();
   expect(stream.commands).toEqual([]);
+  // Held again from another client while it is open: it still deletes only what it shows.
+  stream.state = {
+    status: "stopped",
+    heldBehind: {
+      copies: [{ id: "held-a", heldAt: 9 }],
+      master: "models/hero.blend",
+      threadTitles: ["Hero pass"],
+      bytes: 3 * 1024 * 1024,
+      expiresAt: new Date(2026, 11, 20).getTime(),
+    },
+  };
+  await screen.rerender(
+    <div style={{ height: 400, width: 600 }}>
+      <BlenderPanel threadRef={threadRef} visible composerTarget={threadRef} />
+    </div>,
+  );
+  await expect
+    .element(screen.getByText("held the working copy of it from Hero pass", { exact: false }))
+    .toBeInTheDocument();
+  await expect.element(confirm.getByText("Delete 2 held working copies?")).toBeInTheDocument();
   await confirm.getByRole("button", { name: "Delete" }).click();
   await expect.element(confirm).not.toBeInTheDocument();
   await screen.getByRole("button", { name: "Keep" }).click();
@@ -746,12 +764,7 @@ it("B19: asks about other threads' held copies once the master moved on, and Del
       label: "environment-data:hosted-blender:keep-held",
       value: {
         environmentId: threadRef.environmentId,
-        input: {
-          copies: [
-            { id: "held-a", heldAt: 1 },
-            { id: "held-b", heldAt: 2 },
-          ],
-        },
+        input: { copies: [{ id: "held-a", heldAt: 9 }] },
       },
     },
   ]);

@@ -13306,7 +13306,8 @@
   "76351436512c399d": "Det gick inte att ändra de sparade arbetskopiorna",
   "f924543cf569d79f": "Okänd tråd",
   "c1fbfe9e68ac9f22": "{count, plural, =1 {{master} har ändrats sedan T3 Code sparade arbetskopian av den från {threads} ({size}). T3 Code kan inte avgöra om trådens arbete kom in i mastern. Radera den eller behåll den till {date}.} other {{master} har ändrats sedan T3 Code sparade {count} arbetskopior av den från {threads} ({size}). T3 Code kan inte avgöra om trådarnas arbete kom in i mastern. Radera dem eller behåll dem till {date}.}}",
-  "04be6d4bc375f911": "{count, plural, =1 {Radera arbetskopian från {threads}?} other {Radera {count} arbetskopior från {threads}?}}",
+  "6e752599b2d94aad": "{count, plural, =1 {Radera den här sparade arbetskopian?} other {Radera {count} sparade arbetskopior?}}",
+  "7cec7e14f324f05b": "Från {threads}.",
   "e6503402bdc4c54d": "{count, plural, =1 {{master} har ändrats sedan T3 Code sparade den här kopian, men T3 Code kan inte avgöra om trådens arbete kom in i den. Det går inte att ångra när kopian har raderats.} other {{master} har ändrats sedan T3 Code sparade de här kopiorna, men T3 Code kan inte avgöra om trådarnas arbete kom in i den. Det går inte att ångra när de har raderats.}}",
   "b84cf4886e5698cb": "När kopian har raderats kan tråden inte ta upp den igen. Det går inte att ångra.",
   "8da9cb531d4e4b3f": "Radera",
@@ -13356,6 +13357,7 @@
     },
     " med Blender på servern, som läser in hela scenen."
   ],
+  "f64bf8f014087dd3": "T3 Code kan inte avgöra hur stor den här komprimerade filen är när den öppnas. Att konvertera den med Blender på servern läser in hela scenen.",
   "757bc09b09dce86a": [
     "Den här komprimerade filen är större än ",
     {
