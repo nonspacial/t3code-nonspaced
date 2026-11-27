@@ -50,6 +50,7 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import { SNAP_SHOT_EVENT_CHANNEL } from "../ipc/channels.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
+import * as MenuShortcuts from "./MenuShortcuts.ts";
 import {
   PASSKEY_BRIDGE_ARGUMENT,
   PRIMARY_PASTE_DISABLED_ARGUMENT,
@@ -738,6 +739,52 @@ describe("DesktopWindow", () => {
         assert.isFalse(fakeWindow.setIgnoreMenuShortcuts.mock.lastCall?.[0]);
       }).pipe(Effect.provide(layer));
     }),
+  );
+
+  it.effect(
+    "ignores menu shortcuts while the renderer gives the keyboard to a hosted Blender",
+    () =>
+      Effect.gen(function* () {
+        const fakeWindow = makeFakeBrowserWindow();
+        const createCount = yield* Ref.make(0);
+        const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+        const layer = layerTest({ window: fakeWindow.window, createCount, mainWindow });
+
+        yield* Effect.gen(function* () {
+          const desktopWindow = yield* DesktopWindow.DesktopWindow;
+          yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+          const beforeInput = fakeWindow.webContentsListeners.get("before-input-event");
+          if (!beforeInput) {
+            return yield* Effect.die("before-input-event listener was not registered");
+          }
+          const input = {
+            type: "keyDown",
+            isAutoRepeat: false,
+            key: "n",
+            meta: false,
+            control: true,
+            alt: false,
+            shift: false,
+          };
+          const ignored = () => fakeWindow.setIgnoreMenuShortcuts.mock.lastCall?.[0];
+          beforeInput({ preventDefault: () => {} }, input);
+          assert.isFalse(ignored());
+          MenuShortcuts.setIgnored(1, true);
+          beforeInput({ preventDefault: () => {} }, input);
+          assert.isTrue(ignored());
+          // Ctrl+Q is Blender's too: T3's hold-to-quit stays out of it while in control.
+          let quitPrevented = false;
+          const quit = { ...input, key: "q", meta: true };
+          beforeInput({ preventDefault: () => (quitPrevented = true) }, quit);
+          assert.isFalse(quitPrevented);
+          // A reload drops the renderer's control, so menus work again.
+          fakeWindow.webContentsListeners.get("did-start-loading")?.();
+          beforeInput({ preventDefault: () => {} }, input);
+          assert.isFalse(ignored());
+          beforeInput({ preventDefault: () => (quitPrevented = true) }, quit);
+          assert.isTrue(quitPrevented);
+        }).pipe(Effect.provide(layer));
+      }),
   );
 
   it.effect("ignores input that arrives after the window is destroyed", () =>

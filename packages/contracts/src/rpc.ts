@@ -369,6 +369,28 @@ import {
   DeviceShutdownInput,
 } from "./device.ts";
 import {
+  HostedBlenderDismissInput,
+  HostedBlenderError,
+  HostedBlenderFindHitsInput,
+  HostedBlenderHeldInput,
+  HostedBlenderHeldList,
+  HostedBlenderMasterState,
+  HostedBlenderHits,
+  HostedBlenderOpenInput,
+  HostedBlenderQuitInput,
+  HostedBlenderReopenInput,
+  HostedBlenderRunningList,
+  HostedBlenderSetTimelineInput,
+  HostedBlenderSetViewInput,
+  HostedBlenderInstallResult,
+  HostedBlenderSetupError,
+  HostedBlenderSetupState,
+  HostedBlenderSubscribeInput,
+  HostedBlenderThreadInput,
+  HostedBlenderThreadState,
+  HostedBlenderViewCapture,
+} from "./hostedBlender.ts";
+import {
   ServerConfigStreamEvent,
   DesktopUpdateCommitInput,
   OtlpEndpointCheckInput,
@@ -487,11 +509,22 @@ import {
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
+import {
+  BlendAttachmentPreviewInput,
+  BlendConversionInput,
+  BlendConversionStatus,
+  BlendPreview,
+  BlendPreviewError,
+  BlendPreviewInput,
+} from "./blendPreview.ts";
 
 export const WS_METHODS = {
   projectsListEntries: "projects.listEntries",
   projectsListIgnoredFiles: "projects.listIgnoredFiles",
   projectsReadFile: "projects.readFile",
+  projectsReadBlendPreview: "projects.readBlendPreview",
+  assetsReadBlendPreview: "assets.readBlendPreview",
+  projectsSubscribeBlendConversion: "projects.subscribeBlendConversion",
   projectsSearchContents: "projects.searchContents",
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
@@ -586,6 +619,26 @@ export const WS_METHODS = {
   deviceShutdown: "device.shutdown",
   deviceDetail: "device.detail",
   deviceAction: "device.action",
+
+  hostedBlenderOpen: "hostedBlender.open",
+  hostedBlenderQuit: "hostedBlender.quit",
+  hostedBlenderSubscribeThread: "hostedBlender.subscribeThread",
+  hostedBlenderReopen: "hostedBlender.reopen",
+  hostedBlenderDismiss: "hostedBlender.dismiss",
+  hostedBlenderSubscribeRunning: "hostedBlender.subscribeRunning",
+  hostedBlenderSubscribeHeld: "hostedBlender.subscribeHeld",
+  hostedBlenderDeleteHeld: "hostedBlender.deleteHeld",
+  hostedBlenderKeepHeld: "hostedBlender.keepHeld",
+  hostedBlenderCaptureView: "hostedBlender.captureView",
+  hostedBlenderFindHits: "hostedBlender.findHits",
+  hostedBlenderSetView: "hostedBlender.setView",
+  hostedBlenderSetTimeline: "hostedBlender.setTimeline",
+  hostedBlenderSubscribeMaster: "hostedBlender.subscribeMaster",
+  hostedBlenderOpenMaster: "hostedBlender.openMaster",
+  hostedBlenderMoveIntoT3: "hostedBlender.moveIntoT3",
+  hostedBlenderSubscribeSetup: "hostedBlender.subscribeSetup",
+  hostedBlenderCheckSetup: "hostedBlender.checkSetup",
+  hostedBlenderInstallWithAgent: "hostedBlender.installWithAgent",
 
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
@@ -1661,6 +1714,29 @@ const WsProjectsReadFileRpc = Rpc.make(WS_METHODS.projectsReadFile, {
   error: Schema.Union([ProjectReadFileError, EnvironmentAuthorizationError]),
 });
 
+const WsProjectsReadBlendPreviewRpc = Rpc.make(WS_METHODS.projectsReadBlendPreview, {
+  payload: BlendPreviewInput,
+  success: BlendPreview,
+  error: Schema.Union([BlendPreviewError, EnvironmentAuthorizationError]),
+});
+
+const WsAssetsReadBlendPreviewRpc = Rpc.make(WS_METHODS.assetsReadBlendPreview, {
+  payload: BlendAttachmentPreviewInput,
+  success: BlendPreview,
+  error: Schema.Union([BlendPreviewError, EnvironmentAuthorizationError]),
+});
+
+/** Ending the subscription cancels the conversion, waiting or running. */
+const WsProjectsSubscribeBlendConversionRpc = Rpc.make(
+  WS_METHODS.projectsSubscribeBlendConversion,
+  {
+    payload: BlendConversionInput,
+    success: BlendConversionStatus,
+    error: Schema.Union([BlendPreviewError, EnvironmentAuthorizationError]),
+    stream: true,
+  },
+);
+
 const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
   payload: ProjectWriteFileInput,
   success: ProjectWriteFileResult,
@@ -2116,6 +2192,127 @@ const WsSubscribeDeviceStateRpc = Rpc.make(WS_METHODS.subscribeDeviceState, {
   success: DeviceServiceState,
   error: EnvironmentAuthorizationError,
   stream: true,
+});
+
+const WsHostedBlenderOpenRpc = Rpc.make(WS_METHODS.hostedBlenderOpen, {
+  payload: HostedBlenderOpenInput,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+const WsHostedBlenderQuitRpc = Rpc.make(WS_METHODS.hostedBlenderQuit, {
+  payload: HostedBlenderQuitInput,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+const WsHostedBlenderCaptureViewRpc = Rpc.make(WS_METHODS.hostedBlenderCaptureView, {
+  payload: HostedBlenderThreadInput,
+  success: HostedBlenderViewCapture,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+const WsHostedBlenderFindHitsRpc = Rpc.make(WS_METHODS.hostedBlenderFindHits, {
+  payload: HostedBlenderFindHitsInput,
+  success: HostedBlenderHits,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+const WsHostedBlenderSetViewRpc = Rpc.make(WS_METHODS.hostedBlenderSetView, {
+  payload: HostedBlenderSetViewInput,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+const WsHostedBlenderSetTimelineRpc = Rpc.make(WS_METHODS.hostedBlenderSetTimeline, {
+  payload: HostedBlenderSetTimelineInput,
+  error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
+});
+
+const WsHostedBlenderSubscribeThreadRpc = Rpc.make(WS_METHODS.hostedBlenderSubscribeThread, {
+  payload: HostedBlenderSubscribeInput,
+  success: HostedBlenderThreadState,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+const WsHostedBlenderReopenRpc = Rpc.make(WS_METHODS.hostedBlenderReopen, {
+  payload: HostedBlenderReopenInput,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+const WsHostedBlenderDismissRpc = Rpc.make(WS_METHODS.hostedBlenderDismiss, {
+  payload: HostedBlenderDismissInput,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+const WsHostedBlenderSubscribeRunningRpc = Rpc.make(WS_METHODS.hostedBlenderSubscribeRunning, {
+  payload: Schema.Struct({}),
+  success: HostedBlenderRunningList,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+/** Every held working copy on this server, for Settings; subscribing checks their masters. */
+const WsHostedBlenderSubscribeHeldRpc = Rpc.make(WS_METHODS.hostedBlenderSubscribeHeld, {
+  payload: Schema.Struct({}),
+  success: HostedBlenderHeldList,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+/** Deletes held working copies now. */
+const WsHostedBlenderDeleteHeldRpc = Rpc.make(WS_METHODS.hostedBlenderDeleteHeld, {
+  payload: HostedBlenderHeldInput,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+/** Keeps held working copies the master has moved past, until they expire, without asking again. */
+const WsHostedBlenderKeepHeldRpc = Rpc.make(WS_METHODS.hostedBlenderKeepHeld, {
+  payload: HostedBlenderHeldInput,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+/** The thread's master file, and whether a master Blender or the desktop Blender has it open. */
+const WsHostedBlenderSubscribeMasterRpc = Rpc.make(WS_METHODS.hostedBlenderSubscribeMaster, {
+  payload: HostedBlenderSubscribeInput,
+  success: HostedBlenderMasterState,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+/**
+ * Opens the thread's master in its master Blender, unless the desktop Blender has it open; then
+ * the master state offers Move into T3 instead.
+ */
+const WsHostedBlenderOpenMasterRpc = Rpc.make(WS_METHODS.hostedBlenderOpenMaster, {
+  payload: HostedBlenderSubscribeInput,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+/** Has the desktop Blender save and quit, then opens the master in a master Blender. */
+const WsHostedBlenderMoveIntoT3Rpc = Rpc.make(WS_METHODS.hostedBlenderMoveIntoT3, {
+  /** `relativePath` is the master the user saw; a different master since is refused. */
+  payload: HostedBlenderOpenInput,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
+});
+
+/** The setup check's last result. Passive: subscribing never runs a check. */
+const WsHostedBlenderSubscribeSetupRpc = Rpc.make(WS_METHODS.hostedBlenderSubscribeSetup, {
+  payload: Schema.Struct({}),
+  success: HostedBlenderSetupState,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+/** "Check again": runs the setup check and test encode now. */
+const WsHostedBlenderCheckSetupRpc = Rpc.make(WS_METHODS.hostedBlenderCheckSetup, {
+  payload: Schema.Struct({}),
+  error: EnvironmentAuthorizationError,
+});
+
+/** Starts a No project thread whose agent installs what the check found missing. */
+const WsHostedBlenderInstallWithAgentRpc = Rpc.make(WS_METHODS.hostedBlenderInstallWithAgent, {
+  payload: Schema.Struct({}),
+  success: HostedBlenderInstallResult,
+  error: Schema.Union([HostedBlenderSetupError, EnvironmentAuthorizationError]),
 });
 
 const WsOrchestrationV2DispatchCommandRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, {
@@ -2640,6 +2837,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsListEntriesRpc,
   WsProjectsListIgnoredFilesRpc,
   WsProjectsReadFileRpc,
+  WsProjectsReadBlendPreviewRpc,
+  WsAssetsReadBlendPreviewRpc,
+  WsProjectsSubscribeBlendConversionRpc,
   WsProjectsSearchContentsRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsEnsureScratchRpc,
@@ -2718,6 +2918,25 @@ export const WsRpcGroup = RpcGroup.make(
   WsDeviceDetailRpc,
   WsDeviceActionRpc,
   WsSubscribeDeviceStateRpc,
+  WsHostedBlenderOpenRpc,
+  WsHostedBlenderQuitRpc,
+  WsHostedBlenderSubscribeThreadRpc,
+  WsHostedBlenderReopenRpc,
+  WsHostedBlenderDismissRpc,
+  WsHostedBlenderSubscribeRunningRpc,
+  WsHostedBlenderSubscribeHeldRpc,
+  WsHostedBlenderDeleteHeldRpc,
+  WsHostedBlenderKeepHeldRpc,
+  WsHostedBlenderCaptureViewRpc,
+  WsHostedBlenderFindHitsRpc,
+  WsHostedBlenderSetViewRpc,
+  WsHostedBlenderSetTimelineRpc,
+  WsHostedBlenderSubscribeMasterRpc,
+  WsHostedBlenderOpenMasterRpc,
+  WsHostedBlenderMoveIntoT3Rpc,
+  WsHostedBlenderSubscribeSetupRpc,
+  WsHostedBlenderCheckSetupRpc,
+  WsHostedBlenderInstallWithAgentRpc,
   WsSubscribeServerConfigRpc,
   WsSubscribeServerLifecycleRpc,
   WsSubscribeAuthAccessRpc,

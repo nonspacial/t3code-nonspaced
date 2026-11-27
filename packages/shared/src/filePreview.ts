@@ -21,6 +21,8 @@ export type FilePreviewKind =
   | "markdown"
   | "mermaid"
   | "font"
+  | "model"
+  | "blend"
   | "archive"
   | "sqlite"
   | "docx"
@@ -44,8 +46,12 @@ export function filePreviewKind(
   const extension = name.slice(name.lastIndexOf("."));
   const generic = !mime || GENERIC_MIME_TYPES.has(mime) || mime === "text/plain";
   const richDocuments = options?.richDocuments !== false;
+  // Read on the server; checked first, since a name like README.blend would otherwise be text.
+  if (richDocuments && isBlendPreviewPath(name)) return "blend";
   const office = richDocuments ? officePreviewKind(file) : null;
   if (office) return office;
+  // A 3MF file is a zip, and some systems label it as one.
+  if (richDocuments && modelPreviewFormat(file) !== null) return "model";
   const binary = binaryPreviewKind(file);
   if (binary) return binary;
   if (mime === "application/pdf") return "pdf";
@@ -200,6 +206,69 @@ const FONT_MIME_TYPE_BY_EXTENSION = new Map([
 
 export function isWorkspaceFontPreviewPath(path: string): boolean {
   return /\.(ttf|otf|woff2?)$/i.test(path);
+}
+
+export type ModelPreviewFormat = "glb" | "gltf" | "stl" | "ply" | "obj" | "3mf" | "fbx";
+
+const MODEL_FORMAT_BY_EXTENSION = new Map<string, ModelPreviewFormat>([
+  [".glb", "glb"],
+  [".gltf", "gltf"],
+  [".stl", "stl"],
+  [".ply", "ply"],
+  [".obj", "obj"],
+  [".3mf", "3mf"],
+  [".fbx", "fbx"],
+]);
+
+const MODEL_FORMAT_BY_MIME = new Map<string, ModelPreviewFormat>([
+  ["model/gltf-binary", "glb"],
+  ["model/gltf+json", "gltf"],
+  ["model/stl", "stl"],
+  ["model/x.stl-binary", "stl"],
+  ["model/x.stl-ascii", "stl"],
+  ["application/sla", "stl"],
+  ["application/vnd.ply", "ply"],
+  ["model/obj", "obj"],
+  ["model/3mf", "3mf"],
+  ["application/vnd.ms-package.3dmanufacturing-3dmodel+xml", "3mf"],
+  ["application/vnd.fbx", "fbx"],
+]);
+
+// Linux's MIME database also maps .obj to COFF objects and TGIF drawings, and Windows maps .stl
+// to certificate trust lists, so these count only with a model extension.
+const MODEL_MIME_ALIASES = new Set([
+  "application/x-coff",
+  "application/x-tgif",
+  "application/vnd.ms-pki.stl",
+]);
+
+/** The 3D format a file is rendered as in the browser, by extension and then by MIME type. */
+export function modelPreviewFormat(file: {
+  readonly name: string;
+  readonly mimeType?: string;
+}): ModelPreviewFormat | null {
+  const mime = file.mimeType?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  const name = file.name.toLowerCase();
+  const byExtension = MODEL_FORMAT_BY_EXTENSION.get(name.slice(name.lastIndexOf(".")));
+  const byMime = MODEL_FORMAT_BY_MIME.get(mime);
+  if (
+    byExtension &&
+    (!mime ||
+      GENERIC_MIME_TYPES.has(mime) ||
+      mime === "text/plain" ||
+      byMime !== undefined ||
+      MODEL_MIME_ALIASES.has(mime) ||
+      (byExtension === "gltf" && mime === "application/json") ||
+      (byExtension === "3mf" &&
+        (mime === "application/zip" || mime === "application/x-zip-compressed")))
+  )
+    return byExtension;
+  return byMime ?? null;
+}
+
+/** A Blender file, or one of the `.blend1` backups Blender keeps beside it. */
+export function isBlendPreviewPath(path: string): boolean {
+  return /\.blend\d*$/i.test(path);
 }
 
 export function hostPreviewMimeTypeFromExtension(extension: string): string | null {

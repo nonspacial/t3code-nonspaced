@@ -17,6 +17,18 @@ describe("native device stream document", () => {
     expect(input).toEqual({ deviceId, ticket: "<ticket>" });
   });
 
+  it("starts the stream script the document names", () => {
+    const html = deviceStreamDocument(
+      JSON.stringify({ threadId: "thread-1" }),
+      "var T3BlenderStream={start(input){return input}};",
+      "stopped",
+      "T3BlenderStream",
+    );
+    const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1];
+    const input: unknown = NodeVM.runInNewContext(script!, { window: { addEventListener() {} } });
+    expect(input).toEqual({ threadId: "thread-1" });
+  });
+
   it("reports a bootstrap exception to the native recovery UI", () => {
     const postMessage = vi.fn();
     const html = deviceStreamDocument(

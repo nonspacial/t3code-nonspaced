@@ -116,6 +116,13 @@ import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as PreviewAgentActivity from "./preview/PreviewAgentActivity.ts";
 import * as DesktopBrowserChannel from "./preview/DesktopBrowserChannel.ts";
 import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
+import * as HiddenDisplayBinary from "./hostedBlender/HiddenDisplayBinary.ts";
+import * as DesktopBlender from "./hostedBlender/DesktopBlender.ts";
+import * as HostedBlender from "./hostedBlender/HostedBlender.ts";
+import * as HostedBlenderAgents from "./hostedBlender/HostedBlenderAgents.ts";
+import * as HostedBlenderMcpProxy from "./hostedBlender/HostedBlenderMcpProxy.ts";
+import * as HostedBlenderSetup from "./hostedBlender/HostedBlenderSetup.ts";
+import * as HostedBlenderStream from "./hostedBlender/HostedBlenderStream.ts";
 import * as PreviewBrowser from "./preview/PreviewBrowser.ts";
 import * as ProcessRunner from "./processRunner.ts";
 import * as GitManager from "./git/GitManager.ts";
@@ -150,6 +157,10 @@ import * as TaskFolders from "./workspace/TaskFolders.ts";
 import * as TaskFolderStore from "./workspace/TaskFolderStore.ts";
 import * as KnownWorkspaces from "./workspace/KnownWorkspaces.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
+import * as BlendConversion from "./blend/BlendConversion.ts";
+import * as BlendFileWatcher from "./blend/BlendFileWatcher.ts";
+import * as BlenderDetection from "./blend/BlenderDetection.ts";
+import * as BlendPreview from "./blend/BlendPreview.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as VcsAutomaticFetchInterval from "./vcs/VcsAutomaticFetchInterval.ts";
@@ -565,6 +576,29 @@ const layerDevice = DeviceService.layer.pipe(
   Layer.provide(NetService.layer),
 );
 
+// The setup check reuses the 3D preview's Blender detection, so both find the same Blender.
+const layerHostedBlenderSetup = HostedBlenderSetup.layer.pipe(
+  Layer.provide(HiddenDisplayBinary.layer),
+  Layer.provide(BlenderDetection.layer.pipe(Layer.provide(ProcessRunner.layer))),
+  Layer.provide(ProcessRunner.layer),
+);
+
+const layerHostedBlender = HostedBlender.layer.pipe(
+  Layer.provideMerge(layerHostedBlenderSetup),
+  // Read when a master opens and asked to save and quit by Move into T3; never otherwise.
+  Layer.provide(DesktopBlender.layer),
+  // The open file's folder, so a change on disk the Blender didn't make reloads it.
+  Layer.provide(BlendFileWatcher.layer),
+  Layer.provide(WorkspacePaths.layer),
+  Layer.provide(NetService.layer),
+);
+
+// Below provider sessions, which give threads its MCP; setup's readiness is fed in from above.
+const layerHostedBlenderAgents = HostedBlenderAgents.layer.pipe(
+  Layer.provide(layerServerSettings),
+  Layer.provide(NetService.layer),
+);
+
 const layerWorkspaceEntries = WorkspaceEntries.layer.pipe(Layer.provide(WorkspacePaths.layer));
 
 const layerWorkspaceFileSystem = WorkspaceFileSystem.layer.pipe(
@@ -577,6 +611,18 @@ const layerWorkspace = Layer.mergeAll(
   WorkspacePaths.layer,
   layerWorkspaceEntries,
   layerWorkspaceFileSystem,
+  BlendPreview.layer.pipe(Layer.provide(layerWorkspaceFileSystem)),
+  BlendConversion.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerWorkspaceFileSystem,
+        layerKnownWorkspaces,
+        ProcessRunner.layer,
+        BlenderDetection.layer.pipe(Layer.provide(ProcessRunner.layer)),
+        BlendFileWatcher.layer,
+      ),
+    ),
+  ),
   WorkspaceFolders.layer.pipe(
     Layer.provide(Layer.merge(ProjectStore.layer, TaskFolderStore.layer)),
   ),
@@ -678,7 +724,12 @@ const layerOrchestrationApplication = Layer.merge(
 
 const layerThreadSettlementWorker = Layer.effectDiscard(
   ThreadSettlementService.make.pipe(Effect.flatMap((service) => service.start())),
-).pipe(Layer.provide(layerPullRequestService), Layer.provide(ProjectionStoreV2.layer));
+).pipe(
+  Layer.provide(layerPullRequestService),
+  Layer.provide(ProjectionStoreV2.layer),
+  // The same memoized instance the WebSocket handlers and stream route use.
+  Layer.provide(layerHostedBlender),
+);
 
 const layerIdleCompactionWorker = Layer.effectDiscard(
   IdleCompactionService.make.pipe(Effect.flatMap((service) => service.start())),
@@ -747,6 +798,9 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ),
   layerThreadPullRequestWorker,
   KeepAwake.layer,
+  // WebSocket handlers and the stream route share the one instance per server.
+  layerHostedBlender,
+  HostedBlenderAgents.layerFollowSetup.pipe(Layer.provide(layerHostedBlenderSetup)),
   DelegatedTaskAnalytics.layer,
   Layer.effectDiscard(
     Effect.gen(function* () {
@@ -825,6 +879,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
 const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   Layer.provideMerge(layerPtyAdapter),
   Layer.provideMerge(AcpRegistrySupport.layerFromHost.pipe(Layer.provide(ProviderHostLive.layer))),
+  Layer.provideMerge(layerHostedBlenderAgents),
   Layer.provideMerge(
     Layer.mergeAll(
       layerProviderEventLoggers,
@@ -920,12 +975,15 @@ const layerMakeRoutes = Layer.mergeAll(
     LinkThreadHttp.layer,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
+    HostedBlenderStream.routeLayer,
     PreviewTunnel.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
     speechStreamRouteLayer,
   ),
   McpHttpServer.layer.pipe(
+    // One Blender Lab server per agent session and role, started on its first call.
+    Layer.provide(HostedBlenderMcpProxy.layer),
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
     Layer.provide(McpOAuth.layerMcpClientAuthenticator),
     Layer.provide(ProjectionStoreV2.layer),

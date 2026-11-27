@@ -18,6 +18,31 @@ const entities = vi.hoisted(() => ({
   activeThread: undefined as Thread | undefined,
   delegatedUnderParent: new Set<string>() as ReadonlySet<string>,
   handleNewThread: vi.fn(async () => undefined),
+  /** The active thread's environment has Hosted Blender switched on. */
+  hostedBlender: false,
+  blenderState: null as unknown,
+  commands: [] as Array<{ readonly label: string; readonly value: unknown }>,
+}));
+vi.mock("../state/hostedBlender", async (original) => {
+  const actual = await original<typeof import("../state/hostedBlender")>();
+  const { Atom } = await import("effect/reactivity");
+  const allowed = { permissionAtom: () => Atom.make(true) };
+  return {
+    ...actual,
+    useHostedBlenderState: ((threadRef: unknown) =>
+      threadRef === null ? null : entities.blenderState) as never,
+    hostedBlenderEnvironment: {
+      ...actual.hostedBlenderEnvironment,
+      open: { ...actual.hostedBlenderEnvironment.open, ...allowed },
+      quit: { ...actual.hostedBlenderEnvironment.quit, ...allowed },
+    },
+  };
+});
+vi.mock("../state/use-atom-command", () => ({
+  useAtomCommand: ((command: { readonly label: string }) => async (value: unknown) => {
+    entities.commands.push({ label: command.label, value });
+    return { _tag: "Success", value: undefined };
+  }) as never,
 }));
 vi.mock("../state/server", async (original) => {
   const actual = await original<typeof import("../state/server")>();
@@ -49,6 +74,20 @@ vi.mock("../state/entities", async (original) => ({
   useProjects: () => entities.projects,
   useVisibleThreadShells: () => entities.threads,
   useDelegatedUnderParent: () => entities.delegatedUnderParent,
+  useServerConfigs: () =>
+    new Map(
+      entities.activeThread
+        ? [
+            [
+              entities.activeThread.environmentId,
+              {
+                settings: { hostedBlenderEnabled: entities.hostedBlender },
+                environment: { capabilities: {} },
+              } as never,
+            ],
+          ]
+        : [],
+    ),
 }));
 
 function setup(state: Partial<typeof entities> = {}) {
@@ -61,6 +100,9 @@ function setup(state: Partial<typeof entities> = {}) {
   entities.activeThread = state.activeThread;
   entities.delegatedUnderParent = state.delegatedUnderParent ?? new Set();
   entities.handleNewThread.mockClear();
+  entities.hostedBlender = state.hostedBlender ?? false;
+  entities.blenderState = state.blenderState ?? null;
+  entities.commands = [];
 }
 
 function makeProject(title: string): Project {
@@ -383,5 +425,39 @@ describe("CommandPalette open intents", () => {
 
     await userEvent.keyboard("{Escape}");
     await expect.element(palette).not.toBeInTheDocument();
+  });
+});
+
+describe("S1: Hosted Blender in the command palette", () => {
+  const blenderThread = makeThreadFixture({
+    environmentId: EnvironmentId.make("local"),
+    id: ThreadId.make("blender-thread"),
+    title: "Blender thread",
+  });
+  const unsaved = { status: "running", relativePath: "models/hero.blend", dirty: true };
+
+  it("quits the thread's hosted Blender, asking first, through the pane's own dialog", async () => {
+    setup({ activeThread: blenderThread, hostedBlender: true, blenderState: unsaved });
+    await using _screen = await render(<CommandPalette>{null}</CommandPalette>);
+    openCommandPalette({ query: "hosted Blender" });
+    await expect.element(page.getByRole("option", { name: /Open hosted Blender/ })).toBeVisible();
+    await page.getByRole("option", { name: /Quit hosted Blender/ }).click();
+    // The palette closed; the dialog outlives it, and only its choice discards.
+    await expect.element(page.getByRole("button", { name: "Quit without saving" })).toBeVisible();
+    // Without the app's stylesheet the dialog's own backdrop stacks over it, so a DOM click.
+    await act(() =>
+      (page.getByRole("button", { name: "Quit without saving" }).element() as HTMLElement).click(),
+    );
+    await vi.waitFor(() =>
+      expect(entities.commands).toEqual([
+        {
+          label: "environment-data:hosted-blender:quit",
+          value: {
+            environmentId: blenderThread.environmentId,
+            input: { threadId: blenderThread.id, save: false, discard: true },
+          },
+        },
+      ]),
+    );
   });
 });

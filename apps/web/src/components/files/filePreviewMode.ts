@@ -1,5 +1,11 @@
-import type { AssetResource, ProjectReadFileError, ScopedThreadRef } from "@t3tools/contracts";
+import type {
+  AssetResource,
+  BlendPreviewError,
+  ProjectReadFileError,
+  ScopedThreadRef,
+} from "@t3tools/contracts";
 import { mediaFileReference } from "@t3tools/client-runtime/media-reference";
+import { hostPreviewMimeTypeFromExtension } from "@t3tools/shared/filePreview";
 import { isHostPath, workspaceRelativeFilePath } from "@t3tools/shared/path";
 import { msg } from "gt-react";
 
@@ -14,7 +20,7 @@ export const isMarkdownPreviewFile = (path: string): boolean =>
   /\.(?:md|mdx|markdown|mdown|mkd)$/i.test(path);
 
 export function filePreviewReadErrorMessage(
-  error: ProjectReadFileError,
+  error: ProjectReadFileError | BlendPreviewError,
   resolve: MessageResolver = m,
 ): string {
   switch (error.failure) {
@@ -26,6 +32,12 @@ export function filePreviewReadErrorMessage(
       return resolve(msg("The requested path is outside the workspace."));
     case "resolved_path_outside_root":
       return resolve(msg("The path resolves to a location outside the workspace."));
+    case "unreadable_blend_file":
+      return resolve(msg("This file is not a Blender file, or it is damaged."));
+    case "blend_file_too_large":
+      return resolve(msg("This Blender file is too large to read its details."));
+    case "attachment_not_found":
+      return resolve(msg("This attachment is no longer available."));
     case "operation_failed":
       return error.operation === "realpath-workspace-root"
         ? resolve(msg("The workspace folder could not be accessed."))
@@ -70,4 +82,20 @@ export function workspaceAssetResource(input: {
     threadId: input.threadRef.threadId,
     path: input.absolutePath,
   };
+}
+
+/** The server signs only known preview types for inline use; anything else, such as a 3D model, is fetched as a download. */
+export function servedAsDownload(path: string): boolean {
+  return hostPreviewMimeTypeFromExtension(path.slice(path.lastIndexOf("."))) === null;
+}
+
+/** One file a 3D model references, signed on its own like the model. */
+export function modelCompanionResource(
+  model: Extract<AssetResource, { _tag: "media-file" | "draft-workspace-file" }>,
+  path: string,
+): AssetResource {
+  const disposition = servedAsDownload(path) ? { disposition: "attachment" as const } : {};
+  return model._tag === "media-file"
+    ? { _tag: "media-file", threadId: model.threadId, path, ...disposition }
+    : { _tag: "draft-workspace-file", cwd: model.cwd, path, ...disposition };
 }

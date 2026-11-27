@@ -79,6 +79,22 @@
       "types": "./src/device/hubAccess.ts",
       "default": "./src/device/hubAccess.ts"
     },
+    "./hosted-blender/input": {
+      "types": "./src/hostedBlender/input.ts",
+      "default": "./src/hostedBlender/input.ts"
+    },
+    "./hosted-blender/touch": {
+      "types": "./src/hostedBlender/touch.ts",
+      "default": "./src/hostedBlender/touch.ts"
+    },
+    "./hosted-blender/stream": {
+      "types": "./src/hostedBlender/stream.ts",
+      "default": "./src/hostedBlender/stream.ts"
+    },
+    "./state/hosted-blender": {
+      "types": "./src/state/hostedBlender.ts",
+      "default": "./src/state/hostedBlender.ts"
+    },
     "./preview/server-browser-stream": {
       "types": "./src/preview/serverBrowserStream.ts",
       "default": "./src/preview/serverBrowserStream.ts"
@@ -582,6 +598,18 @@
     "./device/duo-control": {
       "types": "./src/device/duoControl.ts",
       "default": "./src/device/duoControl.ts"
+    },
+    "./model/blend-facts": {
+      "types": "./src/model/blendFacts.ts",
+      "default": "./src/model/blendFacts.ts"
+    },
+    "./model/preview-scene": {
+      "types": "./src/model/previewScene.ts",
+      "default": "./src/model/previewScene.ts"
+    },
+    "./model/decoders": {
+      "types": "./src/model/modelDecoders.ts",
+      "default": "./src/model/modelDecoders.ts"
     },
     "./diff-count": {
       "types": "./src/diffCount.ts",

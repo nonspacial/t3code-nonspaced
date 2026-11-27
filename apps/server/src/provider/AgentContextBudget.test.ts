@@ -12,6 +12,9 @@ import { AssetSigner } from "../assets/AssetSigner.ts";
 import { ServerSecretStore } from "../auth/ServerSecretStore.ts";
 import { ServerConfig } from "../config.ts";
 import { DeviceService } from "../device/DeviceService.ts";
+import { HostedBlender } from "../hostedBlender/HostedBlender.ts";
+import { HostedBlenderAgents } from "../hostedBlender/HostedBlenderAgents.ts";
+import { HostedBlenderMcpProxy } from "../hostedBlender/HostedBlenderMcpProxy.ts";
 import { ServerEnvironment } from "../environment/ServerEnvironment.ts";
 import { GitManager } from "../git/GitManager.ts";
 import { GitWorkflowService } from "../git/GitWorkflowService.ts";
@@ -61,6 +64,9 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(AnalyticsService)({}),
   Layer.mock(AssetSigner)({}),
   Layer.mock(DeviceService)({}),
+  Layer.mock(HostedBlender)({}),
+  Layer.mock(HostedBlenderAgents)({}),
+  Layer.mock(HostedBlenderMcpProxy)({}),
   Layer.mock(DocumentText)({}),
   Layer.mock(EnvironmentThemeService)({}),
   Layer.mock(GitVcsDriver)({}),

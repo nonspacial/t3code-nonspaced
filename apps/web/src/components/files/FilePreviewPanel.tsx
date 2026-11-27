@@ -20,6 +20,8 @@ import {
   isWorkspaceImagePreviewPath,
   isWorkspaceFontPreviewPath,
   isWorkspaceVideoPreviewPath,
+  isBlendPreviewPath,
+  modelPreviewFormat,
   officePreviewKind,
   binaryPreviewKind,
 } from "@t3tools/shared/filePreview";
@@ -64,6 +66,8 @@ import {
 import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
 import { useAssetUrlRefresh, useAssetUrlState } from "~/assets/assetUrls";
 import { OpenInPicker } from "~/components/chat/OpenInPicker";
+import { isBlendFile } from "~/components/blender/blendLinks";
+import { OpenInHostedBlender } from "~/components/blender/OpenInHostedBlender";
 import { fileManagerActionForPath } from "~/components/chat/OpenInPicker.logic";
 import { MediaVideoPlayer } from "~/components/media/MediaVideoPlayer";
 import { MediaActions, type MediaActionSource } from "~/components/media/MediaActions";
@@ -133,11 +137,14 @@ import {
   filePreviewReadErrorMessage,
   isMarkdownPreviewFile,
   resolveFilePreviewPath,
+  servedAsDownload,
   shouldShowFileExplorer,
   workspaceAssetResource,
 } from "./filePreviewMode";
 import { setMarkdownTaskChecked } from "@t3tools/shared/markdownTaskEdits";
 import { changeFileSaveSession, useFileSaveSession } from "./fileSaveSessions";
+import type { ModelAnnotationTarget, ModelViewRequest } from "./ModelFilePreview";
+import type { ModelView } from "@t3tools/shared/modelView";
 import { revisionedQuery } from "~/state/revisionedQuery";
 import {
   getOptimisticProjectFileQueryData,
@@ -163,6 +170,8 @@ interface FilePreviewPanelProps {
   openInShortcutEnabled: boolean;
   revealLine: number | null;
   revealRequestId: number;
+  /** A 3D view link's camera for the model this opens. */
+  revealView: ModelView | null;
   onOpenFile: (relativePath: string) => void;
   onNavigateFolder: (relativePath: string, folderTrail: string, keepSource: boolean) => void;
   /** Retained descendant breadcrumb path after navigating up; see navigateFolder. */
@@ -172,6 +181,9 @@ interface FilePreviewPanelProps {
   workspaceMutationId: string | null;
 }
 
+const BlendFilePreview = lazy(() =>
+  import("./BlendFilePreview").then((module) => ({ default: module.BlendFilePreview })),
+);
 const MermaidFilePreview = lazy(() =>
   import("./MermaidFilePreview").then((module) => ({ default: module.MermaidFilePreview })),
 );
@@ -528,19 +540,26 @@ function WorkspaceDocumentPreview(props: {
   readonly name: string;
   readonly workspaceMutationId: string | null;
   readonly refreshRevision: number;
+  readonly modelView: ModelViewRequest | null;
+  readonly modelAnnotation: ModelAnnotationTarget;
 }) {
+  const disposition =
+    !props.document || servedAsDownload(props.absolutePath)
+      ? { disposition: "attachment" as const }
+      : {};
   const resource =
     props.draft && props.document
       ? {
           _tag: "draft-workspace-file" as const,
           cwd: props.workspaceRoot,
           path: props.absolutePath,
+          ...disposition,
         }
       : {
           _tag: "media-file" as const,
           threadId: props.threadRef.threadId,
           path: props.absolutePath,
-          ...(props.document ? {} : { disposition: "attachment" as const }),
+          ...disposition,
         };
   const gt = useGT();
   // Drafts keep reloading on every workspace mutation, as before.
@@ -572,7 +591,10 @@ function WorkspaceDocumentPreview(props: {
       mimeType="application/octet-stream"
       sizeBytes={0}
       asset={{ environmentId: props.environmentId, resource }}
+      workspaceRoot={props.workspaceRoot}
       origin={gt("File", { $context: "label for a file opened from the workspace" })}
+      modelView={props.modelView}
+      modelAnnotation={props.modelAnnotation}
     />
   );
 }
@@ -1245,6 +1267,7 @@ export default function FilePreviewPanel({
   openInShortcutEnabled,
   revealLine,
   revealRequestId,
+  revealView,
   onOpenFile,
   onNavigateFolder,
   folderTrail,
@@ -1280,11 +1303,14 @@ export default function FilePreviewPanel({
   const isImage = relativePath !== null && !isVideo && isWorkspaceImagePreviewPath(relativePath);
   const isMedia = isImage || isVideo || isAudio;
   const isPdf = relativePath !== null && isPdfPreviewFile(relativePath);
+  const isBlend = relativePath !== null && isBlendPreviewPath(relativePath);
   const isDocument =
     relativePath !== null &&
-    (binaryPreviewKind({ name: relativePath }) !== null ||
+    (isBlend ||
+      binaryPreviewKind({ name: relativePath }) !== null ||
       officePreviewKind({ name: relativePath }) !== null ||
-      isWorkspaceFontPreviewPath(relativePath));
+      isWorkspaceFontPreviewPath(relativePath) ||
+      modelPreviewFormat({ name: relativePath }) !== null);
   const isHtml = relativePath !== null && !isPdf && isBrowserPreviewFile(relativePath);
   const isHostFile =
     attachment !== undefined || (relativePath !== null && isHostPath(relativePath));
@@ -1731,6 +1757,12 @@ export default function FilePreviewPanel({
               asset={{ environmentId, attachmentId: attachment.id }}
               htmlRender={attachment.htmlRender === true}
               threadRef={threadRef}
+              modelAnnotation={{
+                composerTarget: composerDraftTarget,
+                environmentId,
+                projectId,
+                linkPath: null,
+              }}
             />
           ) : relativePath && isVideo && absolutePath ? (
             <WorkspaceVideoPreview
@@ -1795,6 +1827,33 @@ export default function FilePreviewPanel({
               revealRequestId={revealRequestId}
               wordWrap={wordWrap}
             />
+          ) : relativePath && isBlend ? (
+            <Suspense fallback={<FileSurfaceLoading />}>
+              <BlendFilePreview
+                key={`${environmentId}:${cwd}:${relativePath}`}
+                environmentId={environmentId}
+                name={relativePath.split(/[\\/]/).at(-1) || relativePath}
+                source={{
+                  kind: "file",
+                  cwd,
+                  relativePath,
+                  workspaceMutationId,
+                  refreshRevision: fileRefreshRevision,
+                }}
+                actions={
+                  threadRef && !isHostFile && isBlendFile(relativePath) ? (
+                    <OpenInHostedBlender threadRef={threadRef} relativePath={relativePath} />
+                  ) : null
+                }
+                view={revealView ? { view: revealView, requestId: revealRequestId } : null}
+                annotation={{
+                  composerTarget: composerDraftTarget,
+                  environmentId,
+                  projectId,
+                  linkPath: relativePath,
+                }}
+              />
+            </Suspense>
           ) : relativePath &&
             absolutePath &&
             (isDocument || file.readError?.failure === "binary_file") ? (
@@ -1809,6 +1868,13 @@ export default function FilePreviewPanel({
               name={relativePath.split(/[\\/]/).at(-1) || relativePath}
               workspaceMutationId={workspaceMutationId}
               refreshRevision={fileRefreshRevision}
+              modelView={revealView ? { view: revealView, requestId: revealRequestId } : null}
+              modelAnnotation={{
+                composerTarget: composerDraftTarget,
+                environmentId,
+                projectId,
+                linkPath: relativePath,
+              }}
             />
           ) : relativePath && file.error && file.data === null ? (
             <div

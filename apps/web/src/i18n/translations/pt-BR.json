@@ -750,6 +750,7 @@
   "f0ab079175905bbb": "Commit, push e criar {shortLabel}",
   "8360d689ebc7f829": "Fazer push e criar {shortLabel} a partir do branch padrão?",
   "daa408bb99d21d18": "{kind, select, pr {Esta ação vai fazer push dos commits locais e criar um PR em \"{branch}\". Você pode continuar neste branch ou criar um branch de feature e executar a mesma ação nele.} mr {Esta ação vai fazer push dos commits locais e criar um MR em \"{branch}\". Você pode continuar neste branch ou criar um branch de feature e executar a mesma ação nele.} generic {Esta ação vai fazer push dos commits locais e criar uma solicitação de alteração em \"{branch}\". Você pode continuar neste branch ou criar um branch de feature e executar a mesma ação nele.} other {Esta ação vai fazer push dos commits locais e criar {changeRequest} em \"{branch}\". Você pode continuar neste branch ou criar um branch de feature e executar a mesma ação nele.}}",
+  "52e3a38c91652959": "O Blender ainda está salvando a última cópia de {name} de antes de o T3 Code reiniciar. Tente novamente em instantes.",
   "8471c4c5a50ffde3": "Ainda não é possível navegar pelas issues deste host.",
   "2f4a47129f89fe22": "Não conectado. Adicione uma chave de API pessoal para listar as issues.",
   "024baab60525a419": "A credencial salva foi recusada.",
@@ -1857,6 +1858,8 @@
   "a1fcc064a5cece14": "Copiar thread",
   "2eb493c9e7a5fe9a": "Vincular pull request à thread",
   "abbbacfec60327d7": "Mostrar itens vinculados",
+  "717ec3e0cca47597": "Abrir o Hosted Blender",
+  "5d19698001ecca06": "Sair do Hosted Blender",
   "67f5b13c3c7bcd40": "Compartilhar com convidado",
   "82da5b8b340217ac": "Reiniciar a sessão do agente",
   "963d099509eabcd6": "A sessão do agente será reiniciada",
@@ -2426,6 +2429,7 @@
   "4a87cae01ccde544": "O branch desta thread ainda não tem pull request.",
   "32535dba0b9af642": "Esta thread não tem itens vinculados.",
   "07080dead70f4cc5": "Os dispositivos só estão disponíveis a partir de uma thread.",
+  "6a531293dc35167a": "O Hosted Blender não está disponível neste host.",
   "a4bf49b31758ff7e": "Disponível só no app para desktop.",
   "e917841cb66f9af1": "Disponível com um projeto aberto.",
   "14c15fad0c2ee0c8": "Disponível para repositórios Git.",
@@ -3287,6 +3291,7 @@
   "984c25ffcae69300": "Adicionar backend",
   "08570ee0982df89d": "Pareando...",
   "3bbae7c96b6cbfc3": "Abrir app",
+  "2f387e35671e1020": "A cena mudou desde a imagem, então as marcações não vão indicar objetos.",
   "49cc06e79f21f85a": "{seconds}s",
   "8603d41c52392f1d": "{minutes}min {seconds}s",
   "f2a955905704b91d": "{hours}h {minutes}min",
@@ -4610,6 +4615,7 @@
   "b29e1856c4aab31f": "Esta máquina",
   "0cb5a221e9e13a4e": "O agente lê os logs e o código-fonte do T3 Code aqui e pergunta antes de aplicar uma correção ou publicar qualquer coisa.",
   "e7588632064e0364": "Copiado",
+  "afb8bba375e0ff0e": "Copiar caminho",
   "996f7752fa033da6": [
     "ou execute",
     {
@@ -5768,6 +5774,11 @@
   "5c04103935c5510c": "Abrir arquivo",
   "905935d86457429d": "Pesquisar arquivos…",
   "12e0b17270235916": "Abra um projeto para pesquisar os arquivos dele.",
+  "650afcc1cdb79840": "Cor do tema",
+  "b3505fde5e9a35f2": "Vermelho",
+  "ee60378b0de296ac": "Âmbar",
+  "f8fe343f1ba61aef": "Verde",
+  "615070a86c2ebd36": "Magenta",
   "667872eb86f4230f": "Decodificação da imagem cancelada.",
   "c2b080e3e4324613": "Esta imagem demorou demais para decodificar.",
   "c54ff382c8f33dcd": "Não foi possível carregar o decodificador de imagem.",
@@ -12985,5 +12996,699 @@
   "201490988858b511": "retirada por {by}",
   "99451a5d2d40440f": "Retirada por {by}.",
   "3ee30a50b70fffab": "Retirada por {by}: {reason}",
-  "92e129bf413a1220": "retirada"
+  "92e129bf413a1220": "retirada",
+  "3ed524933c568f8c": "Cena",
+  "8f9167efec844695": "Quadros",
+  "8f57fe4fcc5c7945": "{start}–{end}",
+  "5d5a2f58f1a34c19": "Cenas",
+  "9737b868f7aebd61": "Objetos",
+  "3a4c33441eda8301": "Malhas",
+  "472ca1deae1a19f5": "Materiais",
+  "6116c7ae71bc7d05": "Arquivos vinculados",
+  "3286ce5553d9f505": "Tamanho",
+  "8067b4bf490c4ab7": "Conteúdo",
+  "a31ec23f4b06db7d": "Não lido em um arquivo tão grande",
+  "f9eea88cb00b1f4f": "Mais do que o T3 Code lê para uma prévia",
+  "46dae7e064a17ca3": "Blender",
+  "473079352585294d": "Qual Blender mostrar",
+  "72ec28b225ed9811": "Não foi possível abrir o arquivo mestre",
+  "70da4581cf87971c": "Não foi possível mover para o T3 Code",
+  "d5da364f3ffb7fa7": "Cópia de trabalho",
+  "28452db4fe718141": "Trabalho",
+  "d3b2dad809961953": "Mestre",
+  "8fc9ef73a784da09": "Um Blender de desktop que o T3 Code não conseguiu verificar também pode estar com este arquivo aberto. Salve e feche-o lá para que um não sobrescreva o outro.",
+  "ab03a468cc62daf1": "Mover para o T3 Code",
+  "77b72b3b7ee97069": "Abrir no T3 Code",
+  "cb4451ab067ff47d": "O Blender não iniciou",
+  "731b80ac194beb4a": "Aberto no seu Blender de desktop",
+  "ca40a1f4300b4838": "Arquivo mestre não aberto no T3 Code",
+  "10a2ab0021554b0a": [
+    "O Blender não conseguiu abrir ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " na tela oculta. Verifique se o Blender o abre e abra-o de novo."
+  ],
+  "f5db5877ab70bfc8": [
+    "Mover para o T3 Code salva ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " no seu Blender de desktop, com as alterações não salvas, fecha esse Blender e abre o arquivo aqui. O histórico de desfazer é perdido."
+  ],
+  "6484265e8c18d3dd": [
+    "Mover para o T3 Code salva ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " no seu Blender de desktop, fecha esse Blender e abre o arquivo aqui. O histórico de desfazer é perdido."
+  ],
+  "d77c7db5a642f111": [
+    "Há um Blender de desktop em execução, mas o T3 Code não consegue acessar o complemento MCP dele para ver se ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " está aberto. Salve e feche o arquivo lá antes de abri-lo aqui."
+  ],
+  "a0056043b004c957": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " não está aberto em um Blender mestre. É lá que os agentes copiam para ele as alterações comprovadas."
+  ],
+  "e69c6af74880ba75": "Inglês (EUA)",
+  "675e421e80618158": "Inglês (Reino Unido)",
+  "27cface4ce8ec314": "Alemão",
+  "252113dddccaec1a": "Francês",
+  "8ab4b97531ab9d38": "Espanhol",
+  "3545659a9d1bb2e3": "Italiano",
+  "38923bf04cdeb628": "Português",
+  "587094706a1471b7": "Português (Brasil)",
+  "5950bf35d9440cd8": "Sueco",
+  "9db1b78d4555eaae": "Norueguês",
+  "12de4ccc884a2322": "Dinamarquês",
+  "fa15389723321c00": "Alemão suíço",
+  "4011a07411675ba1": "Russo",
+  "d1634d41846e72cb": "Japonês",
+  "c77caac5b764ef8c": "Inglês (Dvorak)",
+  "7b15925473b02c07": "Inglês (Colemak)",
+  "7c6bc1129dc9f48e": "Cena sem título",
+  "83f2e3a5ca79c4ca": "Não foi possível copiar o caminho",
+  "cd078f4497dfcd36": "Não foi possível reiniciar o Blender",
+  "ad3ce6044792509a": "Não foi possível reabrir o Blender",
+  "90e3c64eab32945e": "Descartar o salvamento automático de {name}?",
+  "01201ecb830d7c68": "Descartar as alterações não salvas de {name}?",
+  "a1628cec6e798a98": "o assistente de tela oculta do T3 Code",
+  "759aa5a1a95bc013": "um codificador H.264",
+  "f5a8efdb194519df": "o plugin OpenGL do GStreamer",
+  "d6fcf229c9306851": "Capturar e anotar",
+  "746c576ea195806b": "Assumir o controle",
+  "156baef53680396e": "Assumir o controle",
+  "8f7153ef68b0a1cc": "Tela cheia",
+  "32cf9ac006229af1": "Menu do Blender",
+  "9287e12fbeade687": "Outro dispositivo assumiu o controle do Blender",
+  "d2b10ff67d190925": "Viewport do Blender",
+  "541e8079a70c3b6f": "Memória do Blender {size}",
+  "2151790bc5e65b31": "Indisponível neste host",
+  "b94f5fc6d71bc852": "Configuração necessária",
+  "7050870331ac8b9a": "Nenhum Hosted Blender em execução",
+  "fb2c65328a8a2e17": "Abra um arquivo .blend na pré-visualização de arquivos e escolha Abrir no Hosted Blender.",
+  "61363df2a96b100b": "Abrir Arquivos",
+  "3f25b97ec987231e": "O Blender não conseguiu abrir o arquivo na tela oculta. Verifique se o Blender o abre e se o GStreamer tem um codificador H.264 e abra-o de novo no Hosted Blender.",
+  "c9d23ccb15073177": "O Blender travou",
+  "9f406050b6efb934": "O Blender foi fechado",
+  "5bb5a35408a98d44": [
+    "O Blender estava com ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " aberto em vez do arquivo mestre, então o T3 Code não pode reabri-lo aqui. As alterações não salvas estão em ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "30c3fba6cec25d84": [
+    "O Blender estava com ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " aberto em vez do arquivo mestre, então o T3 Code não pode reabri-lo aqui."
+  ],
+  "0693a88b1530f8eb": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " está fora deste projeto, então o T3 Code não pode reabri-lo. As alterações não salvas estão guardadas em ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "95b2d0bdafc5b01d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " está fora deste projeto, então o T3 Code não pode reabri-lo."
+  ],
+  "0181fc8af235ad77": [
+    "O T3 Code guardou as alterações não salvas de uma cena sem título em ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "c3528aaa534d9a33": "O Blender tinha uma cena sem título aberta, que o T3 Code não pode reabrir.",
+  "24bbaa011bf94b06": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " não está mais neste projeto, então o T3 Code não pode reabri-lo. As alterações não salvas estão guardadas em ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    "."
+  ],
+  "8ca51613f669ada0": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " não está mais neste projeto, então o T3 Code não pode reabri-lo."
+  ],
+  "df374db2c12ff019": [
+    "O Blender não conseguiu restaurar a cópia de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". A cópia foi mantida: tente de novo, abra o arquivo como foi salvo por último ou descarte a cópia."
+  ],
+  "ff3775198cef1512": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " parou inesperadamente. Reiniciar abre o arquivo como foi salvo pela última vez, ou restaure o salvamento automático mais recente."
+  ],
+  "945cdcba38a31b0c": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " parou inesperadamente. Reiniciar abre o arquivo como foi salvo pela última vez."
+  ],
+  "7a2548c51178b2e1": [
+    "O T3 Code guardou estas alterações não salvas de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " quando o Blender recarregou o arquivo depois que ele mudou no disco. O arquivo no disco é mais recente que elas."
+  ],
+  "a1705e3412c3634e": [
+    "O T3 Code fechou ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " quando esta conversa foi concluída ou o T3 Code parou, e manteve as alterações não salvas. Reabrir as restaura."
+  ],
+  "5065123e0dd81fe3": [
+    "O T3 Code tirou ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " deste projeto quando a conversa terminou e o guarda por até 30 dias. Reabrir o coloca de volta e o abre."
+  ],
+  "891e3d7d231af485": [
+    "O T3 Code fechou ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " quando esta conversa foi concluída ou o T3 Code parou."
+  ],
+  "bd90fd96c98e9c6f": "Reiniciar",
+  "220f0a0fa43d9f59": "Restaurar salvamento automático",
+  "182049c015041be2": "Reabrir",
+  "eb23e8b7b8458cfa": "Abrir como salvo por último",
+  "930be3d3ed674427": "Também guardados:",
+  "d6c851db16c7dfd8": "O arquivo como foi salvo por último é mantido. Isso não pode ser desfeito.",
+  "7dfc4caecd0ca4da": "Abrir configurações do Blender",
+  "22e7ff1b5896ba7b": "O Hosted Blender precisa de um servidor Linux. Você ainda pode abrir arquivos 3D na pré-visualização de arquivos.",
+  "ccb9bcd7825f2f99": "A versão do Linux deste servidor traz labwc e GStreamer antigos demais para o Hosted Blender. Você ainda pode abrir arquivos 3D na pré-visualização de arquivos.",
+  "efd53a6196afbf6d": "As versões Flatpak e Snap do Blender ainda não são compatíveis. Configurações › Blender explica como usar outro Blender.",
+  "ec1b57292361ae76": "Ative o Hosted Blender em Configurações › Blender para ver e controlar o Blender aqui.",
+  "e4ec327ad1a82eb5": "O T3 Code ainda não verificou este servidor. Abra um .blend no Hosted Blender ou verifique-o em Configurações › Blender.",
+  "00720d9a3d565862": "Há um codificador H.264 instalado, mas nenhum passou na codificação de teste. Se a GPU estava ocupada, verifique novamente.",
+  "af467bacc13f5e57": [
+    "Está faltando neste servidor: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". Em Configurações › Blender, um agente pode instalar ou você pode ver os comandos."
+  ],
+  "f4266902a2c24f1e": "Iniciando o Blender…",
+  "9d8acbbea6eafeef": [
+    "Abrindo ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " na tela oculta."
+  ],
+  "527860d766ec9a61": "O Blender continuou aberto: sair perderia as edições de imagem não salvas, que uma cópia de recuperação não consegue guardar. Salve-as ou empacote-as no Blender (Image › Save All Images ou Image › Pack) ou saia sem salvar.",
+  "5ac36f75a4037031": "O Blender continuou aberto: sair perderia as edições de catálogos de assets não salvas, que uma cópia de recuperação não consegue guardar. Salve-as no navegador de assets do Blender ou saia sem salvar.",
+  "7cf2c0b26c6d7f23": "Sair…",
+  "2026a467bc778ad9": "Layout do teclado",
+  "1d9b37b42f1216c8": "Automático",
+  "4b0ca2d2af30068a": "Rolagem",
+  "3e3e743c7c26648a": "Automático",
+  "8884c1281f2a2db4": "Roda do mouse",
+  "295182c176fc7bd0": "Trackpad",
+  "8b290ab856b8f02b": "Sair do Blender",
+  "6b30f7f4ebd659d7": "Há pessoas demais assistindo a este Blender. Tente novamente mais tarde.",
+  "1681e6f089782b9d": "Este navegador não consegue reproduzir o stream do Blender.",
+  "7579927020ad5107": "Você tem o controle",
+  "67ab7e22612414d0": "Outro dispositivo tem o controle",
+  "81f3ce1d88ecf7bb": "Assistindo",
+  "b41e3eeb664df523": "Agente editando",
+  "3906097eebf88153": "Mostrando a tela inteira",
+  "27ea83219396f796": "Sem GPU: o Blender ficará lento",
+  "156c7543e861dda6": "Sem acesso à GPU: o Blender ficará lento",
+  "76351436512c399d": "Não foi possível alterar as cópias de trabalho guardadas",
+  "f924543cf569d79f": "Conversa desconhecida",
+  "c1fbfe9e68ac9f22": "{count, plural, =1 {{master} mudou desde que o T3 Code guardou a cópia de trabalho dele de {threads} ({size}). O T3 Code não sabe dizer se o trabalho daquela conversa chegou ao arquivo mestre. Exclua-a ou mantenha-a até {date}.} other {{master} mudou desde que o T3 Code guardou {count} cópias de trabalho dele de {threads} ({size}). O T3 Code não sabe dizer se o trabalho daquelas conversas chegou ao arquivo mestre. Exclua-as ou mantenha-as até {date}.}}",
+  "6e752599b2d94aad": "{count, plural, =1 {Excluir esta cópia de trabalho guardada?} other {Excluir {count} cópias de trabalho guardadas?}}",
+  "7cec7e14f324f05b": "De {threads}.",
+  "e6503402bdc4c54d": "{count, plural, =1 {{master} mudou desde que o T3 Code guardou esta cópia, mas o T3 Code não sabe dizer se o trabalho daquela conversa chegou até ele. Excluir a cópia não pode ser desfeito.} other {{master} mudou desde que o T3 Code guardou estas cópias, mas o T3 Code não sabe dizer se o trabalho daquelas conversas chegou até ele. Excluí-las não pode ser desfeito.}}",
+  "b84cf4886e5698cb": "Depois de excluída, a conversa não poderá retomar esta cópia. Isso não pode ser desfeito.",
+  "8da9cb531d4e4b3f": "Excluir",
+  "cbe0ad4fb8adfdfa": "Manter",
+  "907a0f7ed16a709d": "Não foi possível abrir no Hosted Blender",
+  "7b0cb06d256e6b28": "Abrir no Hosted Blender",
+  "119259d2fa66fadf": "Não foi possível fechar o Blender",
+  "65c73c884114dcf8": "O Blender não respondeu, então continua aberto com suas alterações. Se ele continuar sem responder, escolher “Sair sem salvar” de novo o interrompe e mantém o que o Blender salvou automaticamente por último.",
+  "d679c8479ec344e8": "O Blender não respondeu, então continua aberto, e a saída não vai acontecer depois por conta própria. Tente de novo quando o Blender terminar o que está fazendo.",
+  "e2d3b41b3731a6c1": "Salvar as alterações em {name} antes de sair?",
+  "5e37d1898794cdce": "O Blender está com {name} aberto agora.",
+  "27f4f4a7f0a6bede": "O Blender não conseguiu salvar {images}, então as edições delas são descartadas se você sair sem salvar.",
+  "32504fe5e26d8233": "As alterações que o Blender não salvou serão perdidas se você sair sem salvar.",
+  "97bc5343e76aac1b": "O Blender tem edições de catálogos de assets não salvas, que são descartadas se você sair sem salvar.",
+  "2fc3677814ce9516": "O Blender tem edições de imagem não salvas, que são descartadas se você sair sem salvar.",
+  "9ceb68fb844584c9": "Sair sem salvar",
+  "e21dfc1887d124ec": "Salvar e sair",
+  "004649901eabfebd": "Trabalhando no Blender",
+  "7c23820b77e42b2c": "Recarregar arquivo",
+  "586cd2c4199fa323": "Miniatura salva de {name}",
+  "25d1be241b107e99": "Não foi possível ler o arquivo.",
+  "af3426b9850d4da7": "Convertido com o Blender {version} · em cache",
+  "5b88b6929848ca03": "Convertido há {seconds} s",
+  "ea085b85d5409d6d": "Convertido com o Blender {version}",
+  "e1de2d5335083143": "Convertendo com o Blender {version}… {seconds} s",
+  "9228469f14b148a6": "{file} mudou · atualizando…",
+  "41f9012753a424a9": "Falha na conversão",
+  "047618ba1e0fe59d": "Conversão cancelada",
+  "53a1519e0b7358cf": "Aguardando: {ahead} na frente",
+  "202d05bbf54b83c1": "Lento demais para pré-visualizar",
+  "dd22e61b9a4efe81": "A conversão levou mais de um minuto e foi interrompida. Continuar tentando converte sem limite.",
+  "569078051cbef37c": "Sem Blender neste servidor",
+  "484bbf26d26f6f65": "Instale o Blender pelo blender.org na máquina que executa o T3 Code, ou defina o caminho em Configurações, em Geral, para ver este arquivo em 3D.",
+  "a3a292e8b22c02db": "Salvo pelo Blender {file} · o servidor tem {server}",
+  "4e2b52d678917c4d": "Miniatura salva · Blender {version}",
+  "864d83692fd9047f": "Salvo pelo Blender {version}",
+  "3caa4fb20ff3277d": "O Blender salva esta imagem com o arquivo, então ela pode estar desatualizada se um script salvou o arquivo.",
+  "301ece9c34df1726": "Log do Blender",
+  "20fc073d179a63f5": "O Blender não escreveu nada no log.",
+  "c4dd9c716703715d": "Mostrar visualização 3D",
+  "1811c8b47499cb54": [
+    "Converte este arquivo de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " com o Blender no servidor, que carrega a cena inteira."
+  ],
+  "f64bf8f014087dd3": "O T3 Code não consegue saber o tamanho deste arquivo compactado quando aberto. Convertê-lo com o Blender no servidor carrega a cena inteira.",
+  "757bc09b09dce86a": [
+    "Este arquivo compactado passa de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " quando aberto. Convertê-lo com o Blender no servidor carrega a cena inteira."
+  ],
+  "71f9aa2ee31aac46": "Nenhuma miniatura salva neste arquivo",
+  "27088355449cdd28": "Detalhes da cena",
+  "3a87f8c40f3b8065": "Converter",
+  "3a7a505e7bb890be": "Mostrar log",
+  "5ac36af75f80daf6": "Continuar tentando",
+  "aaf4d7b88f1a09d8": "Descreva a alteração…",
+  "51dbb09f63c653ea": "Comentário da anotação",
+  "dd2fd8921e6266cc": "Visualização 3D congelada para anotar",
+  "5e28beecabfa2e5c": "Ferramenta de anotação",
+  "a66f8d39e8448351": "Cor da marca",
+  "eb865cf8d25f6d4a": "Preencher as novas regiões com sua cor",
+  "a1e2f6d85f16e289": "Preencher regiões",
+  "6de41117ded50df0": "Desfazer ({keys})",
+  "e159b47bd61786e0": "Refazer",
+  "a77918e31ead0058": "Refazer ({keys})",
+  "44480ea1a65332c2": "Desenhar",
+  "141a5228a1559580": "Desenhe à mão livre. Segure Shift para uma linha reta.",
+  "4df9ba9e17814db7": "Linha",
+  "488696a8b05994ee": "Desenhe uma linha. Segure Shift para alinhar em passos de 45°.",
+  "8855b4cada088a84": "Seta",
+  "1ae176e5cf5d7685": "Desenhe uma seta que aponta para onde o arraste termina. Segure Shift para alinhar em passos de 45°.",
+  "ef38e20921500bd4": "Marcar uma região",
+  "75f314382263e063": "Marque uma região. Segure Shift para um quadrado.",
+  "3634581310a50ead": "Apagar uma marca",
+  "bdac60fb8176f6cd": "As pré-visualizações 3D precisam de WebGL, que este navegador desativou ou não suporta.",
+  "2c35172b5a5d8a64": "A visualização 3D parou de responder.",
+  "791277de6140c5c7": "Este arquivo 3D está danificado ou usa recursos que a pré-visualização não suporta.",
+  "54d0d4483d261e37": "Este arquivo 3D não tem geometria para mostrar.",
+  "bee9d18a1a2b0c3e": "Não foi possível encontrar um arquivo de que este modelo precisa.",
+  "2d782dfff8e968f8": "Não foi possível carregar o modelo.",
+  "a1ad1c48825fa0b5": "Este modelo tem mais de 1 GB, grande demais para pré-visualizar. Salve-o para abri-lo em um app 3D.",
+  "6c74f6e6e2d69293": "Carregando modelo 3D…",
+  "4fc027df67b0cbbc": "Modelo grande",
+  "dd420bd9b4c8f356": "Falha na pré-visualização",
+  "108ec15bf5350d7d": "{format} · renderizado no navegador",
+  "b1a9bdc9615401d5": "{count, plural, one {{count} textura não encontrada} other {{count} texturas não encontradas}}",
+  "cbcdb6061aa78bf6": "{count, plural, one {{count} arquivo não encontrado} other {{count} arquivos não encontrados}}",
+  "35d235e816e6f4b0": "Visualização 3D de {name}",
+  "c85eef9dc05fa21b": "Não foi possível encontrar {files} ao lado de {model}.",
+  "411a4c0012fbdc78": "Este modelo tem mais de {size}. Carregá-lo pode deixar esta janela lenta por um tempo.",
+  "7a4197b6468d9219": "Este modelo tem {size}. Carregá-lo pode deixar esta janela lenta por um tempo.",
+  "0b87945c6568d758": "Há uma versão mais recente",
+  "7805e0174e665cd4": "Não foi possível carregar a nova versão",
+  "5ec36ad4005866e2": "{files} não encontrado ao lado de {model}",
+  "164dcb32e690fb3b": "Redefinir visualização",
+  "fd84ebd10dd79423": "Recarregar modelo",
+  "69b6a587633c2599": "Triângulos",
+  "26a4ebec594d4dee": "Pontos",
+  "db81a08c825964a9": "Tamanho",
+  "d51618c38e9c4e73": "{width} × {height} × {depth}",
+  "317be90a94ab7326": "{width} × {height} × {depth} {unit}",
+  "a33fd1cd3116533d": "Manter esta versão",
+  "c61866d92a739c56": "Carregar modelo",
+  "800f266a8be8e117": "Detalhes do modelo",
+  "22738c009abc434a": "Este arquivo não é um arquivo do Blender ou está danificado.",
+  "458554b0a4245572": "Este arquivo do Blender é grande demais para ler seus detalhes.",
+  "31714e7420776a7c": "Este anexo não está mais disponível.",
+  "29e40a5da4bbbf79": "Não foi possível capturar a visualização 3D",
+  "ce122949162f2073": "Pré-visualização flutuante do Blender",
+  "a0f6aecb07b533ff": "Blenders em execução ({count})",
+  "73428370de12439f": "Cópias de trabalho guardadas ({count})",
+  "3014b7f6587ef7f3": "Não foi possível excluir a cópia de trabalho guardada",
+  "b04a15f0adaa16b9": "Nenhum Blender hospedado em execução",
+  "201b5d40d08e74d0": "O Blender hospedado de cada conversa aparece aqui enquanto estiver em execução.",
+  "75daeb1e9b041511": "Conversa desconhecida",
+  "0eda0be3d24af58c": "Sair",
+  "6d24969032ce53a0": "Nenhuma cópia de trabalho guardada",
+  "3d0a18ffc243356c": "Quando uma conversa é concluída ou arquivada, o T3 Code tira a cópia de trabalho do agente dela do projeto e a guarda aqui por até 30 dias, para que a conversa possa retomá-la.",
+  "e9ca4e90337acd65": [
+    "Deixada no projeto em ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ": o T3 Code não teve certeza de que é a própria cópia de trabalho dele, então não a moveu."
+  ],
+  "592c50d245b10973": [
+    "Cópia de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ". O arquivo mestre mudou desde então. Mantida até ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
+    "."
+  ],
+  "e22cf76c96e9f6ef": [
+    "Cópia de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ". Mantida até ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
+    "."
+  ],
+  "1489b5efe3628bf7": [
+    "Um salvamento mais recente chegou enquanto o T3 Code movia esta cópia de trabalho, e outro arquivo ocupou o lugar dela em ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". O T3 Code deixou esse salvamento ao lado, em",
+    " ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ", e não moveu nenhum dos dois."
+  ],
+  "77e2ba01461cdf5f": "Excluir",
+  "7660bc93bbd673be": "Deixe o T3 Code executar o próprio Blender neste servidor, em uma tela oculta, para você ver e controlá-lo no painel do Blender. Somente Linux. O Blender do seu desktop nunca é afetado.",
+  "41dfe036cd2b2975": "Hosted Blender",
+  "9cc2228be8a75b39": "Agentes em threads do Claude e do Codex podem iniciar os Hosted Blender deste servidor, a partir da próxima sessão. Outros provedores ainda não são compatíveis.",
+  "9dfd275b6a5d4f9a": "Conclua a configuração primeiro, incluindo o servidor MCP oficial do Blender. Os agentes o usam para trabalhar no Hosted Blender.",
+  "1f0df945c5a89af5": "Permitir que agentes iniciem o Hosted Blender",
+  "67c674ad132e17bb": "Assistente de tela oculta",
+  "16da5cd9c2fa80bc": "Codificador H.264",
+  "af0373642246bb1c": "Upload OpenGL do GStreamer (NVIDIA)",
+  "129d601c223507ec": "GPU",
+  "d87898d465d6309f": "Servidor MCP do Blender",
+  "541ee140c8330a2a": "Não foi possível verificar a configuração do Hosted Blender",
+  "428192e9745f36eb": "Não foi possível iniciar a thread de configuração",
+  "31ba36fb9402faa7": "Comandos de instalação",
+  "b6554bc1ff014f77": "O servidor MCP oficial do Blender Lab, como ~/.local/bin/blender-mcp. Deixe vazio para encontrá-lo no PATH ou em ~/.local/bin. Verifique novamente após alterá-lo.",
+  "e7743bf6a3de9ca3": "Redefinir o caminho do MCP do Blender",
+  "a9b3c3359bce1e24": "Caminho do MCP do Blender",
+  "6d0cb7390c17be3b": "Encontrar automaticamente",
+  "0726bb02c4c42175": "Verificando este servidor…",
+  "3a450021c92f3e4e": "O T3 Code procura o Blender, o labwc, o GStreamer e a GPU e faz uma codificação de teste.",
+  "b0537628ad92ed53": "Ainda não verificado",
+  "33bb3044d9712567": "Verificar se este servidor tem Blender, labwc, GStreamer e GPU, com uma codificação de teste.",
+  "c3f155eda04d9708": "O Hosted Blender precisa de um servidor Linux. As pré-visualizações de arquivos 3D continuam funcionando neste.",
+  "60f2565d2d2a6c3e": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " traz labwc e GStreamer antigos demais para o Hosted Blender. Ubuntu 24.04, Debian 13, Fedora 43 e Arch funcionam."
+  ],
+  "66c4a476d0b4abaa": "As versões Flatpak e Snap do Blender ainda não são compatíveis. Instale o Blender pelo blender.org ou pela sua distribuição, ou defina o caminho em Configurações › Geral › Pré-visualizações 3D, e verifique novamente.",
+  "cd212c9950bba81d": "Encontrado",
+  "f9ab32870fe2bf3a": "Ausente",
+  "d724abd4cc4a85e5": "Antigo demais",
+  "7b01b12da1a9fd17": "Lento",
+  "a5fe3dee0a941705": "Não é o do Blender Lab",
+  "8becfcfe3e575a76": "Teste falhou",
+  "76b81a9f9a2687ed": "Não iniciou",
+  "7174ef3cfccc7a54": "Executa o Blender na tela oculta e transmite a imagem.",
+  "59e399ec181acb63": "O assistente do próprio T3 Code está ausente nesta instalação. Atualize ou reinstale o T3 Code.",
+  "92a36f954d094a6f": [
+    "Versão ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "759ad8d8187ed946": [
+    "Versão ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". O Hosted Blender precisa do Blender 4.5 ou posterior."
+  ],
+  "2cf31d1c821751ac": "Instale o Blender 4.5 ou posterior, ou defina o caminho em Configurações › Geral › Pré-visualizações 3D.",
+  "5d52dcf7276c5199": "O compositor por trás da tela oculta.",
+  "ac6f1be5c0b72432": [
+    "Versão ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ", capturada com wlr-screencopy. O labwc 0.9 ou posterior captura só a janela do Blender."
+  ],
+  "8ca441a272a1c6e1": [
+    "Versão ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". O Hosted Blender precisa do GStreamer 1.24 ou posterior."
+  ],
+  "f400a2435a7c9972": "O GStreamer 1.24 ou posterior codifica o stream.",
+  "991f74849ed9e582": [
+    "A codificação de teste de um segundo usou ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "154b8f20f1645434": "Há um codificador H.264 instalado, mas nenhum passou na codificação de teste de um segundo. Se a GPU estava ocupada, verifique novamente.",
+  "ba5e2c560dd26d57": "Nenhum codificador H.264 passou na codificação de teste. Instale os plugins do GStreamer: nvh264enc, vah264enc, x264enc ou openh264enc.",
+  "2ab5a1fabca22fd0": "O codificador da NVIDIA lê os quadros do Blender direto da GPU.",
+  "fce6aa0c10874b0c": "O codificador da NVIDIA precisa do plugin OpenGL do GStreamer.",
+  "040d82d74fa9b290": "O Blender desenha com a GPU.",
+  "b1f3a29faa7594ff": "Este servidor tem uma GPU, mas o T3 Code não consegue abri-la. Adicione seu usuário aos grupos render e video. Até lá, o Blender ficará lento.",
+  "e4f914bd5e6899bf": "Nenhuma GPU encontrada. O Hosted Blender ainda funciona, mas o Blender ficará lento.",
+  "933fa7740fe8c681": {
+    "i": 1,
+    "k": "_gt_value_1",
+    "v": "v"
+  },
+  "92c9412a1a79bb73": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " é outro projeto com o mesmo nome, não o MCP do Blender Lab. Instale o oficial ou defina o caminho abaixo."
+  ],
+  "1f0242c77c342e9b": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " não respondeu quando o T3 Code o iniciou, então os agentes ficam sem ferramentas do Blender. Reinstale-o e verifique de novo."
+  ],
+  "9a397640135c1803": "Os agentes precisam do servidor MCP oficial do Blender Lab. O painel funciona sem ele.",
+  "7c26d4f38c0094aa": "O resultado é mantido até você verificar novamente, por exemplo depois de instalar algo.",
+  "021b62ff834041f0": "Instalar o que falta",
+  "ec5d04aa0c3eed05": "Um agente está instalando o que falta",
+  "26c7f14fb81274cb": "Um agente pode instalar em uma nova thread, pedindo sua senha em um cartão privado, nunca no chat. Ou execute os comandos você mesmo. O T3 Code nunca instala pacotes do sistema por conta própria.",
+  "0d7eb1eeb33375bb": "O T3 Code verifica novamente quando o agente termina.",
+  "a19376d3fce3f52d": "Instalar com um agente",
+  "5dee7399d93445e1": "Ocultar os comandos",
+  "fbb5ec917cc3451d": "Mostrar os comandos",
+  "db2f53db5e812a59": "Copiar comandos",
+  "47eb7e3f2072d8a4": "Pré-visualizações 3D",
+  "a2fc60e4c15eb1de": "O Blender que transforma arquivos .blend em pré-visualizações 3D, como /usr/bin/blender ou C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe. Deixe vazio para encontrá-lo no PATH ou onde o Blender é instalado.",
+  "4c0182441f7f746d": "Redefinir o caminho do Blender",
+  "b0e5f2ebaa0f2d56": "Caminho do Blender",
+  "6ac7d143dd2dd2a5": "blender 3d pré-visualização arquivo blend converter glb modelo caminho binário instalar",
+  "dd6b767f08eff9f7": "Blenders em execução",
+  "ec2bc06507d0d9af": "hospedado blender sair memória 3d conversa",
+  "a814b94991df8526": "Cópias de trabalho guardadas",
+  "9a71eb544988a290": "hospedado blender cópia de trabalho wip concluída arquivada excluir expirar mestre",
+  "37d76dab21a26b2a": "blender hosted configuração instalar verificar labwc gstreamer codificador gpu tela oculta linux agente comandos",
+  "f74fb1f1e951cb67": "blender hosted agentes mcp iniciar permitir",
+  "3cf7f8ed35b33c5f": "blender lab mcp servidor caminho binário instalar uv pipx",
+  "0b7950be09ae6c3f": "Linha do tempo",
+  "05d1fff2e7325939": "Mostra a linha do tempo do Blender abaixo da visão 3D no painel do Blender, para cada Blender hospedado neste servidor.",
+  "138dedd43ae601b2": "Linha do tempo no painel do Blender",
+  "d75cc4b1152e0425": "blender hospedado linha do tempo animação quadros-chave reprodução quadros faixa",
+  "b75a2837e20ac029": "Não foi possível restaurar as alterações",
+  "656229dd34610e6d": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " foi alterado no disco, então o Blender o recarregou. As alterações não salvas foram mantidas como cópia de recuperação."
+  ],
+  "a1d7b8f8a44e27aa": "Restaurar alterações",
+  "acd0c171046c17bf": "Substituir as alterações não salvas de {name}?",
+  "cb7a692d62db22e7": "O Blender tem alterações desde que recarregou o arquivo. Restaurar traz de volta as alterações mantidas e guarda estas como cópia de recuperação no lugar delas, para que você possa restaurá-las de novo.",
+  "449feb1ad3d6c425": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " foi alterado no disco. O Blender vai carregá-lo quando o trabalho do agente em execução nele terminar."
+  ],
+  "06be14c04a81e489": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " foi alterado no disco. O Blender vai carregá-lo quando as edições de imagem não salvas forem salvas ou descartadas, pois uma cópia de recuperação não consegue guardá-las."
+  ],
+  "3a3de5a1dfe252e8": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " foi alterado no disco. O Blender vai carregá-lo quando as edições de catálogos de assets não salvas forem salvas ou descartadas, pois uma cópia de recuperação não consegue guardá-las."
+  ],
+  "f813d3c90e608095": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " foi alterado no disco, mas o Blender não conseguiu guardar antes as alterações não salvas, então não carregou a nova versão."
+  ],
+  "07634e6515f13cbe": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " foi alterado no disco, mas o Blender não conseguiu carregar a nova versão. Ele tenta de novo quando o arquivo mudar."
+  ]
 }

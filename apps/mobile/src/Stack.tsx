@@ -61,6 +61,7 @@ import { ReviewCommentComposerSheet } from "./features/review/ReviewCommentCompo
 import { ReviewSheet } from "./features/review/ReviewSheet";
 import { ThreadTerminalRouteScreen } from "./features/terminal/ThreadTerminalRouteScreen";
 import { DevicePreviewRouteScreen } from "./features/devices/DevicePreviewRouteScreen";
+import { BlenderRouteScreen } from "./features/blender/BlenderRouteScreen";
 import { BrowserPreviewRouteScreen } from "./features/browser/BrowserPreviewRouteScreen";
 import { LocalPreviewRouteScreen } from "./features/browser/LocalPreviewRouteScreen";
 import { GitBranchesSheet } from "./features/threads/git/GitBranchesSheet";
@@ -737,6 +738,11 @@ const RootStackConfig = createWorkspaceStackNavigator({
     ThreadDevicePreview: createNativeStackScreen({
       screen: DevicePreviewRouteScreen,
       linking: `${THREAD_LINKING_PREFIX}/devices`,
+      options: immersiveRoute({ hideSystemBars: true }),
+    }),
+    ThreadBlender: createNativeStackScreen({
+      screen: BlenderRouteScreen,
+      linking: `${THREAD_LINKING_PREFIX}/blender`,
       options: immersiveRoute({ hideSystemBars: true }),
     }),
     ThreadBrowserPreview: createNativeStackScreen({

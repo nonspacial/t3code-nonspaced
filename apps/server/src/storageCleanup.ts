@@ -55,6 +55,7 @@ import { threadHasQueuedTurnStart } from "./orchestration-v2/ThreadSettlementSer
 import { MAX_OVERDUE_ARM_MS } from "./orchestration-v2/UsageLimitRecoveryWorker.ts";
 import * as WorktreeBranchSync from "./orchestration-v2/WorktreeBranchSync.ts";
 import { forkParked } from "./serverActivation.ts";
+import { HELD_FOLDER } from "./hostedBlender/workingCopies.ts";
 import * as Settings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import { isFilesystemRoot, managedWorktreesDirectories } from "./worktreesDirectory.ts";
@@ -929,10 +930,24 @@ const make = Effect.gen(function* () {
     return path.basename(resolved) === ".git" ? path.dirname(resolved) : resolved;
   });
 
+  // Git ignores them by their folder's own `.gitignore`, but they are a person's work. A stat
+  // first: most folders have none, and nothing here walks a folder's subfolders.
+  const heldCopiesReason = Effect.fn("StorageCleanup.heldCopiesReason")(function* (cwd: string) {
+    const heldFolder = path.join(cwd, HELD_FOLDER);
+    const held = (yield* fs.exists(heldFolder).pipe(Effect.orElseSucceed(() => false)))
+      ? yield* fs
+          .readDirectory(heldFolder)
+          .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []))
+      : [];
+    return held.some((name) => name !== ".gitignore") ? "holds Blender working copies" : null;
+  });
+
   const localChangesReason = Effect.fn("StorageCleanup.localChangesReason")(function* (
     cwd: string,
     rules: WorktreeCleanupRules,
   ) {
+    const held = yield* heldCopiesReason(cwd);
+    if (held !== null) return held;
     const status = yield* git.execute({
       operation: "StorageCleanup.localChanges",
       cwd,
@@ -1250,6 +1265,8 @@ const make = Effect.gen(function* () {
       const realParent = yield* fs.realPath(path.dirname(folder));
       if ((yield* fs.realPath(folder)) !== path.join(realParent, path.basename(folder)))
         return "folder is a symbolic link";
+      const held = yield* heldCopiesReason(folder);
+      if (held !== null) return held;
       // Every file here is untracked, and only "tracked-changes" lets cleanup delete those.
       if (rules.worktreeKeepWhen !== "tracked-changes") {
         const file = (yield* fs.readDirectory(folder)).find((name) => name !== "node_modules");

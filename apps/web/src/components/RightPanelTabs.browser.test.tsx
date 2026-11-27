@@ -1,12 +1,12 @@
 import "~/index.css";
 
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
 import { InputGroup, InputGroupAddon, InputGroupInput } from "~/components/ui/input-group";
-import type { RightPanelSurface } from "~/rightPanelStore";
+import { type RightPanelSurface, useRightPanelStore } from "~/rightPanelStore";
 import { act, render, stubGlobal } from "../../test/render";
 import { HistorySwipeNavigation } from "./HistorySwipeNavigation";
 import { RightPanelTabs, type RightPanelTabsProps } from "./RightPanelTabs";
@@ -14,6 +14,14 @@ import { subscribePreviewAction } from "./preview/previewActionBus";
 
 const navigateHistory = vi.hoisted(() => vi.fn());
 vi.mock("../navigationHistory", () => ({ canNavigateHistory: () => true, navigateHistory }));
+const blender = vi.hoisted(() => ({ state: null as unknown, watched: [] as unknown[] }));
+vi.mock(import("~/state/hostedBlender"), async (original) => ({
+  ...(await original()),
+  useHostedBlenderState: ((threadRef: unknown) => {
+    blender.watched.push(threadRef);
+    return threadRef === null ? null : blender.state;
+  }) as never,
+}));
 
 // Chromium starts a gesture scroll, and Electron reports its begin, only for a
 // wheel event the page did not preventDefault; it then scrolls the latched scroller.
@@ -151,7 +159,7 @@ const BROWSER_SURFACE: RightPanelSurface = {
 };
 const DIFF_SURFACE: RightPanelSurface = { id: "diff", kind: "diff" };
 
-function panel(activeSurface: RightPanelSurface) {
+function panel(activeSurface: RightPanelSurface, extra: Partial<RightPanelTabsProps> = {}) {
   const noop = () => {};
   const props: RightPanelTabsProps = {
     mode: "inline",
@@ -202,6 +210,7 @@ function panel(activeSurface: RightPanelSurface) {
         </InputGroup>
       </div>
     ),
+    ...extra,
   };
   return <RightPanelTabs {...props} />;
 }
@@ -291,6 +300,34 @@ describe("device tab rename", () => {
     await userEvent.fill(input, "日本語");
     await userEvent.keyboard("{Enter}");
     expect(onRenameDevice).toHaveBeenCalledExactlyOnceWith(DEVICE_SURFACE.id, "日本語");
+  });
+});
+
+describe("the + menu's Blender entry", () => {
+  it("opens the thread's Blender pane where Hosted Blender is on, before its state answers, watching it only while open", async () => {
+    blender.state = null;
+    blender.watched = [];
+    const { hostedBlenderEnvironment } = await import("~/state/hostedBlender");
+    const { Atom } = await import("effect/reactivity");
+    using _open = vi
+      .spyOn(hostedBlenderEnvironment.open, "permissionAtom")
+      .mockReturnValue(Atom.make(true) as never);
+    using openPane = vi.spyOn(useRightPanelStore.getState(), "open").mockImplementation(() => {});
+    const threadRef = {
+      environmentId: EnvironmentId.make("environment-1"),
+      threadId: ThreadId.make("thread-1"),
+    };
+    await using screen = await render(panel(DIFF_SURFACE, { blenderThreadRef: threadRef }));
+    expect(blender.watched.every((watched) => watched === null)).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "Add panel surface" }));
+    await userEvent.click(page.getByRole("menuitem", { name: /Blender/ }));
+    expect(openPane).toHaveBeenCalledWith(threadRef, "blender");
+
+    // Where Hosted Blender is off, the entry isn't offered.
+    await screen.rerender(panel(DIFF_SURFACE, { blenderThreadRef: null }));
+    await userEvent.click(screen.getByRole("button", { name: "Add panel surface" }));
+    await expect.element(page.getByRole("menuitem", { name: /Files/ })).toBeInTheDocument();
+    await expect.element(page.getByRole("menuitem", { name: /Blender/ })).not.toBeInTheDocument();
   });
 });
 

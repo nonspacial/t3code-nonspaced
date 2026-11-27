@@ -103,6 +103,19 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.peerLinksAnswerRequest]: AuthAccessWriteScope,
   [WS_METHODS.peerLinksPairClient]: AuthAccessWriteScope,
   [WS_METHODS.peerLinksPairLink]: AuthAccessWriteScope,
+  [WS_METHODS.hostedBlenderOpen]: AuthOrchestrationOperateScope,
+  [WS_METHODS.hostedBlenderQuit]: AuthOrchestrationOperateScope,
+  [WS_METHODS.hostedBlenderReopen]: AuthOrchestrationOperateScope,
+  [WS_METHODS.hostedBlenderDismiss]: AuthOrchestrationOperateScope,
+  [WS_METHODS.hostedBlenderDeleteHeld]: AuthOrchestrationOperateScope,
+  [WS_METHODS.hostedBlenderKeepHeld]: AuthOrchestrationOperateScope,
+  [WS_METHODS.hostedBlenderSetView]: AuthOrchestrationOperateScope,
+  // The strip belongs to the Blender window every viewer sees: the bar of operating it.
+  [WS_METHODS.hostedBlenderSetTimeline]: AuthOrchestrationOperateScope,
+  [WS_METHODS.hostedBlenderOpenMaster]: AuthOrchestrationOperateScope,
+  [WS_METHODS.hostedBlenderMoveIntoT3]: AuthOrchestrationOperateScope,
+  [WS_METHODS.hostedBlenderCheckSetup]: AuthOrchestrationOperateScope,
+  [WS_METHODS.hostedBlenderInstallWithAgent]: AuthOrchestrationOperateScope,
   // Send stores and sends a report from a thread's turn: the bar of running that thread.
   [WS_METHODS.agentFeedbackAnswerRequest]: AuthOrchestrationOperateScope,
 } as const;

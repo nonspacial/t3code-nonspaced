@@ -22,6 +22,7 @@ const ALL_MCP_CAPABILITIES = [
   "orchestration",
   "worktree",
   "device",
+  "hosted-blender",
   "pull-requests",
   "issues",
   "background-wait",
@@ -222,6 +223,18 @@ export const hiddenWithoutBackgroundWait = (): boolean => {
   );
 };
 
+/**
+ * `hiddenFromOutsideClients`, and hidden from a thread whose session T3 gave no hosted Blender MCP
+ * (other providers, or agents not allowed).
+ */
+export const hiddenWithoutHostedBlender = (): boolean => {
+  const fiber = Fiber.getCurrent();
+  const scope = fiber && Context.getOrUndefined(fiber.context, McpInvocationContext);
+  return (
+    scope === undefined || (scope.thread !== undefined && scope.capabilities.has("hosted-blender"))
+  );
+};
+
 /** `McpSchema.EnabledWhen` for tools only a client outside a thread drives, such as the CLI. */
 export const hiddenFromThreads = (): boolean => {
   const fiber = Fiber.getCurrent();
@@ -291,7 +304,7 @@ export const requireMcpCapability = <const C extends McpCapability>(
     Effect.withSpan("mcp.requireCapability"),
   );
 
-export const requireThreadMcpCapability = <const C extends "preview" | "device">(
+export const requireThreadMcpCapability = <const C extends "preview" | "device" | "hosted-blender">(
   capability: C,
 ): Effect.Effect<McpThreadInvocationScope, McpCapabilityError<C>, McpInvocationContext> =>
   McpInvocationContext.pipe(

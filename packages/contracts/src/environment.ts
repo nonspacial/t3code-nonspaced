@@ -117,6 +117,10 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   projectWorktreeCleanup: Schema.optionalKey(Schema.Boolean),
   settledWorktreeCleanup: Schema.optionalKey(Schema.Boolean),
   worktreesDirectory: Schema.optionalKey(Schema.Boolean),
+  /** Converts `.blend` files to GLB and honors `blenderPath`. */
+  blendConversion: Schema.optionalKey(Schema.Boolean),
+  /** Serves hosted Blender's setup check and honors its switches; hide Settings › Blender without it. */
+  hostedBlenderSetup: Schema.optionalKey(Schema.Boolean),
   /** Sent by macOS servers, which honor the fastWorktreeCheckout setting. */
   fastWorktreeCheckout: Schema.optionalKey(Schema.Boolean),
   threadAutoSettlementScope: Schema.optionalKey(Schema.Boolean),

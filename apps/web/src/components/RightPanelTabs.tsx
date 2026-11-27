@@ -25,8 +25,10 @@ import type {
   ProjectId,
   PullRequestState,
   ResolvedKeybindingsConfig,
+  ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabelsCopy";
 import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subagent-display";
 import {
@@ -44,6 +46,7 @@ import {
   Bot,
   CircleDotIcon,
   Smartphone,
+  Box,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -70,7 +73,8 @@ import {
 import { isElectron } from "~/env";
 import type { DesktopPreviewOverlay } from "~/previewStateStore";
 import { linkedThreadTitle } from "~/linkedThreadSurface";
-import type { RightPanelSurface } from "~/rightPanelStore";
+import { type RightPanelSurface, useRightPanelStore } from "~/rightPanelStore";
+import { hostedBlenderEnvironment, useHostedBlenderState } from "~/state/hostedBlender";
 import { cn } from "~/lib/utils";
 import { issueStatePresentation } from "~/components/issue/issuePresentation";
 import { issueEnvironment } from "~/state/issues";
@@ -160,6 +164,8 @@ export interface RightPanelTabsProps {
   onAddDevice: () => void;
   /** Absent where side chats are not offered. */
   onAddSideChat?: (() => void) | undefined;
+  /** The thread whose hosted Blender the menu offers; null where Hosted Blender is off. */
+  blenderThreadRef?: ScopedThreadRef | null;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -196,6 +202,7 @@ const SURFACE_DISABLED_REASONS = {
   pullRequest: msg("This thread's branch has no pull request yet."),
   pullRequests: msg("This thread has no linked items."),
   device: msg("Devices are only available from a thread."),
+  blender: msg("Hosted Blender isn't available on this host."),
   sideChat: msg("Side chats start after the first message."),
 } as const;
 
@@ -623,6 +630,8 @@ function surfaceTitle(
       return /^\d+$/.test(surface.key) ? `#${surface.key}` : surface.key;
     case "device":
       return surface.title ?? surface.target?.name ?? resolve(msg("Device"));
+    case "blender":
+      return resolve(msg("Blender"));
     case "thread":
       // Until the thread's own title loads.
       return resolve(msg("Thread"));
@@ -725,6 +734,8 @@ function SurfaceIcon({
       return <SideChatTabIcon environmentId={environmentId} threadId={surface.threadId} />;
     case "linked-thread":
       return <MessagesSquare className="size-3 shrink-0" />;
+    case "blender":
+      return <Box className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />
@@ -1133,6 +1144,16 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
   const addSurfaceTriggerRef = useRef<HTMLButtonElement>(null);
   const [renamingDevice, setRenamingDevice] = useState<string | null>(null);
   const [addSurfaceMenuOpen, setAddSurfaceMenuOpen] = useState(false);
+  // As the command palette's Open hosted Blender: watched only while the menu is open.
+  const blenderThreadRef = props.blenderThreadRef ?? null;
+  const canOpenBlender = useAtomValue(
+    hostedBlenderEnvironment.open.permissionAtom(
+      blenderThreadRef?.environmentId ?? ("" as EnvironmentId),
+    ),
+  );
+  const blenderState = useHostedBlenderState(
+    addSurfaceMenuOpen && canOpenBlender ? blenderThreadRef : null,
+  );
   const [tabScrollState, setTabScrollState] = useState({
     hasOverflow: false,
     canScrollLeft: false,
@@ -1224,6 +1245,19 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       disabledReason: messages(SURFACE_DISABLED_REASONS.device),
       onClick: props.onAddDevice,
     },
+    ...(blenderThreadRef !== null && canOpenBlender
+      ? [
+          {
+            label: msg("Blender"),
+            icon: Box,
+            shortcut: "K",
+            // Only a host known to lack it disables this; opening reports anything else missing.
+            available: blenderState?.status !== "unavailable",
+            disabledReason: messages(SURFACE_DISABLED_REASONS.blender),
+            onClick: () => useRightPanelStore.getState().open(blenderThreadRef, "blender"),
+          },
+        ]
+      : []),
     ...(props.onAddSideChat
       ? [
           {

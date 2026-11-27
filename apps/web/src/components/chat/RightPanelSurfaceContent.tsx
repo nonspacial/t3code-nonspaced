@@ -37,6 +37,9 @@ const DevicePanel = lazy(() =>
   import("../device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
 );
 const FilePreviewPanel = lazy(() => import("../files/FilePreviewPanel"));
+const BlenderPanel = lazy(() =>
+  import("../blender/BlenderPanel").then((module) => ({ default: module.BlenderPanel })),
+);
 
 type RightPanelTerminalProps = Omit<
   PersistentThreadTerminalPanelProps,
@@ -268,6 +271,17 @@ export function RightPanelSurfaceContent(props: {
           />
         </Suspense>
       );
+    case "blender":
+      return (
+        <Suspense fallback={null}>
+          <BlenderPanel
+            threadRef={threadRef}
+            visible={visible}
+            composerTarget={props.composerDraftTarget}
+            projectId={props.files.projectId}
+          />
+        </Suspense>
+      );
     case "files":
     case "file": {
       const files = props.files;
@@ -292,6 +306,7 @@ export function RightPanelSurfaceContent(props: {
             {...(attachment ? { attachment } : {})}
             revealLine={surface.kind === "file" ? (surface.revealLine ?? null) : null}
             revealRequestId={surface.kind === "file" ? surface.revealRequestId : 0}
+            revealView={surface.kind === "file" ? (surface.revealView ?? null) : null}
             onOpenFile={files.onOpenFile}
             onNavigateFolder={(relativePath, folderTrail, keepSource) =>
               useRightPanelStore

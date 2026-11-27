@@ -35,6 +35,7 @@ import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
+import * as HostedBlender from "../hostedBlender/HostedBlender.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
@@ -358,6 +359,7 @@ export const make = Effect.gen(function* () {
     quietOpenReadAt.clear();
   });
   const terminals = yield* TerminalManager.TerminalManager;
+  const hostedBlender = yield* HostedBlender.HostedBlender;
   const projectScripts = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
   // Repeated thread.settled retains settledAt; run the action only once per settlement.
   const settleActionRunAt = new Map<ThreadId, number>();
@@ -765,6 +767,10 @@ export const make = Effect.gen(function* () {
       return fullSweeps.enqueue(undefined);
     });
   const threadSweeps = yield* FiberSet.make<void>();
+  // A busy master Blender can take a while to settle; other threads' events don't wait on it.
+  const masterReleases = yield* FiberSet.make<void>();
+  const releaseMaster = (threadId: ThreadId) =>
+    hostedBlender.releaseMaster(threadId).pipe(FiberSet.run(masterReleases), Effect.asVoid);
   const threadSweepSlots = yield* Semaphore.make(8);
   // One sweep per thread at a time; events during a running sweep coalesce into one more pass.
   const threadSweepStates = new Map<ThreadId, "queued" | "running" | "rerun">();
@@ -797,6 +803,9 @@ export const make = Effect.gen(function* () {
       const settled = yield* projections.getThread(threadId);
       if (settled.deletedAt !== null || settled.settledOverride !== "settled") return;
       yield* terminals.closeOnSettle({ threadId });
+      yield* hostedBlender.closeOnSettle({ threadId });
+      // A master Blender quits once the last thread using it settles.
+      yield* releaseMaster(threadId);
       const worktreePath = settled.worktreePath;
       if (worktreePath === null) return;
       if (!(yield* fileSystem.exists(worktreePath))) {
@@ -860,9 +869,14 @@ export const make = Effect.gen(function* () {
     switch (event.type) {
       case "thread.settled":
         return cleanUpSettledThread(event.threadId).pipe(Effect.andThen(enqueueFullSweep()));
+      // An archived thread comes back, with what its Blender kept; a deleted one never does.
       case "thread.archived":
       case "thread.deleted":
-        return enqueueFullSweep();
+        return (
+          event.type === "thread.deleted"
+            ? hostedBlender.forgetThread({ threadId: event.threadId })
+            : hostedBlender.closeOnSettle({ threadId: event.threadId })
+        ).pipe(Effect.andThen(releaseMaster(event.threadId)), Effect.andThen(enqueueFullSweep()));
       case "thread.pull-request-link-updated":
       case "thread.pull-request-synced":
       case "thread.issue-synced":

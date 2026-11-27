@@ -200,10 +200,15 @@ import { usePreviewSession } from "./preview/usePreviewSession";
 import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
 
 import {
+  BLENDER_MINI_PLAYER_SOURCE,
   previewMiniPlayerSourceKey,
   selectThreadPreviewMiniPlayer,
   usePreviewMiniPlayerStore,
 } from "../previewMiniPlayerStore";
+import { decideFloatingBlender } from "./blender/floatingBlender";
+import { agentWorkingInBlender, workingInBlenderBannerItem } from "./blender/workingInBlender";
+import { chatHostedBlenderThread } from "@t3tools/client-runtime/state/hosted-blender";
+import { useHostedBlenderState } from "../state/hostedBlender";
 import { threadPullRequestPanelTarget } from "./pullRequest/pullRequestDetail.logic";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
 import { GuestPendingMessages } from "./chat/GuestShareControls";
@@ -231,6 +236,7 @@ import {
   shouldShowInstanceBadge,
 } from "../providerInstances";
 import {
+  getClientSettings,
   useClientSettings,
   useClientSettingsHydrated,
   useEnvironmentSettings,
@@ -2092,7 +2098,8 @@ export default function ChatView(props: ChatViewProps) {
     activeThreadRef &&
     activePreviewMiniPlayer &&
     previewMiniPlayerVisible &&
-    (activePreviewMiniPlayer.source.kind === "device" || canOperatePreview)
+    // A browser needs preview access; a device or Blender has its own.
+    (activePreviewMiniPlayer.source.kind !== "browser" || canOperatePreview)
       ? activePreviewMiniPlayer
       : null;
   const canvasPreview = useThreadPreviewCanvasSource(activeThreadRef, shownPreviewMiniPlayer);
@@ -2158,6 +2165,41 @@ export default function ChatView(props: ChatViewProps) {
       )
     : linkedThreadPullRequestKey;
   const activeRunningTurnId = activeRuntime?.activeRunId ?? null;
+  // The thread's hosted Blender is only watched while a turn runs or its pane floats.
+  const floatingBlenderThreadRef = chatHostedBlenderThread(
+    serverConfig,
+    isServerThread && !embedded && !shouldUsePlanSidebarSheet ? activeThreadRef : null,
+  );
+  const floatingSource = activePreviewMiniPlayer?.source ?? null;
+  const floatingBlenderState = useHostedBlenderState(
+    floatingBlenderThreadRef && (activeRunningTurnId !== null || floatingSource?.kind === "blender")
+      ? floatingBlenderThreadRef
+      : null,
+  );
+  const blenderPanelShown = renderedRightPanelSurface?.kind === "blender";
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Floats the Blender pane over chat while the shown thread's agent works, and closes it when its Blender stops.
+  useEffect(() => {
+    if (!floatingBlenderThreadRef) return;
+    const action = decideFloatingBlender(scopedThreadKey(floatingBlenderThreadRef), {
+      runningTurnId: activeRunningTurnId,
+      state: floatingBlenderState,
+      autoShowFloatingPreview: clientSettingsHydrated
+        ? getClientSettings().browserAutoShowFloatingPreview
+        : null,
+      floating: floatingSource,
+      panelShown: blenderPanelShown,
+    });
+    const miniPlayer = usePreviewMiniPlayerStore.getState();
+    if (action === "float") miniPlayer.open(floatingBlenderThreadRef, BLENDER_MINI_PLAYER_SOURCE);
+    if (action === "close") miniPlayer.close(floatingBlenderThreadRef);
+  }, [
+    floatingBlenderThreadRef,
+    activeRunningTurnId,
+    floatingBlenderState,
+    floatingSource,
+    blenderPanelShown,
+    clientSettingsHydrated,
+  ]);
   useProactivePanels({
     threadRef: isServerThread && !embedded ? activeThreadRef : null,
     enabled: settings.proactivePanelsEnabled && !shouldUsePlanSidebarSheet && !embedded,
@@ -2831,6 +2873,18 @@ export default function ChatView(props: ChatViewProps) {
       freshSessionPending && activePendingApproval === null
         ? [freshSessionBannerItem(() => disarmFreshSession(routeThreadKey), messages)]
         : [];
+    // Without Hosted Blender on, no turn can be working in one: the timeline isn't scanned.
+    const workingInBlenderItems = agentWorkingInBlender(
+      timelineEntries,
+      chatHostedBlenderThread(serverConfig, activeRunningTurnId),
+    )
+      ? [
+          workingInBlenderBannerItem(
+            { onStop: canInterruptRunningThread ? () => void onInterruptStable() : null },
+            messages,
+          ),
+        ]
+      : [];
     const heldSendItems = composerSendHeld
       ? [
           heldComposerSendBannerItem(
@@ -2848,6 +2902,7 @@ export default function ChatView(props: ChatViewProps) {
         ...usageLimitsItems,
         ...projectCloneItems,
         ...freshSessionItems,
+        ...workingInBlenderItems,
         ...heldSendItems,
         ...systemComposerBannerItems,
       ];
@@ -2860,6 +2915,7 @@ export default function ChatView(props: ChatViewProps) {
       ...usageLimitsItems,
       ...projectCloneItems,
       ...freshSessionItems,
+      ...workingInBlenderItems,
       ...heldSendItems,
       ...systemComposerBannerItems,
       branchMismatchBannerItem(
@@ -4276,6 +4332,10 @@ export default function ChatView(props: ChatViewProps) {
           onAddPullRequests={addPullRequestsSurfaceStable}
           onAddDevice={addDeviceSurfaceStable}
           onAddSideChat={sideChatsOffered ? openSideChatStable : undefined}
+          blenderThreadRef={chatHostedBlenderThread(
+            serverConfig,
+            isServerThread ? activeThreadRef : null,
+          )}
           browserAvailable={canOperatePreview && browserAvailable}
           terminalAvailable={activeProject !== null && canOperateTerminal}
           diffAvailable={isServerThread && diffAvailable}

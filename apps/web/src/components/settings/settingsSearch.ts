@@ -31,6 +31,7 @@ export type SettingsPath =
   | "/settings/threads"
   | "/settings/browser"
   | "/settings/devices"
+  | "/settings/blender"
   | "/settings/scheduled-tasks"
   | "/settings/source-control"
   | "/settings/worktrees"
@@ -109,6 +110,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/threads": msg("Threads"),
   "/settings/browser": msg("Browser"),
   "/settings/devices": msg("Devices"),
+  "/settings/blender": msg("Blender"),
   "/settings/scheduled-tasks": msg("Scheduled tasks"),
   "/settings/source-control": msg("Source control & issues"),
   "/settings/worktrees": msg("Worktrees"),
@@ -159,6 +161,7 @@ const ALL_SETTINGS_NAV_GROUPS: ReadonlyArray<SettingsNavGroup> = [
       "/settings/threads",
       "/settings/browser",
       "/settings/devices",
+      "/settings/blender",
       "/settings/scheduled-tasks",
     ],
   },
@@ -282,6 +285,13 @@ export const SETTINGS_SEARCH_ITEMS = [
         "disk storage automatic delete deleted archived threads old inactive merged settled unchanged worktrees retention days project inherit off custom",
       ),
     ],
+  },
+  {
+    id: "blender-path",
+    title: msg("Blender path"),
+    to: "/settings/general",
+    scope: "environment-defaults",
+    searchTerms: [msg("blender 3d preview blend file convert glb model path binary install")],
   },
   {
     id: "storage-worktrees-location",
@@ -1138,6 +1148,52 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("allow disable enable open drive preview tools sessions project override")],
   },
   {
+    id: "running-blenders",
+    title: msg("Running Blenders"),
+    to: "/settings/blender",
+    targetId: "running-blenders",
+    searchTerms: [msg("hosted blender quit memory 3d thread")],
+  },
+  {
+    id: "held-working-copies",
+    title: msg("Held working copies"),
+    to: "/settings/blender",
+    targetId: "held-working-copies",
+    searchTerms: [msg("hosted blender working copy wip settled archived delete expire master")],
+  },
+  {
+    id: "hosted-blender",
+    title: msg("Hosted Blender"),
+    to: "/settings/blender",
+    scope: "environment-defaults",
+    searchTerms: [
+      msg(
+        "blender hosted setup install check labwc gstreamer encoder gpu hidden display linux agent commands",
+      ),
+    ],
+  },
+  {
+    id: "hosted-blender-allow-agents",
+    title: msg("Allow agents to start hosted Blenders"),
+    to: "/settings/blender",
+    scope: "environment-defaults",
+    searchTerms: [msg("blender hosted agents mcp start allow")],
+  },
+  {
+    id: "hosted-blender-timeline",
+    title: msg("Timeline in the Blender pane"),
+    to: "/settings/blender",
+    scope: "environment-defaults",
+    searchTerms: [msg("blender hosted timeline animation keyframes playback frames strip")],
+  },
+  {
+    id: "blender-mcp-path",
+    title: msg("Blender MCP path"),
+    to: "/settings/blender",
+    scope: "environment-defaults",
+    searchTerms: [msg("blender lab mcp server path binary install uv pipx")],
+  },
+  {
     id: "device-sources",
     title: msg("Device sources"),
     to: "/settings/devices",
@@ -1545,6 +1601,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/threads": null,
   "/settings/browser": null,
   "/settings/devices": null,
+  "/settings/blender": null,
   "/settings/source-control": "environment-defaults",
   "/settings/worktrees": "project-defaults",
   "/settings/connections": "connections",

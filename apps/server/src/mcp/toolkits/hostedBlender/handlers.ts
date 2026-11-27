@@ -1,0 +1,274 @@
+import {
+  type HostedBlenderError,
+  HostedBlenderToolError,
+  type HostedBlenderKeptCopy,
+  type HostedBlenderToolStatusResult,
+  type ThreadId,
+} from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import * as Stream from "effect/Stream";
+
+import { masterAccessHelp, openAgentMaster } from "../../../hostedBlender/agentMaster.ts";
+import {
+  startAgentWorkingCopy,
+  workingAccessHelp,
+} from "../../../hostedBlender/agentWorkingCopy.ts";
+import * as HostedBlender from "../../../hostedBlender/HostedBlender.ts";
+import * as HostedBlenderAgents from "../../../hostedBlender/HostedBlenderAgents.ts";
+import * as HostedBlenderMcpProxy from "../../../hostedBlender/HostedBlenderMcpProxy.ts";
+import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import { threadWorkspaceRoot } from "../../../project/threadWorkspaceRoot.ts";
+import { isWithinRoot } from "../../../workspace/KnownWorkspaces.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as McpToolAccess from "../../McpToolAccess.ts";
+import { HostedBlenderToolkit } from "./tools.ts";
+
+// The session's capability is fixed when it starts; the switch is read on every call.
+const requireHostedBlender = Effect.gen(function* () {
+  const scope = yield* McpInvocationContext.requireThreadMcpCapability("hosted-blender").pipe(
+    Effect.mapError(
+      () =>
+        new HostedBlenderToolError({
+          reason:
+            'Hosted Blender is not available to this agent. T3 adds it to Claude and Codex threads while Hosted Blender and "Allow agents to start hosted Blenders" are on in Settings → Blender; other providers are not supported yet. It applies when the agent session next starts.',
+        }),
+    ),
+  );
+  const agents = yield* HostedBlenderAgents.HostedBlenderAgents;
+  if (!(yield* agents.agentsAllowed)) {
+    return yield* new HostedBlenderToolError({
+      reason:
+        'The user switched off "Allow agents to start hosted Blenders" in Settings → Blender.',
+    });
+  }
+  return scope.thread.threadId;
+});
+
+/** The provider session calling, which an agent's access to a master is tied to. */
+const callerSession = McpInvocationContext.requireThreadMcpCapability("hosted-blender").pipe(
+  Effect.map((scope) => scope.thread.providerSessionId),
+  Effect.mapError(
+    () => new HostedBlenderToolError({ reason: "Hosted Blender is not available to this agent." }),
+  ),
+);
+
+const underConfiguredRoot = Effect.fnUntraced(function* (file: string, root: string | undefined) {
+  if (root === undefined) return file;
+  const path = yield* Path.Path;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const realRoot = yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root));
+  return isWithinRoot(path, file, realRoot) ? path.join(root, path.relative(realRoot, file)) : file;
+});
+
+// Plan mode is read-only: it may look at Blender, never start or quit it.
+const refuseInPlanMode = Effect.fnUntraced(function* (threadId: ThreadId, tool: string) {
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  // A mode that can't be read counts as Plan: refusing is the safe answer.
+  const shell = yield* threads.getThreadShell(threadId).pipe(Effect.orElseSucceed(() => null));
+  if (shell === null) {
+    return yield* new HostedBlenderToolError({
+      reason: `${tool} needs this thread's mode, which T3 could not read. Try again.`,
+    });
+  }
+  if (shell.interactionMode === "plan") {
+    return yield* new HostedBlenderToolError({
+      reason: `${tool} changes this thread's hosted Blender, and Plan mode is read-only. blender_status still works; ask the user to leave Plan mode first.`,
+    });
+  }
+});
+
+/** A kept copy, under its own file. */
+const keptEntry = (
+  role: "working" | "master",
+  copy: HostedBlenderKeptCopy,
+  inWorkspace: (relativePath: string) => string,
+) => {
+  const file =
+    copy.file.kind === "workspace"
+      ? inWorkspace(copy.file.relativePath)
+      : copy.file.kind === "outside"
+        ? copy.file.path
+        : undefined;
+  return {
+    role,
+    status: copy.kind,
+    ...(file === undefined ? {} : { file }),
+    recovery: copy.recovery,
+  };
+};
+
+const workingStatus = Effect.fnUntraced(function* (threadId: ThreadId, unavailable: string | null) {
+  const hostedBlender = yield* HostedBlender.HostedBlender;
+  const path = yield* Path.Path;
+  const state = Option.getOrUndefined(yield* Stream.runHead(hostedBlender.threadState(threadId)));
+  if (state?.status === "failed") return [{ role: "working", status: "failed" }] as const;
+  const root = yield* threadWorkspaceRoot(threadId);
+  const inWorkspace = (relativePath: string) =>
+    root === undefined ? relativePath : path.join(root, relativePath);
+  // Each working file's waiting copy, under its own file, whether or not a Blender runs, and
+  // the working copies held outside the project since the thread finished.
+  const kept = [
+    ...(yield* hostedBlender.keptCopies(threadId)).map((copy) =>
+      keptEntry("working", copy, inWorkspace),
+    ),
+    ...(yield* Effect.forEach(yield* hostedBlender.heldWorkingCopies(threadId), (file) =>
+      underConfiguredRoot(file, root).pipe(
+        Effect.map((shown) => ({ role: "working" as const, status: "held" as const, file: shown })),
+      ),
+    )),
+  ];
+  if (state?.status !== "starting" && state?.status !== "running") return kept;
+  const listener = yield* hostedBlender.agentListener(threadId, { wait: false });
+  const reported = listener?.openFile;
+  // The file Blender has open now, which may no longer be the one it started with, under
+  // the workspace as configured, as chat links are matched against it. None if untitled.
+  const file =
+    reported === null
+      ? undefined
+      : reported === undefined
+        ? inWorkspace(state.relativePath)
+        : yield* underConfiguredRoot(reported, root);
+  return [
+    {
+      role: "working",
+      status: state.status,
+      ...(file === undefined ? {} : { file }),
+      unsavedChanges: state.dirty,
+      // Only a listener that came up on the thread's port takes `blender-hosted` calls, and only
+      // while setup's read of the official server is current.
+      agentAccess: listener?.state === "ready" && unavailable === null,
+      ...(listener?.ended == null ? {} : { agentAccessEnded: listener.ended }),
+      ...(listener?.state === "untested"
+        ? { agentAccessRefused: "untestedBlenderLab" as const }
+        : {}),
+      ...(listener?.state === "ready" || listener?.state === "starting"
+        ? unavailable === null
+          ? {}
+          : { agentAccessHelp: unavailable }
+        : { agentAccessHelp: workingAccessHelp(path.basename(state.relativePath), listener) }),
+    },
+    ...kept,
+  ] as const;
+});
+
+const handlers = {
+  blender_start: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const threadId = yield* requireHostedBlender;
+      yield* refuseInPlanMode(threadId, "blender_start");
+      return yield* startAgentWorkingCopy({ threadId, path: input.path });
+    }),
+  ),
+  blender_master_open: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const threadId = yield* requireHostedBlender;
+      yield* refuseInPlanMode(threadId, "blender_master_open");
+      return yield* openAgentMaster({
+        threadId,
+        path: input.path,
+        agentSession: yield* callerSession,
+      });
+    }),
+  ),
+  blender_status: McpToolAccess.readsAsCaller(() =>
+    Effect.gen(function* () {
+      const threadId = yield* requireHostedBlender;
+      const hostedBlender = yield* HostedBlender.HostedBlender;
+      const proxy = yield* HostedBlenderMcpProxy.HostedBlenderMcpProxy;
+      const unavailable = yield* proxy.unavailable({
+        threadId,
+        providerSessionId: yield* callerSession,
+      });
+      const working = yield* workingStatus(threadId, unavailable);
+      const master = Option.getOrUndefined(
+        yield* Stream.runHead(hostedBlender.masterState(threadId)),
+      );
+      if (master?.status === "failed") {
+        return { blenders: [...working, { role: "master", status: "failed" }] };
+      }
+      // The master's one copy, kept for whichever threads use that file.
+      if (master?.status === "closed" || master?.status === "crashed") {
+        const root = yield* threadWorkspaceRoot(threadId);
+        const path = yield* Path.Path;
+        return {
+          blenders: [
+            ...working,
+            ...master.copies.map((copy) =>
+              keptEntry("master", copy, (relativePath) =>
+                root === undefined ? relativePath : path.join(root, relativePath),
+              ),
+            ),
+          ],
+        } satisfies HostedBlenderToolStatusResult;
+      }
+      if (master?.status !== "starting" && master?.status !== "running") {
+        return { blenders: working };
+      }
+      const root = yield* threadWorkspaceRoot(threadId);
+      const path = yield* Path.Path;
+      const listener = yield* hostedBlender.agentListener(threadId, {
+        wait: false,
+        role: "master",
+      });
+      return {
+        blenders: [
+          ...working,
+          {
+            role: "master",
+            status: master.status,
+            file: root === undefined ? master.relativePath : path.join(root, master.relativePath),
+            unsavedChanges: master.dirty,
+            // Only this thread's own `blender-master` port reaches the shared master.
+            agentAccess: listener?.state === "ready" && unavailable === null,
+            ...(listener?.ended == null ? {} : { agentAccessEnded: listener.ended }),
+            ...(listener?.state === "untested"
+              ? { agentAccessRefused: "untestedBlenderLab" as const }
+              : {}),
+            ...(listener?.state === "ready" || listener?.state === "starting"
+              ? unavailable === null
+                ? {}
+                : { agentAccessHelp: unavailable }
+              : {
+                  agentAccessHelp: masterAccessHelp(path.basename(master.relativePath), listener),
+                }),
+          },
+        ],
+      } satisfies HostedBlenderToolStatusResult;
+    }),
+  ),
+  blender_quit: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const threadId = yield* requireHostedBlender;
+      yield* refuseInPlanMode(threadId, "blender_quit");
+      const hostedBlender = yield* HostedBlender.HostedBlender;
+      yield* hostedBlender
+        .quit({ threadId, save: input.save })
+        .pipe(
+          Effect.mapError((error) => new HostedBlenderToolError({ reason: quitRefusal(error) })),
+        );
+      return {};
+    }),
+  ),
+} satisfies McpToolAccess.Handlers<typeof HostedBlenderToolkit.tools>;
+
+// Only the person can discard, so the agent is told what it can do instead.
+const quitRefusal = (error: HostedBlenderError) => {
+  const again = "then call blender_quit again.";
+  switch (error.reason) {
+    case "unsavedImages":
+      return error.images !== undefined
+        ? `${error.message} You can do that yourself: save each image to a file Blender can write (set its filepath_raw, then image.save()) or pack it (image.pack()), ${again}`
+        : `Blender has unsaved image edits, which quitting would lose: they live outside the .blend, so its recovery copy can't keep them. Blender stays open. Save each edited image to a file Blender can write (set its filepath_raw, then image.save()) or pack it (image.pack()), or reload one (image.reload()) to drop its edits, ${again} If the edits are the person's, ask them.`;
+    case "unsavedCatalogs":
+      return `Blender has unsaved asset catalog edits, which quitting would lose: they live outside the .blend, so its recovery copy can't keep them. Blender stays open. Ask the person to save or discard them in Blender's asset browser, or call blender_quit with save: true, which saves them with the .blend.`;
+    case "quitUnanswered":
+      return "Blender didn't answer in time, most likely because it is busy (a render, a bake, a long load). It stays open, and this quit won't happen later on its own. Call blender_quit again once Blender has finished what it is doing.";
+    default:
+      return error.message;
+  }
+};
+
+export const layer = McpToolAccess.toLayer(HostedBlenderToolkit, handlers);

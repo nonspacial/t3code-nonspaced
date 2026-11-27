@@ -15,6 +15,7 @@ import {
   TurnItemId,
 } from "./baseSchemas.ts";
 import { GUEST_MESSAGE_MAX_LENGTH, GUEST_NAME_MAX_LENGTH } from "./guestShare.ts";
+import { PreviewAnnotationCameraViewSchema, PreviewAnnotationVectorSchema } from "./ipc.ts";
 
 /** Image and file records reference `ChatAttachment` ids, never bytes. */
 
@@ -176,6 +177,19 @@ export const PreviewAnnotationContextRecord = Schema.Struct({
     ).check(Schema.isMaxLength(200)),
   ),
   screenshotContextId: Schema.optionalKey(ComposerContextId),
+  /** A 3D view's camera, in the file's coordinates. */
+  cameraView: Schema.optionalKey(PreviewAnnotationCameraViewSchema),
+  /** The surface under each mark on a 3D view; `index` counts from 1 within its kind. */
+  hits: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        mark: Schema.Literals(["region", "drawing"]),
+        index: PositiveInt,
+        object: NullableShortString,
+        point: PreviewAnnotationVectorSchema,
+      }),
+    ).check(Schema.isMaxLength(200)),
+  ),
 });
 export type PreviewAnnotationContextRecord = typeof PreviewAnnotationContextRecord.Type;
 

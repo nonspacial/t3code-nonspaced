@@ -4,6 +4,8 @@ import { joinPath, resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import {
   isWorkspaceAudioPreviewPath,
   isWorkspaceVideoPreviewPath,
+  isBlendPreviewPath,
+  modelPreviewFormat,
 } from "@t3tools/shared/filePreview";
 
 function isWindowsAbsolutePath(value: string): boolean {
@@ -109,6 +111,23 @@ export function isSvgImagePreviewFile(path: string): boolean {
 
 export function isMarkdownPreviewFile(path: string): boolean {
   return /\.(?:md|mdx|markdown|mdown|mkd)$/i.test(path);
+}
+
+/** A 3D file previews as facts: a `.blend`'s from the server, other formats' name and size. */
+export function isModelFactsFile(path: string): boolean {
+  return isBlendPreviewPath(path) || modelPreviewFormat({ name: path }) !== null;
+}
+
+/**
+ * An uploaded `.blend` attachment shows the facts the server reads from it. A local draft has
+ * nothing on the server yet, so it keeps the document viewer.
+ */
+export function readsBlendAttachmentFacts(input: {
+  readonly name: string;
+  readonly hasEnvironment: boolean;
+  readonly local: boolean;
+}): boolean {
+  return input.hasEnvironment && !input.local && isBlendPreviewPath(input.name);
 }
 
 export function needsWorkspaceFileContents(input: {

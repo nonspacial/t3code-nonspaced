@@ -8,6 +8,7 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Cause from "effect/Cause";
 import {
   filePreviewKind,
+  modelPreviewFormat,
   officePreviewKind,
   FILE_TEXT_PREVIEW_MAX_BYTES,
 } from "@t3tools/shared/filePreview";
@@ -37,6 +38,7 @@ import { useClientSettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 
 import { BinaryFilePreview } from "./BinaryFilePreview";
+import type { ModelAnnotationTarget, ModelViewRequest } from "./ModelFilePreview";
 import { PreviewImage } from "./PreviewImage";
 import { AudioPreview } from "./AudioPreview";
 import { BrowserDocumentFrame } from "./BrowserDocumentFrame";
@@ -51,6 +53,10 @@ import {
 
 const LargeTextViewer = lazy(() => import("./LargeTextViewer"));
 
+const BlendFilePreview = lazy(() =>
+  import("./BlendFilePreview").then((module) => ({ default: module.BlendFilePreview })),
+);
+
 const OfficeFilePreview = lazy(() =>
   import("./OfficeFilePreview").then((module) => ({ default: module.OfficeFilePreview })),
 );
@@ -61,6 +67,10 @@ const FontFilePreview = lazy(() =>
 
 const MermaidFilePreview = lazy(() =>
   import("./MermaidFilePreview").then((module) => ({ default: module.MermaidFilePreview })),
+);
+
+const ModelFilePreview = lazy(() =>
+  import("./ModelFilePreview").then((module) => ({ default: module.ModelFilePreview })),
 );
 
 const SourcePreview = lazy(() => import("./ReadOnlySourcePreview"));
@@ -110,12 +120,19 @@ export function AttachmentFilePreview(props: {
       };
   htmlRender?: boolean;
   threadRef?: ScopedThreadRef;
+  /** Lets a workspace 3D model load the files it references from its folder. */
+  workspaceRoot?: string;
+  /** A 3D model opens at this camera. */
+  modelView?: ModelViewRequest | null;
+  /** Where a 3D model's Screenshot & annotate goes; without it the button is hidden. */
+  modelAnnotation?: ModelAnnotationTarget | null;
   origin?: string;
   onRemove?: () => void;
   onClose?: () => void;
 }) {
   const kind = filePreviewKind(props);
   const officeKind = officePreviewKind(props);
+  const modelFormat = kind === "model" ? modelPreviewFormat(props) : null;
   const delimiter = filePreviewDelimiter(props);
   const renderedMode =
     kind === "mermaid"
@@ -129,6 +146,8 @@ export function AttachmentFilePreview(props: {
             : null;
   const attachmentId =
     props.asset && "attachmentId" in props.asset ? props.asset.attachmentId : undefined;
+  // Facts are read on the server, so only an uploaded attachment has them.
+  const blendAttachmentId = attachmentId !== undefined && kind === "blend" ? attachmentId : null;
   const gt = useGT();
   const messages = useMessages();
   const { copyToClipboard, isCopied } = useCopyToClipboard({
@@ -341,6 +360,36 @@ export function AttachmentFilePreview(props: {
   ) : kind === "font" ? (
     <Suspense fallback={<FileSurfaceLoading />}>
       <FontFilePreview src={url} name={props.name} />
+    </Suspense>
+  ) : blendAttachmentId !== null && props.asset ? (
+    <Suspense fallback={<FileSurfaceLoading />}>
+      <BlendFilePreview
+        environmentId={props.asset.environmentId}
+        name={props.name}
+        source={{ kind: "attachment", attachmentId: blendAttachmentId }}
+      />
+    </Suspense>
+  ) : modelFormat ? (
+    <Suspense fallback={<FileSurfaceLoading />}>
+      <ModelFilePreview
+        key={`${url}:${revision}`}
+        src={url}
+        name={props.name}
+        format={modelFormat}
+        sizeBytes={props.sizeBytes}
+        companions={
+          props.asset && assetResource && props.workspaceRoot !== undefined
+            ? {
+                environmentId: props.asset.environmentId,
+                resource: assetResource,
+                workspaceRoot: props.workspaceRoot,
+              }
+            : null
+        }
+        onRefresh={() => setRevision((value) => value + 1)}
+        view={props.modelView ?? null}
+        annotation={props.modelAnnotation ?? null}
+      />
     </Suspense>
   ) : officeKind ? (
     <Suspense fallback={<FileSurfaceLoading />}>

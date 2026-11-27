@@ -61,6 +61,35 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("lets thread readers watch and annotate hosted Blenders and only operators drive one", () => {
+    for (const method of [
+      WS_METHODS.hostedBlenderSubscribeThread,
+      WS_METHODS.hostedBlenderSubscribeRunning,
+      WS_METHODS.hostedBlenderSubscribeHeld,
+      WS_METHODS.hostedBlenderCaptureView,
+      WS_METHODS.hostedBlenderFindHits,
+      WS_METHODS.hostedBlenderSubscribeSetup,
+    ]) {
+      expect(requiredScopeForRpcMethod(method), method).toBe(AuthOrchestrationReadScope);
+    }
+    for (const method of [
+      WS_METHODS.hostedBlenderOpen,
+      WS_METHODS.hostedBlenderQuit,
+      WS_METHODS.hostedBlenderReopen,
+      WS_METHODS.hostedBlenderDismiss,
+      WS_METHODS.hostedBlenderDeleteHeld,
+      WS_METHODS.hostedBlenderKeepHeld,
+      WS_METHODS.hostedBlenderSetView,
+      // The Timeline strip is part of the Blender window every viewer shares.
+      WS_METHODS.hostedBlenderSetTimeline,
+      // Both run programs on the host; installing also starts an agent thread.
+      WS_METHODS.hostedBlenderCheckSetup,
+      WS_METHODS.hostedBlenderInstallWithAgent,
+    ]) {
+      expect(requiredScopeForRpcMethod(method), method).toBe(AuthOrchestrationOperateScope);
+    }
+  });
+
   it("keeps triage, which seeds an agent that reads logs and the database, behind operate scope", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.serverPrepareTriage)).toBe(
       AuthOrchestrationOperateScope,
@@ -549,6 +578,56 @@ describe("settings mutation authorization", () => {
     }),
   );
 
+  it.effect("S2: the Timeline switch needs operate, through Settings as through the pane", () =>
+    Effect.gen(function* () {
+      let handled = 0;
+      const handlers = group.toLayerHandler(WS_METHODS.serverUpdateSettings, () =>
+        Effect.sync(() => {
+          handled++;
+          return DEFAULT_SERVER_SETTINGS;
+        }),
+      );
+      // Settings access alone writes other Hosted Blender settings, not the strip.
+      const settingsOnly = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(Layer.mergeAll(handlers, RpcAuthorization.layer([AuthSettingsWriteScope]))),
+      );
+      yield* settingsOnly[WS_METHODS.serverUpdateSettings]({
+        patch: { hostedBlenderAllowAgents: false },
+      });
+      expect(handled).toBe(1);
+      expect(
+        yield* settingsOnly[WS_METHODS.serverUpdateSettings]({
+          patch: { hostedBlenderTimeline: false },
+        }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthOrchestrationOperateScope });
+      // Operate alone has the pane's command, not a settings write of the same flag.
+      const operateOnly = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(handlers, RpcAuthorization.layer([AuthOrchestrationOperateScope])),
+        ),
+      );
+      expect(
+        yield* operateOnly[WS_METHODS.serverUpdateSettings]({
+          patch: { hostedBlenderTimeline: false },
+        }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthSettingsWriteScope });
+      expect(requiredScopeForRpcMethod(WS_METHODS.hostedBlenderSetTimeline)).toBe(
+        AuthOrchestrationOperateScope,
+      );
+      // Both grants together may write it either way.
+      const both = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            handlers,
+            RpcAuthorization.layer([AuthSettingsWriteScope, AuthOrchestrationOperateScope]),
+          ),
+        ),
+      );
+      yield* both[WS_METHODS.serverUpdateSettings]({ patch: { hostedBlenderTimeline: false } });
+      expect(handled).toBe(2);
+    }),
+  );
+
   it.effect(
     "does not let a settings grant manage providers or turn off T3 Connect device approval",
     () =>
@@ -608,64 +687,74 @@ describe("settings mutation authorization", () => {
       }),
   );
 
-  it.effect("saving project scripts needs task operation as well as the settings grant", () =>
-    Effect.gen(function* () {
-      const projectId = ProjectId.make("project-1");
-      const scripts = [
-        {
-          id: "setup",
-          name: "Setup",
-          command: "pnpm install",
-          icon: "play" as const,
-          runOnWorktreeCreate: true,
-        },
-      ];
-      const update = (scopes: Parameters<typeof RpcAuthorization.layer>[0]) => {
-        let handled = 0;
-        return RpcTest.makeClient(group).pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              group.toLayerHandler(WS_METHODS.serverUpdateSettings, () =>
-                Effect.sync(() => {
-                  handled++;
-                  return DEFAULT_SERVER_SETTINGS;
-                }),
+  it.effect(
+    "saving project scripts or a Blender path needs task operation as well as the settings grant",
+    () =>
+      Effect.gen(function* () {
+        const projectId = ProjectId.make("project-1");
+        const scripts = [
+          {
+            id: "setup",
+            name: "Setup",
+            command: "pnpm install",
+            icon: "play" as const,
+            runOnWorktreeCreate: true,
+          },
+        ];
+        const update = (scopes: Parameters<typeof RpcAuthorization.layer>[0]) => {
+          let handled = 0;
+          return RpcTest.makeClient(group).pipe(
+            Effect.provide(
+              Layer.mergeAll(
+                group.toLayerHandler(WS_METHODS.serverUpdateSettings, () =>
+                  Effect.sync(() => {
+                    handled++;
+                    return DEFAULT_SERVER_SETTINGS;
+                  }),
+                ),
+                RpcAuthorization.layer(scopes),
               ),
-              RpcAuthorization.layer(scopes),
             ),
-          ),
-          Effect.map((client) => ({ client, handled: () => handled })),
-        );
-      };
-      const patches = [
-        { defaultProjectScripts: scripts },
-        { projectScriptOverrides: { [projectId]: scripts } },
-        { projectSettingsOverrides: { [projectId]: { defaultProjectScripts: scripts } } },
-      ];
+            Effect.map((client) => ({ client, handled: () => handled })),
+          );
+        };
+        const patches = [
+          { defaultProjectScripts: scripts },
+          { projectScriptOverrides: { [projectId]: scripts } },
+          { projectSettingsOverrides: { [projectId]: { defaultProjectScripts: scripts } } },
+          { blenderPath: "/tmp/not-blender" },
+          { blenderMcpPath: "/tmp/not-blender-mcp" },
+          // Switching Hosted Blender on runs the setup check's programs, as Check again does.
+          { hostedBlenderEnabled: true },
+        ];
 
-      const settingsOnly = yield* update([AuthSettingsWriteScope]);
-      for (const patch of patches) {
-        expect(
-          yield* settingsOnly.client[WS_METHODS.serverUpdateSettings]({ patch }).pipe(Effect.flip),
-        ).toMatchObject({ requiredPermission: AuthOrchestrationOperateScope });
-      }
-      expect(settingsOnly.handled()).toBe(0);
-      // Settings that carry no script stay with the settings grant alone.
-      yield* settingsOnly.client[WS_METHODS.serverUpdateSettings]({
-        patch: {
-          defaultAutoPull: true,
-          projectScriptOverrides: { [projectId]: null },
-          projectSettingsOverrides: { [projectId]: { defaultAutoPull: true } },
-        },
-      });
-      expect(settingsOnly.handled()).toBe(1);
+        const settingsOnly = yield* update([AuthSettingsWriteScope]);
+        for (const patch of patches) {
+          expect(
+            yield* settingsOnly.client[WS_METHODS.serverUpdateSettings]({ patch }).pipe(
+              Effect.flip,
+            ),
+          ).toMatchObject({ requiredPermission: AuthOrchestrationOperateScope });
+        }
+        expect(settingsOnly.handled()).toBe(0);
+        // Settings that carry no script stay with the settings grant alone.
+        yield* settingsOnly.client[WS_METHODS.serverUpdateSettings]({
+          patch: {
+            defaultAutoPull: true,
+            projectScriptOverrides: { [projectId]: null },
+            projectSettingsOverrides: { [projectId]: { defaultAutoPull: true } },
+            // Switching it off runs nothing.
+            hostedBlenderEnabled: false,
+          },
+        });
+        expect(settingsOnly.handled()).toBe(1);
 
-      const operator = yield* update([AuthSettingsWriteScope, AuthOrchestrationOperateScope]);
-      for (const patch of patches) {
-        yield* operator.client[WS_METHODS.serverUpdateSettings]({ patch });
-      }
-      expect(operator.handled()).toBe(patches.length);
-    }),
+        const operator = yield* update([AuthSettingsWriteScope, AuthOrchestrationOperateScope]);
+        for (const patch of patches) {
+          yield* operator.client[WS_METHODS.serverUpdateSettings]({ patch });
+        }
+        expect(operator.handled()).toBe(patches.length);
+      }),
   );
 
   it.effect("does not let a settings grant send a named secret to a gateway it picks", () =>

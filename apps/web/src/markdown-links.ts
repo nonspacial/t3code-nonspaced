@@ -7,6 +7,7 @@ import {
   resolveMarkdownFileLink,
 } from "@t3tools/shared/markdownLinks";
 import { parseFileUrlHref, splitFilePathPosition } from "@t3tools/shared/fileLinks";
+import { modelViewFromHref, type ModelView } from "@t3tools/shared/modelView";
 
 import { formatWorkspaceRelativePath } from "./filePathDisplay";
 import { isTerminalLinkActivation } from "./terminal-links";
@@ -21,6 +22,8 @@ export interface MarkdownFileLinkMeta {
   line?: number;
   column?: number;
   endLine?: number;
+  /** The camera a 3D model link opens its preview at (`#view=`). */
+  view?: ModelView;
 }
 
 export function shouldOpenMarkdownFileLinkInEditor(
@@ -77,11 +80,16 @@ function resolveInlineCodeFileLinkMetaUncached(
   cwd: string | undefined,
   baseDir: string | undefined,
 ): MarkdownFileLinkMeta | null {
-  const candidate = inlineCodeFilePathCandidate(codeText);
+  // A 3D view link keeps its `#view=` fragment; only the path decides whether it is a file.
+  const trimmed = codeText.trim();
+  const viewFragment = /#view=[^\s#]*$/.exec(trimmed)?.[0] ?? "";
+  const candidate = inlineCodeFilePathCandidate(
+    trimmed.slice(0, trimmed.length - viewFragment.length),
+  );
   if (candidate === null) return null;
 
   return resolveMarkdownFileLinkMeta(
-    candidate,
+    `${candidate}${viewFragment}`,
     cwd,
     inlineCodePathNamesFromWorkspaceRoot(candidate, cwd, baseDir) ? cwd : baseDir,
   );
@@ -121,6 +129,7 @@ function resolveMarkdownFileLinkMetaUncached(
     targetPath,
     position: { path, ...lines },
   } = resolved;
+  const view = href === undefined ? null : modelViewFromHref(href);
   return {
     filePath: path,
     targetPath,
@@ -128,6 +137,7 @@ function resolveMarkdownFileLinkMetaUncached(
     workspaceRelativePath: workspaceRelativeFilePath(path, cwd),
     basename: fileBasename(path),
     ...lines,
+    ...(view ? { view } : {}),
     workspaceLookupPath:
       !isAbsolutePath(sourcePath) &&
       baseDir !== undefined &&

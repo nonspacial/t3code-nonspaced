@@ -134,6 +134,10 @@ import {
 } from "../../provider/EventNdjsonLogger.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { codexAppServerArgs, resolveCodexLaunchArgs } from "../../provider/codexLaunchArgs.ts";
+import {
+  codexHostedBlenderApprovalsKey,
+  codexHostedBlenderConfig,
+} from "../../provider/hostedBlenderMcp.ts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -921,6 +925,7 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     readonly agentFeedback?: AgentFeedbackMode;
     readonly browserToolsAvailable?: boolean;
     readonly deviceToolsAvailable?: boolean;
+    readonly hostedBlenderToolsAvailable?: boolean;
     /** ChatGPT token sharing does not accept service tiers. */
     readonly omitServiceTier?: boolean;
     readonly appContext?: ProviderAdapter.ProviderAdapterV2TurnInput["appContext"];
@@ -983,6 +988,7 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
             {
               browser: input.browserToolsAvailable ?? true,
               device: input.deviceToolsAvailable ?? false,
+              hostedBlender: input.hostedBlenderToolsAvailable ?? false,
             },
           )
         : undefined;
@@ -1759,6 +1765,7 @@ function codexThreadRuntimeParams(input: {
               omit_tools_from: ["code_mode", "deferred"],
             },
           }),
+      ...codexHostedBlenderConfig(mcpSession, input.runtimePolicy),
     },
   };
 }
@@ -2402,6 +2409,17 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         );
         /** Completed by thread/closed after this connection unsubscribes from the native thread. */
         const threadClosings = new Map<string, Deferred.Deferred<void>>();
+        /** The hosted Blender approvals each loaded native thread has (codexHostedBlenderApprovalsKey). */
+        const blenderApprovalsByThread = new Map<string, string>();
+        const recordBlenderApprovals = (
+          nativeThreadId: string,
+          mcpSession: McpProviderSession.McpProviderSessionConfig | undefined,
+          runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy | undefined,
+        ) => {
+          const key = codexHostedBlenderApprovalsKey(mcpSession, runtimePolicy);
+          if (key === undefined) blenderApprovalsByThread.delete(nativeThreadId);
+          else blenderApprovalsByThread.set(nativeThreadId, key);
+        };
         /** Codex acceptForSession covers only the exact command or patch, not future commands. */
         const sessionApprovals = new Map<
           string,
@@ -8049,6 +8067,29 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           );
         });
 
+        /**
+         * Codex keeps a loaded thread's MCP config through `thread/resume`, so a thread whose
+         * hosted Blender approvals differ (the mode crossed full access or plan) is unloaded
+         * first, as upstream does for agentcast. True: the caller resumes, then records
+         * the approvals once that resume succeeds, so a failed resume unloads again next time.
+         */
+        const unloadForBlenderApprovals = Effect.fn("CodexAdapterV2.unloadForBlenderApprovals")(
+          function* (
+            nativeThreadId: string,
+            mcpSession: McpProviderSession.McpProviderSessionConfig | undefined,
+            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy | undefined,
+          ) {
+            const wanted = codexHostedBlenderApprovalsKey(mcpSession, runtimePolicy);
+            if (blenderApprovalsByThread.get(nativeThreadId) === wanted) return false;
+            if (!threadClosings.has(nativeThreadId)) {
+              threadClosings.set(nativeThreadId, yield* Deferred.make<void>());
+            }
+            yield* client.request("thread/unsubscribe", { threadId: nativeThreadId });
+            blenderApprovalsByThread.delete(nativeThreadId);
+            return true;
+          },
+        );
+
         const startNativeTurn = Effect.fn("CodexAdapterV2.startNativeTurn")(
           function* (
             turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
@@ -8061,6 +8102,19 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               yield* reportStartupPhase();
             }
             const mcpSession = yield* mcpSessions.read(turnInput.threadId);
+            if (yield* unloadForBlenderApprovals(threadId, mcpSession, turnInput.runtimePolicy)) {
+              yield* resumeNativeThread(threadId, {
+                excludeTurns: true,
+                ...codexThreadRuntimeParams({
+                  threadId: turnInput.threadId,
+                  mcpSession,
+                  stdioMcpServers: yield* readStdioMcpServers(turnInput.runtimePolicy.cwd),
+                  modelSelection: turnInput.modelSelection,
+                  runtimePolicy: turnInput.runtimePolicy,
+                }),
+              });
+              recordBlenderApprovals(threadId, mcpSession, turnInput.runtimePolicy);
+            }
             const models = adapterOptions.models === undefined ? [] : yield* adapterOptions.models;
             const configuredReasoningSummary = yield* client
               .request("config/read", { cwd: turnInput.runtimePolicy.cwd, includeLayers: false })
@@ -8081,6 +8135,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               agentFeedback: turnInput.agentFeedback ?? "off",
               browserToolsAvailable: mcpSession?.browserToolsAvailable ?? true,
               deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
+              hostedBlenderToolsAvailable: mcpSession?.hostedBlender !== undefined,
               omitServiceTier: adapterOptions.resolveRuntime !== undefined,
               ...(turnInput.appContext === undefined ? {} : { appContext: turnInput.appContext }),
               ...(configuredReasoningSummary === undefined ? {} : { configuredReasoningSummary }),
@@ -8309,7 +8364,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       mcpSession,
                       stdioMcpServers,
                     }),
-                  }),
+                  }).pipe(
+                    Effect.tap(() =>
+                      Effect.sync(() => recordBlenderApprovals(threadId, mcpSession, undefined)),
+                    ),
+                  ),
                 ),
                 Effect.andThen(request),
               ),
@@ -8484,19 +8543,31 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ]),
               ),
               Effect.flatMap(([mcpSession, stdioMcpServers]) =>
-                client.request("thread/start", {
-                  ...codexThreadRuntimeParams({
-                    threadId: threadInput.threadId,
-                    mcpSession,
-                    stdioMcpServers,
-                    modelSelection: threadInput.modelSelection,
-                    runtimePolicy: threadInput.runtimePolicy,
-                  }),
-                  // Codex tags the child's MCP calls with thread_source "subagent".
-                  ...(IdAllocator.isDelegatedTaskThread(threadInput.threadId)
-                    ? { threadSource: "subagent" }
-                    : {}),
-                }),
+                client
+                  .request("thread/start", {
+                    ...codexThreadRuntimeParams({
+                      threadId: threadInput.threadId,
+                      mcpSession,
+                      stdioMcpServers,
+                      modelSelection: threadInput.modelSelection,
+                      runtimePolicy: threadInput.runtimePolicy,
+                    }),
+                    // Codex tags the child's MCP calls with thread_source "subagent".
+                    ...(IdAllocator.isDelegatedTaskThread(threadInput.threadId)
+                      ? { threadSource: "subagent" }
+                      : {}),
+                  })
+                  .pipe(
+                    Effect.tap((response) =>
+                      Effect.sync(() =>
+                        recordBlenderApprovals(
+                          response.thread.id,
+                          mcpSession,
+                          threadInput.runtimePolicy,
+                        ),
+                      ),
+                    ),
+                  ),
               ),
               Effect.tap((response) => {
                 appThreadByNativeThread.set(response.thread.id, threadInput.threadId);
@@ -8528,11 +8599,19 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const nativeThreadId = yield* getNativeThreadId(threadInput.providerThread);
               const appThreadId = threadInput.threadId ?? threadInput.providerThread.appThreadId;
               if (appThreadId != null) appThreadByNativeThread.set(nativeThreadId, appThreadId);
+              const mcpSession = yield* readMcpSession(appThreadId);
+              // Codex answers "Not initialized" to an unsubscribe before `initialize`, and a resume
+              // can be the first call after a T3 restart.
+              yield* ensureInitialized.pipe(
+                Effect.andThen(
+                  unloadForBlenderApprovals(nativeThreadId, mcpSession, threadInput.runtimePolicy),
+                ),
+              );
               const resume = resumeNativeThread(nativeThreadId, {
                 excludeTurns: true,
                 ...codexThreadRuntimeParams({
                   threadId: appThreadId,
-                  mcpSession: yield* readMcpSession(appThreadId),
+                  mcpSession,
                   stdioMcpServers: yield* readStdioMcpServers(threadInput.runtimePolicy?.cwd),
                   ...(threadInput.modelSelection === undefined
                     ? {}
@@ -8574,6 +8653,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 updatedAt: codexTimestamp(response.thread.updatedAt),
               } satisfies OrchestrationV2ProviderThread;
               rootProviderThreads.set(nativeThreadId, resumed);
+              recordBlenderApprovals(nativeThreadId, mcpSession, threadInput.runtimePolicy);
               yield* releaseGoalUpdates(nativeThreadId);
               return rootProviderThreads.get(nativeThreadId) ?? resumed;
             },
@@ -8784,6 +8864,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             function* (unloadInput) {
               const nativeThreadId = yield* getNativeThreadId(unloadInput.providerThread);
               sessionApprovals.delete(nativeThreadId);
+              blenderApprovalsByThread.delete(nativeThreadId);
               // Archive also unloads, inline and without thread/closed; resumeNativeThread
               // unarchives it on the next turn.
               if (unloadInput.archive === true) {
@@ -9540,14 +9621,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               // thread/revert requires the thread loaded in this app-server; resume after restart or idle release.
               // Like withLoadedThread, resume with the thread's saved model and cwd, not the session's.
               if (!loaded) {
+                const mcpSession = yield* readMcpSession(threadInput.providerThread.appThreadId);
                 yield* resumeNativeThread(threadId, {
                   excludeTurns: true,
                   ...codexThreadRuntimeParams({
                     threadId: threadInput.providerThread.appThreadId,
-                    mcpSession: yield* readMcpSession(threadInput.providerThread.appThreadId),
+                    mcpSession,
                     stdioMcpServers: yield* readStdioMcpServers(undefined),
                   }),
                 });
+                recordBlenderApprovals(threadId, mcpSession, undefined);
               }
               const response = yield* ensureInitialized.pipe(
                 Effect.andThen(revertCodexThread(client, threadId, numTurns)),
@@ -9586,13 +9669,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             function* (threadInput) {
               const threadId = yield* getNativeThreadId(threadInput.sourceProviderThread);
               const boundary = yield* resolveCodexForkBoundary(threadInput);
+              const forkMcpSession = yield* mcpSessions.read(threadInput.targetThreadId);
               const fork = client.request("thread/fork", {
                 threadId,
                 excludeTurns: true,
                 ...(boundary.lastTurnId === undefined ? {} : { lastTurnId: boundary.lastTurnId }),
                 ...codexThreadRuntimeParams({
                   threadId: threadInput.targetThreadId,
-                  mcpSession: yield* mcpSessions.read(threadInput.targetThreadId),
+                  mcpSession: forkMcpSession,
                   stdioMcpServers: yield* readStdioMcpServers(threadInput.runtimePolicy?.cwd),
                   ...(threadInput.modelSelection === undefined
                     ? {}
@@ -9624,6 +9708,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                 ),
               );
+              recordBlenderApprovals(response.thread.id, forkMcpSession, threadInput.runtimePolicy);
               let forkedThread = response.thread;
               if (boundary.rollbackTurnCount > 0) {
                 const { historyMode } = yield* ensureInitialized.pipe(

@@ -100,11 +100,24 @@ vi.mock(import("../state/filesystem"), async (original) => {
         : actual.useFilesystemReadAccess(environmentId)) as never,
   };
 });
+const hostedBlender = vi.hoisted(() => ({
+  state: { status: "stopped" } as { status: string; relativePath?: string; dirty?: boolean },
+  setView: vi.fn(async () => "moved" as const),
+}));
+vi.mock(import("../state/hostedBlender"), async (original) => ({
+  ...(await original()),
+  readHostedBlenderState: (async () => hostedBlender.state) as never,
+  readHostedBlenderMasterState: (async () => null) as never,
+  setHostedBlenderView: hostedBlender.setView as never,
+}));
 const threadWorktrees = vi.hoisted(() => new Map<string, string>());
+// A link to a hosted Blender's file asks for its state only where Hosted Blender is on.
+const hostedBlenderSetting = vi.hoisted(() => ({ enabled: false }));
 vi.mock(import("../state/entities"), async (original) => {
   const actual = await original();
   return {
     ...actual,
+    readEnvironmentHostedBlenderEnabled: () => hostedBlenderSetting.enabled,
     readThreadShell: ((ref: { threadId: string }) => {
       const worktreePath = threadWorktrees.get(ref.threadId);
       return worktreePath === undefined ? actual.readThreadShell(ref as never) : { worktreePath };
@@ -190,6 +203,7 @@ function setup() {
   appearance.value = "light";
   parsedSources.length = 0;
   settingsOverrides.mathRenderingEnabled = false;
+  hostedBlenderSetting.enabled = false;
   nativeFileDrag.enabled = false;
   renderDiagram.mockReset();
   threadWorktrees.clear();
@@ -578,7 +592,7 @@ describe("ChatMarkdown workspace file opens", () => {
     await act(async () => other!.click());
     await act(async () => resolvePending(result));
 
-    expect(openFile).toHaveBeenCalledExactlyOnceWith(threadRef, "/elsewhere/b.md", 9);
+    expect(openFile).toHaveBeenCalledExactlyOnceWith(threadRef, "/elsewhere/b.md", 9, undefined);
     expect(workspaceSearch).toHaveBeenCalledOnce();
   });
 
@@ -598,6 +612,7 @@ describe("ChatMarkdown workspace file opens", () => {
       expect(openFile).toHaveBeenCalledExactlyOnceWith(
         scratchThread,
         "/repo-a/packages/state/filesystem.ts",
+        undefined,
         undefined,
       ),
     );
@@ -681,6 +696,37 @@ describe("ChatMarkdown workspace file opens", () => {
         relativePath: "/elsewhere/other.md",
       });
     }
+  });
+});
+
+describe("ChatMarkdown 3D view links", () => {
+  const threadRef = {
+    environmentId: EnvironmentId.make("workspace"),
+    threadId: ThreadId.make("thread-view-links"),
+  };
+
+  it("moves the hosted Blender's viewport window to a view link on its open file", async () => {
+    setup();
+    hostedBlenderSetting.enabled = true;
+    threadWorktrees.set(threadRef.threadId, "/repo");
+    hostedBlender.state = { status: "running", relativePath: "bracket-5.blend", dirty: false };
+    hostedBlender.setView.mockClear();
+    await using screen = await renderText("look from [here](bracket-5.blend#view=6,-6,5,0,0,0)", {
+      cwd: "/repo",
+      threadRef,
+    });
+    await act(async () => screen.container.querySelector("a")!.click());
+    await vi.waitFor(() =>
+      expect(hostedBlender.setView).toHaveBeenCalledWith(
+        threadRef,
+        "bracket-5.blend",
+        { position: [6, -6, 5], target: [0, 0, 0] },
+        "working",
+      ),
+    );
+    expect(
+      selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, threadRef),
+    ).toMatchObject({ kind: "blender" });
   });
 });
 

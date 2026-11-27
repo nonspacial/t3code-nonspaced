@@ -2840,6 +2840,9 @@ describe("orphan worktree reports", () => {
   );
 });
 
+const HELD_COPY = ".t3/held-working-copies/copy-id/copy.blend";
+const HELD_GITIGNORE = ".t3/held-working-copies/.gitignore";
+
 describe("storage cleanup reports and local file policies", () => {
   it.effect.each([true, false])(
     "sweeps on runtime retirement rather than live error metadata, worktreeOnDelete=%s",
@@ -3021,17 +3024,25 @@ describe("storage cleanup reports and local file policies", () => {
       scheduled: true,
       reason: "Thread has a scheduled task",
     },
+    {
+      name: "a held Blender working copy",
+      policy: "tracked-changes",
+      held: true,
+      reason: "Holds Blender working copies",
+    },
   ] as const)(
     "keeps an idle No project thread's scratch folder with $name",
     ({
       policy,
       repository,
       scheduled,
+      held,
       reason,
     }: {
       readonly policy?: WorktreeKeepWhen;
       readonly repository?: string;
       readonly scheduled?: boolean;
+      readonly held?: boolean;
       readonly reason: string;
     }) =>
       runCleanupTest(
@@ -3045,6 +3056,12 @@ describe("storage cleanup reports and local file policies", () => {
             { recursive: true },
           );
           yield* fixture.fs.writeFileString(`${folder}/notes.md`, "scratch\n");
+          if (held) {
+            yield* fixture.fs.makeDirectory(`${folder}/.t3/held-working-copies/copy-id`, {
+              recursive: true,
+            });
+            yield* fixture.fs.writeFileString(`${folder}/${HELD_COPY}`, "held");
+          }
           // No thread owns this one, so it is listed and never removed.
           const leftover = `${scratchRoot}/leftover`;
           yield* fixture.fs.makeDirectory(leftover);
@@ -3679,15 +3696,28 @@ describe("storage cleanup reports and local file policies", () => {
     ["any-local-files", "tracked.txt", "kept"],
     ["uncommitted-changes", "tracked.txt", "kept"],
     ["tracked-changes", "tracked.txt", "kept"],
+    // A hosted Blender's held working copy is ignored by its own folder's `.gitignore`.
+    ["any-local-files", HELD_COPY, "kept"],
+    ["uncommitted-changes", HELD_COPY, "kept"],
+    ["tracked-changes", HELD_COPY, "kept"],
+    ["uncommitted-changes", HELD_GITIGNORE, "removed"],
   ] as const)("applies %j", ([policy, file, outcome]) =>
     runCleanupTest(
       Effect.gen(function* () {
         const { service, fs, worktree, setPolicy } = yield* cleanupFixture();
         setPolicy(policy);
         expect(yield* service.latestReport).toBeNull();
-        yield* fs.writeFileString(`${worktree}/${file}`, "local data\n");
-        const sizes = yield* Effect.forEach(yield* fs.readDirectory(worktree), (name) =>
-          allocatedBytes(fs, `${worktree}/${name}`),
+        if (file === HELD_COPY || file === HELD_GITIGNORE) {
+          yield* fs.makeDirectory(`${worktree}/${file.slice(0, file.lastIndexOf("/"))}`, {
+            recursive: true,
+          });
+          yield* fs.writeFileString(`${worktree}/${HELD_GITIGNORE}`, "*\n");
+        }
+        if (file !== HELD_GITIGNORE)
+          yield* fs.writeFileString(`${worktree}/${file}`, "local data\n");
+        const sizes = yield* Effect.forEach(
+          yield* fs.readDirectory(worktree, { recursive: true }),
+          (name) => allocatedBytes(fs, `${worktree}/${name}`),
         );
         const bytes = sizes.reduce((sum, size) => sum + size, 0);
         const report = yield* service.runNow;
@@ -3708,7 +3738,11 @@ describe("storage cleanup reports and local file policies", () => {
         expect(yield* service.latestReport).toEqual(report);
         if (outcome === "kept")
           expect(report.entries[0]?.reason).toContain(
-            file === ".env" ? "ignored files (.env)" : "uncommitted changes (1 file)",
+            file === ".env"
+              ? "ignored files (.env)"
+              : file === HELD_COPY
+                ? "Holds Blender working copies"
+                : "uncommitted changes (1 file)",
           );
       }),
     ),

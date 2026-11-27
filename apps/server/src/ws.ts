@@ -83,6 +83,8 @@ import {
   type ProjectMutation,
   ProjectListEntriesError,
   ProjectReadFileError,
+  BlendPreviewError,
+  type BlendConversionStatus,
   ProjectSearchContentsError,
   ProjectSearchEntriesError,
   ProjectWriteFileError,
@@ -213,6 +215,8 @@ import { terminalOutputStream, withOutputWindow } from "./terminal/OutputProtoco
 import { withSocketHeartbeat } from "./socketHeartbeat.ts";
 import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as DeviceService from "./device/DeviceService.ts";
+import * as HostedBlender from "./hostedBlender/HostedBlender.ts";
+import * as HostedBlenderSetup from "./hostedBlender/HostedBlenderSetup.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
@@ -230,6 +234,9 @@ import * as LayoutCommandApprovalWrites from "./workspace/LayoutCommandApprovalW
 import * as TaskFolders from "./workspace/TaskFolders.ts";
 import * as KnownWorkspaces from "./workspace/KnownWorkspaces.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
+import * as BlendConversion from "./blend/BlendConversion.ts";
+import type { BlendFileFormatError } from "./blend/blendFile.ts";
+import * as BlendPreview from "./blend/BlendPreview.ts";
 import { readWorkflowScript } from "./orchestration-v2/workflowScriptQuery.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
@@ -690,6 +697,31 @@ function filesystemBrowseFailureContext(error: WorkspaceEntries.WorkspaceEntries
       return unexpectedCompatibilityError(error);
   }
 }
+
+/** A `.blend` read's failure as the error clients get. */
+const blendPreviewError =
+  (relativePath: string) =>
+  (
+    cause:
+      | BlendFileFormatError
+      | WorkspaceFileSystem.WorkspaceFileSystemError
+      | WorkspacePaths.WorkspacePathOutsideRootError,
+  ): BlendPreviewError => {
+    if (cause._tag === "BlendFileFormatError")
+      return new BlendPreviewError({
+        relativePath,
+        failure: cause.problem === "too_large" ? "blend_file_too_large" : "unreadable_blend_file",
+        cause,
+      });
+    const { failure, resolvedPath, operation } = projectFileFailureContext(cause);
+    return new BlendPreviewError({
+      relativePath,
+      failure,
+      ...(resolvedPath === undefined ? {} : { resolvedPath }),
+      ...(operation === undefined ? {} : { operation }),
+      cause,
+    });
+  };
 
 function projectFileFailureContext(
   error:
@@ -1525,6 +1557,8 @@ export const layerWsRpc = (
       const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
       const pullRequestSync = yield* PullRequestSyncReactor.PullRequestSyncReactor;
       const deviceService = yield* DeviceService.DeviceService;
+      const hostedBlender = yield* HostedBlender.HostedBlender;
+      const hostedBlenderSetup = yield* HostedBlenderSetup.HostedBlenderSetup;
       const deviceHostContext =
         yield* Effect.context<Effect.Services<ReturnType<typeof remoteSshDeviceHosts>>>();
       const orchestrationEngine = yield* Orchestrator.OrchestratorV2;
@@ -1603,6 +1637,8 @@ export const layerWsRpc = (
       const layoutCommandApprovalWrites =
         yield* LayoutCommandApprovalWrites.LayoutCommandApprovalWrites;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+      const blendPreview = yield* BlendPreview.BlendPreview;
+      const blendConversion = yield* BlendConversion.BlendConversion;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
@@ -3159,6 +3195,22 @@ export const layerWsRpc = (
                 }),
             ),
           ),
+        [WS_METHODS.projectsReadBlendPreview]: (input) =>
+          blendPreview.read(input).pipe(Effect.mapError(blendPreviewError(input.relativePath))),
+        [WS_METHODS.projectsSubscribeBlendConversion]: (input) =>
+          Stream.callback<BlendConversionStatus, BlendPreviewError>((queue) =>
+            blendConversion
+              .watch(input, (status) => Queue.offer(queue, status).pipe(Effect.asVoid))
+              .pipe(
+                Effect.mapError(blendPreviewError(input.relativePath)),
+                Effect.matchCauseEffect({
+                  onFailure: (cause) => Queue.failCause(queue, cause),
+                  onSuccess: () => Queue.end(queue),
+                }),
+                Effect.forkScoped,
+              ),
+          ),
+        [WS_METHODS.assetsReadBlendPreview]: (input) => blendPreview.readAttachment(input),
         [WS_METHODS.projectsWriteFile]: (input) =>
           workspaceFileSystem.writeFile(input).pipe(
             Effect.mapError(
@@ -3515,6 +3567,28 @@ export const layerWsRpc = (
         [WS_METHODS.deviceDetail]: (input) => deviceService.detail(input),
         [WS_METHODS.deviceAction]: (input) => deviceService.action(input),
         [WS_METHODS.subscribeDeviceState]: (_input) => DeviceService.stateStream(deviceService),
+        [WS_METHODS.hostedBlenderOpen]: (input) => hostedBlender.open(input),
+        [WS_METHODS.hostedBlenderQuit]: (input) => hostedBlender.quit(input),
+        [WS_METHODS.hostedBlenderSubscribeThread]: (input) =>
+          hostedBlender.threadState(input.threadId),
+        [WS_METHODS.hostedBlenderReopen]: (input) => hostedBlender.reopen(input),
+        [WS_METHODS.hostedBlenderDismiss]: (input) => hostedBlender.dismiss(input),
+        [WS_METHODS.hostedBlenderSubscribeRunning]: () => hostedBlender.runningBlenders,
+        [WS_METHODS.hostedBlenderSubscribeHeld]: () => hostedBlender.heldCopies,
+        [WS_METHODS.hostedBlenderDeleteHeld]: (input) => hostedBlender.deleteHeld(input.copies),
+        [WS_METHODS.hostedBlenderKeepHeld]: (input) => hostedBlender.keepHeld(input.copies),
+        [WS_METHODS.hostedBlenderCaptureView]: (input) =>
+          hostedBlender.captureView(input.threadId, input.role),
+        [WS_METHODS.hostedBlenderFindHits]: (input) => hostedBlender.findHits(input),
+        [WS_METHODS.hostedBlenderSetView]: (input) => hostedBlender.setView(input),
+        [WS_METHODS.hostedBlenderSetTimeline]: (input) => hostedBlender.setTimeline(input.shown),
+        [WS_METHODS.hostedBlenderSubscribeMaster]: (input) =>
+          hostedBlender.masterState(input.threadId),
+        [WS_METHODS.hostedBlenderOpenMaster]: (input) => hostedBlender.reopenMaster(input.threadId),
+        [WS_METHODS.hostedBlenderMoveIntoT3]: (input) => hostedBlender.moveIntoT3(input),
+        [WS_METHODS.hostedBlenderSubscribeSetup]: (_input) => hostedBlenderSetup.state,
+        [WS_METHODS.hostedBlenderCheckSetup]: (_input) => hostedBlenderSetup.check,
+        [WS_METHODS.hostedBlenderInstallWithAgent]: (_input) => hostedBlenderSetup.installWithAgent,
         [WS_METHODS.previewStopLocalServer]: (input) => portDiscovery.stopServer(input),
         [WS_METHODS.subscribeDiscoveredLocalServers]: (input) =>
           Stream.callback<DiscoveredLocalServerList>((queue) =>

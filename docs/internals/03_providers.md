@@ -71,6 +71,16 @@ and permission claims match what the protocol can enforce.
   bypass a provider's sandbox or approval rules.
 - **T3 MCP tools.** Inject the thread's authenticated MCP server so agents can reach T3 tools, and
   keep turns working if that server is unreachable.
+- **Per-thread stdio servers follow the thread's mode.** Hosted Blender's `blender-hosted` and
+  `blender-master` ([`hostedBlenderMcp.ts`](../../apps/server/src/provider/hostedBlenderMcp.ts))
+  pre-approve every tool only in full access and offer read-only tools alone in plan mode. Codex
+  reads MCP config only when it loads a thread, and `thread/resume` of a loaded thread keeps the old
+  config, so the Codex adapter unsubscribes and resumes a thread whose approvals changed. Claude
+  starts a new query when its allowed tools change. Their ports are assigned when the session
+  starts, so the Blender started later binds the port the session already has. A master Blender is
+  shared by threads, so its listener binds a private port instead, and each agent thread's
+  `blender-master` port is a relay in T3 ([`portForward.ts`](../../apps/server/src/hostedBlender/portForward.ts))
+  that closes on its own when that thread's access ends.
 
 ## Model manifest
 

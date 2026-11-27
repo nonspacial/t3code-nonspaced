@@ -50,6 +50,7 @@ import * as Stream from "effect/Stream";
 
 import { base64UrlDecodeUtf8, base64UrlEncode } from "../auth/utils.ts";
 import * as AssetSigner from "./AssetSigner.ts";
+import { blendCacheDir, isBlendCacheFileName } from "../blend/blendCache.ts";
 import { makeIsServerInternalPath } from "../auth/serverInternalPaths.ts";
 import { parseAttachmentFileExtension, resolveAttachmentPathById } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
@@ -197,6 +198,13 @@ const AssetClaimsSchema = Schema.Union([
     threadId: ThreadId,
     itemId: TurnItemId,
     index: Schema.Number,
+    expiresAt: Schema.Number,
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    kind: Schema.Literal("blend-glb"),
+    /** A cache entry's name; only the server mints these, after converting a workspace file. */
+    fileName: Schema.String,
     expiresAt: Schema.Number,
   }),
   Schema.Struct({
@@ -975,6 +983,18 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
   };
 });
 
+/** A URL for a `.blend` conversion's cached GLB, which no client can name itself. */
+export const issueBlendGlbUrl = Effect.fn("AssetAccess.issueBlendGlbUrl")(function* (
+  fileName: string,
+) {
+  const expiresAt = (yield* Clock.currentTimeMillis) + ASSET_TOKEN_TTL_MS;
+  const encodedPayload = base64UrlEncode(
+    encodeAssetClaims({ version: 1, kind: "blend-glb", fileName, expiresAt }),
+  );
+  const signature = yield* (yield* AssetSigner.AssetSigner).sign(encodedPayload);
+  return `${ASSET_ROUTE_PREFIX}/${encodedPayload}.${signature}/scene.glb`;
+});
+
 export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   token: string,
   relativePath: string,
@@ -1081,6 +1101,28 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
       Effect.orElseSucceed(() => null),
     );
     return file ? ({ kind: "file", path: background.path, file } satisfies ResolvedAsset) : null;
+  }
+
+  if (claims.kind === "blend-glb") {
+    if (!isBlendCacheFileName(claims.fileName)) return null;
+    const config = yield* ServerConfig.ServerConfig;
+    const path = yield* Path.Path;
+    const fileSystem = yield* FileSystem.FileSystem;
+    // openMediaFile refuses any path that is not canonical, and the T3 home may be a symlink.
+    const cacheDir = yield* fileSystem
+      .realPath(blendCacheDir(path, config.providerStatusCacheDir))
+      .pipe(Effect.orElseSucceed(() => null));
+    if (cacheDir === null) return null;
+    const glbPath = path.join(cacheDir, claims.fileName);
+    const file = yield* openMediaFile(glbPath).pipe(Effect.orElseSucceed(() => null));
+    return file
+      ? ({
+          kind: "file",
+          path: glbPath,
+          mimeType: "model/gltf-binary",
+          file,
+        } satisfies ResolvedAsset)
+      : null;
   }
 
   if (claims.kind === "native-app-icon") {

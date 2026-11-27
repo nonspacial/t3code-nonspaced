@@ -27,6 +27,7 @@ import {
   createEnvironmentCommand,
   createEnvironmentRpcCommand,
   createEnvironmentRpcQueryAtomFamily,
+  createEnvironmentRpcSubscriptionAtomFamily,
 } from "./runtime.ts";
 import { createProject, deleteProject, updateProject } from "../operations/commands.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
@@ -169,6 +170,24 @@ export function createProjectEnvironmentAtoms<R, E>(
       staleTimeMs: 15_000,
     }),
     readFile,
+    readBlendPreview: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:projects:read-blend-preview",
+      tag: WS_METHODS.projectsReadBlendPreview,
+      staleTimeMs: 30_000,
+      idleTtlMs: 5 * 60_000,
+    }),
+    // A closed preview stops its conversion soon after, whether it is waiting or running.
+    convertBlend: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:projects:convert-blend",
+      tag: WS_METHODS.projectsSubscribeBlendConversion,
+      idleTtlMs: 1_000,
+    }),
+    readBlendAttachmentPreview: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:projects:read-blend-attachment-preview",
+      tag: WS_METHODS.assetsReadBlendPreview,
+      staleTimeMs: 30_000,
+      idleTtlMs: 5 * 60_000,
+    }),
     optimisticFile: (target: OptimisticProjectFileTarget) =>
       optimisticFileFamily(optimisticProjectFileKey(target)),
     create: createEnvironmentCommand(runtime, {

@@ -93,6 +93,8 @@ import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
 import * as ThreadViewers from "./orchestration-v2/ThreadViewers.ts";
 import * as CodexInstallation from "./provider/CodexInstallation.ts";
 import * as DeviceService from "./device/DeviceService.ts";
+import * as HostedBlender from "./hostedBlender/HostedBlender.ts";
+import * as HostedBlenderSetup from "./hostedBlender/HostedBlenderSetup.ts";
 import * as DocumentText from "./provider/DocumentText.ts";
 import * as DirectEndpoints from "./environment/DirectEndpoints.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
@@ -165,6 +167,8 @@ import * as WorkspaceFolders from "./workspace/WorkspaceFolders.ts";
 import * as LayoutCommandApprovalWrites from "./workspace/LayoutCommandApprovalWrites.ts";
 import * as TaskFolders from "./workspace/TaskFolders.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
+import * as BlendConversion from "./blend/BlendConversion.ts";
+import * as BlendPreview from "./blend/BlendPreview.ts";
 import * as WorktreeSetupTracker from "./project/WorktreeSetupTracker.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
@@ -854,6 +858,8 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   ThreadViewers.layer,
   Layer.mock(CodexInstallation.CodexInstallation)({ managedDirectory: "/unused" }),
   Layer.mock(DeviceService.DeviceService)({}),
+  Layer.mock(HostedBlender.HostedBlender)({}),
+  Layer.mock(HostedBlenderSetup.HostedBlenderSetup)({}),
   Layer.mock(EnvironmentTheme.EnvironmentThemeService)({}),
   Layer.mock(GitWorkflowService.GitWorkflowService)({}),
   Layer.mock(HostResources.HostResources)({}),
@@ -921,6 +927,8 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(TaskFolders.TaskFolders)({}),
   Layer.mock(LayoutCommandApprovalWrites.LayoutCommandApprovalWrites)({}),
   Layer.mock(WorkspaceFileSystem.WorkspaceFileSystem)({}),
+  Layer.mock(BlendPreview.BlendPreview)({}),
+  Layer.mock(BlendConversion.BlendConversion)({}),
   Layer.mock(WorktreeSetupTracker.WorktreeSetupTracker)({}),
   FeatureFlags.layerTest(),
 );

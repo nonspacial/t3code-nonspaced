@@ -588,15 +588,24 @@ jobs:
           toolchain: stable
           components: rustfmt
 
+      # The hidden display helper links GStreamer, GBM and xkbcommon, and its integration test
+      # runs a headless labwc with x264 (no GPU).
+      - name: Install hidden display dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev libgbm-dev libxkbcommon-dev xkb-data labwc \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
+
       - name: Check Rust formatting
         run: |
-          for crate in resource-monitor kde-snap-shot hyprland-snap-shot; do
+          for crate in resource-monitor kde-snap-shot hyprland-snap-shot hidden-display; do
             cargo fmt --manifest-path "native/$crate/Cargo.toml" -- --check
           done
 
       - name: Test Rust crates
         run: |
-          for crate in resource-monitor kde-snap-shot hyprland-snap-shot; do
+          for crate in resource-monitor kde-snap-shot hyprland-snap-shot hidden-display; do
             cargo test --locked --manifest-path "native/$crate/Cargo.toml"
           done
 

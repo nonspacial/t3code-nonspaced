@@ -36,6 +36,10 @@ import {
   type ClaudeLedgerUsage,
   type ClaudeModelLedger,
 } from "../../provider/ClaudeTurnTokenUsage.ts";
+import {
+  claudeHostedBlenderOverrides,
+  claudeHostedBlenderToolDecision,
+} from "../../provider/hostedBlenderMcp.ts";
 import { toMcpElicitationResponse } from "../../provider/CodexMcpElicitation.ts";
 import {
   type CanUseTool,
@@ -227,6 +231,7 @@ import {
 import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
 import {
   T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
+  T3_CODE_HOSTED_BLENDER_INSTRUCTIONS_WITH_TOOL_SEARCH,
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
 } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
@@ -2523,6 +2528,24 @@ const subagentDeviceInstructions: HookCallback = () =>
     },
   });
 
+// PreToolUse hooks run before Claude's permission rules and modes, so no allow rule or mode can
+// let a hosted Blender tool off the read-only list through in Plan, a tool added later included.
+const denyHostedBlenderWritesInPlan: HookCallback = (hookInput) =>
+  Promise.resolve(
+    hookInput.hook_event_name === "PreToolUse" &&
+      claudeHostedBlenderToolDecision(hookInput.tool_name, HOSTED_BLENDER_PLAN_POLICY) === "deny"
+      ? {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse" as const,
+            permissionDecision: "deny" as const,
+            permissionDecisionReason:
+              "Plan mode offers only read-only Blender tools: scene summaries, screenshots and doc search.",
+          },
+        }
+      : {},
+  );
+const HOSTED_BLENDER_PLAN_POLICY = { runtimeMode: "approval-required", interactionMode: "plan" };
+
 export function makeClaudeQueryOptions(input: {
   readonly modelSelection: ModelSelection;
   readonly modelCatalog?: ClaudeModelCatalog;
@@ -2542,6 +2565,10 @@ export function makeClaudeQueryOptions(input: {
   readonly agentFeedback?: AgentFeedbackMode;
   /** The thread's T3 MCP session holds the `device` capability. */
   readonly deviceToolsAvailable?: boolean;
+  /** T3 gave the session its hosted Blender MCP servers. */
+  readonly hostedBlenderToolsAvailable?: boolean;
+  /** Plan mode: only the read-only hosted Blender tools may run. */
+  readonly hostedBlenderReadOnly?: boolean;
   readonly tools?: ClaudeAgentSdkQueryTools;
   readonly allowedTools?: ReadonlyArray<string>;
   readonly disallowedTools?: ReadonlyArray<string>;
@@ -2645,6 +2672,7 @@ export function makeClaudeQueryOptions(input: {
           },
         } as ClaudeSdkSettings);
   const deviceInstructions = input.mcpServers !== undefined && input.deviceToolsAvailable === true;
+  const blenderReadOnly = input.mcpServers !== undefined && input.hostedBlenderReadOnly === true;
   const agentFeedback = input.mcpServers === undefined ? "off" : (input.agentFeedback ?? "off");
   const options: ClaudeAgentSdkQueryOptions = {
     model: compiledSelection.apiModelId,
@@ -2711,15 +2739,21 @@ export function makeClaudeQueryOptions(input: {
               CLAUDE_SEND_TO_USER_INSTRUCTIONS +
               (deviceInstructions
                 ? `\n${T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH}\n`
+                : "") +
+              (input.hostedBlenderToolsAvailable === true
+                ? `\n${T3_CODE_HOSTED_BLENDER_INSTRUCTIONS_WITH_TOOL_SEARCH}\n`
                 : "")),
         ...launchAppendSystemPrompt,
       ].join("\n\n"),
     },
-    ...(deviceInstructions || input.onStop !== undefined
+    ...(deviceInstructions || input.onStop !== undefined || blenderReadOnly
       ? {
           hooks: {
             ...(deviceInstructions
               ? { SubagentStart: [{ hooks: [subagentDeviceInstructions] }] }
+              : {}),
+            ...(blenderReadOnly
+              ? { PreToolUse: [{ hooks: [denyHostedBlenderWritesInPlan] }] }
               : {}),
             ...(input.onStop === undefined ? {} : { Stop: [{ hooks: [input.onStop] }] }),
           },
@@ -2859,9 +2893,13 @@ export function claudeMcpQueryOverrides(input: {
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
   readonly readOnlySandbox: boolean;
   readonly allowedTools?: ReadonlyArray<string>;
+  /** The thread's modes, which decide what the hosted Blender servers pre-approve. */
+  readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
 }): {
   readonly allowedTools?: ReadonlyArray<string>;
+  readonly disallowedTools?: ReadonlyArray<string>;
   readonly mcpServers?: ClaudeQueryOptions["mcpServers"];
+  readonly hostedBlenderReadOnly?: true;
 } {
   const session = input.mcpSession;
   if (session === undefined) {
@@ -2870,8 +2908,20 @@ export function claudeMcpQueryOverrides(input: {
   const mcpAllowedTools = input.readOnlySandbox
     ? CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS
     : [CLAUDE_T3_MCP_TOOL_WILDCARD];
+  const blender = claudeHostedBlenderOverrides(
+    session,
+    input.runtimePolicy ?? {
+      runtimeMode: "approval-required",
+      ...(input.readOnlySandbox ? { sandboxPolicy: { type: "readOnly" } } : {}),
+    },
+  );
   return {
-    allowedTools: Array.from(new Set([...(input.allowedTools ?? []), ...mcpAllowedTools])),
+    allowedTools: Array.from(
+      new Set([...(input.allowedTools ?? []), ...mcpAllowedTools, ...blender.allowedTools]),
+    ),
+    ...(blender.disallowedTools.length === 0
+      ? {}
+      : { disallowedTools: blender.disallowedTools, hostedBlenderReadOnly: true as const }),
     mcpServers: {
       [CLAUDE_T3_MCP_SERVER]: {
         type: "http",
@@ -2881,6 +2931,7 @@ export function claudeMcpQueryOverrides(input: {
         },
         timeout: CLAUDE_T3_MCP_TOOL_TIMEOUT_MS,
       },
+      ...blender.mcpServers,
     },
   };
 }
@@ -3958,6 +4009,7 @@ export function claudeEffectiveQueryPolicyKey(
   queryPolicy: ClaudeRuntimeQueryPolicy,
   mcpOverrides: {
     readonly allowedTools?: ReadonlyArray<string>;
+    readonly disallowedTools?: ReadonlyArray<string>;
     readonly mcpServers?: ClaudeQueryOptions["mcpServers"];
   },
   // Folders are fixed when a query starts, so a changed list needs a new one.
@@ -3965,6 +4017,7 @@ export function claudeEffectiveQueryPolicyKey(
 ): string {
   return JSON.stringify({
     workspace,
+    disallowedTools: mcpOverrides.disallowedTools,
     runtimePolicy: claudeRuntimeQueryPolicyKey({
       ...queryPolicy,
       ...(mcpOverrides.allowedTools === undefined
@@ -13086,7 +13139,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             } satisfies PermissionResult;
           }
 
-          if (!requiresClaudeApproval(context)) {
+          const blenderDecision = claudeHostedBlenderToolDecision(
+            toolName,
+            context.input.runtimePolicy,
+          );
+          if (blenderDecision === "deny") {
+            return {
+              behavior: "deny",
+              message:
+                "Plan mode offers only read-only Blender tools: scene summaries, screenshots and doc search.",
+              toolUseID: callbackOptions.toolUseID,
+            } satisfies PermissionResult;
+          }
+          if (!requiresClaudeApproval(context) && blenderDecision !== "ask") {
             return {
               behavior: "allow",
               updatedInput: toolInput,
@@ -13592,6 +13657,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             );
           const mcpOverrides = claudeMcpQueryOverrides({
             mcpSession,
+            runtimePolicy: turnInput.runtimePolicy,
             readOnlySandbox:
               sandboxPolicyKindForClaudeRuntimePolicy(turnInput.runtimePolicy) === "readOnly",
             ...(queryPolicy.allowedTools === undefined
@@ -13807,7 +13873,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ...(mcpOverrides.mcpServers === undefined
               ? {}
               : { mcpServers: mcpOverrides.mcpServers }),
+            ...(mcpOverrides.disallowedTools === undefined
+              ? {}
+              : { disallowedTools: mcpOverrides.disallowedTools }),
             deviceToolsAvailable: mcpSession?.capabilities?.has("device") === true,
+            hostedBlenderToolsAvailable: mcpSession?.hostedBlender !== undefined,
+            ...(mcpOverrides.hostedBlenderReadOnly === true ? { hostedBlenderReadOnly: true } : {}),
             permissionMode: queryPolicy.permissionMode,
             ...(queryPolicy.allowDangerouslySkipPermissions === undefined
               ? {}

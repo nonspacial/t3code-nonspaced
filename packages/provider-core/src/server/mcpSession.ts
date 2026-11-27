@@ -20,6 +20,21 @@ export interface McpProviderSessionConfig {
   readonly agentDeviceEnvironment?: Readonly<Record<string, string>>;
   /** True while a delegated task this thread started will wake it with its result. */
   readonly hasPendingWake?: Effect.Effect<boolean>;
+  /** The official Blender MCP for this thread's hosted Blenders, when the user allows agents. */
+  readonly hostedBlender?: HostedBlenderMcpLaunch;
+}
+
+/**
+ * How T3 runs the official `blender-mcp` for a thread's session. The master relay's port is the
+ * thread's, assigned before any master exists; a working Blender listens on a port of its own.
+ */
+export interface HostedBlenderMcpLaunch {
+  readonly command: string;
+  readonly blenderPath: string;
+  /** The relay to the master Blender the thread copies back into. */
+  readonly masterPort: number;
+  /** A private `TMPDIR` for the MCP server. */
+  readonly tmpDir: string;
 }
 
 export function withAgentDeviceEnvironment(

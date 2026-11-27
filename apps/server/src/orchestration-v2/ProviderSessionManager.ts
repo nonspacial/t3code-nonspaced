@@ -54,7 +54,9 @@ import {
 import { ProviderWorkspaceMissingError } from "../provider/Errors.ts";
 import * as ProviderInstallationGate from "../provider/ProviderInstallationGate.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as HostedBlenderAgents from "../hostedBlender/HostedBlenderAgents.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import type * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as ServerSettings from "../serverSettings.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -452,6 +454,18 @@ function providerThreadLoadKey(input: {
   });
 }
 
+const sameHostedBlenderLaunch = (
+  a: McpProviderSession.HostedBlenderMcpLaunch | undefined,
+  b: McpProviderSession.HostedBlenderMcpLaunch | undefined,
+) =>
+  a === b ||
+  (a !== undefined &&
+    b !== undefined &&
+    a.command === b.command &&
+    a.blenderPath === b.blenderPath &&
+    a.masterPort === b.masterPort &&
+    a.tmpDir === b.tmpDir);
+
 export const layerWithOptions = (
   options: ProviderSessionManagerV2LayerOptions = {},
 ): Layer.Layer<
@@ -478,6 +492,9 @@ export const layerWithOptions = (
       /** Unreadable settings must preserve explicit browser-access opt-outs. */
       const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
       const projectService = yield* Effect.serviceOption(ProjectService.ProjectService);
+      const hostedBlenderAgents = yield* Effect.serviceOption(
+        HostedBlenderAgents.HostedBlenderAgents,
+      );
       const eventSink = yield* EventSink.EventSinkV2;
       const commandOutput = yield* CommandOutputHub.CommandOutputHub;
       const promptSuggestionStore = yield* SubscriptionRef.make<
@@ -639,6 +656,19 @@ export const layerWithOptions = (
                 if (Option.getOrElse(backgroundWait, () => false)) {
                   capabilities.add("background-wait");
                 }
+                // Ports for the thread's hosted Blenders are assigned now, before any exists.
+                const hostedBlender = Option.isNone(hostedBlenderAgents)
+                  ? undefined
+                  : yield* registry.get(providerInstanceId).pipe(
+                      Effect.flatMap((adapter) =>
+                        hostedBlenderAgents.value.sessionLaunch({
+                          threadId,
+                          driver: adapter.driver,
+                        }),
+                      ),
+                      Effect.orElseSucceed(() => undefined),
+                    );
+                if (hostedBlender !== undefined) capabilities.add("hosted-blender");
                 const subagent = yield* projectionStore.getThread(threadId).pipe(
                   Effect.map((thread) => thread.lineage.relationshipToParent === "subagent"),
                   Effect.orElseSucceed(() => false),
@@ -664,6 +694,8 @@ export const layerWithOptions = (
                     resolved.thread.providerInstanceId === providerInstanceId &&
                     resolved.capabilities.has("preview") === browserToolsAvailable &&
                     resolved.capabilities.has("device") === deviceToolsAvailable &&
+                    resolved.capabilities.has("hosted-blender") === (hostedBlender !== undefined) &&
+                    sameHostedBlenderLaunch(existing.hostedBlender, hostedBlender) &&
                     // A failed capability read cannot tell that the live credential is wrong.
                     (Option.isNone(backgroundWait) ||
                       resolved.capabilities.has("background-wait") === backgroundWait.value) &&
@@ -673,6 +705,12 @@ export const layerWithOptions = (
                     return { mcpCredentialId: existing.providerSessionId, issued: false };
                   }
                   dropMcpCredentialReservation(threadId, existing.providerSessionId);
+                  // The replaced credential stops working first, so nothing can grant it a
+                  // hosted Blender again; then its agent loses them, before the new one reuses
+                  // the thread's ports.
+                  yield* mcpSessionRegistry.revokeThread(threadId);
+                  yield* mcpSessions.clear(threadId);
+                  yield* endHostedBlenderAccess(threadId, existing.providerSessionId);
                 }
                 yield* mcpSessionRegistry.revokeThread(threadId);
                 const credential = yield* mcpSessionRegistry.issue({
@@ -684,6 +722,7 @@ export const layerWithOptions = (
                 });
                 yield* mcpSessions.set({
                   ...credential.config,
+                  ...(hostedBlender === undefined ? {} : { hostedBlender }),
                   hasPendingWake: projectionStore
                     .getThreadRecords(threadId, ["runs", "subagents"])
                     .pipe(
@@ -695,16 +734,25 @@ export const layerWithOptions = (
                 return { mcpCredentialId: credential.config.providerSessionId, issued: true };
               }),
             );
+      // A hosted Blender listens for the thread's agent only while its session holds the MCP.
+      const endHostedBlenderAccess = (threadId: ThreadId, mcpCredentialId: string | undefined) =>
+        Option.isNone(hostedBlenderAgents)
+          ? Effect.void
+          : hostedBlenderAgents.value.sessionEnded(threadId, mcpCredentialId);
       const clearMcpSession = (threadId: ThreadId, mcpCredentialId?: string) =>
         mcpCredentialId === undefined
-          ? mcpSessionRegistry
-              .revokeThread(threadId)
-              .pipe(Effect.tap(() => mcpSessions.clear(threadId)))
+          ? Effect.gen(function* () {
+              const ended = (yield* mcpSessions.read(threadId))?.providerSessionId;
+              yield* mcpSessionRegistry.revokeThread(threadId);
+              yield* mcpSessions.clear(threadId);
+              yield* endHostedBlenderAccess(threadId, ended);
+            })
           : mcpSessionRegistry.revokeProviderSession(mcpCredentialId).pipe(
               Effect.tap(() =>
                 Effect.gen(function* () {
                   if ((yield* mcpSessions.read(threadId))?.providerSessionId === mcpCredentialId) {
                     yield* mcpSessions.clear(threadId);
+                    yield* endHostedBlenderAccess(threadId, mcpCredentialId);
                   }
                 }),
               ),

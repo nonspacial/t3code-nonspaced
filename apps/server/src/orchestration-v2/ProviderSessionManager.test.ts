@@ -41,6 +41,7 @@ import { HttpServer } from "effect/http";
 
 import { ProviderWorkspaceMissingError } from "../provider/Errors.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as HostedBlenderAgents from "../hostedBlender/HostedBlenderAgents.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -688,6 +689,7 @@ function layerTest(input: {
   readonly releaseRecorded?: Deferred.Deferred<void>;
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
   readonly projectServiceLayer?: Layer.Layer<ProjectService.ProjectService>;
+  readonly hostedBlenderAgentsLayer?: Layer.Layer<HostedBlenderAgents.HostedBlenderAgents>;
   readonly installationGateLayer?: Layer.Layer<ProviderInstallationGate.ProviderInstallationGate>;
 }) {
   const layerConfiguredEventSink =
@@ -788,6 +790,7 @@ function layerTest(input: {
           input.installationGateLayer ?? ProviderInstallationGate.layer,
           ...(input.serverSettingsLayer === undefined ? [] : [input.serverSettingsLayer]),
           ...(input.projectServiceLayer === undefined ? [] : [input.projectServiceLayer]),
+          ...(input.hostedBlenderAgentsLayer === undefined ? [] : [input.hostedBlenderAgentsLayer]),
         ),
       ),
     ),
@@ -862,6 +865,7 @@ function runBrowserAccessScenario(input: {
   readonly createThread?: boolean;
   readonly projectExists?: boolean;
   readonly delegatedBy?: ThreadId;
+  readonly hostedBlenderAgentsLayer?: Layer.Layer<HostedBlenderAgents.HostedBlenderAgents>;
 }) {
   return Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
@@ -911,6 +915,9 @@ function runBrowserAccessScenario(input: {
           idleTimeoutMs: 1_000,
           mcpConfigs,
           projectServiceLayer: layerProjectService,
+          ...(input.hostedBlenderAgentsLayer === undefined
+            ? {}
+            : { hostedBlenderAgentsLayer: input.hostedBlenderAgentsLayer }),
           serverSettingsLayer: ServerSettings.layerTest({
             enableAgentBrowserAccess: input.enableAgentBrowserAccess,
             ...(input.enableAgentDeviceAccess === undefined
@@ -6092,6 +6099,49 @@ it.effect(
     }),
 );
 
+it.effect("ProviderSessionManagerV2 gives the session its hosted Blender MCP when it starts", () =>
+  Effect.gen(function* () {
+    const launch = {
+      command: "/home/user/.local/bin/blender-mcp",
+      blenderPath: "/usr/bin/blender",
+      masterPort: 41002,
+      tmpDir: "/tmp/t3hb-mcp",
+    };
+    const asked: Array<string> = [];
+    const ended: Array<string> = [];
+    const agentsLayer = (given: typeof launch | undefined) =>
+      Layer.mock(HostedBlenderAgents.HostedBlenderAgents)({
+        sessionLaunch: ({ driver }) =>
+          Effect.sync(() => {
+            asked.push(driver);
+            return given;
+          }),
+        sessionEnded: (threadId) =>
+          Effect.sync(() => {
+            ended.push(threadId);
+          }),
+      });
+    const withBlender = yield* runBrowserAccessScenario({
+      enableAgentBrowserAccess: true,
+      projectOverride: true,
+      hostedBlenderAgentsLayer: agentsLayer(launch),
+    });
+    assert.deepEqual(withBlender?.hostedBlender, launch);
+    assert.isTrue(withBlender?.capabilities?.has("hosted-blender"));
+    assert.deepEqual(asked, ["codex"]);
+    // Releasing the session takes its hosted Blender's agent listener back.
+    assert.deepEqual(ended, ["thread-provider-session-manager-browser-access"]);
+
+    const without = yield* runBrowserAccessScenario({
+      enableAgentBrowserAccess: true,
+      projectOverride: true,
+      hostedBlenderAgentsLayer: agentsLayer(undefined),
+    });
+    assert.isUndefined(without?.hostedBlender);
+    assert.isFalse(without?.capabilities?.has("hosted-blender"));
+  }),
+);
+
 it.effect("ProviderSessionManagerV2 withholds device tools while device support is off", () =>
   Effect.gen(function* () {
     const global = yield* runBrowserAccessScenario({
@@ -6140,4 +6190,151 @@ it.effect("ProviderSessionManagerV2 gives a delegated child its project's device
     });
     assert.isTrue(child?.capabilities?.has("device"));
   }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 ends a thread's hosted Blender access when its MCP credential is replaced",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const mcpConfigs = yield* Ref.make<
+        ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
+      >([]);
+      const ended: Array<string> = [];
+      // What the thread's MCP session was when its access ended: gone, so nothing can grant it.
+      const credentialAtEnd: Array<string | undefined> = [];
+      let readCredential: Effect.Effect<string | undefined> = Effect.succeed("unread");
+      let launches = 0;
+      const agentsLayer = Layer.mock(HostedBlenderAgents.HostedBlenderAgents)({
+        // Each session start offers a different launch, so the credential is replaced.
+        sessionLaunch: () =>
+          Effect.sync(() => {
+            launches += 1;
+            return {
+              command: "/home/user/.local/bin/blender-mcp",
+              blenderPath: "/usr/bin/blender",
+              hostedPort: 41000 + launches * 2,
+              masterPort: 41001 + launches * 2,
+              tmpDir: "/tmp/t3hb-mcp",
+            };
+          }),
+        sessionEnded: (threadId, session) =>
+          Effect.suspend(() => readCredential).pipe(
+            Effect.tap((credential) =>
+              Effect.sync(() => {
+                ended.push(`${threadId} ${session}`);
+                credentialAtEnd.push(credential);
+              }),
+            ),
+            Effect.asVoid,
+          ),
+      });
+      const effect = Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-provider-session-manager-blender-replacement");
+        readCredential = mcpSessions
+          .read(threadId)
+          .pipe(Effect.map((config) => config?.providerSessionId));
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const replacementSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        const first = (yield* Ref.get(mcpConfigs)).at(-1);
+        assert.deepEqual(ended, []);
+        yield* manager.open({
+          threadId,
+          providerSessionId: replacementSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const second = (yield* Ref.get(mcpConfigs)).at(-1);
+        assert.notEqual(second?.providerSessionId, first?.providerSessionId);
+        // The old credential's agent loses its Blender before the new one gets the port, scoped
+        // to that credential, and only once it no longer works.
+        assert.deepEqual(ended, [`${threadId} ${first?.providerSessionId}`]);
+        assert.deepEqual(credentialAtEnd, [undefined]);
+      });
+      yield* effect.pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 1_000,
+            capabilities: ExclusiveCapabilities,
+            mcpConfigs,
+            hostedBlenderAgentsLayer: agentsLayer,
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 revokes no hosted Blender access when the MCP credential is unchanged",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const mcpConfigs = yield* Ref.make<
+        ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
+      >([]);
+      const ended: Array<string> = [];
+      const launch = {
+        command: "/home/user/.local/bin/blender-mcp",
+        blenderPath: "/usr/bin/blender",
+        masterPort: 41011,
+        tmpDir: "/tmp/t3hb-mcp",
+      };
+      const agentsLayer = Layer.mock(HostedBlenderAgents.HostedBlenderAgents)({
+        sessionLaunch: () => Effect.succeed(launch),
+        sessionEnded: (threadId) =>
+          Effect.sync(() => {
+            ended.push(threadId);
+          }),
+      });
+      const effect = Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-provider-session-manager-blender-refresh");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        const first = (yield* Ref.get(mcpConfigs)).at(-1);
+        // An ordinary refresh keeps the credential, and every grant made to it.
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        assert.equal(
+          (yield* Ref.get(mcpConfigs)).at(-1)?.providerSessionId,
+          first?.providerSessionId,
+        );
+        assert.deepEqual(ended, []);
+      });
+      yield* effect.pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 1_000,
+            capabilities: ExclusiveCapabilities,
+            mcpConfigs,
+            hostedBlenderAgentsLayer: agentsLayer,
+          }),
+        ),
+      );
+    }),
 );

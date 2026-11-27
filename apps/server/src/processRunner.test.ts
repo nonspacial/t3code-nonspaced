@@ -298,6 +298,8 @@ describe("runProcess", () => {
   );
 });
 
+const RUNNER_HOME = process.env.HOME;
+
 // The server's spawner stack, as server.ts builds it.
 const layerLaunched = ProcessRunner.layer.pipe(Layer.provide(ProcessLauncher.layerServer));
 
@@ -319,6 +321,25 @@ describe("ProcessRunner.layer", () => {
         const result = yield* runner.run({ command: "sh", args: ["-c", "echo $PPID"] });
 
         expectHelperPid(result.stdout);
+      }).pipe(Effect.provide(layerLaunched.pipe(Layer.provide(NodeServices.layer)))),
+  );
+
+  it.live.skipIf(HostProcess.Platform.defaultValue() !== "linux")(
+    "gives a child exactly its environment when told to replace the server's",
+    () =>
+      Effect.gen(function* () {
+        const runner = yield* ProcessRunner.ProcessRunner;
+        const seen = (replaceEnv: boolean) =>
+          runner
+            .run({
+              command: "/bin/sh",
+              args: ["-c", 'echo "${HOME-unset}:${T3_ONLY-}"'],
+              env: { PATH: "/usr/bin:/bin", T3_ONLY: "kept" },
+              replaceEnv,
+            })
+            .pipe(Effect.map((result) => result.stdout.trim()));
+        expect(yield* seen(true)).toBe("unset:kept");
+        expect(yield* seen(false)).toBe(`${RUNNER_HOME}:kept`);
       }).pipe(Effect.provide(layerLaunched.pipe(Layer.provide(NodeServices.layer)))),
   );
 

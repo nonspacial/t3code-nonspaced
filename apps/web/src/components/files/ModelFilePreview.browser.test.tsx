@@ -1,0 +1,731 @@
+import "~/index.css";
+
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import {
+  type AssetResource,
+  type BlendPreview,
+  EnvironmentId,
+  HostedBlenderError,
+  type HostedBlenderMasterState,
+  type HostedBlenderThreadState,
+  ThreadId,
+} from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import { AsyncResult, Atom } from "effect/reactivity";
+import type { ReactNode } from "react";
+import { expect, it, vi } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
+
+import { useComposerDraftStore } from "~/composerDraftStore";
+import { useRightPanelStore } from "~/rightPanelStore";
+import { render } from "../../../test/render";
+import { blenderRoleFor, useBlenderRoleStore } from "../blender/blenderRole";
+import { OpenInHostedBlender } from "../blender/OpenInHostedBlender";
+import { BlendFilePreview } from "./BlendFilePreview";
+import { MODEL_CONFIRM_BYTES, ModelFilePreview } from "./ModelFilePreview";
+
+const { mint } = vi.hoisted(() => ({
+  mint: vi.fn<(resource: AssetResource) => Promise<string | null>>(),
+}));
+
+vi.mock(import("~/assets/assetUrls"), async (original) => ({
+  ...(await original()),
+  useAssetUrlMinter: () => mint,
+}));
+
+// Dictation needs a connected environment; these tests type the comment.
+vi.mock("~/speech/useTextFieldSpeech", () => ({
+  SpeechTextField: (props: { children: (speech: undefined) => ReactNode }) =>
+    props.children(undefined),
+  TextFieldSpeechControls: () => null,
+}));
+
+// A .blend's preview: its facts as read, and the conversion queries it makes.
+const state = vi.hoisted(() => ({
+  preview: null as unknown,
+  queries: [] as unknown[],
+  atoms: null as Map<unknown, unknown> | null,
+  config: null as unknown,
+  /** What every conversion the preview subscribes to says. */
+  status: null as unknown,
+}));
+
+vi.mock(import("~/state/projects"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    projectEnvironment: {
+      ...actual.projectEnvironment,
+      // One atom per preview: a new one each render would never settle.
+      readBlendPreview: (() => {
+        const atoms = (state.atoms ??= new Map<unknown, unknown>());
+        if (!atoms.has(state.preview)) {
+          atoms.set(state.preview, Atom.make(AsyncResult.success(state.preview)));
+        }
+        return atoms.get(state.preview);
+      }) as never,
+      convertBlend: ((request: unknown) => ({ convertBlend: request })) as never,
+    },
+  };
+});
+vi.mock(import("~/state/revisionedQuery"), async (original) => ({
+  ...(await original()),
+  revisionedQuery: ((atom: unknown) => atom) as never,
+}));
+vi.mock(import("~/state/query"), async (original) => ({
+  ...(await original()),
+  useEnvironmentQuery: ((query: unknown) => {
+    state.queries.push(query);
+    return { data: query === null ? null : state.status, error: null, refresh: () => undefined };
+  }) as never,
+}));
+vi.mock(import("~/state/server"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    serverEnvironment: {
+      ...actual.serverEnvironment,
+      configValueAtom: (() =>
+        (state.config ??= Atom.make({
+          environment: { capabilities: { blendConversion: true } },
+        }))) as never,
+    },
+  };
+});
+
+// Open in hosted Blender, in the same file preview: the thread's Blenders, and the open it runs.
+const hosted = vi.hoisted(() => ({
+  thread: null as HostedBlenderThreadState | null,
+  master: { status: "none" } as HostedBlenderMasterState | null,
+  open: vi.fn(async (): Promise<unknown> => ({ _tag: "Success", value: undefined })),
+}));
+
+vi.mock(import("~/state/hostedBlender"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    useHostedBlenderState: (() => hosted.thread) as never,
+    useHostedBlenderMasterState: (() => hosted.master) as never,
+    hostedBlenderEnvironment: {
+      ...actual.hostedBlenderEnvironment,
+      open: { ...actual.hostedBlenderEnvironment.open, permissionAtom: () => Atom.make(true) },
+      openMaster: {
+        ...actual.hostedBlenderEnvironment.openMaster,
+        permissionAtom: () => Atom.make(true),
+      },
+    } as never,
+  };
+});
+vi.mock(import("~/state/use-atom-command"), async (original) => ({
+  ...(await original()),
+  useAtomCommand: (() => hosted.open) as never,
+}));
+
+function setup(files: Record<string, BlobPart> = {}) {
+  hosted.thread = null;
+  hosted.master = { status: "none" };
+  hosted.open.mockReset().mockImplementation(async () => ({ _tag: "Success", value: undefined }));
+  state.queries = [];
+  state.status = null;
+  useBlenderRoleStore.setState({ roles: {} });
+  mint.mockReset();
+  mint.mockImplementation(async (resource) => {
+    const path = resource._tag === "media-file" ? resource.path : undefined;
+    const file = path === undefined ? undefined : files[path];
+    return file === undefined ? null : URL.createObjectURL(new Blob([file]));
+  });
+}
+
+const modelUrl = (contents: BlobPart) => URL.createObjectURL(new Blob([contents]));
+
+// The preview fills the file pane, so it needs a pane with a size to lay out in.
+function pane() {
+  const container = document.createElement("div");
+  container.className = "flex h-96 w-[32rem] flex-col";
+  return { container };
+}
+
+// A binary STL with two facets whose normals are all zero, as many exporters write them.
+function stl(scale = 1) {
+  const view = new DataView(new ArrayBuffer(84 + 2 * 50));
+  view.setUint32(80, 2, true);
+  const facets = [
+    [0, 0, 0, 10, 0, 0, 0, 20, 5],
+    [10, 0, 0, 10, 20, 5, 0, 20, 5],
+  ];
+  facets.forEach((vertices, facet) =>
+    vertices.forEach((value, index) =>
+      view.setFloat32(84 + facet * 50 + 12 + index * 4, value * scale, true),
+    ),
+  );
+  return view.buffer;
+}
+
+const workspaceRoot = "/work/project";
+const crate = {
+  environmentId: EnvironmentId.make("environment-1"),
+  resource: {
+    _tag: "media-file" as const,
+    threadId: ThreadId.make("thread-1"),
+    path: "/work/project/models/crate/crate.gltf",
+  },
+  workspaceRoot,
+};
+
+// One textured triangle whose geometry lives in a separate crate.bin.
+const gltf = JSON.stringify({
+  asset: { version: "2.0" },
+  scene: 0,
+  scenes: [{ nodes: [0] }],
+  nodes: [{ mesh: 0 }],
+  meshes: [{ primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1 }, material: 0 }] }],
+  materials: [
+    { pbrMetallicRoughness: { baseColorTexture: { index: 0 } }, normalTexture: { index: 1 } },
+  ],
+  textures: [{ source: 0 }, { source: 1 }],
+  images: [{ uri: "textures/crate%20diffuse.png" }, { uri: "../shared/escape.png" }],
+  buffers: [{ uri: "crate.bin", byteLength: 60 }],
+  bufferViews: [
+    { buffer: 0, byteOffset: 0, byteLength: 36 },
+    { buffer: 0, byteOffset: 36, byteLength: 24 },
+  ],
+  accessors: [
+    { bufferView: 0, componentType: 5126, count: 3, type: "VEC3", min: [0, 0, 0], max: [1, 1, 0] },
+    { bufferView: 1, componentType: 5126, count: 3, type: "VEC2" },
+  ],
+});
+const crateBin = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1]);
+
+it("renders a model in the browser and lists what it measured", async () => {
+  setup();
+  const preview = (src: string) => (
+    <ModelFilePreview
+      src={src}
+      name="bracket.stl"
+      format="stl"
+      sizeBytes={0}
+      companions={null}
+      onRefresh={() => {}}
+    />
+  );
+  await using screen = await render(preview(modelUrl(stl())), pane());
+  await expect.element(screen.getByText("STL · rendered in the browser")).toBeVisible();
+  await expect.element(screen.getByRole("img", { name: "3D view of bracket.stl" })).toBeVisible();
+  await expect.element(screen.getByText("Triangles")).toBeVisible();
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+  expect(mint).not.toHaveBeenCalled();
+
+  // A new version loads into the same viewer, so its WebGL context stays.
+  const canvas = screen.container.querySelector("canvas");
+  await screen.rerender(preview(modelUrl(stl(2))));
+  await expect.element(screen.getByText("20 × 10 × 40 mm")).toBeVisible();
+  await expect.element(screen.getByText("STL · rendered in the browser")).toBeVisible();
+  const canvases = screen.container.querySelectorAll("canvas");
+  expect(canvases).toHaveLength(1);
+  expect(canvases[0]).toBe(canvas);
+  expect(canvases[0]?.getContext("webgl2")?.isContextLost()).toBe(false);
+});
+
+it("keeps the shown model while a new version downloads, and after one that fails", async () => {
+  setup();
+  const preview = (src: string, pending = false) => (
+    <ModelFilePreview
+      src={src}
+      name="bracket.stl"
+      format="stl"
+      sizeBytes={0}
+      companions={null}
+      onRefresh={() => {}}
+      updatingChip={<p>bracket.stl changed · updating…</p>}
+      pendingChip={pending ? <p>Converting the next save…</p> : undefined}
+    />
+  );
+  await using screen = await render(preview(modelUrl(stl())), pane());
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+
+  const slow = "https://example.test/slow.stl";
+  const { promise: download, resolve: finishDownload } = Promise.withResolvers<Response>();
+  const realFetch = globalThis.fetch;
+  using _fetch = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation((input, init) => (input === slow ? download : realFetch(input, init)));
+  await screen.rerender(preview(slow));
+  await expect.element(screen.getByText("bracket.stl changed · updating…")).toBeVisible();
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+  finishDownload(new Response(stl(2)));
+  await expect.element(screen.getByText("20 × 10 × 40 mm")).toBeVisible();
+  await expect.element(screen.getByText("STL · rendered in the browser")).toBeVisible();
+
+  const broken = modelUrl("not a model");
+  await screen.rerender(preview(broken));
+  await expect.element(screen.getByText("Couldn't load the new version")).toBeVisible();
+  await expect.element(screen.getByText("20 × 10 × 40 mm")).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Reset view" })).toBeVisible();
+
+  // Work on the next version outranks the last one's failure.
+  await screen.rerender(preview(broken, true));
+  await expect.element(screen.getByText("Converting the next save…")).toBeVisible();
+  await expect.element(screen.getByText("Couldn't load the new version")).not.toBeInTheDocument();
+});
+
+// A cube Blender 5.3 exported with Draco mesh compression.
+const DRACO_CUBE = Uint8Array.from(
+  atob(
+    "Z2xURgIAAABcBAAAOAMAAEpTT057ImFzc2V0Ijp7ImdlbmVyYXRvciI6Iktocm9ub3MgZ2xURiBCbGVuZGVyIEkvTy" +
+      "B2NS4zLjQzIiwidmVyc2lvbiI6IjIuMCJ9LCJleHRlbnNpb25zVXNlZCI6WyJLSFJfZHJhY29fbWVzaF9jb21wcmVz" +
+      "c2lvbiJdLCJleHRlbnNpb25zUmVxdWlyZWQiOlsiS0hSX2RyYWNvX21lc2hfY29tcHJlc3Npb24iXSwic2NlbmUiOj" +
+      "AsInNjZW5lcyI6W3sibmFtZSI6IlNjZW5lIiwibm9kZXMiOlswXX1dLCJub2RlcyI6W3sibWVzaCI6MCwibmFtZSI6" +
+      "IkN1YmUifV0sIm1lc2hlcyI6W3sibmFtZSI6IkN1YmUiLCJwcmltaXRpdmVzIjpbeyJhdHRyaWJ1dGVzIjp7IlBPU0" +
+      "lUSU9OIjowLCJOT1JNQUwiOjEsIlRFWENPT1JEXzAiOjJ9LCJleHRlbnNpb25zIjp7IktIUl9kcmFjb19tZXNoX2Nv" +
+      "bXByZXNzaW9uIjp7ImJ1ZmZlclZpZXciOjAsImF0dHJpYnV0ZXMiOnsiUE9TSVRJT04iOjAsIk5PUk1BTCI6MSwiVE" +
+      "VYQ09PUkRfMCI6Mn19fSwiaW5kaWNlcyI6MywibW9kZSI6NH1dfV0sImFjY2Vzc29ycyI6W3siY29tcG9uZW50VHlw" +
+      "ZSI6NTEyNiwiY291bnQiOjI0LCJtYXgiOlsxLDEsMV0sIm1pbiI6Wy0xLC0xLC0xXSwidHlwZSI6IlZFQzMifSx7Im" +
+      "NvbXBvbmVudFR5cGUiOjUxMjYsImNvdW50IjoyNCwidHlwZSI6IlZFQzMifSx7ImNvbXBvbmVudFR5cGUiOjUxMjYs" +
+      "ImNvdW50IjoyNCwidHlwZSI6IlZFQzIifSx7ImNvbXBvbmVudFR5cGUiOjUxMjMsImNvdW50IjozNiwidHlwZSI6Il" +
+      "NDQUxBUiJ9XSwiYnVmZmVyVmlld3MiOlt7ImJ1ZmZlciI6MCwiYnl0ZUxlbmd0aCI6MjY0LCJieXRlT2Zmc2V0Ijow" +
+      "fV0sImJ1ZmZlcnMiOlt7ImJ5dGVMZW5ndGgiOjI2NH1dfQgBAABCSU4ARFJBQ08CAgEBAAAAGAwCDAAABd/3fd8H/w" +
+      "JmQP8CZkD/AmZAA/8AAAAAAAEAAAEACQMAAAIBAQkDAAEDAQMJAgACAgEBAQECAyEncQxxDA980e3sb88W91pJDKA0" +
+      "i4AAAAAA/z8AAAAAgL8AAIC/AACAvwAAAEAOAAMBAAsDATAbAQgBCAYACvFzbYD/AQD+AwD8/w/8BwAAACDgP4AA/w" +
+      "MAAP8BAAAKAQEBAA0DARAjARgBGAcA/Fbqf1qJ/////v9//wGAAAIAAP7f/wEAAP4PgP/3fwDwfwAIgP/3fwDwf/8D" +
+      "YP/9HwD8HwAC4P/9HwAAAAAAAP8PAAAAAAA+AAAAAAAAgD8M",
+  ),
+  (char) => char.charCodeAt(0),
+);
+
+it("S2: decodes a Draco-compressed glTF", async () => {
+  setup();
+  await using screen = await render(
+    <ModelFilePreview
+      src={modelUrl(DRACO_CUBE)}
+      name="cube.glb"
+      format="glb"
+      sizeBytes={DRACO_CUBE.byteLength}
+      companions={null}
+      onRefresh={() => {}}
+    />,
+    pane(),
+  );
+  await expect.element(screen.getByText("2 × 2 × 2 m")).toBeVisible();
+});
+
+it("signs each file a glTF references beside it and names the ones it cannot read", async () => {
+  setup({ "/work/project/models/crate/crate.bin": crateBin });
+  await using screen = await render(
+    <ModelFilePreview
+      src={modelUrl(gltf)}
+      name="crate.gltf"
+      format="gltf"
+      sizeBytes={0}
+      companions={crate}
+      onRefresh={() => {}}
+    />,
+    pane(),
+  );
+  await expect.element(screen.getByText("2 textures not found")).toBeVisible();
+  await screen.getByText("2 textures not found").click();
+  await expect
+    .element(screen.getByText(/not found next to crate\.gltf$/))
+    .toMatchTextContent("textures/crate diffuse.png");
+  await expect
+    .element(screen.getByText(/not found next to crate\.gltf$/))
+    .toMatchTextContent("../shared/escape.png");
+  expect(mint.mock.calls.map(([resource]) => resource)).toEqual(
+    expect.arrayContaining([
+      {
+        ...crate.resource,
+        path: "/work/project/models/crate/crate.bin",
+        disposition: "attachment",
+      },
+      { ...crate.resource, path: "/work/project/models/crate/textures/crate diffuse.png" },
+    ]),
+  );
+  expect(mint).toHaveBeenCalledTimes(2);
+  await screen.unmount();
+
+  // Without the buffer it can't load at all: named, with Try again.
+  setup();
+  await using missing = await render(
+    <ModelFilePreview
+      src={modelUrl(gltf)}
+      name="crate.gltf"
+      format="gltf"
+      sizeBytes={0}
+      companions={crate}
+      onRefresh={() => {}}
+    />,
+    pane(),
+  );
+  await expect
+    .element(missing.getByText("crate.bin could not be found next to crate.gltf."))
+    .toBeVisible();
+  await expect.element(missing.getByRole("button", { name: "Try again" })).toBeVisible();
+});
+
+it("asks before parsing a very large model, and over the shown one before a large new version", async () => {
+  setup();
+  const preview = (src: string, sizeBytes: number) => (
+    <ModelFilePreview
+      src={src}
+      name="scan.stl"
+      format="stl"
+      sizeBytes={sizeBytes}
+      companions={null}
+      onRefresh={() => {}}
+    />
+  );
+  {
+    await using first = await render(preview(modelUrl(stl()), MODEL_CONFIRM_BYTES + 1), pane());
+    await expect.element(first.getByText("Large model")).toBeVisible();
+    await userEvent.click(first.getByRole("button", { name: "Load model" }));
+    await expect.element(first.getByText("STL · rendered in the browser")).toBeVisible();
+  }
+
+  await using screen = await render(preview(modelUrl(stl()), 0), pane());
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+  const canvas = screen.container.querySelector("canvas");
+
+  // A new version known to be large before it downloads asks over the shown model.
+  await screen.rerender(preview(modelUrl(stl(2)), MODEL_CONFIRM_BYTES + 1));
+  await expect.element(screen.getByRole("button", { name: "Load model" })).toBeVisible();
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Keep this version" }));
+  await expect.element(screen.getByText("A newer version is available")).toBeVisible();
+  await expect.element(screen.getByText("10 × 5 × 20 mm")).toBeVisible();
+  await userEvent.click(screen.getByText("A newer version is available"));
+  await userEvent.click(screen.getByRole("button", { name: "Load model" }));
+  await expect.element(screen.getByText("20 × 10 × 40 mm")).toBeVisible();
+  expect(screen.container.querySelector("canvas")).toBe(canvas);
+
+  await screen.unmount();
+
+  // One that turns out large only as it downloads asks too, over the shown model.
+  await using later = await render(preview(modelUrl(stl()), 0), pane());
+  await expect.element(later.getByText("10 × 5 × 20 mm")).toBeVisible();
+  const laterCanvas = later.container.querySelector("canvas");
+  const large = "https://example.test/large.stl";
+  const realFetch = globalThis.fetch;
+  using _fetch = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) =>
+    input === large
+      ? Promise.resolve(
+          new Response(stl(2), {
+            headers: { "content-length": String(MODEL_CONFIRM_BYTES + 1) },
+          }),
+        )
+      : realFetch(input, init),
+  );
+  await later.rerender(preview(large, 0));
+  await expect.element(later.getByRole("button", { name: "Load model" })).toBeVisible();
+  await expect.element(later.getByText("10 × 5 × 20 mm")).toBeVisible();
+  expect(later.container.querySelector("canvas")).toBe(laterCanvas);
+});
+
+const environmentId = EnvironmentId.make("environment-1");
+
+function annotated(threadId: string, view?: { position: number[]; target: number[] }) {
+  const composerTarget = scopeThreadRef(environmentId, ThreadId.make(threadId));
+  return {
+    composerTarget,
+    draft: () => useComposerDraftStore.getState().getComposerDraft(composerTarget),
+    element: (
+      <ModelFilePreview
+        src={modelUrl(stl())}
+        name="bracket (v2).stl"
+        format="stl"
+        sizeBytes={0}
+        companions={null}
+        onRefresh={() => {}}
+        annotation={{ composerTarget, environmentId, linkPath: "out/bracket (v2).stl" }}
+        {...(view
+          ? {
+              view: {
+                view: {
+                  position: view.position as [number, number, number],
+                  target: view.target as [number, number, number],
+                },
+                requestId: 1,
+              },
+            }
+          : {})}
+      />
+    ),
+  };
+}
+
+function drag(target: Element, from: [number, number], to: [number, number]) {
+  const box = target.getBoundingClientRect();
+  const at = ([x, y]: [number, number]) => ({
+    clientX: box.left + box.width * x,
+    clientY: box.top + box.height * y,
+    pointerId: 1,
+    button: 0,
+    bubbles: true,
+  });
+  target.dispatchEvent(new PointerEvent("pointerdown", at(from)));
+  target.dispatchEvent(
+    new PointerEvent("pointermove", at([(from[0] + to[0]) / 2, (from[1] + to[1]) / 2])),
+  );
+  target.dispatchEvent(new PointerEvent("pointermove", at(to)));
+  target.dispatchEvent(new PointerEvent("pointerup", at(to)));
+}
+
+it("freezes the view to annotate and attaches its camera and what each mark covers", async () => {
+  setup();
+  const model = annotated("thread-annotate");
+  await using screen = await render(model.element, pane());
+  await expect.element(screen.getByText("STL · rendered in the browser")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
+  const surface = screen.getByRole("img", { name: "Frozen 3D view to annotate" });
+  await expect.element(surface).toBeVisible();
+
+  await userEvent.click(screen.getByRole("button", { name: "Mark a region" }));
+  drag(surface.element(), [0.45, 0.45], [0.55, 0.55]);
+  await userEvent.click(screen.getByRole("button", { name: "Draw" }));
+  drag(surface.element(), [0.02, 0.02], [0.06, 0.04]);
+  // A stray line in the middle is erased; the marks around it stay.
+  drag(surface.element(), [0.2, 0.8], [0.3, 0.8]);
+  drag(surface.element(), [0.9, 0.9], [0.95, 0.95]);
+  await userEvent.click(screen.getByRole("button", { name: "Erase a mark" }));
+  drag(surface.element(), [0.25, 0.8], [0.25, 0.8]);
+  // An arrow from an empty corner whose tip is where the region's middle is.
+  await userEvent.click(screen.getByRole("button", { name: "Arrow", exact: true }));
+  drag(surface.element(), [0.02, 0.98], [0.5, 0.5]);
+  await userEvent.fill(screen.getByRole("textbox", { name: "Annotation comment" }), "Thicken");
+  await userEvent.click(screen.getByRole("button", { name: "Add to chat" }));
+
+  await vi.waitFor(() => expect(model.draft()?.previewAnnotations).toHaveLength(1));
+  await expect.element(surface).not.toBeInTheDocument();
+  const annotation = model.draft()!.previewAnnotations[0]!;
+  expect(annotation).toMatchObject({
+    pageTitle: "bracket (v2).stl",
+    comment: "Thicken",
+    cameraView: { upAxis: "z" },
+  });
+  // The region covers the slanted facets, whose points satisfy z = y / 4 in the STL's own space.
+  const hit = annotation.regions[0]?.hit;
+  expect(hit?.object).toBeNull();
+  expect(hit?.point[2]).toBeCloseTo((hit?.point[1] ?? Number.NaN) / 4, 2);
+  // The drawings in the empty corners cover nothing.
+  expect(annotation.strokes).toHaveLength(3);
+  expect(annotation.strokes[0]).not.toHaveProperty("hit");
+  // The arrow reports what its tip is on, not where its shaft first meets the model.
+  const tip = annotation.strokes[2]?.hit;
+  expect(tip?.point[0]).toBeCloseTo(hit?.point[0] ?? Number.NaN, 2);
+  expect(tip?.point[1]).toBeCloseTo(hit?.point[1] ?? Number.NaN, 2);
+  expect(tip?.point[2]).toBeCloseTo(hit?.point[2] ?? Number.NaN, 2);
+  expect(model.draft()?.images.map((image) => image.id)).toEqual([annotation.id]);
+});
+
+it("opens at the camera a view link carries, in the file's own coordinates", async () => {
+  setup();
+  const model = annotated("thread-view", { position: [30, 40, 50], target: [5, 10, 2.5] });
+  await using screen = await render(model.element, pane());
+  await expect.element(screen.getByText("STL · rendered in the browser")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Screenshot & annotate" }));
+  await userEvent.fill(screen.getByRole("textbox", { name: "Annotation comment" }), "From here");
+  await userEvent.keyboard("{Enter}");
+  await vi.waitFor(() => expect(model.draft()?.previewAnnotations).toHaveLength(1));
+  const camera = model.draft()!.previewAnnotations[0]!.cameraView!;
+  camera.position.forEach((value, index) => expect(value).toBeCloseTo([30, 40, 50][index]!, 3));
+  camera.target.forEach((value, index) => expect(value).toBeCloseTo([5, 10, 2.5][index]!, 3));
+});
+
+const previewOf = (byteLength: number): BlendPreview => ({
+  relativePath: "scene.blend",
+  byteLength,
+  blenderVersion: "5.0",
+  thumbnail: null,
+  scene: null,
+  scenes: 1,
+  objects: 1,
+  meshes: 1,
+  materials: 0,
+  libraries: [],
+});
+
+const preview = (relativePath = "scene.blend") => (
+  <div className="flex h-100 w-150 flex-col">
+    <BlendFilePreview
+      environmentId={EnvironmentId.make("environment-1")}
+      name={relativePath}
+      source={{
+        kind: "file",
+        cwd: "/work",
+        relativePath,
+        workspaceMutationId: null,
+        refreshRevision: 0,
+      }}
+    />
+  </div>
+);
+
+const conversions = () => state.queries.filter((query) => query !== null);
+
+it("converts a large .blend only when asked, once, saying it runs Blender, and remembers it, and a smaller one at once", async () => {
+  setup();
+  state.preview = previewOf(6 * 1024 * 1024 * 1024);
+  {
+    await using screen = await render(preview());
+    await expect
+      .element(screen.getByText("with Blender on the server", { exact: false }))
+      .toBeInTheDocument();
+    expect(conversions()).toEqual([]);
+    await screen.getByRole("button", { name: "Show 3D view" }).click();
+    expect(conversions().at(-1)).toMatchObject({
+      convertBlend: { input: { relativePath: "scene.blend", once: true } },
+    });
+  }
+  // Shown again this session, it converts without being asked twice.
+  state.queries = [];
+  await using again = await render(preview());
+  await expect.element(again.getByText("Scene details")).toBeInTheDocument();
+  expect(conversions()[0]).toMatchObject({
+    convertBlend: { input: { relativePath: "scene.blend", once: true } },
+  });
+  await again.unmount();
+
+  // The server found it large since its facts were read: asked first too.
+  state.preview = previewOf(20 * 1024 * 1024);
+  state.queries = [];
+  state.status = { status: "large", byteLength: 6 * 1024 * 1024 * 1024 };
+  {
+    await using savedOver = await render(preview("saved-over.blend"));
+    await expect
+      .element(savedOver.getByRole("button", { name: "Show 3D view" }))
+      .toBeInTheDocument();
+    expect(conversions().at(-1), "large since read").not.toMatchObject({
+      convertBlend: { input: { once: true } },
+    });
+  }
+
+  // A smaller one converts as soon as its preview opens, watched for changes.
+  state.queries = [];
+  state.status = null;
+  await using small = await render(preview("small.blend"));
+  await expect.element(small.getByText("Scene details")).toBeInTheDocument();
+  expect(conversions().at(-1), "a smaller .blend").toEqual({
+    convertBlend: {
+      environmentId: "environment-1",
+      input: { cwd: "/work", relativePath: "small.blend" },
+    },
+  });
+  await expect.element(small.getByRole("button", { name: "Show 3D view" })).not.toBeInTheDocument();
+});
+
+it("asks first for a compressed .blend small on disk but large, or maybe large, once inflated", async () => {
+  setup();
+  state.preview = { ...previewOf(20 * 1024 * 1024), partial: true, large: true };
+  await using screen = await render(preview("packed.blend"));
+  // Its size on disk is no reason to convert at once: the size once opened is.
+  await screen.getByRole("button", { name: "Show 3D view" }).click();
+  expect(conversions()).toHaveLength(1);
+  expect(conversions()[0]).toMatchObject({
+    convertBlend: { input: { relativePath: "packed.blend", once: true } },
+  });
+  // Read only partway, its size once opened unknown: asked first, its facts claiming no size.
+  state.preview = { ...previewOf(20 * 1024 * 1024), partial: true, large: true, sizeUnknown: true };
+  state.queries = [];
+  await using unknown = await render(preview("unknown.blend"));
+  await expect.element(unknown.getByRole("button", { name: "Show 3D view" })).toBeInTheDocument();
+  await expect.element(unknown.getByText("Not read for a file this large")).not.toBeInTheDocument();
+  expect(conversions()).toHaveLength(0);
+});
+
+const threadRef = {
+  environmentId: EnvironmentId.make("environment-1"),
+  threadId: ThreadId.make("thread-1"),
+};
+
+it.each([
+  {
+    label: "on a server nobody has checked, so the open runs the first check",
+    missing: ["check"],
+    opens: true,
+    fails: false,
+  },
+  {
+    label: "on a server whose check wasn't ready, so the open checks it again",
+    missing: ["encoder"],
+    opens: true,
+    fails: false,
+  },
+  {
+    label: "never while Hosted Blender is switched off",
+    missing: ["enabled"],
+    opens: false,
+    fails: false,
+  },
+  {
+    label: "and shows the pane when opening finds setup incomplete",
+    missing: ["check"],
+    opens: true,
+    fails: true,
+  },
+] as const)("opens the file $label", async ({ missing, opens, fails }) => {
+  setup();
+  hosted.thread = { status: "notSetUp", missing: [...missing] };
+  if (fails) {
+    hosted.open.mockImplementationOnce(async () => ({
+      _tag: "Failure",
+      cause: Cause.fail(new HostedBlenderError({ reason: "notSetUp" })),
+    }));
+  }
+  using showPane = vi.spyOn(useRightPanelStore.getState(), "open");
+  await using _screen = await render(
+    <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
+  );
+  await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
+  expect(hosted.open.mock.calls, "the open").toEqual(
+    opens
+      ? [
+          [
+            {
+              environmentId: threadRef.environmentId,
+              input: { threadId: threadRef.threadId, relativePath: "models/hero.blend" },
+            },
+          ],
+        ]
+      : [],
+  );
+  if (fails) await vi.waitFor(() => expect(showPane).toHaveBeenCalledWith(threadRef, "blender"));
+});
+
+const workingOnCopy: HostedBlenderThreadState = {
+  status: "running",
+  relativePath: "models/hero.wip-1a2b3c4d.blend",
+  dirty: false,
+};
+
+it.each([
+  {
+    label: "shows the running master's own Blender, opening nothing",
+    master: { status: "running", relativePath: "models/hero.blend", dirty: false },
+    opened: [],
+  },
+  {
+    label: "opens the thread's known master in its master Blender when none has it open",
+    master: {
+      status: "notOpen",
+      relativePath: "models/hero.blend",
+      desktop: null,
+      desktopDirty: false,
+    },
+    // As the Master side's Open in T3 Code: the thread's master, not a working open of it.
+    opened: [[{ environmentId: threadRef.environmentId, input: { threadId: threadRef.threadId } }]],
+  },
+] satisfies ReadonlyArray<{ label: string; master: HostedBlenderMasterState; opened: unknown[] }>)(
+  "for the master's file, $label",
+  async ({ master, opened }) => {
+    setup();
+    hosted.thread = workingOnCopy;
+    hosted.master = master;
+    useBlenderRoleStore.getState().setRole(threadRef, "working");
+    using showPane = vi.spyOn(useRightPanelStore.getState(), "open");
+    await using _screen = await render(
+      <OpenInHostedBlender threadRef={threadRef} relativePath="models/hero.blend" />,
+    );
+    await userEvent.click(page.getByRole("button", { name: "Open in hosted Blender" }));
+    await vi.waitFor(() => expect(showPane).toHaveBeenCalledWith(threadRef, "blender"));
+    expect(blenderRoleFor(threadRef)).toBe("master");
+    expect(hosted.open.mock.calls).toEqual(opened);
+  },
+);

@@ -148,6 +148,9 @@ import {
 import { editPendingThreadMessage } from "../../state/edit-pending-thread-message";
 import { environmentCatalog } from "../../connection/catalog";
 import { deviceEnvironment } from "../../state/device";
+import { chatHostedBlenderThread } from "@t3tools/client-runtime/state/hosted-blender";
+import { useHostedBlenderState } from "../../state/hostedBlender";
+import { watchableHostedBlender } from "../blender/watchableHostedBlender";
 import { useEnvironmentQuery } from "../../state/query";
 import { threadDevicePreviews } from "../devices/threadDevicePreviews";
 import { ThreadBrowserFloat } from "../browser/ThreadBrowserFloat";
@@ -465,6 +468,24 @@ function ThreadDetailBody(
       environmentId: props.environmentId,
       threadId: props.selectedThread.id,
       ...(tabId === undefined ? {} : { tabId }),
+    });
+  };
+  // Watched only while a turn runs, as on web: a thread opened and read holds no Blender stream.
+  const watchableBlender = watchableHostedBlender(
+    useHostedBlenderState(
+      chatHostedBlenderThread(
+        props.serverConfig,
+        props.draftMode || props.selectedThread.runtime?.activeRunId == null
+          ? null
+          : { environmentId: props.environmentId, threadId: props.selectedThread.id },
+      ),
+    ).data,
+  );
+  const openBlender = () => {
+    Keyboard.dismiss();
+    navigation.navigate("ThreadBlender", {
+      environmentId: props.environmentId,
+      threadId: props.selectedThread.id,
     });
   };
   const isKeyboardVisible = useKeyboardState((state) => state.isVisible);
@@ -932,7 +953,8 @@ function ThreadDetailBody(
     queuedCount > 0 ||
     agentsSegment !== null ||
     devicePreviews.length > 0 ||
-    browserTabs.tabs.length > 0;
+    browserTabs.tabs.length > 0 ||
+    watchableBlender !== null;
   const selectedThreadFeed = props.selectedThreadFeed;
   // A palette message result opens the thread at that message: earlier
   // history loads until the message is in the feed, which then scrolls to it.
@@ -1695,6 +1717,9 @@ function ThreadDetailBody(
                       browserTabs.tabs.length > 0
                         ? { count: browserTabs.tabs.length, onPress: () => openBrowserPreview() }
                         : null
+                    }
+                    blenderPreview={
+                      watchableBlender ? { ...watchableBlender, onPress: openBlender } : null
                     }
                     showScrollToEnd={showScrollToEndButton}
                     onScrollToEnd={handleScrollToEnd}

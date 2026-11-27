@@ -9,10 +9,21 @@ import {
   isWorkspaceImagePreviewPath,
   isWorkspacePreviewEntryPath,
   mediaKindFromPath,
+  modelPreviewFormat,
   officePreviewKind,
 } from "./filePreview.ts";
 
 describe("workspace file previews", () => {
+  it("classifies a .blend by name before its MIME type or a README-like name", () => {
+    for (const file of [
+      { name: "README.blend", mimeType: "application/octet-stream" },
+      { name: "rig.blend1", mimeType: "text/plain" },
+      { name: "rig.BLEND", mimeType: "application/x-blender" },
+    ]) {
+      expect(filePreviewKind(file)).toBe("blend");
+    }
+  });
+
   it.each([
     ["zip", "archive", "application/zip"],
     ["jar", "archive", "application/java-archive"],
@@ -64,6 +75,35 @@ describe("workspace file previews", () => {
       );
     },
   );
+  it.each([
+    ["statue.glb", "glb", "model/gltf-binary"],
+    ["crate.GLTF", "gltf", "model/gltf+json"],
+    ["bracket.stl", "stl", "model/stl"],
+    ["scan.ply", "ply", "application/vnd.ply"],
+    ["chair.obj", "obj", "model/obj"],
+    ["part.3mf", "3mf", "model/3mf"],
+    ["rig.fbx", "fbx", "application/vnd.fbx"],
+  ])("renders %s in the browser as a 3D model", (name, format, mimeType) => {
+    for (const fileMime of ["", "application/octet-stream", "text/plain", mimeType]) {
+      expect(filePreviewKind({ name, mimeType: fileMime })).toBe("model");
+      expect(modelPreviewFormat({ name, mimeType: fileMime })).toBe(format);
+    }
+    expect(modelPreviewFormat({ name: "download", mimeType })).toBe(format);
+    expect(filePreviewKind({ name, mimeType }, { richDocuments: false })).not.toBe("model");
+  });
+  it("accepts conflicting OS labels for model files only with a model extension", () => {
+    expect(filePreviewKind({ name: "chair.obj", mimeType: "application/x-tgif" })).toBe("model");
+    expect(filePreviewKind({ name: "chair.obj", mimeType: "application/x-coff" })).toBe("model");
+    expect(filePreviewKind({ name: "main.o", mimeType: "application/x-coff" })).toBe("unsupported");
+    expect(filePreviewKind({ name: "bracket.stl", mimeType: "application/vnd.ms-pki.stl" })).toBe(
+      "model",
+    );
+    expect(filePreviewKind({ name: "scene.gltf", mimeType: "application/json" })).toBe("model");
+    expect(filePreviewKind({ name: "part.3mf", mimeType: "application/zip" })).toBe("model");
+    expect(filePreviewKind({ name: "statue.glb", mimeType: "application/zip" })).toBe("archive");
+    expect(filePreviewKind({ name: "scene.json", mimeType: "application/json" })).toBe("text");
+    expect(filePreviewKind({ name: "chair.obj", mimeType: "image/png" })).toBe("image");
+  });
   it.each([
     [
       "quarterly-report.DOCX",
