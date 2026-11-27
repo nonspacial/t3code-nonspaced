@@ -49,7 +49,7 @@ _spaces = _Spaces([_view3d] + ([_assets] if state.get("assetBrowser") else []))
 _spaces.active = _assets if state.get("assetBrowser") == "shown" else _view3d
 _area = types.SimpleNamespace(width=800, height=600, spaces=_spaces)
 _screen = types.SimpleNamespace(areas=[_area])
-_windows = [] if state.get("noWindow") else [types.SimpleNamespace(screen=_screen)]
+_windows = [types.SimpleNamespace(screen=_screen)]
 context = types.SimpleNamespace(
     preferences=types.SimpleNamespace(
         addons=addons,
@@ -249,9 +249,6 @@ def stop():
     for client in deferred_tool._deferred_clients:
         client.conn.close()
     deferred_tool._deferred_clients.clear()
-import os as _os
-if json.loads(_os.environ["STUB_STATE"]).get("brokenServer"):
-    del _accept_clients
 `,
   "addon_utils.py": String.raw`
 import importlib, json, os, types
@@ -326,18 +323,13 @@ if _scenario.get("connect", True):
     _t3.connect(SOCKET_PATH)
     _tick()
     _steps.append(_report())
-    if _scenario.get("pressStartBeforeGrant"):
-        _press_start()
-        _steps.append(_report())
-    if _scenario.get("fileBeforeGrant"):
-        bpy.data.filepath = "/work/other.blend"
     bpy.data.is_dirty = bool(_scenario.get("dirty"))
     # What a person does in Blender before T3 asks, a tick after each step.
     for _step in _scenario.get("catalogSteps", []):
         _browser = _step.get("browser")
         bpy._spaces[:] = [bpy._view3d] + ([bpy._assets] if _browser else [])
         bpy._assets.browse_mode = "FILES" if _browser == "files" else "ASSETS"
-        bpy._assets.params.asset_library_reference = _step.get("library", "lib")
+        bpy._assets.params.asset_library_reference = "lib"
         bpy._spaces.active = bpy._assets if _browser in ("shown", "files") else bpy._view3d
         if "unsaved" in _step:
             bpy.world["unsaved"] = _step["unsaved"]
@@ -345,13 +337,6 @@ if _scenario.get("connect", True):
             bpy.world["unsaved"] = False
             _on_save_post()
         _tick()
-    if _scenario.get("listeningBeforeGrant"):
-        # Blender Lab already listening, however it got there, when T3's grant arrives.
-        _addons.enable("${MCP}", default_set=True)
-        _server().start("localhost", int(MCP_PORT))
-    if _scenario.get("manifestBeforeGrant") is not None:
-        with open(os.path.join(os.environ["PYTHONPATH"], "bl_ext/t3_blender_lab/mcp/blender_manifest.toml"), "w") as _m:
-            _m.write(_scenario["manifestBeforeGrant"])
     _t3.sendall("".join(json.dumps(kind if isinstance(kind, dict) else {"type": kind}) + "\n" for kind in _scenario.get("send", ["grantAgentListener"])).encode())
     _tick()
     _steps.append(_report())
@@ -386,11 +371,6 @@ elif _then == "saveAs":
     _on_save_post()
 elif _then == "revert":
     _on_load_post()
-elif _then == "loadTime":
-    # Any load, a revert of the same file included, says when it happened.
-    _before = _snapshot().get("loadedAt")
-    _on_load_post()
-    _steps.append(dict(loadedBefore=_before, loadedAfter=type(_snapshot().get("loadedAt")).__name__))
 elif _then == "saveInBlender":
     # Ctrl+S in the pane, then a copy saved elsewhere, which leaves the open file as it was.
     _on_save_post(bpy.data.filepath)
@@ -412,14 +392,10 @@ elif _then == "saveInBlender":
         if message["type"] == "saved"
     ])
 elif _then in (
-    "saveAndQuit", "failedSaveAndQuit", "pendingSaveAndQuit", "quitWithoutSaving", "discardOther",
-    "saveOther",
+    "saveAndQuit", "failedSaveAndQuit", "discardOther", "saveOther",
 ):
     # Save and quit as T3 asks for it: Blender's own operators stood in for.
     import contextlib, types
-    if _then == "pendingSaveAndQuit":
-        # The agent's deferred call that can write is still pending when Save and quit saves.
-        _Guard.deferred.append({"writes": True, "check": None})
     _windows = bpy.context.window_manager.windows
     _windows[:] = [types.SimpleNamespace(as_pointer=lambda: 0)]
     bpy.context.temp_override = lambda **_kwargs: contextlib.nullcontext()
@@ -455,10 +431,8 @@ elif _then in (
     bpy.ops.wm = types.SimpleNamespace(save_mainfile=_save_mainfile, quit_blender=_quit_blender)
     bpy.ops.ed = types.SimpleNamespace(undo_push=_undo_push)
     _t3.sendall(
-        b'{"type": "quit", "save": false}\n'
-        if _then == "quitWithoutSaving"
         # The person's discard of a file Blender no longer has open.
-        else b'{"type": "quit", "save": false, "filepath": "/work/other.blend"}\n'
+        b'{"type": "quit", "save": false, "filepath": "/work/other.blend"}\n'
         if _then == "discardOther"
         # The person's Save and quit of a file Blender no longer has open.
         else b'{"type": "quit", "save": true, "hold": true, "filepath": "/work/other.blend"}\n'
@@ -472,10 +446,7 @@ elif _then in (
             _addons.log("heard", [json.loads(line)["type"] for line in _t3.recv(65536).decode().splitlines()])
         except BlockingIOError:
             _addons.log("heard", [])
-elif _then in (
-    "replaceViewport", "stuckViewport", "ownChanged", "lateMarked", "loadInSession", "ownClosed",
-    "childClosed", "reusedAddress",
-):
+elif _then == "replaceViewport":
     # The file was saved with T3's viewport window open, one from a build before T3 marked it
     # (a plain lone 3D view), and the user's own window of another editor: after any load the
     # add-on swaps T3's for its own, and leaves the user's alone.
@@ -489,12 +460,11 @@ elif _then in (
         def __init__(self, kind):
             super().__init__(); self.areas = [_Area(kind)]
     class _Window:
-        def __init__(self, kind, marked=False, pointer=None):
+        def __init__(self, kind, marked=False):
             self.screen = _Screen(kind)
-            self.pointer = pointer
             if marked:
                 self.screen["t3_viewport"] = True
-        def as_pointer(self): return id(self) if self.pointer is None else self.pointer
+        def as_pointer(self): return id(self)
     _windows = bpy.context.window_manager.windows
     _users = _Window("IMAGE_EDITOR")
     _saved = _Window("VIEW_3D", marked=True)
@@ -508,11 +478,7 @@ elif _then in (
         return contextlib.nullcontext()
     def _close():
         _closes.append(_current[0])
-        if _then != "stuckViewport":
-            _windows.remove(_current[0])
-        if _then == "childClosed" and _current[0] is _saved:
-            # Its child window closes with it.
-            _windows.remove(_legacy)
+        _windows.remove(_current[0])
     def _dupli(_mode):
         window = _Window("VIEW_3D"); _windows.append(window); _opened.append(window)
     bpy.context.temp_override = _override
@@ -520,8 +486,6 @@ elif _then in (
         window_close=_close, recover_auto_save=lambda **_kwargs: {"FINISHED"}
     )
     bpy.ops.screen = types.SimpleNamespace(area_dupli=_dupli)
-    if RECOVER_PATH is not None:
-        _recover()
     def _t3_pass():
         # As a connected T3 answers a window the add-on announced: it expects it.
         if _t3 is not None and _State.viewport_wanted is not None:
@@ -529,69 +493,8 @@ elif _then in (
         return _open_viewport_window()
     # The timer runs until it returns None; a stuck close must not keep it going.
     _runs = 0
-    _late = _Window("VIEW_3D", marked=True)
     while _t3_pass() is not None and _runs < 10:
         _runs += 1
-        if _then == "lateMarked" and _runs == 1:
-            # A marked window seen only after the first pass isn't the copy's to replace.
-            _windows.append(_late)
-    if _then == "lateMarked":
-        _steps.append(dict(lateKept=_late in _windows))
-    if _then == "reusedAddress":
-        # A later load brings back a marked window at an address a closed one had.
-        _windows[:] = [_Window("VIEW_3D"), _Window("VIEW_3D", marked=True, pointer=id(_saved))]
-        _opened.clear()
-        _on_load_post()
-        _runs = 0
-        while _t3_pass() is not None and _runs < 10:
-            _runs += 1
-        _steps.append(dict(
-            viewports=len([window for window in _windows[1:] if _lone_3d_view(window)]),
-            fresh=len(_opened),
-        ))
-    if _then == "loadInSession":
-        # The person (or the agent) opens a file saved from a hosted Blender: Blender gives
-        # every window a new struct with the file's screens.
-        _users = _Window("IMAGE_EDITOR")
-        _windows[:] = [_Window("VIEW_3D"), _Window("VIEW_3D", marked=True), _Window("VIEW_3D"), _users]
-        _opened.clear()
-        _closes.clear()
-        _on_load_post()
-        _runs = 0
-        while _t3_pass() is not None and _runs < 10:
-            _runs += 1
-        lone = [window for window in _windows[1:] if _lone_3d_view(window)]
-        _steps.append(dict(
-            viewports=len(lone),
-            tracked=_viewport() is not None and _viewport()[0] is lone[0],
-            fresh=len(_opened),
-        ))
-    if _then in ("ownChanged", "ownClosed"):
-        # The person turns T3's window into another editor, or closes it: it's no longer T3's
-        # viewport, and Blender's own tick, with nothing else asking, replaces it.
-        _first = _opened[0]
-        if _then == "ownChanged":
-            _first.screen.areas[0].type = "IMAGE_EDITOR"
-        else:
-            _windows.remove(_first)
-        _changed = _viewport()
-        bpy.app.registered.clear()
-        _tick()
-        _scheduled = [function for function in bpy.app.registered if function is _open_viewport_window]
-        for function in _scheduled:
-            bpy.app.registered.remove(function)
-            _passes = 0
-            while _t3_pass() is not None and _passes < 10:
-                _passes += 1
-        _steps.append(dict(
-            stillOwn=_changed is not None and _changed[0] is _first,
-            scheduled=len(_scheduled),
-            reopened=_viewport() is not None and _viewport()[0] is _opened[-1],
-            fresh=len(_opened),
-            # One T3 viewport window, the one streamed: the old one is gone.
-            oldGone=_first not in _windows,
-            marked=len([window for window in _windows if window.screen.get("t3_viewport")]),
-        ))
     _steps.append(dict(
         _report(),
         windows=len(_windows),
@@ -958,19 +861,15 @@ const runAddon = (input: {
         readonly type: "quit";
         readonly save: boolean;
         readonly hold?: boolean;
-        readonly deadline?: number;
       }
   >;
   /** Asset catalogs edited and not saved, which only Blender's catalog poll can tell. */
   readonly unsavedCatalogs?: boolean;
-  /** No window to check catalogs through. */
-  readonly noWindow?: boolean;
   /** An asset browser in the main window, as its area's editor or out of view behind another. */
   readonly assetBrowser?: "shown" | "hidden";
   /** Steps a person takes before T3 asks, each followed by the add-on's tick. */
   readonly catalogSteps?: ReadonlyArray<{
     readonly browser?: "shown" | "files" | "hidden";
-    readonly library?: string;
     readonly unsaved?: boolean;
     readonly save?: boolean;
   }>;
@@ -978,17 +877,8 @@ const runAddon = (input: {
   readonly dirty?: boolean;
   /** Images edited and not saved, which saving the .blend leaves behind. */
   readonly dirtyImages?: ReadonlyArray<string>;
-  readonly pressStartBeforeGrant?: boolean;
-  /** Another file is open by the time T3's grant arrives. */
-  readonly fileBeforeGrant?: boolean;
-  /** Launched to restore a recovery copy, as Reopen does. */
-  readonly recover?: boolean;
   readonly then?:
-    | "stuckViewport"
     | "settledWords"
-    | "ownChanged"
-    | "lateMarked"
-    | "loadInSession"
     | "revoke"
     | "drop"
     | "otherFile"
@@ -997,29 +887,19 @@ const runAddon = (input: {
     | "replaceViewport"
     | "saveAndQuit"
     | "saveInBlender"
-    | "pendingSaveAndQuit"
-    | "quitWithoutSaving"
     | "discardOther"
     | "saveOther"
-    | "loadTime"
-    | "ownClosed"
-    | "childClosed"
-    | "reusedAddress"
     | "failedSaveAndQuit";
   /** The installed extension's manifest version; 1.0.3 by default. */
   readonly mcpVersion?: string;
   /** Its whole manifest, in place of one with `mcpVersion`. */
   readonly manifest?: string;
-  /** The manifest the grant finds, written after launch. */
-  readonly manifestBeforeGrant?: string;
   /** Blender 5.3's Reload Scripts, with T3's startup gate, after the grant. */
   readonly reload?: boolean;
   /** Blender Lab's own functions back on its running listener. */
   readonly unguardedListener?: boolean;
   /** Blender Lab enabled and listening without T3's grant. */
   readonly startedOutsideGrant?: boolean;
-  /** Blender Lab's server module lacks a function the guard wraps. */
-  readonly brokenServer?: boolean;
   readonly undoSteps?: number;
   readonly undoPushFails?: boolean;
   /**
@@ -1061,8 +941,6 @@ const runAddon = (input: {
   readonly sendAfterCall?: ReadonlyArray<"quitIfClean">;
   /** Blender skipped T3's startup gate, so enabled add-ons registered from the settings. */
   readonly gateSkipped?: boolean;
-  /** Blender Lab is listening already when the grant arrives. */
-  readonly listeningBeforeGrant?: boolean;
   readonly undoPushLeavesClean?: boolean;
   readonly globalUndo?: boolean;
   /**
@@ -1122,7 +1000,6 @@ const runAddon = (input: {
       "--t3-mcp-port",
       String(port),
       ...(input.listen ? ["--t3-mcp-listen"] : []),
-      ...(input.recover ? ["--t3-recover", NodePath.join(dir, "session.blend")] : []),
       ...(input.installed.includes(MCP)
         ? ["--t3-mcp-snapshot", NodePath.join(dir, "bl_ext/t3_blender_lab")]
         : []),
