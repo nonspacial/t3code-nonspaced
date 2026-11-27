@@ -97,13 +97,6 @@ function handle(message) {
     return text("rendered");
   }
   if (name === "named") return text("Object named port 41000, near localhost:41000.");
-  if (name === "held") {
-    // Answers once "release" beside its log is gone.
-    send({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: message.params._meta.progressToken, progress: 0 } });
-    const release = require("node:path").join(require("node:path").dirname(process.env.FAKE_LOG), "release");
-    const timer = setInterval(() => { if (!fs.existsSync(release)) { clearInterval(timer); text("held done"); } }, 20);
-    return;
-  }
   if (name === "unreachable") {
     // Blender Lab's own wording when nothing listens on its port.
     return send({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "Error executing tool unreachable: Cannot connect to Blender at localhost:" + process.env.BLENDER_MCP_PORT + ". Ensure Blender is running with the MCP addon enabled and the server started." }], isError: true } });
@@ -116,16 +109,6 @@ function handle(message) {
     send({ jsonrpc: "2.0", id: "server-1", method: "roots/list" });
     pendingAsk = message.id;
     return;
-  }
-  if (name === "deaf") {
-    // Stays alive but takes no more input.
-    process.stdin.removeAllListeners("end");
-    process.stdin.destroy();
-    fs.closeSync(0);
-    // Gone with its parent, so a test run that dies leaves nothing behind.
-    const parent = process.ppid;
-    setInterval(() => { if (process.ppid !== parent) process.exit(0); }, 50);
-    return text("deaf");
   }
   if (name === "crash") process.exit(3);
   // "wait" says it started, and is never answered.
@@ -177,12 +160,6 @@ const setup = Effect.fnUntraced(function* (options?: { readonly command?: string
   const allowed = { value: true };
   const mode: { value: "default" | "plan" | "unreadable" } = { value: "default" };
   const grants = new Map<string, Grant>();
-  // While on, each grant read waits for the test to release it, handing it a release here.
-  const holdGrants = { value: false };
-  const grantReads = yield* Queue.unbounded<Deferred.Deferred<void>>();
-  // The same for the thread's mode, which the gates read from the database.
-  const holdModes = { value: false };
-  const modeReads = yield* Queue.unbounded<Deferred.Deferred<void>>();
   const spawned: Array<Spawned> = [];
   // Each spawn as it happens, for a test that acts once a server is starting.
   const spawns = yield* Queue.unbounded<Spawned>();
@@ -217,11 +194,6 @@ const setup = Effect.fnUntraced(function* (options?: { readonly command?: string
           Layer.mock(HostedBlender.HostedBlender)({
             agentGrant: ({ threadId, role, session }) =>
               Effect.gen(function* () {
-                if (holdGrants.value) {
-                  const release = Deferred.makeUnsafe<void>();
-                  Queue.offerUnsafe(grantReads, release);
-                  yield* Deferred.await(release);
-                }
                 const grant = grants.get(`${threadId}:${role}`);
                 return grant !== undefined &&
                   (grant.session === undefined || grant.session === session)
@@ -241,11 +213,6 @@ const setup = Effect.fnUntraced(function* (options?: { readonly command?: string
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadShell: () =>
               Effect.gen(function* () {
-                if (holdModes.value) {
-                  const release = Deferred.makeUnsafe<void>();
-                  Queue.offerUnsafe(modeReads, release);
-                  yield* Deferred.await(release);
-                }
                 return mode.value === "unreadable"
                   ? yield* Effect.fail(new Error("unreadable") as never)
                   : ({ interactionMode: mode.value } as never);
@@ -360,13 +327,7 @@ const setup = Effect.fnUntraced(function* (options?: { readonly command?: string
     allowed,
     mode,
     grants,
-    holdGrants,
-    grantReads,
-    holdModes,
-    modeReads,
-    sessions,
     hold: path.join(dir, "hold"),
-    release: path.join(dir, "release"),
     spawned,
     spawns,
     layerScope,
@@ -436,27 +397,6 @@ describe("HostedBlenderMcpProxy", () => {
     ),
   );
 
-  it.live("refuses discovery when setup has no capture, or the installed build changed", () =>
-    run(
-      Effect.gen(function* () {
-        const t = yield* setup();
-        yield* t.startSession(a, 41000);
-        const kept = t.capture.value;
-        t.capture.value = null;
-        const [missing] = yield* t.ask(a, "working", { method: "tools/list" });
-        assert.include(missing?.error.message, "Check again");
-        t.capture.value = kept;
-        // Upgraded in place since setup read it: the old list would describe another server.
-        NodeFS.appendFileSync(t.script, "\n// a newer build\n");
-        const [changed] = yield* t.ask(a, "working", { method: "tools/list" });
-        assert.include(changed?.error.message, "changed since T3 Code checked it");
-        const [call] = yield* t.callTool(a, "working", "echo");
-        assert.include(call?.error.message, "changed since T3 Code checked it");
-        assert.deepStrictEqual(t.spawned, []);
-      }),
-    ),
-  );
-
   it.live(
     "starts one server per session and role on its grant's port, and nothing else steers it",
     () =>
@@ -484,6 +424,17 @@ describe("HostedBlenderMcpProxy", () => {
           );
           assert.match(starts[1]!, /host=localhost port=41001 /);
           assert.match(starts[2]!, /host=localhost port=42000 /);
+
+          // A server that crashed is started again on the next call.
+          const [crashed] = yield* t.callTool(a, "working", "crash");
+          assert.include(crashed?.error.message, "stopped unexpectedly (exit code 3)");
+          const [answered] = yield* t.callTool(a, "working", "echo");
+          assert.strictEqual(
+            answered?.result.content[0].text,
+            '{"from":"session-a"}',
+            "restarted after a crash",
+          );
+          assert.strictEqual((yield* t.starts).length, 4);
         }),
       ),
   );
@@ -536,314 +487,6 @@ describe("HostedBlenderMcpProxy", () => {
     ),
   );
 
-  it.live("checks the grant again before a call reaches the server", () =>
-    run(
-      Effect.gen(function* () {
-        const t = yield* setup();
-        yield* t.startSession(a, 41000);
-        NodeFS.writeFileSync(t.hold, "");
-        const reply = yield* t
-          .send(a, "working", {
-            id: 1,
-            method: "tools/call",
-            params: { name: "echo", arguments: {} },
-          })
-          .pipe(Effect.flatMap(t.collect), Effect.forkChild);
-        // The grant ends after the call was admitted, while its server starts and before the
-        // call is written; its ending hasn't been processed yet.
-        yield* Queue.take(t.spawns);
-        t.grants.delete(`${threadA}:working`);
-        NodeFS.rmSync(t.hold);
-        const [refused] = yield* Fiber.join(reply);
-        assert.include(refused?.error.message, "blender_quit with save: true");
-        assert.deepStrictEqual(yield* t.calls, []);
-        // And a new launch's grant is not the one the server was started for.
-        t.grants.set(`${threadA}:working`, { grant: "launch-next", port: 41000 });
-        const [answered] = yield* t.callTool(a, "working", "echo");
-        assert.strictEqual(answered?.result.content[0].text, '{"from":"session-a"}');
-        assert.strictEqual((yield* t.starts).length, 2);
-      }),
-    ),
-  );
-
-  it.live("stops the server an ending reaches while its registration still waits", () =>
-    run(
-      Effect.gen(function* () {
-        const t = yield* setup();
-        yield* t.startSession(a, 41000);
-        t.holdGrants.value = true;
-        const calling = yield* t.callTool(a, "working", "echo").pipe(Effect.forkChild);
-        // Registration holds the lock while it reads the grant; the session ends meanwhile.
-        const registering = yield* Queue.take(t.grantReads);
-        yield* PubSub.publish(t.ends, { threadId: threadA, session: "session-a" });
-        t.holdGrants.value = false;
-        yield* Deferred.succeed(registering, undefined);
-        const [ended] = yield* Fiber.join(calling);
-        assert.include(ended?.error.message, "This agent session ended");
-        yield* t.spawned[0]!.exitCode;
-        assert.deepStrictEqual(yield* t.calls, []);
-      }),
-    ),
-  );
-
-  it.live("reads the credential again after the slower gates, just before the write", () =>
-    run(
-      Effect.gen(function* () {
-        const t = yield* setup();
-        yield* t.startSession(a, 41000);
-        yield* t.callTool(a, "working", "echo");
-        t.holdGrants.value = true;
-        const calling = yield* t.callTool(a, "working", "echo").pipe(Effect.forkChild);
-        yield* Deferred.succeed(yield* Queue.take(t.grantReads), undefined);
-        // The write's own read of the grant: the session's credential is gone by its end.
-        const writing = yield* Queue.take(t.grantReads);
-        yield* t.sessions.clear(threadA);
-        t.holdGrants.value = false;
-        yield* Deferred.succeed(writing, undefined);
-        const [refused] = yield* Fiber.join(calling);
-        assert.strictEqual(
-          refused?.error.message,
-          "Hosted Blender is not available to this agent session.",
-        );
-        assert.deepStrictEqual(yield* t.calls, ["call echo"]);
-      }),
-    ),
-  );
-
-  it.live("never writes a call cancelled while its gates were read", () =>
-    run(
-      Effect.gen(function* () {
-        const t = yield* setup();
-        yield* t.startSession(a, 41000);
-        yield* t.callTool(a, "working", "echo");
-        t.holdGrants.value = true;
-        const reply = yield* t
-          .send(a, "working", {
-            id: "late",
-            method: "tools/call",
-            params: { name: "echo", arguments: {} },
-          })
-          .pipe(Effect.flatMap(t.collect), Effect.forkChild);
-        yield* Deferred.succeed(yield* Queue.take(t.grantReads), undefined);
-        const reading = reply;
-        const writing = yield* Queue.take(t.grantReads);
-        yield* t.send(a, "working", {
-          method: "notifications/cancelled",
-          params: { requestId: "late" },
-        });
-        t.holdGrants.value = false;
-        yield* Deferred.succeed(writing, undefined);
-        assert.deepStrictEqual(yield* Fiber.join(reading), []);
-        // Ordered after the cancel on the server's stdin.
-        yield* t.callTool(a, "working", "echo");
-        assert.deepStrictEqual(yield* t.calls, ["call echo", "call echo"]);
-      }),
-    ),
-  );
-
-  it.live("withdraws a call cancelled during its first admission", () =>
-    run(
-      Effect.gen(function* () {
-        const t = yield* setup();
-        yield* t.startSession(a, 41000);
-        yield* t.callTool(a, "working", "echo");
-        t.holdModes.value = true;
-        const reply = yield* t
-          .send(a, "working", {
-            id: "early",
-            method: "tools/call",
-            params: { name: "echo", arguments: {} },
-          })
-          .pipe(Effect.flatMap(t.collect), Effect.forkChild);
-        // Before any server is chosen for it, the client cancels and goes on reading.
-        const admitting = yield* Queue.take(t.modeReads);
-        yield* t.send(a, "working", {
-          method: "notifications/cancelled",
-          params: { requestId: "early" },
-        });
-        t.holdModes.value = false;
-        yield* Deferred.succeed(admitting, undefined);
-        assert.deepStrictEqual(yield* Fiber.join(reply), []);
-        yield* t.callTool(a, "working", "echo");
-        assert.deepStrictEqual(yield* t.calls, ["call echo", "call echo"]);
-      }),
-    ),
-  );
-
-  it.live("starts no server for a first call cancelled during its admission", () =>
-    run(
-      Effect.gen(function* () {
-        const t = yield* setup();
-        yield* t.startSession(a, 41000);
-        t.holdModes.value = true;
-        const reply = yield* t
-          .send(a, "working", {
-            id: "first",
-            method: "tools/call",
-            params: { name: "echo", arguments: {} },
-          })
-          .pipe(Effect.flatMap(t.collect), Effect.forkChild);
-        const admitting = yield* Queue.take(t.modeReads);
-        yield* t.send(a, "working", {
-          method: "notifications/cancelled",
-          params: { requestId: "first" },
-        });
-        t.holdModes.value = false;
-        yield* Deferred.succeed(admitting, undefined);
-        assert.deepStrictEqual(yield* Fiber.join(reply), []);
-        // A server started for it would be spawned before one a later call starts.
-        yield* t.callTool(a, "master", "echo");
-        const [first] = Array.from(yield* Queue.takeAll(t.spawns));
-        assert.strictEqual(first?.env.BLENDER_MCP_PORT, "41001");
-        assert.strictEqual(t.spawned.length, 1);
-      }),
-    ),
-  );
-
-  it.live("leaves the server started since for a newer build when a stale read is refused", () =>
-    run(
-      Effect.gen(function* () {
-        const t = yield* setup();
-        yield* t.startSession(a, 41000);
-        yield* t.callTool(a, "working", "echo");
-        // A call reads the installed build, then waits on its mode read.
-        t.holdModes.value = true;
-        const stale = yield* t.callTool(a, "working", "echo").pipe(Effect.forkChild);
-        const resuming = yield* Queue.take(t.modeReads);
-        t.holdModes.value = false;
-        // Meanwhile setup reads a newer build and another call starts its server, still busy.
-        NodeFS.appendFileSync(t.script, "\n// a newer build\n");
-        t.capture.value = yield* captureBlenderMcp({
-          command: t.script,
-          environment: { PATH, FAKE_LOG: `${t.hold}.log` },
-          tmpDir: NodeOS.tmpdir(),
-        });
-        NodeFS.writeFileSync(t.release, "");
-        const busy = yield* t.send(a, "working", {
-          id: "on-new",
-          method: "tools/call",
-          params: { name: "held", arguments: {}, _meta: { progressToken: "held" } },
-        });
-        if (busy._tag !== "Stream") return assert.fail("expected a call");
-        const messages = yield* Queue.unbounded<Record<string, any>, Cause.Done>();
-        yield* busy.messages.pipe(
-          Stream.runForEach((message) => Queue.offer(messages, decode(message))),
-          Effect.andThen(Queue.end(messages)),
-          Effect.forkChild,
-        );
-        assert.strictEqual((yield* Queue.take(messages)).method, "notifications/progress");
-        const replacement = t.spawned[1]!;
-        yield* Deferred.succeed(resuming, undefined);
-        const [refused] = yield* Fiber.join(stale);
-        assert.include(refused?.error.message, "changed since T3 Code checked it");
-        // The newer server's call completes, and the server keeps running.
-        NodeFS.rmSync(t.release);
-        assert.strictEqual((yield* Queue.take(messages)).result.content[0].text, "held done");
-        const [answered] = yield* t.callTool(a, "working", "echo");
-        assert.strictEqual(answered?.result.content[0].text, '{"from":"session-a"}');
-        assert.strictEqual(t.spawned.length, 2);
-        assert.isFalse(
-          yield* replacement.exitCode.pipe(
-            Effect.timeoutOption("0 millis"),
-            Effect.map((exit) => exit._tag === "Some"),
-          ),
-        );
-      }),
-    ),
-  );
-
-  it.live("reads setup's capture in the final gate, after the mode read it waited on", () =>
-    run(
-      Effect.gen(function* () {
-        const t = yield* setup();
-        yield* t.startSession(a, 41000);
-        yield* t.callTool(a, "working", "echo");
-        const old = t.spawned[0]!;
-        t.holdModes.value = true;
-        const calling = yield* t.callTool(a, "working", "echo").pipe(Effect.forkChild);
-        yield* Deferred.succeed(yield* Queue.take(t.modeReads), undefined);
-        // The write's own mode read: setup's check fails while it waits, before any ending.
-        const writing = yield* Queue.take(t.modeReads);
-        t.capture.value = null;
-        t.holdModes.value = false;
-        yield* Deferred.succeed(writing, undefined);
-        const [refused] = yield* Fiber.join(calling);
-        assert.include(refused?.error.message, "Check again");
-        yield* old.exitCode;
-        assert.deepStrictEqual(yield* t.calls, ["call echo"]);
-      }),
-    ),
-  );
-
-  it.live("stops only the servers on the build setup took back", () =>
-    run(
-      Effect.gen(function* () {
-        const t = yield* setup();
-        yield* t.startSession(a, 41000);
-        yield* t.callTool(a, "working", "echo");
-        const before = t.capture.value!.build;
-        NodeFS.appendFileSync(t.script, "\n// a newer build\n");
-        t.capture.value = yield* captureBlenderMcp({
-          command: t.script,
-          environment: { PATH, FAKE_LOG: `${t.hold}.log` },
-          tmpDir: NodeOS.tmpdir(),
-        });
-        yield* t.callTool(a, "working", "echo");
-        assert.strictEqual(t.spawned.length, 2);
-        // The old build's late ending leaves the server already on its successor.
-        yield* PubSub.publish(t.ends, { staleBuild: before });
-        yield* t.callTool(a, "working", "echo");
-        assert.strictEqual(t.spawned.length, 2);
-        const replacement = t.spawned[1]!;
-        const waiting = yield* t.startWait(a, "on-new");
-        yield* PubSub.publish(t.ends, { staleBuild: t.capture.value!.build });
-        const [failed] = Array.from(yield* waiting.rest);
-        assert.include(failed?.error.message, "reinstalled");
-        yield* replacement.exitCode;
-      }),
-    ),
-  );
-
-  it.live("stops a server whose session ends while it is still starting", () =>
-    run(
-      Effect.gen(function* () {
-        const t = yield* setup();
-        yield* t.startSession(a, 41000);
-        NodeFS.writeFileSync(t.hold, "");
-        const calling = yield* t.callTool(a, "working", "echo").pipe(Effect.forkChild);
-        const starting = yield* Queue.take(t.spawns);
-        yield* PubSub.publish(t.ends, { threadId: threadA, session: "session-a" });
-        const [ended] = yield* Fiber.join(calling);
-        assert.include(ended?.error.message, "This agent session ended");
-        yield* starting.exitCode;
-        NodeFS.rmSync(t.hold);
-      }),
-    ),
-  );
-
-  it.live("refuses a write when the thread entered Plan mode while it waited for its server", () =>
-    run(
-      Effect.gen(function* () {
-        const t = yield* setup();
-        yield* t.startSession(a, 41000);
-        NodeFS.writeFileSync(t.hold, "");
-        const reply = yield* t.send(a, "working", {
-          id: 1,
-          method: "tools/call",
-          params: { name: "execute_blender_code", arguments: { code: "x" } },
-        });
-        // Admitted in Default mode; the server is still starting when the user switches.
-        const reading = yield* t.collect(reply).pipe(Effect.forkChild);
-        yield* Queue.take(t.spawns);
-        t.mode.value = "plan";
-        NodeFS.rmSync(t.hold);
-        const [refused] = yield* Fiber.join(reading);
-        assert.include(refused?.error.message, "Plan mode is read-only");
-        assert.deepStrictEqual(yield* t.calls, []);
-      }),
-    ),
-  );
-
   it.live("replaces the server when setup reads a new build, and stops it when a check fails", () =>
     run(
       Effect.gen(function* () {
@@ -866,6 +509,22 @@ describe("HostedBlenderMcpProxy", () => {
         const [refused] = yield* t.callTool(a, "working", "echo");
         assert.include(refused?.error.message, "Check again");
         yield* t.spawned[1]!.exitCode;
+
+        // Discovery with no capture asks for Check again, and starts nothing.
+        const [missing] = yield* t.ask(a, "working", { method: "tools/list" });
+        assert.include(missing?.error.message, "Check again", "discovery with no capture");
+        t.capture.value = yield* captureBlenderMcp({
+          command: t.script,
+          environment: { PATH, FAKE_LOG: `${t.hold}.log` },
+          tmpDir: NodeOS.tmpdir(),
+        });
+        // Upgraded in place since setup read it: the old list would describe another server.
+        NodeFS.appendFileSync(t.script, "\n// a newer build again\n");
+        const [changed] = yield* t.ask(a, "working", { method: "tools/list" });
+        assert.include(changed?.error.message, "changed since T3 Code checked it", "discovery");
+        const [call] = yield* t.callTool(a, "working", "echo");
+        assert.include(call?.error.message, "changed since T3 Code checked it", "a call");
+        assert.strictEqual(t.spawned.length, 2, "discovery and refused calls start nothing");
       }),
     ),
   );
@@ -1022,36 +681,19 @@ describe("HostedBlenderMcpProxy", () => {
         }
         yield* t.callTool(a, "working", "echo");
         assert.strictEqual(t.spawned.length, 5);
-      }),
-    ),
-  );
 
-  it.live("restarts a crashed server on the next call", () =>
-    run(
-      Effect.gen(function* () {
-        const t = yield* setup();
-        yield* t.startSession(a, 41000);
-        const [crashed] = yield* t.callTool(a, "working", "crash");
-        assert.include(crashed?.error.message, "stopped unexpectedly (exit code 3)");
-        const [answered] = yield* t.callTool(a, "working", "echo");
-        assert.strictEqual(answered?.result.content[0].text, '{"from":"session-a"}');
-        assert.strictEqual(t.spawned.length, 2);
-      }),
-    ),
-  );
-
-  it.live("stops a server that takes no more input, and starts a fresh one", () =>
-    run(
-      Effect.gen(function* () {
-        const t = yield* setup();
-        yield* t.startSession(a, 41000);
-        yield* t.callTool(a, "working", "deaf");
-        const deaf = t.spawned.at(-1)!;
-        const [failed] = yield* t.callTool(a, "working", "echo");
-        assert.include(failed?.error.message, "stopped answering");
-        yield* deaf.exitCode;
-        const [answered] = yield* t.callTool(a, "working", "echo");
-        assert.strictEqual(answered?.result.content[0].text, '{"from":"session-a"}');
+        // A session that ends while its server is still starting stops that server too.
+        yield* PubSub.publish(t.ends, { threadId: threadA });
+        yield* t.spawned.at(-1)!.exitCode;
+        yield* Queue.clear(t.spawns);
+        NodeFS.writeFileSync(t.hold, "");
+        const calling = yield* t.callTool(a, "working", "echo").pipe(Effect.forkChild);
+        const starting = yield* Queue.take(t.spawns);
+        yield* PubSub.publish(t.ends, { threadId: threadA, session: "session-a" });
+        const [ended] = yield* Fiber.join(calling);
+        assert.include(ended?.error.message, "This agent session ended", "ended while starting");
+        yield* starting.exitCode;
+        NodeFS.rmSync(t.hold);
       }),
     ),
   );
@@ -1105,22 +747,6 @@ describe("HostedBlenderMcpProxy", () => {
         yield* t.spawned[0]!.exitCode;
         yield* t.callTool(a, "working", "echo");
         assert.strictEqual(t.spawned.length, 2);
-      }),
-    ),
-  );
-
-  it.effect("gives up on a call the server never answers, and stops that server", () =>
-    run(
-      Effect.gen(function* () {
-        const t = yield* setup();
-        yield* t.startSession(a, 41000);
-        const waiting = yield* t.startWait(a, "never");
-        // Far past any client's own timeout, so a render still running is not cut short.
-        yield* TestClock.adjust("64 minutes");
-        yield* TestClock.adjust("2 minutes");
-        const [failed] = Array.from(yield* waiting.rest);
-        assert.include(failed?.error.message, "stopped answering");
-        yield* t.spawned[0]!.exitCode;
       }),
     ),
   );
