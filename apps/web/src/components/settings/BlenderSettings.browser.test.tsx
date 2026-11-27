@@ -9,6 +9,8 @@ import { render } from "../../../test/render";
 const state = vi.hoisted(() => ({
   held: [] as HostedBlenderHeldList,
   commands: [] as Array<{ readonly label: string; readonly value: unknown }>,
+  // Told when `held` changes, as the server's list would tell the page.
+  listeners: new Set<() => void>(),
 }));
 
 vi.mock(import("./SettingsScopeContext"), async (original) => ({
@@ -23,9 +25,17 @@ vi.mock(import("./SettingsScopeContext"), async (original) => ({
 }));
 vi.mock(import("~/state/hostedBlender"), async (original) => {
   const actual = await original();
+  const { useSyncExternalStore } = await import("react");
   return {
     ...actual,
-    useHeldWorkingCopies: (() => state.held) as never,
+    useHeldWorkingCopies: (() =>
+      useSyncExternalStore(
+        (listener) => {
+          state.listeners.add(listener);
+          return () => state.listeners.delete(listener);
+        },
+        () => state.held,
+      )) as never,
     useRunningHostedBlenders: (() => []) as never,
     hostedBlenderEnvironment: {
       ...actual.hostedBlenderEnvironment,
@@ -97,13 +107,16 @@ it("B19: lists held working copies with their thread, master, size and expiry, a
   await deletes.click();
   // Nothing is deleted until the person confirms.
   const confirm = screen.getByRole("alertdialog");
-  await expect
-    .element(confirm.getByText("Delete the working copy from Hero pass?"))
-    .toBeInTheDocument();
+  await expect.element(confirm.getByText("Delete this held working copy?")).toBeInTheDocument();
+  await expect.element(confirm.getByText("From Hero pass.", { exact: false })).toBeInTheDocument();
   await expect
     .element(confirm.getByText("Deleting the copy can't be undone.", { exact: false }))
     .toBeInTheDocument();
   expect(state.commands).toEqual([]);
+  // Reopened and held again from another client while it is open: it still deletes the hold
+  // it showed, which the server then leaves alone.
+  state.held = [{ ...state.held[0]!, heldAt: new Date(2026, 10, 25).getTime() }, state.held[1]!];
+  for (const listener of state.listeners) listener();
   await confirm.getByRole("button", { name: "Delete" }).click();
   await expect.element(confirm).not.toBeInTheDocument();
   expect(state.commands).toEqual([

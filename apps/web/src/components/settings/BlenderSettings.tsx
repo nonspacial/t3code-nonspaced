@@ -9,7 +9,11 @@ import { Link } from "@tanstack/react-router";
 import { T, useGT, useMessages, Var } from "gt-react";
 import { useState } from "react";
 
-import { ConfirmHeldDelete, heldExpiryDate } from "~/components/blender/HeldCopiesNotice";
+import {
+  ConfirmHeldDelete,
+  type HeldDeleteTarget,
+  heldExpiryDate,
+} from "~/components/blender/HeldCopiesNotice";
 import { fileName, useQuitHostedBlender } from "~/components/blender/useQuitHostedBlender";
 import { Button } from "~/components/ui/button";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
@@ -166,11 +170,12 @@ function HeldWorkingCopyRow(props: {
   const deleteHeld = useAtomCommand(hostedBlenderEnvironment.deleteHeld, { reportFailure: false });
   const [pending, setPending] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const remove = async () => {
+  const [target, setTarget] = useState<HeldDeleteTarget | null>(null);
+  const remove = async (shown: HeldDeleteTarget) => {
     setPending(true);
     const result = await deleteHeld({
       environmentId: props.environmentId,
-      input: { copies: [{ id: copy.id, heldAt: copy.heldAt }] },
+      input: { copies: shown.copies },
     });
     setPending(false);
     setConfirming(false);
@@ -228,19 +233,24 @@ function HeldWorkingCopyRow(props: {
               variant="outline"
               size="sm"
               disabled={pending}
-              onClick={() => setConfirming(true)}
+              onClick={() => {
+                setTarget({
+                  copies: [{ id: copy.id, heldAt: copy.heldAt }],
+                  threads: threadTitle,
+                  master: fileName(copy.master),
+                  behind: copy.behind === true,
+                });
+                setConfirming(true);
+              }}
             >
               <T context="deletes a held working copy">Delete</T>
             </Button>
             <ConfirmHeldDelete
               open={confirming}
               onOpenChange={setConfirming}
-              count={1}
-              threads={threadTitle}
-              master={fileName(copy.master)}
-              behind={copy.behind === true}
+              target={target}
               pending={pending}
-              onDelete={() => void remove()}
+              onDelete={(shown) => void remove(shown)}
             />
           </>
         ) : null
