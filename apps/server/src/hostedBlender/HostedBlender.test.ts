@@ -6913,8 +6913,8 @@ scene.frame_set(1)`;
   const SEMU_HEADER_BYTES = 16;
   // Frames are decoded this small: enough to tell the colours apart.
   const SMALL = { width: 160, height: 90 };
-  // labwc's default title bar over a floating window, in output pixels.
-  const TITLE_BAR = 28;
+  // The title bar over a floating window, in output pixels: as tall as the helper's close button.
+  const TITLE_BAR = 40;
 
   /** Every frame streamed from now, as H.264 access units, acked as a client acks them. */
   const recordStream = Effect.fn(function* (service: HostedBlender.HostedBlender["Service"]) {
@@ -7168,7 +7168,7 @@ scene.frame_set(1)`;
         const { width, height } = preferences.others[0]!;
         const left = (1280 - width) / 2;
         const top = (720 - height - TITLE_BAR) / 2;
-        yield* click(left + width - 14, top + TITLE_BAR / 2);
+        yield* click(left + width - TITLE_BAR / 2, top + TITLE_BAR / 2);
         yield* layoutWhen((layout) => layout.others.length === 0 && withStrip(layout));
         yield* framesAfter(recording, units.length);
 

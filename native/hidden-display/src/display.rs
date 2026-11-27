@@ -79,7 +79,8 @@ impl Paths {
         }
     }
 
-    /// Creates the directories (private to this user) and writes labwc's `rc.xml`.
+    /// Creates the directories (private to this user) and writes labwc's `rc.xml` and
+    /// `themerc-override`.
     pub fn prepare(&self, window_title: Option<&str>) -> io::Result<()> {
         for directory in [
             &self.runtime,
@@ -92,9 +93,18 @@ impl Paths {
                 .mode(0o700)
                 .create(directory)?;
         }
-        fs::write(self.labwc_config.join("rc.xml"), labwc_config(window_title))
+        fs::write(self.labwc_config.join("rc.xml"), labwc_config(window_title))?;
+        fs::write(
+            self.labwc_config.join("themerc-override"),
+            LABWC_THEME_OVERRIDE,
+        )
     }
 }
+
+/// A floating window's close button, 26 px square in labwc's default theme, is hard to hit in a
+/// narrow pane or by touch. This widens its hit box and the title bar with it; the glyph stays
+/// labwc's own bitmap.
+pub const LABWC_THEME_OVERRIDE: &str = "window.button.width: 40\nwindow.button.height: 40\n";
 
 /// The captured window is made fullscreen so stream pixels are output pixels. Blender's other
 /// windows (render view, file browser, Preferences) float centred in front of it with a close
@@ -491,5 +501,19 @@ mod tests {
             3
         );
         assert!(config.contains(r#"<context name="Close">"#));
+    }
+
+    #[test]
+    fn prepare_writes_the_config_and_a_close_button_large_enough_to_hit() {
+        let state = tempfile::tempdir().unwrap();
+        let paths = Paths::new(state.path(), &state.path().join("run"), None);
+        paths.prepare(Some("3D Viewport")).unwrap();
+        assert_eq!(
+            fs::read_to_string(paths.labwc_config.join("rc.xml")).unwrap(),
+            labwc_config(Some("3D Viewport"))
+        );
+        let theme = fs::read_to_string(paths.labwc_config.join("themerc-override")).unwrap();
+        assert!(theme.contains("window.button.width: 40\n"));
+        assert!(theme.contains("window.button.height: 40\n"));
     }
 }
