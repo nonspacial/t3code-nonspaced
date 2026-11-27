@@ -46,7 +46,7 @@ vi.mock(import("~/state/use-atom-command"), async (original) => ({
 
 import { BlenderSettingsPanel } from "./BlenderSettings";
 
-it("B19: lists held working copies with their thread, master, size and expiry, and deletes one", async () => {
+it("B19: lists held working copies with their thread, master, size and expiry, and deletes one once confirmed", async () => {
   state.held = [
     {
       id: "held-a",
@@ -73,11 +73,14 @@ it("B19: lists held working copies with their thread, master, size and expiry, a
   state.commands = [];
   await using screen = await render(<BlenderSettingsPanel />);
   await screen.getByText("Held working copies (2)").click();
-  await expect.element(screen.getByText("Hero pass")).toBeInTheDocument();
+  // The thread, where the copy comes back from, is a link to it.
+  await expect
+    .element(screen.getByRole("link", { name: "Hero pass" }))
+    .toHaveAttribute("href", "/environment-1/thread-a");
   await expect
     .element(
       screen.getByText(
-        /^Copy of hero\.blend, 2(\.0+)? KB\. The master has changed since\. Deleted on [^.]*20[^.]*\.$/,
+        /^Copy of hero\.blend, 2(\.0+)? KB\. The master has changed since\. Kept until [^.]*20[^.]*\.$/,
       ),
     )
     .toBeInTheDocument();
@@ -92,6 +95,17 @@ it("B19: lists held working copies with their thread, master, size and expiry, a
   const deletes = screen.getByRole("button", { name: "Delete" });
   expect(deletes.elements()).toHaveLength(1);
   await deletes.click();
+  // Nothing is deleted until the person confirms.
+  const confirm = screen.getByRole("alertdialog");
+  await expect
+    .element(confirm.getByText("Delete the working copy from Hero pass?"))
+    .toBeInTheDocument();
+  await expect
+    .element(confirm.getByText("Deleting the copy can't be undone.", { exact: false }))
+    .toBeInTheDocument();
+  expect(state.commands).toEqual([]);
+  await confirm.getByRole("button", { name: "Delete" }).click();
+  await expect.element(confirm).not.toBeInTheDocument();
   expect(state.commands).toEqual([
     {
       label: "environment-data:hosted-blender:delete-held",

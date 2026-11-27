@@ -382,6 +382,21 @@ describe("P1: reading a large .blend", () => {
         objects: 4,
       });
       expect(await readBlendFileFacts(path, "revision-1")).toMatchObject({ large: true });
+      // A whole read that stops at a limit after the large-file size is still a large file's.
+      const pastLarge = 24 + blockBytes;
+      await expect(
+        readBlendFile(path, { wholeUpTo: Infinity, maxBlocks: 2 }),
+      ).resolves.toMatchObject({ partial: true, large: true });
+      await expect(
+        readBlendFile(path, { wholeUpTo: Infinity, maxScannedBytes: pastLarge }),
+      ).resolves.toMatchObject({ partial: true, large: true });
+      // Once a revision is found large, no later read of it clears that.
+      expect(await readBlendFileFacts(path, "revision-2")).toMatchObject({ large: true });
+      await NodeFSP.writeFile(path, scene);
+      expect(await readBlendFileFacts(path, "revision-2", undefined, true)).toMatchObject({
+        large: true,
+      });
+      expect(await readBlendFileFacts(path, "revision-2")).toMatchObject({ large: true });
     });
   });
 

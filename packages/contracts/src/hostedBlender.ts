@@ -226,6 +226,11 @@ export const HostedBlenderHeldCopy = Schema.Struct({
   kept: Schema.optionalKey(Schema.Boolean),
   /** T3 Code couldn't be sure the file is its own copy, so it left it in the project. */
   leftInProject: Schema.optionalKey(Schema.Boolean),
+  /**
+   * With `leftInProject`: a newer save came in while T3 Code moved the copy, and another file
+   * took its place meanwhile, so T3 Code left that save here, beside it, and moved nothing.
+   */
+  setAside: Schema.optionalKey(Schema.String),
 });
 export type HostedBlenderHeldCopy = typeof HostedBlenderHeldCopy.Type;
 
@@ -511,6 +516,7 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
       "stillSaving",
       "heldCopyInTheWay",
       "heldCopyNotDeleted",
+      "heldCopyNotKept",
     ]),
     /** With `unsavedImages` from a save: the edited images Blender couldn't save. */
     images: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -593,6 +599,8 @@ export class HostedBlenderError extends Schema.TaggedError<HostedBlenderError>()
         return "Blender is still saving its last copy of this file from before T3 Code restarted. Try again in a moment.";
       case "heldCopyNotDeleted":
         return "T3 Code couldn't delete the held working copy, so it is still held. Try again.";
+      case "heldCopyNotKept":
+        return "T3 Code couldn't save your answer to keep the held working copy, so it may ask again. Try again.";
       case "heldCopyInTheWay":
         return "T3 Code is holding this thread's working copy, but another file now has its name in the project, so T3 Code didn't put the copy back. Move that file aside, then try again.";
     }

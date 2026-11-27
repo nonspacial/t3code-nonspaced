@@ -456,8 +456,16 @@ async function readBlocks(
   let blocks = 0;
   let scanned = 0;
   let keptBytes = 0;
+  // Large on disk or once inflated, from what is known so far, however the walk ends.
+  const large = () =>
+    headOnly || source.byteLength > BLEND_LARGE_FILE_BYTES || scanned > BLEND_LARGE_FILE_BYTES;
   // At a limit the walk ends with what it found so far.
-  const partial = (large = false) => ({ kept, counts, partial: true as const, large });
+  const partial = (overBudget = false) => ({
+    kept,
+    counts,
+    partial: true as const,
+    large: overBudget || large(),
+  });
   for (;;) {
     // A closed preview or a newer request stops the walk; the source closes on the way out.
     signal?.throwIfAborted();
@@ -469,15 +477,7 @@ async function readBlocks(
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const le = header.littleEndian;
     const code = ascii(bytes.subarray(0, 4));
-    // Large once inflated, whatever this read was allowed to walk.
-    if (code === "ENDB") {
-      return {
-        kept,
-        counts,
-        partial: false as const,
-        large: source.compressed && scanned > BLEND_LARGE_FILE_BYTES,
-      };
-    }
+    if (code === "ENDB") return { kept, counts, partial: false as const, large: large() };
     // Blender 5.0's large block header puts the struct index before the pointer and the length after.
     const length = header.largeBlocks ? Number(view.getBigInt64(16, le)) : view.getInt32(4, le);
     const sdnaIndex = header.largeBlocks
@@ -496,7 +496,7 @@ async function readBlocks(
       : source.compressed
         ? Math.min(limits.maxScannedBytes, limits.wholeUpTo)
         : Infinity;
-    if (scanned > budget) return partial(headOnly || scanned > limits.wholeUpTo);
+    if (scanned > budget) return partial(scanned > limits.wholeUpTo);
     counts.set(code, (counts.get(code) ?? 0) + 1);
     if (!KEPT_CODES.has(code)) {
       if (!(await source.skip(length))) throw new BlendFileFormatError({ problem: "ends_early" });
@@ -671,7 +671,13 @@ export async function readBlendFileFacts(
       return hit;
     }
   }
-  const facts = await readBlendFile(realPath, whole ? { wholeUpTo: Infinity } : {}, signal);
+  const read = await readBlendFile(realPath, whole ? { wholeUpTo: Infinity } : {}, signal);
+  // A revision found large stays large, whichever read comes after: the preview asks first.
+  const facts =
+    read.large !== true &&
+    [keyOf("whole"), keyOf("head")].some((key) => key !== null && factsCache.get(key)?.large)
+      ? { ...read, large: true as const }
+      : read;
   const key = keyOf(whole || facts.partial !== true ? "whole" : "head");
   if (key !== null) {
     factsCache.set(key, facts);

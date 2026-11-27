@@ -13297,7 +13297,10 @@
   "156c7543e861dda6": "Kein GPU-Zugriff: Blender wird langsam sein",
   "76351436512c399d": "Die aufbewahrten Arbeitskopien konnten nicht geändert werden",
   "f924543cf569d79f": "Unbekannter Thread",
-  "11b2e4f89a737c8b": "{count, plural, =1 {{master} hat sich geändert, seit T3 Code die Arbeitskopie davon aus {threads} aufbewahrt ({size}). Diese Kopie enthält einen Stand, den du hinter dir gelassen hast. Lösche sie jetzt oder behalte sie bis {date}.} other {{master} hat sich geändert, seit T3 Code {count} Arbeitskopien davon aus {threads} aufbewahrt ({size}). Sie enthalten einen Stand, den du hinter dir gelassen hast. Lösche sie jetzt oder behalte sie bis {date}.}}",
+  "c1fbfe9e68ac9f22": "{count, plural, =1 {{master} hat sich geändert, seit T3 Code die Arbeitskopie davon aus {threads} aufbewahrt ({size}). T3 Code kann nicht erkennen, ob die Arbeit dieses Threads im Master angekommen ist. Lösche sie oder behalte sie bis {date}.} other {{master} hat sich geändert, seit T3 Code {count} Arbeitskopien davon aus {threads} aufbewahrt ({size}). T3 Code kann nicht erkennen, ob die Arbeit dieser Threads im Master angekommen ist. Lösche sie oder behalte sie bis {date}.}}",
+  "04be6d4bc375f911": "{count, plural, =1 {Die Arbeitskopie aus {threads} löschen?} other {{count} Arbeitskopien aus {threads} löschen?}}",
+  "e6503402bdc4c54d": "{count, plural, =1 {{master} hat sich geändert, seit T3 Code diese Kopie aufbewahrt, aber T3 Code kann nicht erkennen, ob die Arbeit dieses Threads dort angekommen ist. Das Löschen der Kopie lässt sich nicht rückgängig machen.} other {{master} hat sich geändert, seit T3 Code diese Kopien aufbewahrt, aber T3 Code kann nicht erkennen, ob die Arbeit dieser Threads dort angekommen ist. Das Löschen lässt sich nicht rückgängig machen.}}",
+  "b84cf4886e5698cb": "Sobald die Kopie gelöscht ist, kann der Thread sie nicht wieder aufnehmen. Das lässt sich nicht rückgängig machen.",
   "8da9cb531d4e4b3f": "Löschen",
   "cbe0ad4fb8adfdfa": "Behalten",
   "907a0f7ed16a709d": "Konnte nicht in Hosted Blender geöffnet werden",
@@ -13431,7 +13434,7 @@
     },
     " belassen: T3 Code konnte nicht sicher sein, dass es seine eigene Arbeitskopie ist, und hat sie deshalb nicht verschoben."
   ],
-  "72f632768d65286c": [
+  "592c50d245b10973": [
     "Kopie von ",
     {
       "i": 1,
@@ -13444,15 +13447,15 @@
       "k": "_gt_value_2",
       "v": "v"
     },
-    ". Der Master hat sich seitdem geändert. Wird am ",
+    ". Der Master hat sich seitdem geändert. Aufbewahrt bis ",
     {
       "i": 3,
       "k": "_gt_value_3",
       "v": "v"
     },
-    " gelöscht."
+    "."
   ],
-  "cb54027f77eb65b0": [
+  "e22cf76c96e9f6ef": [
     "Kopie von ",
     {
       "i": 1,
@@ -13465,13 +13468,29 @@
       "k": "_gt_value_2",
       "v": "v"
     },
-    ". Wird am ",
+    ". Aufbewahrt bis ",
     {
       "i": 3,
       "k": "_gt_value_3",
       "v": "v"
     },
-    " gelöscht."
+    "."
+  ],
+  "1489b5efe3628bf7": [
+    "Während T3 Code diese Arbeitskopie verschob, kam eine neuere Speicherung hinzu, und eine andere Datei hat ihren Platz unter ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " eingenommen. T3 Code hat diese Speicherung daneben gelassen, unter",
+    " ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ", und keine der beiden verschoben."
   ],
   "77e2ba01461cdf5f": "Löschen",
   "7660bc93bbd673be": "Lass T3 Code ein eigenes Blender auf diesem Server auf einem verborgenen Display ausführen, damit du es im Blender-Bereich sehen und steuern kannst. Nur Linux. Dein Desktop-Blender wird nie angetastet.",

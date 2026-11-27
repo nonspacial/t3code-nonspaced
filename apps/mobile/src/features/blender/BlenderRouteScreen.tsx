@@ -414,8 +414,8 @@ function ReloadNotices(props: {
 }
 
 /**
- * Asked once the master has changed since other threads' working copies of it were held: they
- * are of an edition the person has moved past. As on web; Keep stops the question.
+ * Asked once the master has changed since other threads' working copies of it were held: T3 Code
+ * can't tell whether their work reached the master. As on web: Delete asks first; Keep stops it.
  */
 function HeldCopiesNotice(props: {
   readonly environmentId: EnvironmentId;
@@ -446,14 +446,30 @@ function HeldCopiesNotice(props: {
     props.behind.threadTitles.length > 0
       ? props.behind.threadTitles.join(", ")
       : gt("Unknown thread");
+  const count = props.behind.copies.length;
+  const master = fileName(props.behind.master);
+  const confirmDelete = () =>
+    Dialog.confirm({
+      title: gt(
+        "{count, plural, =1 {Delete the working copy from {threads}?} other {Delete {count} working copies from {threads}?}}",
+        { count, threads },
+      ),
+      message: gt(
+        "{count, plural, =1 {{master} has changed since T3 Code held this copy, but T3 Code can't tell whether that thread's work reached it. Deleting the copy can't be undone.} other {{master} has changed since T3 Code held these copies, but T3 Code can't tell whether those threads' work reached it. Deleting them can't be undone.}}",
+        { count, master },
+      ),
+      confirmText: gt("Delete", { $context: "deletes held working copies" }),
+      destructive: true,
+      onConfirm: () => void answer(false),
+    });
   return (
     <View className="gap-2 px-3 pt-2">
       <Notice
         message={gt(
-          "{count, plural, =1 {{master} has changed since T3 Code held the working copy of it from {threads} ({size}). That copy holds an edition you've moved past. Delete it now, or keep it until {date}.} other {{master} has changed since T3 Code held {count} working copies of it from {threads} ({size}). They hold an edition you've moved past. Delete them now, or keep them until {date}.}}",
+          "{count, plural, =1 {{master} has changed since T3 Code held the working copy of it from {threads} ({size}). T3 Code can't tell whether that thread's work reached the master. Delete it, or keep it until {date}.} other {{master} has changed since T3 Code held {count} working copies of it from {threads} ({size}). T3 Code can't tell whether those threads' work reached the master. Delete them, or keep them until {date}.}}",
           {
-            count: props.behind.copies.length,
-            master: fileName(props.behind.master),
+            count,
+            master,
             threads,
             size: formatAttachmentSize(props.behind.bytes, messages),
             date: new Date(props.behind.expiresAt).toLocaleDateString(undefined, {
@@ -468,7 +484,7 @@ function HeldCopiesNotice(props: {
             label={gt("Delete", { $context: "deletes held working copies" })}
             tone="secondary"
             disabled={pending}
-            onPress={() => void answer(false)}
+            onPress={confirmDelete}
           />
           <Button
             label={gt("Keep", { $context: "keeps held working copies" })}

@@ -39,12 +39,23 @@ Copies made before the record existed are never imported.
 
 Its thread settling or being archived holds it once the thread's Blender has really ended,
 and so does any later end of a Blender of a thread still finished (however long a held close
-keeps it open, and never while a Blender released at shutdown may still write it): copied into the state folder through a synced temporary name, then the
-original and its `.blend1` backups removed. The project and the state are on different drives,
-so the record says which way a move was going, and whatever acts on a copy next (a start, an
-open, a hold, an answer) first finishes it from the side that is whole, removing only T3's own
-files: under the copy's lock nothing is mid-move, so a state left between two is a write that
-failed. Each copy's moves run under a lock of its own, by path,
+keeps it open, and never while a Blender released at shutdown may still write it), then its
+`.blend1` backups removed. The record stays in T3's state, but the file is held in the
+workspace's own `.t3/held-working-copies` (its `.gitignore` of `*` keeps it out of git and the
+file index, which skip ignored paths), never on the OS drive the state is on: a scene can be
+gigabytes, kept 30 days per finished thread. The record names where it is; one with no place is
+beside the record, as earlier builds held them. T3's lock doesn't stop another program (a
+desktop Blender) saving that path, so the copy is never deleted by name: it is renamed into the
+held folder, which takes whatever is there at that instant, and put back by hard link. Only
+across a mount inside the workspace (EXDEV), or with no known workspace, is it held in T3's
+state instead: copied through a synced temporary name, then the project's file renamed aside in
+its own folder and removed only if it is still the file that was copied. A save that slipped in goes
+back to its place, never over a file there, and nothing is held; with a file there, it stays
+aside and Settings says where. The record says which way a move was going, and whatever acts
+on a copy next (a start, an open, a hold, an answer) first finishes it from the side that is
+whole, removing only T3's own files: a file set aside goes back first, as the newest the
+project had, and the copy is held again later. Under the copy's lock nothing is mid-move, so a
+state left between two is a write that failed. Each copy's moves run under a lock of its own, by path,
 which every open of a recorded copy takes too, so an open during a move waits for it and acts on
 what it left. Opening the thread's Blender (the pane shows its held copy as a kept one) puts it
 back by hard link, which never replaces a file that took its name. Delete and Keep name a hold
@@ -52,7 +63,8 @@ by when it was held, so an answer to an earlier hold never reaches a later one. 
 reload watcher reads one) differing from the one recorded at hold, read only when it costs
 nothing (start, a thread opening or saving that master, Settings, the daily pass); nothing
 watches it. The daily pass, the only timer, also deletes what is past 30 days and what a
-deleted or missing thread left. Agents can't delete held copies.
+deleted or missing thread left, and records whose held file went with its workspace (a removed
+worktree). A held file can't be opened or chosen as a master. Agents can't delete held copies.
 
 ## A quit is one record
 

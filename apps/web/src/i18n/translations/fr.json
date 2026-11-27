@@ -13298,7 +13298,10 @@
   "156c7543e861dda6": "Pas d’accès au GPU : Blender sera lent",
   "76351436512c399d": "Impossible de modifier les copies de travail conservées",
   "f924543cf569d79f": "Fil inconnu",
-  "11b2e4f89a737c8b": "{count, plural, =1 {{master} a changé depuis que T3 Code a conservé sa copie de travail issue de {threads} ({size}). Cette copie contient une édition que vous avez dépassée. Supprimez-la maintenant ou gardez-la jusqu’au {date}.} other {{master} a changé depuis que T3 Code a conservé {count} copies de travail issues de {threads} ({size}). Elles contiennent une édition que vous avez dépassée. Supprimez-les maintenant ou gardez-les jusqu’au {date}.}}",
+  "c1fbfe9e68ac9f22": "{count, plural, =1 {{master} a changé depuis que T3 Code conserve sa copie de travail issue de {threads} ({size}). T3 Code ne peut pas savoir si le travail de ce fil est arrivé dans le fichier maître. Supprimez-la ou conservez-la jusqu’au {date}.} other {{master} a changé depuis que T3 Code conserve {count} copies de travail issues de {threads} ({size}). T3 Code ne peut pas savoir si le travail de ces fils est arrivé dans le fichier maître. Supprimez-les ou conservez-les jusqu’au {date}.}}",
+  "04be6d4bc375f911": "{count, plural, =1 {Supprimer la copie de travail de {threads} ?} other {Supprimer {count} copies de travail de {threads} ?}}",
+  "e6503402bdc4c54d": "{count, plural, =1 {{master} a changé depuis que T3 Code conserve cette copie, mais T3 Code ne peut pas savoir si le travail de ce fil y est arrivé. La suppression de la copie est irréversible.} other {{master} a changé depuis que T3 Code conserve ces copies, mais T3 Code ne peut pas savoir si le travail de ces fils y est arrivé. Leur suppression est irréversible.}}",
+  "b84cf4886e5698cb": "Une fois supprimée, le fil ne pourra plus reprendre cette copie. Cette action est irréversible.",
   "8da9cb531d4e4b3f": "Supprimer",
   "cbe0ad4fb8adfdfa": "Garder",
   "907a0f7ed16a709d": "Impossible d’ouvrir dans Hosted Blender",
@@ -13432,7 +13435,7 @@
     },
     " : T3 Code n’a pas pu s’assurer que c’est sa propre copie de travail, il ne l’a donc pas déplacée."
   ],
-  "72f632768d65286c": [
+  "592c50d245b10973": [
     "Copie de ",
     {
       "i": 1,
@@ -13445,7 +13448,7 @@
       "k": "_gt_value_2",
       "v": "v"
     },
-    ". Le maître a changé depuis. Supprimée le ",
+    ". Le fichier maître a changé depuis. Conservée jusqu’au ",
     {
       "i": 3,
       "k": "_gt_value_3",
@@ -13453,7 +13456,7 @@
     },
     "."
   ],
-  "cb54027f77eb65b0": [
+  "e22cf76c96e9f6ef": [
     "Copie de ",
     {
       "i": 1,
@@ -13466,13 +13469,29 @@
       "k": "_gt_value_2",
       "v": "v"
     },
-    ". Supprimée le ",
+    ". Conservée jusqu’au ",
     {
       "i": 3,
       "k": "_gt_value_3",
       "v": "v"
     },
     "."
+  ],
+  "1489b5efe3628bf7": [
+    "Un enregistrement plus récent est arrivé pendant que T3 Code déplaçait cette copie de travail, et un autre fichier a pris sa place à ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ". T3 Code a laissé cet enregistrement à côté, à",
+    " ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    ", et n’a déplacé ni l’un ni l’autre."
   ],
   "77e2ba01461cdf5f": "Supprimer",
   "7660bc93bbd673be": "Laissez T3 Code exécuter son propre Blender sur ce serveur, sur un écran masqué, pour le voir et le piloter dans le panneau Blender. Linux uniquement. Votre Blender de bureau n’est jamais touché.",
