@@ -55,6 +55,7 @@ import { threadHasQueuedTurnStart } from "./orchestration-v2/ThreadSettlementSer
 import { MAX_OVERDUE_ARM_MS } from "./orchestration-v2/UsageLimitRecoveryWorker.ts";
 import * as WorktreeBranchSync from "./orchestration-v2/WorktreeBranchSync.ts";
 import { forkParked } from "./serverActivation.ts";
+import { HELD_FOLDER } from "./hostedBlender/workingCopies.ts";
 import * as Settings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import { isFilesystemRoot, managedWorktreesDirectories } from "./worktreesDirectory.ts";
@@ -933,6 +934,15 @@ const make = Effect.gen(function* () {
     cwd: string,
     rules: WorktreeCleanupRules,
   ) {
+    // Git ignores them by their folder's own `.gitignore`, but they are a person's work. A
+    // stat first: most worktrees have none, and nothing here walks a worktree's folders.
+    const heldFolder = path.join(cwd, HELD_FOLDER);
+    const held = (yield* fs.exists(heldFolder).pipe(Effect.orElseSucceed(() => false)))
+      ? yield* fs
+          .readDirectory(heldFolder)
+          .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []))
+      : [];
+    if (held.some((name) => name !== ".gitignore")) return "holds Blender working copies";
     const status = yield* git.execute({
       operation: "StorageCleanup.localChanges",
       cwd,
