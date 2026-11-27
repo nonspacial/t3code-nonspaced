@@ -7467,6 +7467,441 @@ describe.skipIf(!canHostBlender)("a real hosted Blender's endings", () => {
   );
 });
 
+// Blender Lab's MCP add-on (its `mcp` extension folder, version 1.0.3), which a granted launch
+// snapshots from the user's Blender. Its source isn't in this repo; set this to run the cases.
+const blenderLabAddon = hostEnvironment.T3_TEST_BLENDER_LAB_MCP;
+const canGrantAgents =
+  canHostBlender &&
+  blenderLabAddon !== undefined &&
+  NodeFS.existsSync(NodePath.join(blenderLabAddon, "blender_manifest.toml"));
+
+/** One call as an agent's Blender Lab MCP server makes it: JSON, then NUL, answered alike. */
+const agentCall = (port: number, code: string) =>
+  Effect.promise(
+    () =>
+      new Promise<{
+        readonly status?: string;
+        readonly message?: string;
+        readonly result?: unknown;
+      }>((resolve) => {
+        const socket = NodeNet.connect(port, "127.0.0.1");
+        let received = Buffer.alloc(0);
+        socket.on("connect", () =>
+          socket.write(`${JSON.stringify({ type: "execute", code, strict_json: false })}\0`),
+        );
+        socket.on("data", (chunk) => {
+          received = Buffer.concat([received, chunk]);
+          const end = received.indexOf(0);
+          if (end < 0) return;
+          socket.destroy();
+          resolve(JSON.parse(received.subarray(0, end).toString("utf8")));
+        });
+        socket.on("error", (error) => resolve({ status: "unreachable", message: error.message }));
+        socket.on("close", () => resolve({ status: "closed" }));
+      }),
+  );
+
+// Rewrites the file named second with the one named first, a slice every 100 ms, as another
+// program saving a large file does; "writing" and "written" in the folder named third mark it.
+const SLOW_WRITER = String.raw`
+import os, sys, time
+source, target, folder = sys.argv[1:4]
+data = open(source, "rb").read()
+with open(target, "wb") as out:
+    open(os.path.join(folder, "writing"), "w").close()
+    step = max(1, len(data) // 30)
+    for start in range(0, len(data), step):
+        out.write(data[start:start + step])
+        out.flush()
+        time.sleep(0.1)
+open(os.path.join(folder, "written"), "w").close()
+`;
+
+// Drives an asset browser in Blender's main window from HB_TEST_DIR/command, one word a tick
+// ("assets", "local", "catalog", "files", "save-catalogs"), and writes what it shows to
+// report.json.
+const CATALOG_STARTUP_SCRIPT = `import json, os
+import bpy
+
+_queue = []
+
+def _browser(window):
+    return next((area for area in window.screen.areas if area.type == "FILE_BROWSER"), None)
+
+def _report(folder, window):
+    area = _browser(window)
+    report = {"dirty": bool(bpy.data.is_dirty), "ui": area.ui_type if area else None,
+              "library": None, "editable": None, "unsaved": None}
+    if area is not None and area.ui_type == "ASSETS" and area.spaces.active.params is not None:
+        report["library"] = area.spaces.active.params.asset_library_reference
+        with bpy.context.temp_override(window=window, area=area, space_data=area.spaces.active):
+            report["editable"] = bool(bpy.ops.asset.catalog_new.poll())
+            report["unsaved"] = bool(bpy.ops.asset.catalogs_save.poll())
+    with open(os.path.join(folder, "report.json.part"), "w") as out:
+        json.dump(report, out)
+    os.replace(os.path.join(folder, "report.json.part"), os.path.join(folder, "report.json"))
+
+def _poll():
+    folder = os.environ.get("HB_TEST_DIR", "")
+    window = bpy.context.window_manager.windows[0]
+    command_path = os.path.join(folder, "command")
+    if os.path.exists(command_path):
+        _queue.extend(open(command_path).read().split(";"))
+        os.remove(command_path)
+    if _queue:
+        verb = _queue.pop(0)
+        area = _browser(window)
+        if verb == "assets":
+            if area is None:
+                area = next(area for area in window.screen.areas if area.type == "DOPESHEET_EDITOR")
+                area.type = "FILE_BROWSER"
+            area.ui_type = "ASSETS"
+        elif verb == "files":
+            area.ui_type = "FILES"
+        elif verb == "local":
+            area.spaces.active.params.asset_library_reference = "LOCAL"
+        else:
+            with bpy.context.temp_override(window=window, area=area, space_data=area.spaces.active):
+                if verb == "catalog":
+                    bpy.ops.asset.catalog_new()
+                elif verb == "save-catalogs":
+                    bpy.ops.asset.catalogs_save()
+    _report(folder, window)
+    return 0.2
+
+def register():
+    bpy.app.timers.register(_poll, first_interval=1.0, persistent=True)
+
+def unregister():
+    pass
+`;
+
+describe.skipIf(!canHostBlender)("a real hosted Blender's agent access and its endings", () => {
+  /** A file in `work`, and a host whose settings hold `startup` scripts and Blender Lab. */
+  const realHost = Effect.fn(function* (
+    prefix: string,
+    startup: Readonly<Record<string, string>> = {},
+  ) {
+    const dir = yield* tempDir(prefix);
+    const workspace = NodePath.join(dir, "work");
+    NodeFS.mkdirSync(workspace, { recursive: true });
+    NodeChildProcess.execFileSync("blender", [
+      "--background",
+      "--factory-startup",
+      "--python-expr",
+      `import bpy; bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(NodePath.join(workspace, "cube.blend"))})`,
+    ]);
+    const configHome = NodePath.join(dir, "config");
+    const settings = NodePath.join(configHome, "blender", "5.3");
+    const scripts = NodePath.join(settings, "scripts", "startup");
+    NodeFS.mkdirSync(scripts, { recursive: true });
+    for (const [name, source] of Object.entries(startup)) {
+      NodeFS.writeFileSync(NodePath.join(scripts, name), source);
+    }
+    if (blenderLabAddon !== undefined) {
+      NodeFS.cpSync(
+        blenderLabAddon,
+        NodePath.join(settings, "extensions", "lab_blender_org", "mcp"),
+        { recursive: true },
+      );
+    }
+    const agentPort = yield* Effect.flatMap(NetService.NetService, (net) =>
+      net.reserveLoopbackPort(),
+    ).pipe(Effect.provide(NetService.layer));
+    const accessEnded = yield* Queue.unbounded<{
+      readonly threadId: ThreadId;
+      readonly role: HostedBlenderAgents.HostedBlenderRole;
+      readonly grant: string;
+    }>();
+    const host = {
+      env: {
+        PATH: hostEnvironment.PATH,
+        XDG_RUNTIME_DIR: hostEnvironment.XDG_RUNTIME_DIR,
+        XDG_CONFIG_HOME: configHome,
+        HB_TEST_DIR: dir,
+      },
+      helper: helperBuild,
+      workspaceRoot: workspace,
+      baseDir: dir,
+      agentPort,
+      accessEnded,
+    };
+    const command = (text: string) => {
+      NodeFS.writeFileSync(NodePath.join(dir, "command.partial"), text);
+      NodeFS.renameSync(NodePath.join(dir, "command.partial"), NodePath.join(dir, "command"));
+    };
+    return { dir, workspace, host, agentPort, accessEnded, command };
+  });
+
+  /** The agent's own Blender on the working copy, its Blender Lab listener up. */
+  const agentBlender = Effect.fn(function* (service: HostedBlender.HostedBlender["Service"]) {
+    yield* service.open({ threadId, relativePath: "cube.blend" }, { agentWorkingCopy: true });
+    yield* service.threadState(threadId).pipe(
+      Stream.filter((state) => state.status === "running"),
+      Stream.runHead,
+    );
+    expect((yield* service.agentListener(threadId, { wait: true }))?.state).toBe("ready");
+  });
+
+  const ended = (service: HostedBlender.HostedBlender["Service"]) =>
+    service.threadState(threadId).pipe(
+      Stream.filter((state) => state.status !== "running" && state.status !== "starting"),
+      Stream.runHead,
+      Effect.map(Option.getOrThrow),
+      Effect.map(card),
+    );
+
+  it.live.skipIf(!canGrantAgents)(
+    "S3: refuses the agent while another program is still writing the .blend, and runs it on the file once written",
+    () =>
+      Effect.gen(function* () {
+        const { dir, workspace, host, agentPort } = yield* realHost("real-agent-writing");
+        const newer = NodePath.join(dir, "newer.blend");
+        NodeChildProcess.execFileSync("blender", [
+          "--background",
+          "--factory-startup",
+          "--python-expr",
+          `import bpy; bpy.context.scene.collection.objects.link(bpy.data.objects.new("T3Outside", None)); bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(newer)})`,
+        ]);
+        const service = yield* serviceFor(layerFor(host));
+        yield* agentBlender(service);
+        const code = `import os, bpy\nopen(os.path.join(${JSON.stringify(dir)}, "ran"), "a").write("x")\nresult = {"objects": sorted(o.name for o in bpy.data.objects)}`;
+
+        const writer = NodeChildProcess.spawn(python, [
+          "-c",
+          SLOW_WRITER,
+          newer,
+          NodePath.join(workspace, "cube.blend"),
+          dir,
+        ]);
+        yield* Effect.addFinalizer(() => Effect.sync(() => writer.kill()));
+        yield* fileAppears(dir, NodePath.join(dir, "writing"));
+        const refused = yield* agentCall(agentPort, code);
+        expect(NodeFS.existsSync(NodePath.join(dir, "written"))).toBe(false);
+        expect(refused.status).toBe("error");
+        expect(refused.message).toMatch(/still being written/);
+        expect(NodeFS.existsSync(NodePath.join(dir, "ran"))).toBe(false);
+
+        // Written and settled, the next call loads the file first and runs on it.
+        yield* fileAppears(dir, NodePath.join(dir, "written"));
+        const ran = yield* agentCall(agentPort, code).pipe(
+          Effect.filterOrFail(
+            (reply) => reply.status === "ok",
+            (reply) => reply,
+          ),
+          Effect.retry({
+            while: (reply) => reply.status === "error",
+            // oxlint-disable-next-line t3code/no-real-time-wait-in-tests -- T3's word that the write settled reaches Blender in its own time, with no event here to await.
+            schedule: Schedule.spaced("500 millis"),
+            times: 20,
+          }),
+        );
+        expect(ran.result).toMatchObject({ objects: expect.arrayContaining(["T3Outside"]) });
+        expect(NodeFS.readFileSync(NodePath.join(dir, "ran"), "utf8")).toBe("x");
+        yield* service.quit({ threadId, save: false, discard: true });
+      }).pipe(Effect.scoped),
+  );
+
+  it.live.skipIf(!canGrantAgents)(
+    "ends the agent's access as revoked, never as a lost connection, when T3 closes its Blender or stops",
+    () =>
+      Effect.gen(function* () {
+        const { host, agentPort, accessEnded } = yield* realHost("real-agent-revoked");
+        /** Every `ended` the agent could read from now until Blender is gone. */
+        const watchEnded = (service: HostedBlender.HostedBlender["Service"]) => {
+          const seen: Array<string | null> = [];
+          const done = service.agentListener(threadId, { wait: false }).pipe(
+            Effect.tap((report) => Effect.sync(() => seen.push(report?.ended ?? null))),
+            Effect.repeat({
+              until: (report) => report === null,
+              // oxlint-disable-next-line t3code/no-real-time-wait-in-tests -- T3 publishes nothing as Blender's connection drops; each tick's read is what an agent could see.
+              schedule: Schedule.spaced("20 millis"),
+            }),
+            Effect.catchCause(() => Effect.void),
+          );
+          return { seen, done };
+        };
+
+        // Settled: T3 closes it.
+        const service = yield* serviceFor(layerFor(host));
+        yield* agentBlender(service);
+        const closing = watchEnded(service);
+        const watching = yield* closing.done.pipe(Effect.forkChild);
+        yield* service.closeOnSettle({ threadId });
+        yield* Queue.take(accessEnded);
+        expect(yield* ended(service)).toEqual({ status: "stopped" });
+        yield* Fiber.join(watching);
+        expect(closing.seen).toContain("revoked");
+        expect(closing.seen.filter((value) => value !== null && value !== "revoked")).toEqual([]);
+        expect((yield* agentCall(agentPort, "result = {}")).status).not.toBe("ok");
+
+        // T3 stops with the agent's Blender running.
+        const stopping = yield* Effect.gen(function* () {
+          const first = yield* serviceFor(layerFor(host));
+          yield* agentBlender(first);
+          const watched = watchEnded(first);
+          yield* watched.done.pipe(Effect.forkDetach);
+          return watched.seen;
+        }).pipe(Effect.scoped);
+        expect(stopping).toContain("revoked");
+        expect(stopping.filter((value) => value !== null && value !== "revoked")).toEqual([]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.live.skipIf(!canGrantAgents)(
+    "Save and quit with the agent's call still running keeps the quit copy, and without one ends saved",
+    () =>
+      Effect.gen(function* () {
+        const { dir, workspace, host, agentPort } = yield* realHost("real-agent-save-quit");
+        const service = yield* serviceFor(layerFor(host));
+        const hostedDir = NodePath.join(dir, "userdata", "hosted-blender");
+
+        // The agent's edit, finished: Save and quit writes it and keeps nothing.
+        yield* agentBlender(service);
+        const edit = yield* agentCall(
+          agentPort,
+          `import bpy\nbpy.context.scene.collection.objects.link(bpy.data.objects.new("T3Agent", None))\nresult = {}`,
+        );
+        expect(edit.status).toBe("ok");
+        yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status === "running" && state.dirty),
+          Stream.runHead,
+        );
+        yield* service.quit({ threadId, save: true });
+        expect(yield* ended(service)).toEqual({ status: "stopped" });
+        expect(objectsIn(NodePath.join(workspace, "cube.blend"))).toContain("T3Agent");
+        expect(recoveryOf(hostedDir)).toBeNull();
+
+        // A call whose deferred part can still write when the save lands: Blender is unsaved
+        // again as it quits, so its quit copy is kept.
+        yield* agentBlender(service);
+        const release = NodePath.join(dir, "release");
+        const deferred = yield* agentCall(
+          agentPort,
+          `import os\nopen(os.path.join(${JSON.stringify(dir)}, "deferred"), "w").close()\ndef check_is_finished():\n    return {"status": "ok"} if os.path.exists(${JSON.stringify(release)}) else None\n`,
+        ).pipe(Effect.forkChild);
+        yield* fileAppears(dir, NodePath.join(dir, "deferred"));
+        yield* service.quit({ threadId, save: true });
+        expect(yield* ended(service)).toEqual({
+          status: "closed",
+          relativePath: "cube.blend",
+          recovery: true,
+        });
+        expect(objectsIn(recoveryOf(hostedDir)!.session)).toContain("T3Agent");
+        NodeFS.writeFileSync(release, "");
+        expect((yield* Fiber.join(deferred)).status).not.toBe("ok");
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "keeps the master open after a catalog edit whose asset browser became a File Browser, and quits it once they are saved",
+    () =>
+      Effect.gen(function* () {
+        const { dir, host, command } = yield* realHost("real-master-catalogs", {
+          "t3_test_catalogs.py": CATALOG_STARTUP_SCRIPT,
+        });
+        const service = yield* serviceFor(layerFor(host));
+        type Report = {
+          readonly dirty: boolean;
+          readonly ui: string | null;
+          readonly library: string | null;
+          readonly editable: boolean | null;
+          readonly unsaved: boolean | null;
+        };
+        const reportPath = NodePath.join(dir, "report.json");
+        const read = (): Report | null =>
+          NodeFS.existsSync(reportPath)
+            ? JSON.parse(NodeFS.readFileSync(reportPath, "utf8"))
+            : null;
+        const reportWhen = (matches: (report: Report) => boolean) =>
+          fileAppears(dir, reportPath, () => {
+            const report = read();
+            return report !== null && matches(report);
+          }).pipe(Effect.map(() => read()!));
+        const masterStatus = service.masterState(threadId).pipe(
+          Stream.runHead,
+          Effect.map((state) => Option.getOrThrow(state).status),
+        );
+
+        yield* service.openMaster({ threadId, relativePath: "cube.blend" });
+        yield* service.masterState(threadId).pipe(
+          Stream.filter((state) => state.status === "running"),
+          Stream.runHead,
+        );
+        command("assets;local");
+        const shown = yield* reportWhen((report) => report.editable === true).pipe(
+          Effect.timeoutOption("30 seconds"),
+        );
+        expect(Option.getOrElse(shown, () => read())).toMatchObject({
+          library: "LOCAL",
+          editable: true,
+          unsaved: false,
+        });
+        command("catalog");
+        expect(yield* reportWhen((report) => report.unsaved === true)).toMatchObject({
+          dirty: false,
+        });
+        command("files");
+        yield* reportWhen((report) => report.ui === "FILES");
+        yield* service.releaseMaster(threadId);
+        expect(yield* masterStatus).toBe("running");
+
+        // Back in an asset browser and saved, nothing holds it.
+        command("assets");
+        expect(yield* reportWhen((report) => report.editable === true)).toMatchObject({
+          unsaved: true,
+        });
+        command("save-catalogs");
+        yield* reportWhen((report) => report.editable === true && report.unsaved === false);
+        yield* service.releaseMaster(threadId);
+        yield* service.masterState(threadId).pipe(
+          Stream.filter((state) => state.status === "none"),
+          Stream.runHead,
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("keeps a restored copy unsaved when it would save to where its workspace was", () =>
+    Effect.gen(function* () {
+      const { dir, workspace, host } = yield* realHost("real-restore-moved", {
+        "t3_test_edit.py": EDITING_STARTUP_SCRIPT,
+      });
+      const hostedDir = NodePath.join(dir, "userdata", "hosted-blender");
+      yield* Effect.gen(function* () {
+        const service = yield* serviceFor(layerFor(host));
+        yield* service.open({ threadId, relativePath: "cube.blend" });
+        yield* service.threadState(threadId).pipe(
+          Stream.filter((state) => state.status === "running" && state.dirty),
+          Stream.runHead,
+        );
+        yield* service.closeOnSettle({ threadId });
+        expect(yield* ended(service)).toMatchObject({ status: "closed", recovery: true });
+      }).pipe(Effect.scoped);
+      const kept = recoveryOf(hostedDir)!;
+      const keptBytes = NodeFS.readFileSync(kept.session);
+
+      // The thread's worktree moved; the copy still names the file where it was.
+      const moved = NodePath.join(dir, "moved");
+      NodeFS.renameSync(workspace, moved);
+      const service = yield* serviceFor(layerFor({ ...host, workspaceRoot: moved }));
+      expect(yield* firstState(service)).toEqual({
+        status: "closed",
+        relativePath: "cube.blend",
+        recovery: true,
+      });
+      yield* service.reopen({ threadId, key: CUBE, restore: true });
+      expect(yield* ended(service)).toEqual({
+        status: "closed",
+        relativePath: "cube.blend",
+        recovery: true,
+        restoreFailed: true,
+      });
+      expect(NodeFS.readFileSync(recoveryOf(hostedDir)!.session).equals(keptBytes)).toBe(true);
+      expect(NodeFS.existsSync(workspace)).toBe(false);
+    }).pipe(Effect.scoped),
+  );
+});
+
 // Records Blender's command line, then shows the viewport window and waits to be asked to quit.
 const ARGS_HELPER = String.raw`
 import json, os, struct, sys
