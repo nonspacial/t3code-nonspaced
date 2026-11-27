@@ -5083,36 +5083,8 @@ scene.frame_set(1)`;
           yield* launch("timeline-switch-real");
         const first = yield* layoutWhen(withStrip);
         const pointer = first.windows[0]!.pointer;
-        // Reloads run while a pane is on screen, and keep the window, the strip as switched and
-        // the view.
-        const viewer = yield* attach(service, false);
-        yield* Queue.take(viewer.output).pipe(
-          Effect.repeat({ until: (output) => output._tag === "frame" }),
-        );
-        yield* service.setView({
-          threadId,
-          relativePath: "cube.blend",
-          view: { position: [6, -6, 5], target: [0, 0, 0] },
-        });
-        const same = (layout: Layout) =>
-          layout.windows.length === 1 && layout.windows[0]!.pointer === pointer;
-        const sameView = Effect.gen(function* () {
-          const view = yield* service.captureView(threadId);
-          view.cameraView.position.forEach((value, index) =>
-            expect(value).toBeCloseTo([6, -6, 5][index]!, 3),
-          );
-        });
-        writeOutside(4);
-        const reloaded = yield* layoutWhen((layout) => layout.mark === 4);
-        expect(withStrip(reloaded) && same(reloaded), "a reload with the strip on").toBe(true);
-        yield* sameView;
-
         yield* settings.updateSettings({ hostedBlenderTimeline: false });
         const off = yield* layoutWhen(alone);
-        writeOutside(-3);
-        const again = yield* layoutWhen((layout) => layout.mark === -3);
-        expect(alone(again) && same(again), "a reload with the strip off").toBe(true);
-        yield* sameView;
         // The pane's menu writes the same setting.
         yield* service.setTimeline(true);
         const on = yield* layoutWhen(withStrip);
@@ -5158,11 +5130,50 @@ scene.frame_set(1)`;
           (layout) => withStrip(layout) && layout.pid !== first.pid,
         );
         expect(reopened.windows[0]!.areas[1]!.ui).toBe("TIMELINE");
+        // In it, a reload when the file changes on disk keeps the one viewport window, the strip
+        // as switched and the view. Reloads run while a pane is on screen.
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const viewer = yield* attach(service, false);
+            yield* Queue.take(viewer.output).pipe(
+              Effect.repeat({ until: (output) => output._tag === "frame" }),
+            );
+            // The window the copy brought back has been replaced by now, as the stream shows.
+            const shown = yield* layoutWhen(
+              (layout) => withStrip(layout) && layout.pid === reopened.pid,
+            );
+            const same = (layout: Layout) =>
+              layout.windows.length === 1 &&
+              layout.windows[0]!.pointer === shown.windows[0]!.pointer;
+            yield* service.setView({
+              threadId,
+              relativePath: "cube.blend",
+              view: { position: [6, -6, 5], target: [0, 0, 0] },
+            });
+            const sameView = Effect.gen(function* () {
+              const view = yield* service.captureView(threadId);
+              view.cameraView.position.forEach((value, index) =>
+                expect(value).toBeCloseTo([6, -6, 5][index]!, 3),
+              );
+            });
+            writeOutside(4);
+            const reloaded = yield* layoutWhen((layout) => layout.mark === 4);
+            expect(withStrip(reloaded) && same(reloaded), "a reload with the strip on").toBe(true);
+            yield* sameView;
+            // Switched off from the pane's menu, a reload leaves it off.
+            yield* service.setTimeline(false);
+            yield* layoutWhen((layout) => alone(layout) && same(layout));
+            writeOutside(-3);
+            const again = yield* layoutWhen((layout) => layout.mark === -3);
+            expect(alone(again) && same(again), "a reload with the strip off").toBe(true);
+            yield* sameView;
+          }),
+        );
         yield* service.quit({ threadId, save: false, discard: true });
 
-        // A launch while it is off starts without the strip.
-        yield* service.setTimeline(false);
-        yield* service.open({ threadId, relativePath: "cube.blend" });
+        // A launch while it is off starts without the strip (of the other file: the reload
+        // kept cube.blend's unsaved work as its copy).
+        yield* service.open({ threadId, relativePath: "other.blend" });
         const launchedOff = yield* layoutWhen(
           (layout) => alone(layout) && layout.pid !== reopened.pid,
         );
