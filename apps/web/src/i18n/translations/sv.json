@@ -13356,6 +13356,7 @@
     },
     " med Blender på servern, som läser in hela scenen."
   ],
+  "f64bf8f014087dd3": "T3 Code kan inte avgöra hur stor den här komprimerade filen är när den öppnas. Att konvertera den med Blender på servern läser in hela scenen.",
   "757bc09b09dce86a": [
     "Den här komprimerade filen är större än ",
     {

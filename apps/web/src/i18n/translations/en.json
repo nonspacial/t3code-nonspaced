@@ -13359,6 +13359,7 @@
     },
     " file with Blender on the server, which loads the whole scene."
   ],
+  "f64bf8f014087dd3": "T3 Code can't tell how large this compressed file is once opened. Converting it with Blender on the server loads the whole scene.",
   "757bc09b09dce86a": [
     "This compressed file is over ",
     {

@@ -546,7 +546,7 @@ describe("BlendConversion", () => {
   );
 
   it.effect(
-    "converts a compressed file that is small on disk but inflates past the limit only when asked",
+    "converts a compressed file small on disk only when asked, once it inflates past the limit or may",
     () =>
       Effect.gen(function* () {
         const { root, path, fileSystem } = yield* workspace;
@@ -583,6 +583,23 @@ describe("BlendConversion", () => {
         });
         yield* Fiber.join(watched.fiber);
         expect(yield* convertAll(input)).toEqual(["converting", "ready"]);
+
+        // Read only as far as the details' memory budget, its size once inflated still unknown:
+        // asked first as well. Five 16 MiB blocks the read keeps, past its 64 MiB.
+        const kept = new Uint8Array(24 + 16 * 1024 * 1024);
+        kept.set(new TextEncoder().encode("ID"));
+        new DataView(kept.buffer).setInt32(4, 16 * 1024 * 1024, true);
+        const unknown = NodeZlib.zstdCompressSync(
+          Buffer.concat([bytes.subarray(0, 12), kept, kept, kept, kept, kept, bytes.subarray(12)]),
+        );
+        yield* fileSystem.writeFile(path.join(root, "unknown.blend"), unknown);
+        const unsized = { cwd: root, relativePath: "unknown.blend" };
+        const asked = yield* startConversion(unsized, "watch");
+        expect(yield* Queue.take(asked.progress)).toEqual({
+          status: "large",
+          byteLength: unknown.byteLength,
+        });
+        yield* Fiber.join(asked.fiber);
       }).pipe(Effect.provide(layerFor({ run: writeGlb }))),
   );
 

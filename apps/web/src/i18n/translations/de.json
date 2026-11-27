@@ -13348,6 +13348,7 @@
     },
     "-Datei mit Blender auf dem Server, der dafür die ganze Szene lädt."
   ],
+  "f64bf8f014087dd3": "T3 Code kann nicht erkennen, wie groß diese komprimierte Datei entpackt ist. Beim Konvertieren mit Blender auf dem Server wird die ganze Szene geladen.",
   "757bc09b09dce86a": [
     "Diese komprimierte Datei ist entpackt größer als ",
     {

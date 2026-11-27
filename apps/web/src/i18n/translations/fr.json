@@ -13349,6 +13349,7 @@
     },
     " avec Blender sur le serveur, qui charge toute la scène."
   ],
+  "f64bf8f014087dd3": "T3 Code ne peut pas savoir quelle taille fait ce fichier compressé une fois ouvert. Le convertir avec Blender sur le serveur charge toute la scène.",
   "757bc09b09dce86a": [
     "Ce fichier compressé dépasse ",
     {

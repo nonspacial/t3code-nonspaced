@@ -209,6 +209,11 @@ export function BlendFilePreview(props: {
               Converts this <Var>{formatBytes(largeBytes)}</Var> file with Blender on the server,
               which loads the whole scene.
             </T>
+          ) : preview.sizeUnknown === true ? (
+            <T>
+              T3 Code can't tell how large this compressed file is once opened. Converting it with
+              Blender on the server loads the whole scene.
+            </T>
           ) : (
             <T>
               This compressed file is over <Var>{formatBytes(BLEND_LARGE_FILE_BYTES)}</Var> once

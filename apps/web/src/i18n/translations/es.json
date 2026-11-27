@@ -13344,6 +13344,7 @@
     },
     " con Blender en el servidor, que carga toda la escena."
   ],
+  "f64bf8f014087dd3": "T3 Code no puede saber cuánto ocupa este archivo comprimido una vez abierto. Al convertirlo con Blender en el servidor se carga toda la escena.",
   "757bc09b09dce86a": [
     "Este archivo comprimido ocupa más de ",
     {

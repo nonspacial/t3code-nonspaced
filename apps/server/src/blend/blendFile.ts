@@ -35,6 +35,8 @@ export interface BlendFileFacts {
   readonly partial?: true;
   /** Past the large-file size on disk, or once inflated: it converts only when asked. */
   readonly large?: true;
+  /** A compressed file read only partway, before its size once inflated was known: `large` too. */
+  readonly sizeUnknown?: true;
 }
 
 interface ByteSource {
@@ -459,13 +461,18 @@ async function readBlocks(
   // Large on disk or once inflated, from what is known so far, however the walk ends.
   const large = () =>
     headOnly || source.byteLength > BLEND_LARGE_FILE_BYTES || scanned > BLEND_LARGE_FILE_BYTES;
-  // At a limit the walk ends with what it found so far.
-  const partial = (overBudget = false) => ({
-    kept,
-    counts,
-    partial: true as const,
-    large: overBudget || large(),
-  });
+  // At a limit the walk ends with what it found so far. A compressed file stopped short of the
+  // large-file size may inflate past it: it asks first too.
+  const partial = (overBudget = false) => {
+    const known = overBudget || large();
+    return {
+      kept,
+      counts,
+      partial: true as const,
+      large: known || source.compressed,
+      sizeUnknown: !known && source.compressed,
+    };
+  };
   for (;;) {
     // A closed preview or a newer request stops the walk; the source closes on the way out.
     signal?.throwIfAborted();
@@ -477,7 +484,9 @@ async function readBlocks(
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const le = header.littleEndian;
     const code = ascii(bytes.subarray(0, 4));
-    if (code === "ENDB") return { kept, counts, partial: false as const, large: large() };
+    if (code === "ENDB") {
+      return { kept, counts, partial: false as const, large: large(), sizeUnknown: false };
+    }
     // Blender 5.0's large block header puts the struct index before the pointer and the length after.
     const length = header.largeBlocks ? Number(view.getBigInt64(16, le)) : view.getInt32(4, le);
     const sdnaIndex = header.largeBlocks
@@ -550,7 +559,12 @@ export async function readBlendFile(
   try {
     const header = await readHeader(source);
     const resolved = { ...DEFAULT_LIMITS, ...limits };
-    const { kept, counts, partial, large } = await readBlocks(source, header, resolved, signal);
+    const { kept, counts, partial, large, sizeUnknown } = await readBlocks(
+      source,
+      header,
+      resolved,
+      signal,
+    );
     const thumbnail = readThumbnail(
       kept.find((block) => block.code === "TEST"),
       header,
@@ -568,6 +582,7 @@ export async function readBlendFile(
         libraries: [],
         partial: true,
         ...(large ? { large: true as const } : {}),
+        ...(sizeUnknown ? { sizeUnknown: true as const } : {}),
       };
     }
     const dna = kept.find((block) => block.code === "DNA1");
@@ -673,9 +688,13 @@ export async function readBlendFileFacts(
   }
   const read = await readBlendFile(realPath, whole ? { wholeUpTo: Infinity } : {}, signal);
   // A revision found large stays large, whichever read comes after: the preview asks first.
+  // One only maybe large is what the read that went further found.
   const facts =
     read.large !== true &&
-    [keyOf("whole"), keyOf("head")].some((key) => key !== null && factsCache.get(key)?.large)
+    [keyOf("whole"), keyOf("head")].some((key) => {
+      const cached = key === null ? undefined : factsCache.get(key);
+      return cached?.large === true && cached.sizeUnknown !== true;
+    })
       ? { ...read, large: true as const }
       : read;
   const key = keyOf(whole || facts.partial !== true ? "whole" : "head");

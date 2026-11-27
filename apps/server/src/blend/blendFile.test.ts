@@ -155,9 +155,12 @@ describe("readBlendFile", () => {
     });
     const limits = [{ maxScannedBytes: 64 * 1024 }, { maxKeptBytes: 64 * 1024 }, { maxBlocks: 50 }];
     for (const limit of limits) {
+      // Stopped before its size once inflated is known, a compressed file may be a large one.
       await expect(readBlendFile(fixture("bracket-5.blend"), limit)).resolves.toMatchObject({
         objects: 0,
         partial: true,
+        large: true,
+        sizeUnknown: true,
       });
     }
     // Skipping costs nothing in an uncompressed file, so only its kept bytes and blocks count.
@@ -165,6 +168,10 @@ describe("readBlendFile", () => {
       await expect(readBlendFile(path, { maxScannedBytes: 64 * 1024 })).resolves.toMatchObject({
         objects: 4,
       });
+      // Its size on disk is its size: a small one stopped at a limit is still small.
+      const stopped = await readBlendFile(path, { maxKeptBytes: 64 * 1024 });
+      expect(stopped).toMatchObject({ partial: true });
+      expect(stopped).not.toHaveProperty("large");
     });
   });
 

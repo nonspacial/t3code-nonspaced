@@ -13349,6 +13349,7 @@
     },
     " com o Blender no servidor, que carrega a cena inteira."
   ],
+  "f64bf8f014087dd3": "O T3 Code não consegue saber o tamanho deste arquivo compactado quando aberto. Convertê-lo com o Blender no servidor carrega a cena inteira.",
   "757bc09b09dce86a": [
     "Este arquivo compactado passa de ",
     {

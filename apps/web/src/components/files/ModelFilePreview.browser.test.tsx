@@ -638,7 +638,7 @@ it("converts a large .blend only when asked, once, saying it runs Blender, and r
   });
 });
 
-it("asks first for a compressed .blend that is small on disk but large once inflated", async () => {
+it("asks first for a compressed .blend small on disk but large, or maybe large, once inflated", async () => {
   state.preview = { ...previewOf(20 * 1024 * 1024), partial: true, large: true };
   state.queries = [];
   state.status = null;
@@ -652,6 +652,17 @@ it("asks first for a compressed .blend that is small on disk but large once infl
   expect(conversions()[0]).toMatchObject({
     convertBlend: { input: { relativePath: "packed.blend", once: true } },
   });
+  // Read only partway, its size once opened unknown: asked first, claiming no size.
+  state.preview = { ...previewOf(20 * 1024 * 1024), partial: true, large: true, sizeUnknown: true };
+  state.queries = [];
+  await using unknown = await render(preview("unknown.blend"));
+  await expect
+    .element(unknown.getByText("can't tell how large this compressed file is", { exact: false }))
+    .toBeInTheDocument();
+  await expect
+    .element(unknown.getByText("over 512 MB once opened", { exact: false }))
+    .not.toBeInTheDocument();
+  expect(conversions()).toHaveLength(0);
 });
 
 it("asks first when the server finds a .blend large since its facts were read", async () => {
