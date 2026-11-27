@@ -3024,17 +3024,25 @@ describe("storage cleanup reports and local file policies", () => {
       scheduled: true,
       reason: "Thread has a scheduled task",
     },
+    {
+      name: "a held Blender working copy",
+      policy: "tracked-changes",
+      held: true,
+      reason: "Holds Blender working copies",
+    },
   ] as const)(
     "keeps an idle No project thread's scratch folder with $name",
     ({
       policy,
       repository,
       scheduled,
+      held,
       reason,
     }: {
       readonly policy?: WorktreeKeepWhen;
       readonly repository?: string;
       readonly scheduled?: boolean;
+      readonly held?: boolean;
       readonly reason: string;
     }) =>
       runCleanupTest(
@@ -3048,6 +3056,12 @@ describe("storage cleanup reports and local file policies", () => {
             { recursive: true },
           );
           yield* fixture.fs.writeFileString(`${folder}/notes.md`, "scratch\n");
+          if (held) {
+            yield* fixture.fs.makeDirectory(`${folder}/.t3/held-working-copies/copy-id`, {
+              recursive: true,
+            });
+            yield* fixture.fs.writeFileString(`${folder}/${HELD_COPY}`, "held");
+          }
           // No thread owns this one, so it is listed and never removed.
           const leftover = `${scratchRoot}/leftover`;
           yield* fixture.fs.makeDirectory(leftover);
