@@ -144,6 +144,20 @@ it.effect(
       expect(attached).toEqual([
         ["thread-1", { canOperate: false, role: "working", visible: true }],
       ]);
+
+      const roles = Promise.withResolvers<unknown>();
+      yield* serve(
+        [AuthOrchestrationReadScope],
+        (_threadId, options) =>
+          Effect.sync(() => {
+            roles.resolve(options.role);
+            return { _tag: "stopped" as const };
+          }),
+        "&role=master",
+      );
+      expect(yield* Effect.promise(() => roles.promise), "the pane asks for the master").toBe(
+        "master",
+      );
     }),
 );
 
@@ -175,22 +189,6 @@ it.effect("refuses sessions that can't read threads", () =>
     );
     expect(closed).not.toBe(HOSTED_BLENDER_STREAM_STOPPED_CLOSE_CODE);
     expect(attached).toBe(false);
-  }),
-);
-
-it.effect("watches the thread's master Blender when the pane asks for it", () =>
-  Effect.gen(function* () {
-    const roles = Promise.withResolvers<unknown>();
-    yield* serve(
-      [AuthOrchestrationReadScope],
-      (_threadId, options) =>
-        Effect.sync(() => {
-          roles.resolve(options.role);
-          return { _tag: "stopped" as const };
-        }),
-      "&role=master",
-    );
-    expect(yield* Effect.promise(() => roles.promise)).toBe("master");
   }),
 );
 
