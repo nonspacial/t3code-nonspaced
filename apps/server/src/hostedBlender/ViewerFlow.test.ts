@@ -30,26 +30,18 @@ describe("ViewerFlow", () => {
     expect(flow.offer(frame(false, 21), 0).send).toBeNull();
     expect(ids([...flow.ack(0).send, ...flow.ack(0).send])).toEqual([20, 21]);
     expect(flow.ack(0).send).toEqual([]);
-  });
 
-  it("times each frame from going out to its own ack", () => {
-    const flow = new ViewerFlow();
-    flow.offer(frame(true, 1), 100);
-    flow.offer(frame(false, 2), 110);
-    expect(flow.ack(140)).toMatchObject({ latencyMs: 40 });
-    expect(flow.ack(200)).toEqual({ send: [], latencyMs: 60, requestKeyframe: false });
-    expect(flow.ack(300).latencyMs).toBeNull();
-  });
-
-  it("resyncs on the next keyframe, which waits behind a full window", () => {
-    const flow = new ViewerFlow();
-    filled(flow);
-    flow.offer(frame(false, 10), 0);
-    flow.resync();
-    // Showing a pane asks for its keyframe itself; frames still out ask for nothing.
-    expect(flow.offer(frame(false, 11), 0).requestKeyframe).toBe(false);
-    expect(flow.offer(frame(true, 12), 0).send).toBeNull();
-    expect(ids(flow.ack(0).send)).toEqual([12]);
+    // Each frame is timed from going out to its own ack, which feeds the bitrate.
+    const timed = new ViewerFlow();
+    timed.offer(frame(true, 1), 100);
+    timed.offer(frame(false, 2), 110);
+    expect(timed.ack(140), "the keyframe's own latency").toMatchObject({ latencyMs: 40 });
+    expect(timed.ack(200), "the delta's own latency").toEqual({
+      send: [],
+      latencyMs: 60,
+      requestKeyframe: false,
+    });
+    expect(timed.ack(300).latencyMs, "an ack with nothing out").toBeNull();
   });
 
   it("drops queued deltas when a keyframe supersedes them", () => {
@@ -61,6 +53,16 @@ describe("ViewerFlow", () => {
     flow.offer(frame(false, 13), 0);
     expect(ids(flow.ack(0).send)).toEqual([12]);
     expect(flow.ack(0).send).toEqual([]);
+
+    // A resync waits for the next keyframe too, behind a full window.
+    const resynced = new ViewerFlow();
+    filled(resynced);
+    resynced.offer(frame(false, 10), 0);
+    resynced.resync();
+    // Showing a pane asks for its keyframe itself; frames still out ask for nothing.
+    expect(resynced.offer(frame(false, 11), 0).requestKeyframe, "resync asks nothing").toBe(false);
+    expect(resynced.offer(frame(true, 12), 0).send, "the keyframe waits").toBeNull();
+    expect(ids(resynced.ack(0).send), "then goes out alone").toEqual([12]);
   });
 
   it("falls back to the next keyframe when a slow viewer's queue overflows", () => {
@@ -73,16 +75,15 @@ describe("ViewerFlow", () => {
     for (let left = 1; left < MAX_IN_FLIGHT_FRAMES; left++) flow.ack(0);
     expect(flow.offer(frame(false, 100), 0)).toEqual({ send: null, requestKeyframe: true });
     expect(ids([flow.offer(frame(true, 101), 0).send])).toEqual([101]);
-  });
 
-  it("asks for keyframes from a stalled viewer only once a stuck frame is acked", () => {
-    const flow = new ViewerFlow();
-    flow.offer(frame(true, 0), 0);
-    // A second at 60 fps, with keyframes forced for others now and then, never acked.
+    // A stalled viewer asks for no keyframe until a stuck frame is acked, so it can't start a
+    // keyframe storm: a second at 60 fps, with keyframes forced for others now and then.
+    const stalled = new ViewerFlow();
+    stalled.offer(frame(true, 0), 0);
     let requests = 0;
     for (let id = 1; id <= 60; id++) {
-      if (flow.offer(frame(id % 10 === 0, id), id * 16).requestKeyframe) requests += 1;
+      if (stalled.offer(frame(id % 10 === 0, id), id * 16).requestKeyframe) requests += 1;
     }
-    expect(requests).toBe(0);
+    expect(requests, "keyframe requests from a stalled viewer").toBe(0);
   });
 });
