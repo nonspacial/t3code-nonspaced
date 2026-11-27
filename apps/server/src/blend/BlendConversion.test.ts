@@ -1,4 +1,7 @@
-// @effect-diagnostics nodeBuiltinImport:off - the test packs a compressed .blend with Node's zstd.
+// @effect-diagnostics nodeBuiltinImport:off - the test packs a compressed .blend with Node's zstd, and makes .blend files with a real Blender.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 import * as NodeStream from "node:stream";
 import * as NodeZlib from "node:zlib";
 
@@ -675,5 +678,122 @@ describe("BlendConversion", () => {
       );
       expect(seen).toEqual([{ status: "unavailable", reason: "noBlender" }]);
     }).pipe(Effect.provide(layerFor({ run: () => Effect.die("never"), blender: null }))),
+  );
+});
+
+const blenderOnPath = (process.env.PATH ?? "")
+  .split(NodePath.delimiter)
+  .filter(Boolean)
+  .map((dir) => NodePath.join(dir, "blender"))
+  .find((candidate) => NodeFS.existsSync(candidate));
+
+/** Runs `script` in background Blender, which uses no GPU, with `bpy` imported. */
+const inBlender = (script: string) =>
+  NodeChildProcess.execFileSync(
+    blenderOnPath!,
+    [
+      "--background",
+      "--factory-startup",
+      "--python-exit-code",
+      "1",
+      "--python-expr",
+      `import bpy\n${script}`,
+    ],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  );
+
+/** The GLB's JSON chunk, read as glTF's binary container lays it out. */
+const glbJson = (bytes: Buffer) => {
+  expect(bytes.toString("latin1", 0, 4)).toBe("glTF");
+  expect(bytes.readUInt32LE(4)).toBe(2);
+  expect(bytes.readUInt32LE(8)).toBe(bytes.byteLength);
+  const length = bytes.readUInt32LE(12);
+  expect(bytes.toString("latin1", 16, 20)).toBe("JSON");
+  return JSON.parse(bytes.toString("utf8", 20, 20 + length)) as {
+    readonly asset: { readonly version: string };
+    readonly nodes?: ReadonlyArray<{ readonly name?: string }>;
+  };
+};
+
+describe.skipIf(blenderOnPath === undefined)("BlendConversion with a real Blender", () => {
+  it.live(
+    "converts a real .blend to a GLB with its scripts off, and again once a file it links is saved",
+    () =>
+      Effect.gen(function* () {
+        const runner = yield* ProcessRunner.ProcessRunner.pipe(
+          Effect.provide(ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
+        );
+        const version = /Blender (\d+\.\d+\.\d+)/.exec(
+          NodeChildProcess.execFileSync(blenderOnPath!, ["--version"], { encoding: "utf8" }),
+        )![1]!;
+        const runs: Array<RunInput> = [];
+        const run: Run = (input) =>
+          Effect.sync(() => runs.push(input)).pipe(Effect.andThen(runner.run(input)));
+        yield* Effect.gen(function* () {
+          const { root, path, fileSystem } = yield* workspace;
+          const parts = path.join(root, "parts.blend");
+          const main = path.join(root, "main.blend");
+          const marker = path.join(root, "script-ran");
+          // Parts with a cube; main with a cube of its own, the parts' cube linked in, and a
+          // script set to run whenever the file opens.
+          inBlender(`
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_cube_add()
+bpy.context.object.name = "Part"
+bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(parts)})
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_cube_add(location=(3, 0, 0))
+bpy.context.object.name = "Own"
+with bpy.data.libraries.load(${JSON.stringify(parts)}, link=True) as (source, linked):
+    linked.objects = ["Part"]
+for obj in linked.objects:
+    bpy.context.scene.collection.objects.link(obj)
+text = bpy.data.texts.new("autorun.py")
+text.write("open(" + repr(${JSON.stringify(marker)}) + ", 'w').write('ran')")
+text.use_module = True
+bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(main)})
+`);
+          const input = { cwd: root, relativePath: "main.blend" };
+          const conversion = yield* BlendConversion.BlendConversion;
+          const converted = Effect.gen(function* () {
+            const seen: Array<BlendConversionStatus> = [];
+            yield* conversion.convert(input, (status) => Effect.sync(() => seen.push(status)));
+            return seen;
+          });
+
+          const first = yield* converted;
+          expect(first.map(({ status }) => status)).toEqual(["converting", "ready"]);
+          const ready = first[1]!;
+          if (ready.status !== "ready") throw new Error("not ready");
+          const glb = glbJson(
+            NodeFS.readFileSync(
+              path.join(yield* cacheDirectory, cacheFileNameOf(ready.relativeUrl)),
+            ),
+          );
+          expect(glb.asset.version).toBe("2.0");
+          expect(glb.nodes?.map((node) => node.name)).toEqual(
+            expect.arrayContaining(["Own", "Part"]),
+          );
+          // Scripts in the file never ran: Blender was told so before it opened the file.
+          expect(NodeFS.existsSync(marker)).toBe(false);
+          const args = runs[0]!.args;
+          expect(args).toContain("--disable-autoexec");
+          expect(args.indexOf("--disable-autoexec")).toBeLessThan(
+            args.indexOf(yield* fileSystem.realPath(main)),
+          );
+
+          expect(yield* converted).toEqual([
+            expect.objectContaining({ status: "ready", cached: true }),
+          ]);
+          // Saving the linked file, as a person does in Blender, makes the next preview convert.
+          inBlender(`
+bpy.ops.wm.open_mainfile(filepath=${JSON.stringify(parts)})
+bpy.data.objects["Part"].location.z = 2
+bpy.ops.wm.save_mainfile()
+`);
+          expect((yield* converted).map(({ status }) => status)).toEqual(["converting", "ready"]);
+          expect(runs).toHaveLength(2);
+        }).pipe(Effect.provide(layerFor({ run, blender: { path: blenderOnPath!, version } })));
+      }).pipe(Effect.scoped),
   );
 });
