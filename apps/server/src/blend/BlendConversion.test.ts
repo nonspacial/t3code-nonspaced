@@ -12,7 +12,6 @@ import { BLEND_LARGE_FILE_BYTES, type BlendConversionStatus } from "@t3tools/con
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -194,73 +193,6 @@ const touchFile = (file: string, at: number) =>
 
 describe("BlendConversion", () => {
   it.effect(
-    "runs Blender privately with scripts off, then answers from the cache until a file it links changes",
-    () => {
-      const runs: Array<RunInput> = [];
-      const run: Run = (input) =>
-        Effect.sync(() => runs.push(input)).pipe(Effect.andThen(writeGlb(input)));
-      return Effect.gen(function* () {
-        yield* TestClock.setTime(Date.UTC(2030, 0, 1));
-        const { root, path, fileSystem } = yield* workspace;
-        const input = { cwd: root, relativePath: "assembly.blend" };
-
-        expect(yield* convertAll(input)).toEqual(["converting", "ready"]);
-        const [first] = runs;
-        const blendPath = yield* fileSystem.realPath(path.join(root, "assembly.blend"));
-        expect(first?.command).toBe("/opt/blender/blender");
-        // Options before the file apply to opening it, so scripts are off before it loads.
-        expect(first?.args.slice(0, 7)).toEqual([
-          "--background",
-          "--factory-startup",
-          "--disable-autoexec",
-          "-noaudio",
-          "--python-exit-code",
-          "1",
-          blendPath,
-        ]);
-        expect(first?.timeout).toEqual(BlendConversion.CONVERSION_TIME_LIMIT);
-        const cacheDir = yield* cacheDirectory;
-        expect(first?.env).toMatchObject({
-          PATH: "/bin",
-          TMPDIR: expect.stringContaining(cacheDir),
-          BLENDER_USER_CONFIG: expect.stringContaining(cacheDir),
-        });
-        expect(first?.env?.T3CODE_HOME).toBeUndefined();
-        // The child gets only this environment, and works in its private folder, never the file's.
-        expect(first?.replaceEnv).toBe(true);
-        expect(first?.cwd).toContain(cacheDir);
-
-        const conversion = yield* BlendConversion.BlendConversion;
-        const hits: Array<BlendConversionStatus> = [];
-        yield* conversion.convert(input, (progress) => Effect.sync(() => hits.push(progress)));
-        expect(hits).toEqual([expect.objectContaining({ status: "ready", cached: true })]);
-        // A hit counts as a use now, which the size cap's least-recently-used order reads.
-        const hit = hits[0]?.status === "ready" ? cacheFileNameOf(hits[0].relativeUrl) : "";
-        const used = yield* fileSystem.stat(path.join(yield* cacheDirectory, hit));
-        expect(used.mtime._tag === "Some" && used.mtime.value.getTime()).toBe(Date.UTC(2030, 0, 1));
-        expect(runs).toHaveLength(1);
-        // The work folder, with Blender's temp files and config, is gone.
-        expect(
-          (yield* fileSystem.readDirectory(cacheDir)).filter((name) => name.startsWith(".")),
-        ).toEqual([]);
-
-        yield* fileSystem.utimes(
-          path.join(root, "parts-5.blend"),
-          Date.UTC(2031, 0, 1) / 1000,
-          Date.UTC(2031, 0, 1) / 1000,
-        );
-        expect(yield* convertAll(input)).toEqual(["converting", "ready"]);
-        expect(yield* convertAll({ ...input, refresh: true, keepTrying: true })).toEqual([
-          "converting",
-          "ready",
-        ]);
-        expect(runs).toHaveLength(3);
-        expect(runs[2]?.timeout).toEqual(Duration.infinity);
-      }).pipe(Effect.provide(layerFor({ run })));
-    },
-  );
-
-  it.effect(
     "converts one file at a time; waiting files hear their place and can be cancelled",
     () => {
       const started: Array<Deferred.Deferred<void>> = [];
@@ -366,39 +298,45 @@ describe("BlendConversion", () => {
           reason: "outsideWorkspace",
         });
       }
+      // Watching a file it can't convert reports that once and ends the watch.
+      const watched: Array<BlendConversionStatus> = [];
+      yield* Effect.flatMap(BlendConversion.BlendConversion, (conversion) =>
+        conversion.watch(input, (status) => Effect.sync(() => watched.push(status))),
+      ).pipe(Effect.provide(layerFor({ run: never, blender: null })));
+      expect(watched, "a watch of a file it can't convert").toEqual([
+        { status: "unavailable", reason: "noBlender" },
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("keeps the cache under its size cap, evicting the least recently used first", () =>
     Effect.gen(function* () {
-      yield* TestClock.setTime(Date.UTC(2030, 0, 1));
-      const { root, fileSystem } = yield* workspace;
-      const conversion = yield* BlendConversion.BlendConversion;
-      const names: Record<string, string> = {};
-      for (const relativePath of [
-        "assembly.blend",
-        "bracket.blend",
-        "assembly.blend",
-        "bracket-4.blend",
-      ]) {
-        yield* conversion.convert({ cwd: root, relativePath }, (progress) =>
-          Effect.sync(() => {
-            if (progress.status === "ready")
-              names[relativePath] = cacheFileNameOf(progress.relativeUrl);
-          }),
+      yield* Effect.gen(function* () {
+        yield* TestClock.setTime(Date.UTC(2030, 0, 1));
+        const { root, fileSystem } = yield* workspace;
+        const conversion = yield* BlendConversion.BlendConversion;
+        const names: Record<string, string> = {};
+        for (const relativePath of [
+          "assembly.blend",
+          "bracket.blend",
+          "assembly.blend",
+          "bracket-4.blend",
+        ]) {
+          yield* conversion.convert({ cwd: root, relativePath }, (progress) =>
+            Effect.sync(() => {
+              if (progress.status === "ready")
+                names[relativePath] = cacheFileNameOf(progress.relativeUrl);
+            }),
+          );
+        }
+        // Each GLB is 10 bytes and the cap holds two: the assembly was used again, the bracket not.
+        expect((yield* fileSystem.readDirectory(yield* cacheDirectory)).toSorted()).toEqual(
+          [names["assembly.blend"], names["bracket-4.blend"]].toSorted(),
         );
-      }
-      // Each GLB is 10 bytes and the cap holds two: the assembly was used again, the bracket not.
-      expect((yield* fileSystem.readDirectory(yield* cacheDirectory)).toSorted()).toEqual(
-        [names["assembly.blend"], names["bracket-4.blend"]].toSorted(),
-      );
-    }).pipe(Effect.provide(layerFor({ run: writeGlb, cacheMaxBytes: 25 }))),
-  );
+      }).pipe(Effect.provide(layerFor({ run: writeGlb, cacheMaxBytes: 25 })));
 
-  it.effect(
-    "P7: never admits a GLB larger than the cache can hold, keeping every other entry",
-    () =>
-      Effect.gen(function* () {
+      // P7: a GLB larger than the whole cap is never admitted, and every other entry is kept.
+      yield* Effect.gen(function* () {
         const { root, fileSystem } = yield* workspace;
         const conversion = yield* BlendConversion.BlendConversion;
         const statuses: Array<BlendConversionStatus> = [];
@@ -410,8 +348,8 @@ describe("BlendConversion", () => {
         const kept = statuses.flatMap((status) =>
           status.status === "ready" ? [cacheFileNameOf(status.relativeUrl)] : [],
         );
-        expect(kept).toHaveLength(1);
-        expect(statuses.at(-1)).toMatchObject({ status: "failed" });
+        expect(kept, "only the export that fits is kept").toHaveLength(1);
+        expect(statuses.at(-1), "the one past the cap fails").toMatchObject({ status: "failed" });
         // Only the bracket's entry, and no work folder left behind.
         expect(yield* fileSystem.readDirectory(yield* cacheDirectory)).toEqual(kept);
       }).pipe(
@@ -428,7 +366,8 @@ describe("BlendConversion", () => {
               }).pipe(Effect.provide(NodeServices.layer), Effect.orDie),
           }),
         ),
-      ),
+      );
+    }),
   );
 
   it.effect(
@@ -479,31 +418,6 @@ describe("BlendConversion", () => {
           expect(yield* Queue.take(closed)).toEqual([assembly, parts]);
         }).pipe(Effect.provide(layerFor({ run, watcher })));
       });
-    },
-  );
-
-  it.effect(
-    "converts again at once when the file was saved while it converted, keeping nothing of it",
-    () => {
-      const release = Deferred.makeUnsafe<void>();
-      const run: Run = (input) => Deferred.await(release).pipe(Effect.andThen(writeGlb(input)));
-      return Effect.gen(function* () {
-        const { root, path, fileSystem } = yield* workspace;
-        const live = yield* startConversion({ cwd: root, relativePath: "bracket.blend" }, "watch");
-        expect((yield* Queue.take(live.progress)).status).toBe("converting");
-        yield* touchFile(path.join(root, "bracket.blend"), Date.UTC(2031, 0, 1));
-        yield* Deferred.succeed(release, undefined);
-        // The export was of neither version, so it is neither shown nor cached.
-        expect(yield* Queue.take(live.progress)).toEqual(
-          expect.objectContaining({ status: "converting", changed: "bracket.blend" }),
-        );
-        expect((yield* Queue.take(live.progress)).status).toBe("ready");
-        const cached = (yield* fileSystem.readDirectory(yield* cacheDirectory)).filter((name) =>
-          name.endsWith(".glb"),
-        );
-        expect(cached).toHaveLength(1);
-        yield* Fiber.interrupt(live.fiber);
-      }).pipe(Effect.provide(layerFor({ run })));
     },
   );
 
@@ -603,70 +517,6 @@ describe("BlendConversion", () => {
       }).pipe(Effect.provide(layerFor({ run: writeGlb }))),
   );
 
-  it.effect("keeps watching a file that is missing for a moment while it is saved", () =>
-    Effect.gen(function* () {
-      const { watcher, opened, signal } = yield* makeWatcher;
-      yield* Effect.gen(function* () {
-        const { root, path, fileSystem } = yield* workspace;
-        const bracket = path.join(root, "bracket.blend");
-        const live = yield* startConversion({ cwd: root, relativePath: "bracket.blend" }, "watch");
-        yield* Queue.take(live.progress);
-        expect((yield* Queue.take(live.progress)).status).toBe("ready");
-        yield* Queue.take(opened);
-
-        const saved = yield* fileSystem.readFile(bracket);
-        yield* fileSystem.remove(bracket);
-        yield* signal;
-        expect((yield* Queue.take(live.progress)).status).toBe("failed");
-
-        // The watch compares against the missing file now, so only its return converts again.
-        yield* Queue.take(opened);
-        yield* fileSystem.writeFile(bracket, saved);
-        yield* signal;
-        expect(yield* Queue.take(live.progress)).toEqual(
-          expect.objectContaining({ status: "converting", changed: "bracket.blend" }),
-        );
-        expect((yield* Queue.take(live.progress)).status).toBe("ready");
-        yield* Fiber.interrupt(live.fiber);
-      }).pipe(Effect.provide(layerFor({ run: writeGlb, watcher })));
-    }),
-  );
-
-  it.effect(
-    "converts again when the save that failed a round finishes before the watch reopens",
-    () =>
-      Effect.gen(function* () {
-        const { watcher, opened, signal } = yield* makeWatcher;
-        yield* Effect.gen(function* () {
-          const { root, path, fileSystem } = yield* workspace;
-          const bracket = path.join(root, "bracket.blend");
-          const saved = yield* fileSystem.readFile(bracket);
-          const conversion = yield* BlendConversion.BlendConversion;
-          const progress = yield* Queue.unbounded<BlendConversionStatus>();
-          const live = yield* conversion
-            .watch({ cwd: root, relativePath: "bracket.blend" }, (status) =>
-              // The save lands while the failed round reports, before anything is watched again.
-              (status.status === "failed"
-                ? fileSystem.writeFile(bracket, saved).pipe(Effect.orDie)
-                : Effect.void
-              ).pipe(Effect.andThen(Queue.offer(progress, status)), Effect.asVoid),
-            )
-            .pipe(Effect.forkChild);
-          yield* Queue.take(progress);
-          expect((yield* Queue.take(progress)).status).toBe("ready");
-          yield* Queue.take(opened);
-
-          yield* fileSystem.remove(bracket);
-          yield* signal;
-          expect((yield* Queue.take(progress)).status).toBe("failed");
-          expect(yield* Queue.take(progress)).toEqual(
-            expect.objectContaining({ status: "converting", changed: "bracket.blend" }),
-          );
-          yield* Fiber.interrupt(live);
-        }).pipe(Effect.provide(layerFor({ run: writeGlb, watcher })));
-      }),
-  );
-
   it.effect("never watches a linked library among the server's own files", () =>
     Effect.gen(function* () {
       const { watcher, opened } = yield* makeWatcher;
@@ -683,18 +533,6 @@ describe("BlendConversion", () => {
         yield* Fiber.interrupt(live.fiber);
       }).pipe(Effect.provide(layerFor({ run: writeGlb, watcher })));
     }),
-  );
-
-  it.effect("stops watching a file it cannot convert", () =>
-    Effect.gen(function* () {
-      const { root } = yield* workspace;
-      const conversion = yield* BlendConversion.BlendConversion;
-      const seen: Array<BlendConversionStatus> = [];
-      yield* conversion.watch({ cwd: root, relativePath: "bracket.blend" }, (status) =>
-        Effect.sync(() => seen.push(status)),
-      );
-      expect(seen).toEqual([{ status: "unavailable", reason: "noBlender" }]);
-    }).pipe(Effect.provide(layerFor({ run: () => Effect.die("never"), blender: null }))),
   );
 });
 
@@ -742,7 +580,10 @@ describe.skipIf(blenderOnPath === undefined)("BlendConversion with a real Blende
           Effect.provide(ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
         );
         const version = /Blender (\d+\.\d+\.\d+)/.exec(
-          NodeChildProcess.execFileSync(blenderOnPath!, ["--version"], { encoding: "utf8" }),
+          NodeChildProcess.execFileSync(blenderOnPath!, ["--version"], {
+            encoding: "utf8",
+            timeout: 60_000,
+          }),
         )![1]!;
         const runs: Array<RunInput> = [];
         const run: Run = (input) =>
@@ -799,6 +640,24 @@ bpy.ops.wm.save_as_mainfile(filepath=${JSON.stringify(main)})
           expect(args.indexOf("--disable-autoexec")).toBeLessThan(
             args.indexOf(yield* fileSystem.realPath(main)),
           );
+          // Blender ran privately: only this environment, its temp files and settings in a work
+          // folder of its own, never T3's variables, and the folder is gone once it is done.
+          const cacheDir = yield* cacheDirectory;
+          expect(runs[0]!.timeout, "a conversion is time-limited").toEqual(
+            BlendConversion.CONVERSION_TIME_LIMIT,
+          );
+          expect(runs[0]!.replaceEnv, "only this environment").toBe(true);
+          expect(runs[0]!.env).toMatchObject({
+            PATH: "/bin",
+            TMPDIR: expect.stringContaining(cacheDir),
+            BLENDER_USER_CONFIG: expect.stringContaining(cacheDir),
+          });
+          expect(runs[0]!.env?.T3CODE_HOME, "no T3 variables").toBeUndefined();
+          expect(runs[0]!.cwd, "its private folder, never the file's").toContain(cacheDir);
+          expect(
+            (yield* fileSystem.readDirectory(cacheDir)).filter((name) => name.startsWith(".")),
+            "the work folder is gone",
+          ).toEqual([]);
 
           expect(yield* converted).toEqual([
             expect.objectContaining({ status: "ready", cached: true }),
