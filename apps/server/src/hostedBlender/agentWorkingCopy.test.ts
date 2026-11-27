@@ -14,7 +14,9 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as PlatformError from "effect/PlatformError";
 import * as Stream from "effect/Stream";
 
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -306,6 +308,44 @@ describe("startAgentWorkingCopy", () => {
       expect(error.reason).toContain("not a separate copy");
       assert.deepEqual(opened, []);
       assert.equal(NodeFS.readFileSync(master, "utf8"), "master");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("makes the working copy on a drive with no hard links, and reuses it after", () =>
+    Effect.gen(function* () {
+      const root = yield* tempWorkspace;
+      writeMaster(root, "hero.blend");
+      // exFAT, FAT32 and many SMB mounts refuse every hard link.
+      const noHardLinks = Layer.effect(
+        FileSystem.FileSystem,
+        Effect.map(Effect.service(FileSystem.FileSystem), (base) => ({
+          ...base,
+          link: (from: string) =>
+            Effect.fail(
+              PlatformError.systemError({
+                _tag: "Unknown",
+                module: "FileSystem",
+                method: "link",
+                pathOrDescriptor: from,
+                syscall: "link",
+                cause: Object.assign(new Error("EPERM"), { code: "EPERM" }),
+              }),
+            ),
+        })),
+      );
+      const start = startAgentWorkingCopy({ threadId, path: "hero.blend" }).pipe(
+        Effect.provide(noHardLinks.pipe(Layer.provideMerge(layerFor({ root, opened: [] })))),
+      );
+      assert.equal((yield* start).created, true);
+      assert.equal(
+        NodeFS.readFileSync(NodePath.join(root, "hero.wip-3c4d5e6f.blend"), "utf8"),
+        "master",
+      );
+      assert.equal((yield* start).created, false);
+      assert.deepEqual(NodeFS.readdirSync(root).toSorted(), [
+        "hero.blend",
+        "hero.wip-3c4d5e6f.blend",
+      ]);
     }).pipe(Effect.scoped),
   );
 

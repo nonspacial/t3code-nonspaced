@@ -232,7 +232,7 @@ const sameFile = (a: FileSystem.File.Info, b: FileSystem.File.Info) =>
  * own name may be left: the caller removes it. A file renamed onto `to` between the last check
  * and the rename is lost.
  */
-const publishAt = Effect.fnUntraced(function* (source: string, to: string) {
+export const publishAt = Effect.fnUntraced(function* (source: string, to: string) {
   const fileSystem = yield* FileSystem.FileSystem;
   const linked = yield* fileSystem.link(source, to).pipe(
     Effect.as("published" as const),

@@ -14,7 +14,7 @@ import { BLENDER_HOSTED_MCP_SERVER } from "../provider/hostedBlenderMcp.ts";
 import { isWithinRoot } from "../workspace/KnownWorkspaces.ts";
 import * as HostedBlender from "./HostedBlender.ts";
 import { untestedBlenderLabReason } from "./agentGuard.ts";
-import { HELD_FOLDER, threadTag, workingCopyName } from "./workingCopies.ts";
+import { HELD_FOLDER, publishAt, threadTag, workingCopyName } from "./workingCopies.ts";
 
 /**
  * A working copy is opened only as a regular file that isn't its master, so neither a symlink nor
@@ -52,8 +52,8 @@ const assertSeparateCopy = Effect.fn("HostedBlender.assertSeparateCopy")(functio
 /**
  * Copies the master to `workingCopy` without ever replacing what is there. An existing copy is
  * checked and reused before anything is copied; otherwise the copy is made under a private name
- * and hard-linked into place, which fails if a concurrent start got there first, whose copy is
- * then checked the same way. False when the copy already existed.
+ * and given its name only if that is free (`publishAt`): a concurrent start that got there first
+ * has its copy checked the same way. False when the copy already existed.
  */
 const createWorkingCopy = Effect.fn("HostedBlender.createWorkingCopy")(function* (
   master: string,
@@ -68,7 +68,7 @@ const createWorkingCopy = Effect.fn("HostedBlender.createWorkingCopy")(function*
     yield* assertSeparateCopy(workingCopy, [master], requested);
     return false;
   }
-  const linked = yield* Effect.scoped(
+  const published = yield* Effect.scoped(
     Effect.gen(function* () {
       const staging = yield* fileSystem.makeTempDirectoryScoped({
         directory: path.dirname(master),
@@ -76,10 +76,10 @@ const createWorkingCopy = Effect.fn("HostedBlender.createWorkingCopy")(function*
       });
       const partial = path.join(staging, "copy.blend");
       yield* fileSystem.copyFile(master, partial);
-      return yield* fileSystem.link(partial, workingCopy).pipe(Effect.isSuccess);
+      return yield* publishAt(partial, workingCopy);
     }),
   ).pipe(Effect.mapError(couldNotCopy));
-  if (linked) return true;
+  if (published === "published") return true;
   yield* assertSeparateCopy(workingCopy, [master], requested);
   return false;
 });
