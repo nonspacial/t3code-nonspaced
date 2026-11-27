@@ -2255,6 +2255,17 @@ describe("B19: a finished thread's working copy is held", () => {
       expect(NodeFS.readdirSync(elsewhere)).toEqual([]);
       yield* service.putBackHeld({ threadId, path: at(COPY) });
       expect(NodeFS.readFileSync(at(COPY), "utf8")).toBe("working copy");
+
+      // A symlink to a folder inside the workspace holds nothing there either: a held file
+      // there would be named by a path the guards against opening it don't know.
+      const inside = at("assets");
+      NodeFS.mkdirSync(inside);
+      NodeFS.rmSync(NodePath.join(workspace, ".t3"));
+      NodeFS.symlinkSync(inside, NodePath.join(workspace, ".t3"));
+      yield* service.closeOnSettle({ threadId });
+      yield* heldWhen(service, (list) => list.length === 1 && list[0]!.heldAt > held!.heldAt);
+      expect(NodeFS.readFileSync(stateFile(held!.id), "utf8")).toBe("working copy");
+      expect(NodeFS.readdirSync(inside)).toEqual([]);
     }).pipe(Effect.scoped),
   );
 

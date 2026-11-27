@@ -55,7 +55,7 @@ if nothing has it and renaming the copy over that; the record stays `returning` 
 name is gone (a second name would make the copy "linked" and never held again). An empty file a
 crash left at the name is taken as T3's claim and removed: an empty file is no one's work. Only
 across a mount inside the workspace (EXDEV), with no known workspace, or with a `.t3` or held
-folder that is a symlink out of the workspace, is it held in T3's state instead: copied through a synced
+folder that is a symlink at all, is it held in T3's state instead: copied through a synced
 temporary name, then the project's file renamed aside
 in its own folder (the record names the aside, and only a named one is ever put back) and removed
 only if it is still the file that was copied. Removing a held copy removes its file and partial,

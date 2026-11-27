@@ -23,19 +23,17 @@ export const workspaceRootOf = (record: WorkingCopyRecord) =>
     : null;
 
 /**
- * Whether the workspace's held folder, as far as it exists, stays inside the workspace: a `.t3`
- * or `held-working-copies` that is a symlink out of it holds nothing there.
+ * Whether the workspace's held folder, as far as it exists, is its own: a `.t3` or
+ * `held-working-copies` that is a symlink at all holds nothing there, so a held file is always
+ * under the folder the guards against opening one compare with.
  */
 export const heldFolderInside = Effect.fnUntraced(function* (root: string) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const realRoot = yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root));
   for (const folder of [path.join(root, ".t3"), path.join(root, HELD_FOLDER)]) {
     const info = yield* fileSystem.lstat(folder).pipe(Effect.option);
     if (Option.isNone(info)) return true;
-    if (info.value.type !== "SymbolicLink") continue;
-    const real = yield* fileSystem.realPath(folder).pipe(Effect.option);
-    if (Option.isNone(real) || !real.value.startsWith(`${realRoot}${path.sep}`)) return false;
+    if (info.value.type === "SymbolicLink") return false;
   }
   return true;
 });
