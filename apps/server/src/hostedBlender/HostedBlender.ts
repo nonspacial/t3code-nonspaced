@@ -106,9 +106,12 @@ import { sendHoldingSlot } from "./ControlSlot.ts";
 import { ViewerFlow } from "./ViewerFlow.ts";
 import * as WorkingCopies from "./workingCopies.ts";
 import {
+  asideOf,
   decodeWorkingCopyRecord,
   encodeWorkingCopyRecord,
   HELD_COPY_LIMIT,
+  HELD_FOLDER,
+  workspaceRootOf,
   type WorkingCopyRecord,
 } from "./workingCopies.ts";
 
@@ -628,7 +631,9 @@ export class HostedBlender extends Context.Service<
       copies: ReadonlyArray<HostedBlenderHeldRef>,
     ) => Effect.Effect<void, HostedBlenderError>;
     /** The person kept these past their master moving on: they stay until the limit, unasked. */
-    readonly keepHeld: (copies: ReadonlyArray<HostedBlenderHeldRef>) => Effect.Effect<void>;
+    readonly keepHeld: (
+      copies: ReadonlyArray<HostedBlenderHeldRef>,
+    ) => Effect.Effect<void, HostedBlenderError>;
     readonly threadState: (threadId: ThreadId) => Stream.Stream<HostedBlenderThreadState>;
     /** `canOperate`: the viewer may take control (`terminal:operate`). */
     readonly attachViewer: (
@@ -1062,14 +1067,18 @@ const make = Effect.gen(function* () {
   const workingCopies = new Map<string, WorkingCopyRecord>();
   // Held copies whose master changed on disk since they were held, as last checked.
   const behindMaster = new Set<string>();
-  // Copies T3 couldn't prove its own when it last tried to hold them, and when.
-  const leftInProject = new Map<string, number>();
+  // Copies T3 couldn't prove its own when it last tried to hold them, and when, or that it left
+  // because a newer save came in as it moved them and another file took their place.
+  const leftInProject = new Map<string, { readonly at: number; readonly setAside: boolean }>();
   // Moves and deletions of one working copy run one at a time, by its path; other copies don't
   // wait. Opens of a recorded copy take the same lock.
   const copyLocks = yield* KeyedLock.make<string>();
   // Asks for another pass over the working copies, as a released Blender's end does.
   const sweepRequests = yield* Queue.sliding<void>(1);
   const heldList = yield* SubscriptionRef.make<HostedBlenderHeldList>([]);
+  // Held copies' projections are rebuilt only once a copy's record, a master's revision as last
+  // checked, or a thread's master has changed since: not on every state publish.
+  let heldStale = true;
   const heldBehinds = yield* SubscriptionRef.make<ReadonlyMap<ThreadId, HostedBlenderHeldBehind>>(
     new Map(),
   );
@@ -1079,13 +1088,23 @@ const make = Effect.gen(function* () {
       Effect.provideService(Path.Path, path),
     );
   const notOwnCopy = (record: WorkingCopyRecord) => withFiles(WorkingCopies.notOwnCopy(record));
+  const renameOut = (from: string, held: string) => withFiles(WorkingCopies.renameOut(from, held));
   const copyOut = (from: string, held: string) => withFiles(WorkingCopies.copyOut(from, held));
+  const takeCopied = (from: string, copied: WorkingCopies.CopiedFile) =>
+    withFiles(WorkingCopies.takeCopied(from, copied));
+  const restoreAside = (copy: string) => withFiles(WorkingCopies.restoreAside(copy));
   const copyBack = (held: string, to: string) => withFiles(WorkingCopies.copyBack(held, to));
+  const linkBack = (held: string, to: string) => withFiles(WorkingCopies.linkBack(held, to));
+  const prepareHeldFolder = (root: string, held: string) =>
+    withFiles(WorkingCopies.prepareHeldFolder(root, held));
   const removeBackups = (copy: string) => withFiles(WorkingCopies.removeBackups(copy));
   const workingCopyId = (threadId: string, copyPath: string) =>
     NodeCrypto.createHash("sha256").update(`${threadId}\n${copyPath}`).digest("hex");
   const workingCopyDir = (id: string) => path.join(workingCopiesDir, id);
+  // In T3's state: copies held by earlier builds, and those whose master is across a mount.
   const heldFileOf = (id: string) => path.join(workingCopyDir(id), "copy.blend");
+  /** Where a held copy's file is, or goes while it is being held. */
+  const payloadOf = (id: string, record: WorkingCopyRecord) => record.heldFile ?? heldFileOf(id);
   const heldExpiry = (record: WorkingCopyRecord) =>
     (record.heldAt ?? 0) + Duration.toMillis(HELD_COPY_LIMIT);
 
@@ -1157,8 +1176,10 @@ const make = Effect.gen(function* () {
   };
 
   const publishHeld = () =>
-    Effect.suspend(() =>
-      SubscriptionRef.set(
+    Effect.suspend(() => {
+      if (!heldStale) return Effect.void;
+      heldStale = false;
+      return SubscriptionRef.set(
         heldBehinds,
         new Map(
           Array.from(threadMasters.keys()).flatMap((threadId) => {
@@ -1180,11 +1201,18 @@ const make = Effect.gen(function* () {
                   path: record.path,
                   bytes: record.bytes ?? 0,
                 };
-                const leftAt = leftInProject.get(id);
+                const left = leftInProject.get(id);
                 if (record.state !== "held") {
-                  return leftAt === undefined || record.state !== "live"
+                  return left === undefined || record.state !== "live"
                     ? []
-                    : [{ ...entry, heldAt: leftAt, leftInProject: true }];
+                    : [
+                        {
+                          ...entry,
+                          heldAt: left.at,
+                          leftInProject: true,
+                          ...(left.setAside ? { setAside: asideOf(record.path) } : {}),
+                        },
+                      ];
                 }
                 return [
                   {
@@ -1199,8 +1227,8 @@ const make = Effect.gen(function* () {
               .toSorted((a, b) => b.heldAt - a.heldAt),
           ),
         ),
-      ),
-    );
+      );
+    });
 
   /** The thread's copies, newest first, as the pane and the agent see them. */
   const copiesOf = (threadId: string): Array<HostedBlenderKeptCopy> =>
@@ -1808,13 +1836,29 @@ const make = Effect.gen(function* () {
       fileSystem.writeFileString(to, encodeWorkingCopyRecord(record)),
     );
     workingCopies.set(id, record);
+    heldStale = true;
   });
   // Forgotten only once its files are gone, so a removal that fails is tried again.
   const dropWorkingCopy = Effect.fnUntraced(function* (id: string) {
+    const held = workingCopies.get(id)?.heldFile;
+    // Gone already with its workspace, as a removed worktree takes it.
+    if (held !== undefined) {
+      yield* fileSystem.remove(path.dirname(held), { recursive: true, force: true });
+    }
     yield* fileSystem.remove(workingCopyDir(id), { recursive: true, force: true });
     workingCopies.delete(id);
     behindMaster.delete(id);
     leftInProject.delete(id);
+    heldStale = true;
+  });
+  // Said in Settings until the person deals with it: the next hold tries again first.
+  const noteSetAside = Effect.fnUntraced(function* (id: string, record: WorkingCopyRecord) {
+    leftInProject.set(id, { at: yield* Clock.currentTimeMillis, setAside: true });
+    heldStale = true;
+    yield* Effect.logWarning(
+      "left a newer save of a hosted Blender working copy aside: another file took its place",
+      { path: record.path, aside: asideOf(record.path) },
+    );
   });
   const liveRecord = (record: WorkingCopyRecord): WorkingCopyRecord => ({
     threadId: record.threadId,
@@ -1823,10 +1867,13 @@ const make = Effect.gen(function* () {
     ...(record.relativePath === undefined ? {} : { relativePath: record.relativePath }),
     state: "live",
   });
-  const removeHeldFile = (id: string) =>
+  const removeHeldFile = (id: string, record: WorkingCopyRecord) =>
     Effect.all([
       fileSystem.remove(heldFileOf(id), { force: true }),
       fileSystem.remove(`${heldFileOf(id)}.partial`, { force: true }),
+      record.heldFile === undefined
+        ? Effect.void
+        : fileSystem.remove(path.dirname(record.heldFile), { recursive: true, force: true }),
     ]);
 
   /**
@@ -1836,13 +1883,16 @@ const make = Effect.gen(function* () {
    */
   const settleMove = Effect.fnUntraced(function* (id: string, record: WorkingCopyRecord) {
     if (record.state === "holding") {
+      // A file a hold set aside to check it goes back first: it is the newest the project had.
+      const aside = yield* restoreAside(record.path);
       if (Option.isSome(yield* fileSystem.lstat(record.path).pipe(Effect.option))) {
-        yield* removeHeldFile(id);
+        yield* removeHeldFile(id, record);
         const live = liveRecord(record);
         yield* writeWorkingCopy(live);
+        if (aside === "setAside") yield* noteSetAside(id, record);
         return live;
       }
-      if (!(yield* fileSystem.exists(heldFileOf(id)))) {
+      if (!(yield* fileSystem.exists(payloadOf(id, record)))) {
         yield* dropWorkingCopy(id);
         return null;
       }
@@ -1856,10 +1906,10 @@ const make = Effect.gen(function* () {
       if (Option.isSome(there) && Number(there.value.size) === record.bytes) {
         const live = liveRecord(record);
         yield* writeWorkingCopy(live);
-        yield* removeHeldFile(id);
+        yield* removeHeldFile(id, record);
         return live;
       }
-      if (!(yield* fileSystem.exists(heldFileOf(id)))) {
+      if (!(yield* fileSystem.exists(payloadOf(id, record)))) {
         yield* dropWorkingCopy(id);
         return null;
       }
@@ -1887,6 +1937,7 @@ const make = Effect.gen(function* () {
           return;
         }
         workingCopies.set(entry, record.value);
+        heldStale = true;
         yield* settleMove(entry, record.value);
       }).pipe(
         Effect.catchCauseIf(
@@ -3621,13 +3672,20 @@ const make = Effect.gen(function* () {
    * A `.blend` the thread may open: inside its workspace, really (no symlink out), and a file.
    * Opening is the pane's first use, by a caller allowed to start programs here.
    */
-  // Runs inside open's or openMaster's span.
-  const checkedBlend = Effect.fnUntraced(function* (threadId: ThreadId, relativePath: string) {
+  /** What a launch needs here, or why none can start: never anything about the file. */
+  const launchTools = Effect.fnUntraced(function* () {
     yield* setup.ensureCheckedForOpen;
     const tools = yield* setup.readiness.pipe(Stream.runHead, Effect.map(Option.getOrNull));
+    if (switchedOff) return yield* new HostedBlenderError({ reason: "notSetUp" });
     if (tools?.status !== "ok") {
       return yield* new HostedBlenderError({ reason: tools?.status ?? "notSetUp" });
     }
+    return tools;
+  });
+
+  // Runs inside open's or openMaster's span.
+  const checkedBlend = Effect.fnUntraced(function* (threadId: ThreadId, relativePath: string) {
+    const tools = yield* launchTools();
     if (!relativePath.toLowerCase().endsWith(".blend"))
       return yield* new HostedBlenderError({ reason: "notBlendFile" });
     const root = yield* threadRoot(threadId);
@@ -3641,7 +3699,11 @@ const make = Effect.gen(function* () {
       fileSystem.realPath(root),
       fileSystem.realPath(resolved.absolutePath),
     ]).pipe(Effect.mapError(() => new HostedBlenderError({ reason: "fileNotFound" })));
-    if (!isWithinRoot(path, real[1], real[0])) {
+    // Held copies are T3's, never a file to open or a master.
+    if (
+      !isWithinRoot(path, real[1], real[0]) ||
+      isWithinRoot(path, real[1], path.join(real[0], HELD_FOLDER))
+    ) {
       return yield* new HostedBlenderError({ reason: "notInWorkspace" });
     }
     const stat = yield* fileSystem
@@ -5150,6 +5212,7 @@ const make = Effect.gen(function* () {
         known.chosen = true;
         if (options?.agentSession !== undefined) known.agentSession = options.agentSession;
         threadMasters.set(threadId, known);
+        heldStale = true;
         yield* checkMasters(file.blendPath).pipe(Effect.forkIn(serviceScope));
         return yield* inMasterQueue(file.blendPath)(joinMaster(threadId, file, recover));
       }),
@@ -5331,6 +5394,7 @@ const make = Effect.gen(function* () {
     instance.retryQuit = outcome === "uncertain";
     if (outcome === "quit" && threadMasters.get(threadId)?.blendPath === instance.blendPath) {
       threadMasters.delete(threadId);
+      heldStale = true;
     }
     yield* publishNow();
   });
@@ -5344,14 +5408,20 @@ const make = Effect.gen(function* () {
         known.agentSession = null;
         const instance = instances.get(masterKey(known.blendPath));
         if (instance === undefined || !instance.masterThreads.has(threadId)) {
-          if (threadMasters.get(threadId) === known) threadMasters.delete(threadId);
+          if (threadMasters.get(threadId) === known) {
+            threadMasters.delete(threadId);
+            heldStale = true;
+          }
           return yield* publishNow();
         }
         instance.agentThreads.delete(threadId);
         yield* syncForwards(instance);
         if (instance.masterThreads.size > 1) {
           instance.masterThreads.delete(threadId);
-          if (threadMasters.get(threadId) === known) threadMasters.delete(threadId);
+          if (threadMasters.get(threadId) === known) {
+            threadMasters.delete(threadId);
+            heldStale = true;
+          }
           return yield* publishNow();
         }
         yield* decideQuit(instance, threadId);
@@ -5399,6 +5469,7 @@ const make = Effect.gen(function* () {
           if (previous?.blendPath === file.blendPath || previous?.chosen === true) {
             return Effect.void;
           }
+          heldStale = true;
           threadMasters.set(threadId, {
             blendPath: file.blendPath,
             relativePath: file.relativePath,
@@ -5543,11 +5614,14 @@ const make = Effect.gen(function* () {
 
   /** Moves one live copy out of the project into T3's state; runs under its copy's lock. */
   const holdCopy = Effect.fnUntraced(function* (id: string, record: WorkingCopyRecord) {
+    // A newer save an earlier hold set aside goes back first, once its place is free.
+    if ((yield* restoreAside(record.path)) === "setAside") return yield* noteSetAside(id, record);
     const why = yield* notOwnCopy(record);
     // Gone from the project already: nothing is left to hold.
     if (why === "missing") return yield* dropWorkingCopy(id);
     if (why !== null) {
-      leftInProject.set(id, yield* Clock.currentTimeMillis);
+      leftInProject.set(id, { at: yield* Clock.currentTimeMillis, setAside: false });
+      heldStale = true;
       return yield* Effect.logWarning(
         "left a hosted Blender working copy in the project: T3 can't be sure it is its own",
         { path: record.path, why },
@@ -5558,30 +5632,55 @@ const make = Effect.gen(function* () {
     if ((yield* claimedBy(record.path)) !== undefined) return;
     const shell = Option.getOrNull(yield* threadLookup(record.threadId));
     const info = yield* fileSystem.stat(record.path);
-    const holding: WorkingCopyRecord = {
+    // Held on the project's own drive, in its workspace, whenever the workspace is known.
+    const root = workspaceRootOf(record);
+    let holding: WorkingCopyRecord = {
       ...liveRecord(record),
       state: "holding",
       heldAt: yield* Clock.currentTimeMillis,
       masterRevision: yield* readFileRevision(record.master),
       bytes: Number(info.size),
       threadTitle: shell?.title ?? "",
+      ...(root === null ? {} : { heldFile: path.join(root, HELD_FOLDER, id, "copy.blend") }),
     };
+    const stayLive = writeWorkingCopy(liveRecord(record));
     yield* writeWorkingCopy(holding);
-    if (!(yield* copyOut(record.path, heldFileOf(id)))) {
-      yield* writeWorkingCopy(liveRecord(record));
-      return;
-    }
     yield* holdGate(record.path);
-    // The copy-out can take a while: a thread made active meanwhile keeps its copy in the project.
-    if (!(yield* threadFinished(record.threadId))) {
-      yield* removeHeldFile(id);
-      yield* writeWorkingCopy(liveRecord(record));
-      return;
+    if (!(yield* threadFinished(record.threadId))) return yield* stayLive;
+    if (root !== null) {
+      yield* prepareHeldFolder(root, payloadOf(id, holding)).pipe(Effect.tapError(() => stayLive));
     }
-    yield* fileSystem.remove(record.path);
+    // One rename on the same drive, which nothing saved meanwhile can slip past.
+    let bytes = yield* renameOut(record.path, payloadOf(id, holding)).pipe(
+      Effect.tapError(() => stayLive),
+    );
+    if (bytes === null) {
+      // Across drives (a master reached through a mount): copied into T3's own state instead.
+      yield* removeHeldFile(id, holding);
+      const { heldFile: _, ...inState } = holding;
+      holding = inState;
+      yield* writeWorkingCopy(holding);
+      const copied = yield* copyOut(record.path, heldFileOf(id)).pipe(
+        Effect.tapError(() => stayLive),
+      );
+      // The copy-out can take a while: a thread made active meanwhile keeps its copy in the project.
+      if (copied === null || !(yield* threadFinished(record.threadId))) {
+        yield* removeHeldFile(id, holding);
+        return yield* stayLive;
+      }
+      const taken = yield* takeCopied(record.path, copied);
+      if (taken !== "taken") {
+        // A newer save came in as it was copied: that stays in the project, and nothing is held.
+        yield* removeHeldFile(id, holding);
+        yield* stayLive;
+        if (taken === "setAside") yield* noteSetAside(id, record);
+        return;
+      }
+      bytes = copied.size;
+    }
     yield* removeBackups(record.path);
-    yield* writeWorkingCopy({ ...holding, state: "held" });
     leftInProject.delete(id);
+    yield* writeWorkingCopy({ ...holding, bytes, state: "held" });
   });
 
   /** Removes a live copy whose thread is gone from the project, if it is provably T3's. */
@@ -5655,6 +5754,7 @@ const make = Effect.gen(function* () {
       const behind = now !== null && now !== record.masterRevision;
       if (behind === behindMaster.has(id)) continue;
       changed = true;
+      heldStale = true;
       if (behind) behindMaster.add(id);
       else behindMaster.delete(id);
     }
@@ -5677,7 +5777,14 @@ const make = Effect.gen(function* () {
           const shell = lookup.value;
           const gone = shell === null || shell.deletedAt !== null;
           if (record.state === "held") {
-            if (gone || now >= heldExpiry(record)) yield* dropWorkingCopy(id);
+            // A payload gone with its workspace (a removed worktree) leaves nothing to keep.
+            if (
+              gone ||
+              now >= heldExpiry(record) ||
+              !(yield* fileSystem.exists(payloadOf(id, record)))
+            ) {
+              yield* dropWorkingCopy(id);
+            }
             return;
           }
           if (gone) return yield* deleteFromProject(id, record);
@@ -5725,9 +5832,11 @@ const make = Effect.gen(function* () {
       }
       const revision = yield* readFileRevision(record.master);
       yield* writeWorkingCopy({ ...record, state: "returning" });
-      const moved = yield* copyBack(heldFileOf(id), record.path).pipe(
-        Effect.orElseSucceed(() => "incomplete" as const),
-      );
+      const held = payloadOf(id, record);
+      // On the project's drive it goes back by a link, as it left by a rename: nothing is copied.
+      const moved = yield* (
+        record.heldFile === undefined ? copyBack(held, record.path) : linkBack(held, record.path)
+      ).pipe(Effect.orElseSucceed(() => "incomplete" as const));
       if (moved !== "linked") {
         yield* writeWorkingCopy(record);
         return yield* new HostedBlenderError({
@@ -5735,8 +5844,9 @@ const make = Effect.gen(function* () {
         });
       }
       yield* writeWorkingCopy(liveRecord(record));
-      yield* removeHeldFile(id).pipe(Effect.ignore);
+      yield* removeHeldFile(id, record).pipe(Effect.ignore);
       behindMaster.delete(id);
+      heldStale = true;
       yield* publishNow();
       return { masterChanged: revision !== null && revision !== record.masterRevision };
     },
@@ -5787,7 +5897,15 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const id = workingCopyId(threadId, copyPath);
         const record = workingCopies.get(id);
-        if (record !== undefined) yield* putBack(id, record);
+        if (record !== undefined) {
+          // A launch refused anyway leaves a held copy held: only one that can start takes it back.
+          yield* launchTools();
+          const running = instances.get(threadId);
+          if (running?.role === "working" && running.blendPath !== copyPath) {
+            return yield* new HostedBlenderError({ reason: "otherFileOpen" });
+          }
+          yield* putBack(id, record);
+        }
         return yield* opening;
       }),
     );
@@ -5834,12 +5952,18 @@ const make = Effect.gen(function* () {
   const keepHeld: HostedBlender["Service"]["keepHeld"] = Effect.fn("HostedBlender.keepHeld")(
     function* (copies) {
       yield* afterSalvage;
-      yield* Effect.forEach(copies, ({ id, heldAt }) =>
+      const failed = yield* Effect.forEach(copies, ({ id, heldAt }) =>
         onCopy(id, (record) =>
           asSeen(record, heldAt) ? writeWorkingCopy({ ...record, kept: true }) : Effect.void,
-        ).pipe(Effect.catch(logHeldFailure)),
+        ).pipe(
+          Effect.as(false),
+          Effect.catch((cause) => logHeldFailure(cause).pipe(Effect.as(true))),
+        ),
       );
       yield* publishNow();
+      if (failed.some(Boolean)) {
+        return yield* new HostedBlenderError({ reason: "heldCopyNotKept" });
+      }
     },
   );
 

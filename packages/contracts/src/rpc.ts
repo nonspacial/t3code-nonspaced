@@ -2267,7 +2267,7 @@ const WsHostedBlenderDeleteHeldRpc = Rpc.make(WS_METHODS.hostedBlenderDeleteHeld
 /** Keeps held working copies the master has moved past, until they expire, without asking again. */
 const WsHostedBlenderKeepHeldRpc = Rpc.make(WS_METHODS.hostedBlenderKeepHeld, {
   payload: HostedBlenderHeldInput,
-  error: EnvironmentAuthorizationError,
+  error: Schema.Union([HostedBlenderError, EnvironmentAuthorizationError]),
 });
 
 /** The thread's master file, and whether a master Blender or the desktop Blender has it open. */
