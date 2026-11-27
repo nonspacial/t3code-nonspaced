@@ -18,7 +18,10 @@ it.each([
     // The scan costs seconds per thousand objects, so a scene without Geometry Nodes skips it.
     "scans for Geometry Nodes instances only when the scene has an enabled Geometry Nodes modifier",
   ],
-])("asks the exporter for %s, which %s", (option) => {
-  expect(BLEND_EXPORT_SCRIPT).toMatch(option);
-  expect(BLEND_EXPORT_SCRIPT).not.toContain('"export_gn_mesh": True');
-});
+] as Array<[string | RegExp, string]>)(
+  "asks the exporter for %s, which %s",
+  (option: string | RegExp, _why: string) => {
+    expect(BLEND_EXPORT_SCRIPT).toMatch(option);
+    expect(BLEND_EXPORT_SCRIPT).not.toContain('"export_gn_mesh": True');
+  },
+);
