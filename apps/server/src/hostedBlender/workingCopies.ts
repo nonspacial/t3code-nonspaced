@@ -22,6 +22,24 @@ export const workspaceRootOf = (record: WorkingCopyRecord) =>
     ? record.path.slice(0, -(record.relativePath.length + 1))
     : null;
 
+/**
+ * Whether the workspace's held folder, as far as it exists, stays inside the workspace: a `.t3`
+ * or `held-working-copies` that is a symlink out of it holds nothing there.
+ */
+export const heldFolderInside = Effect.fnUntraced(function* (root: string) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const realRoot = yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root));
+  for (const folder of [path.join(root, ".t3"), path.join(root, HELD_FOLDER)]) {
+    const info = yield* fileSystem.lstat(folder).pipe(Effect.option);
+    if (Option.isNone(info)) return true;
+    if (info.value.type !== "SymbolicLink") continue;
+    const real = yield* fileSystem.realPath(folder).pipe(Effect.option);
+    if (Option.isNone(real) || !real.value.startsWith(`${realRoot}${path.sep}`)) return false;
+  }
+  return true;
+});
+
 /** Makes the workspace's held folder, ignored by git without touching the project's own rules. */
 export const prepareHeldFolder = Effect.fnUntraced(function* (root: string, held: string) {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -74,6 +92,8 @@ export const WorkingCopyRecord = Schema.Struct({
    * when T3's state was the only place (copies held before, or a master across a mount).
    */
   heldFile: Schema.optional(Schema.String),
+  /** Where a hold across drives set the project's file aside to check it, until it is back. */
+  aside: Schema.optional(Schema.String),
 });
 export type WorkingCopyRecord = typeof WorkingCopyRecord.Type;
 const WorkingCopyRecordJson = Schema.fromJsonString(WorkingCopyRecord);
@@ -199,16 +219,16 @@ export const takeCopied = Effect.fnUntraced(function* (from: string, copied: Cop
     yield* fileSystem.remove(aside);
     return "taken" as const;
   }
-  return yield* restoreAside(from);
+  return yield* restoreAside(from, aside);
 });
 
 /**
- * Puts a file a hold set aside back at `to`, never over a file there by then: `setAside`, the
- * file left aside, when one is. `restored` once it is back, or when nothing was aside.
+ * Puts the file a hold set `aside` (as its record names) back at `to`, never over a file there
+ * by then: `setAside`, the file left aside, when one is. `restored` once it is back, or when
+ * nothing was aside.
  */
-export const restoreAside = Effect.fnUntraced(function* (to: string) {
+export const restoreAside = Effect.fnUntraced(function* (to: string, aside: string) {
   const fileSystem = yield* FileSystem.FileSystem;
-  const aside = asideOf(to);
   const [asideFile, there] = yield* Effect.all([
     sizeAndTime(fileSystem, aside),
     sizeAndTime(fileSystem, to),

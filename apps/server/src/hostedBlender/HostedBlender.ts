@@ -1,5 +1,7 @@
-// @effect-diagnostics nodeBuiltinImport:off - names recovery folders by a hash of their file.
+// @effect-diagnostics nodeBuiltinImport:off - names recovery folders by a hash of their file, and
+// removes a held copy's folder only while empty, which FileSystem's recursive remove can't.
 import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
   HostedBlenderError,
@@ -615,8 +617,9 @@ export class HostedBlender extends Context.Service<
       readonly relativePath: string;
     }) => Effect.Effect<void>;
     /**
-     * Puts the thread's held copy that sat at `path` back there, never over a file there now.
-     * Null when none is held; `masterChanged` when the master moved on since it was held.
+     * Puts the thread's held copy that sat at `path` back there, never over a file there now,
+     * and only for a launch that can start. Null when none is held; `masterChanged` when the
+     * master moved on since it was held.
      */
     readonly putBackHeld: (input: {
       readonly threadId: ThreadId;
@@ -1092,11 +1095,16 @@ const make = Effect.gen(function* () {
   const copyOut = (from: string, held: string) => withFiles(WorkingCopies.copyOut(from, held));
   const takeCopied = (from: string, copied: WorkingCopies.CopiedFile) =>
     withFiles(WorkingCopies.takeCopied(from, copied));
-  const restoreAside = (copy: string) => withFiles(WorkingCopies.restoreAside(copy));
+  /** Only a file the record says a hold set aside goes back: any other is not T3's to move. */
+  const restoreAside = (record: WorkingCopyRecord) =>
+    record.aside === undefined
+      ? Effect.succeed("restored" as const)
+      : withFiles(WorkingCopies.restoreAside(record.path, record.aside));
   const copyBack = (held: string, to: string) => withFiles(WorkingCopies.copyBack(held, to));
   const linkBack = (held: string, to: string) => withFiles(WorkingCopies.linkBack(held, to));
   const prepareHeldFolder = (root: string, held: string) =>
     withFiles(WorkingCopies.prepareHeldFolder(root, held));
+  const heldFolderInside = (root: string) => withFiles(WorkingCopies.heldFolderInside(root));
   const removeBackups = (copy: string) => withFiles(WorkingCopies.removeBackups(copy));
   const workingCopyId = (threadId: string, copyPath: string) =>
     NodeCrypto.createHash("sha256").update(`${threadId}\n${copyPath}`).digest("hex");
@@ -1123,8 +1131,11 @@ const make = Effect.gen(function* () {
           held: true,
         }
       : null;
+  // Built again only once a copy's record changes: every state publish reads them.
+  let heldCards: ReadonlyMap<string, ReadonlyArray<HostedBlenderKeptCopy>> | null = null;
   /** Each thread's held cards, in one pass over the records. */
   const heldCardsByThread = () => {
+    if (heldCards !== null) return heldCards;
     const cards = new Map<string, Array<HostedBlenderKeptCopy>>();
     for (const record of workingCopies.values()) {
       const card = heldCardOf(record);
@@ -1133,6 +1144,7 @@ const make = Effect.gen(function* () {
       thread.push(card);
       cards.set(record.threadId, thread);
     }
+    heldCards = cards;
     return cards;
   };
   /** The pane's kept copies: the recovery copies, and the held copies with no recovery copy. */
@@ -1837,16 +1849,32 @@ const make = Effect.gen(function* () {
     );
     workingCopies.set(id, record);
     heldStale = true;
+    heldCards = null;
   });
+  /** A held file in a workspace, then its folder only if nothing else is in it: only those are T3's. */
+  const removeHeldPayload = (held: string) =>
+    Effect.all([
+      fileSystem.remove(held, { force: true }),
+      fileSystem.remove(`${held}.partial`, { force: true }),
+    ]).pipe(
+      // A folder that isn't empty, or is gone, stays as it is.
+      Effect.andThen(
+        Effect.promise(() =>
+          NodeFSP.rmdir(path.dirname(held)).then(
+            () => undefined,
+            () => undefined,
+          ),
+        ),
+      ),
+    );
   // Forgotten only once its files are gone, so a removal that fails is tried again.
   const dropWorkingCopy = Effect.fnUntraced(function* (id: string) {
     const held = workingCopies.get(id)?.heldFile;
     // Gone already with its workspace, as a removed worktree takes it.
-    if (held !== undefined) {
-      yield* fileSystem.remove(path.dirname(held), { recursive: true, force: true });
-    }
+    if (held !== undefined) yield* removeHeldPayload(held);
     yield* fileSystem.remove(workingCopyDir(id), { recursive: true, force: true });
     workingCopies.delete(id);
+    heldCards = null;
     behindMaster.delete(id);
     leftInProject.delete(id);
     heldStale = true;
@@ -1867,13 +1895,24 @@ const make = Effect.gen(function* () {
     ...(record.relativePath === undefined ? {} : { relativePath: record.relativePath }),
     state: "live",
   });
+  /**
+   * Whether a copy's files being gone means they were removed: its workspace is there, and so is
+   * its master. A drive not mounted yet looks like neither, and an empty mount point like a folder
+   * emptied, so either keeps the record until the drive is back or the copy expires.
+   */
+  const filesReachable = (record: WorkingCopyRecord) =>
+    Effect.all([
+      fileSystem.exists(workspaceRootOf(record) ?? path.dirname(record.path)),
+      fileSystem.exists(record.master),
+    ]).pipe(
+      Effect.map(([root, master]) => root && master),
+      Effect.orElseSucceed(() => false),
+    );
   const removeHeldFile = (id: string, record: WorkingCopyRecord) =>
     Effect.all([
       fileSystem.remove(heldFileOf(id), { force: true }),
       fileSystem.remove(`${heldFileOf(id)}.partial`, { force: true }),
-      record.heldFile === undefined
-        ? Effect.void
-        : fileSystem.remove(path.dirname(record.heldFile), { recursive: true, force: true }),
+      record.heldFile === undefined ? Effect.void : removeHeldPayload(record.heldFile),
     ]);
 
   /**
@@ -1884,15 +1923,19 @@ const make = Effect.gen(function* () {
   const settleMove = Effect.fnUntraced(function* (id: string, record: WorkingCopyRecord) {
     if (record.state === "holding") {
       // A file a hold set aside to check it goes back first: it is the newest the project had.
-      const aside = yield* restoreAside(record.path);
+      const aside = yield* restoreAside(record);
       if (Option.isSome(yield* fileSystem.lstat(record.path).pipe(Effect.option))) {
         yield* removeHeldFile(id, record);
-        const live = liveRecord(record);
+        const live =
+          aside === "setAside"
+            ? { ...liveRecord(record), aside: record.aside }
+            : liveRecord(record);
         yield* writeWorkingCopy(live);
         if (aside === "setAside") yield* noteSetAside(id, record);
         return live;
       }
       if (!(yield* fileSystem.exists(payloadOf(id, record)))) {
+        if (!(yield* filesReachable(record))) return record;
         yield* dropWorkingCopy(id);
         return null;
       }
@@ -1902,14 +1945,27 @@ const make = Effect.gen(function* () {
       return held;
     }
     if (record.state === "returning") {
-      const there = yield* fileSystem.stat(record.path).pipe(Effect.option);
-      if (Option.isSome(there) && Number(there.value.size) === record.bytes) {
+      const [there, payload] = yield* Effect.all([
+        fileSystem.stat(record.path).pipe(Effect.option),
+        fileSystem.stat(payloadOf(id, record)).pipe(Effect.option),
+      ]);
+      // Linked back, as the held name is the same file, or copied back whole.
+      const linked =
+        Option.isSome(there) &&
+        Option.isSome(payload) &&
+        Option.isSome(there.value.ino) &&
+        Option.isSome(payload.value.ino) &&
+        there.value.dev === payload.value.dev &&
+        there.value.ino.value === payload.value.ino.value;
+      if (linked || (Option.isSome(there) && Number(there.value.size) === record.bytes)) {
+        // Live only once the held name is gone: a second name would make it no copy of T3's.
+        yield* removeHeldFile(id, record);
         const live = liveRecord(record);
         yield* writeWorkingCopy(live);
-        yield* removeHeldFile(id, record);
         return live;
       }
-      if (!(yield* fileSystem.exists(payloadOf(id, record)))) {
+      if (Option.isNone(payload)) {
+        if (!(yield* filesReachable(record))) return record;
         yield* dropWorkingCopy(id);
         return null;
       }
@@ -1938,6 +1994,7 @@ const make = Effect.gen(function* () {
         }
         workingCopies.set(entry, record.value);
         heldStale = true;
+        heldCards = null;
         yield* settleMove(entry, record.value);
       }).pipe(
         Effect.catchCauseIf(
@@ -5615,10 +5672,15 @@ const make = Effect.gen(function* () {
   /** Moves one live copy out of the project into T3's state; runs under its copy's lock. */
   const holdCopy = Effect.fnUntraced(function* (id: string, record: WorkingCopyRecord) {
     // A newer save an earlier hold set aside goes back first, once its place is free.
-    if ((yield* restoreAside(record.path)) === "setAside") return yield* noteSetAside(id, record);
+    if (record.aside !== undefined) {
+      if ((yield* restoreAside(record)) === "setAside") return yield* noteSetAside(id, record);
+      yield* writeWorkingCopy(liveRecord(record));
+    }
     const why = yield* notOwnCopy(record);
     // Gone from the project already: nothing is left to hold.
-    if (why === "missing") return yield* dropWorkingCopy(id);
+    if (why === "missing") {
+      return (yield* filesReachable(record)) ? yield* dropWorkingCopy(id) : undefined;
+    }
     if (why !== null) {
       leftInProject.set(id, { at: yield* Clock.currentTimeMillis, setAside: false });
       heldStale = true;
@@ -5632,8 +5694,10 @@ const make = Effect.gen(function* () {
     if ((yield* claimedBy(record.path)) !== undefined) return;
     const shell = Option.getOrNull(yield* threadLookup(record.threadId));
     const info = yield* fileSystem.stat(record.path);
-    // Held on the project's own drive, in its workspace, whenever the workspace is known.
-    const root = workspaceRootOf(record);
+    // Held on the project's own drive, in its workspace, whenever the workspace is known and
+    // its held folder stays inside it.
+    const known = workspaceRootOf(record);
+    const root = known !== null && (yield* heldFolderInside(known)) ? known : null;
     let holding: WorkingCopyRecord = {
       ...liveRecord(record),
       state: "holding",
@@ -5668,12 +5732,19 @@ const make = Effect.gen(function* () {
         yield* removeHeldFile(id, holding);
         return yield* stayLive;
       }
+      // Named before the file is set aside, so only that file is ever put back from there.
+      const aside = asideOf(record.path);
+      yield* writeWorkingCopy({ ...holding, aside });
       const taken = yield* takeCopied(record.path, copied);
       if (taken !== "taken") {
         // A newer save came in as it was copied: that stays in the project, and nothing is held.
         yield* removeHeldFile(id, holding);
-        yield* stayLive;
-        if (taken === "setAside") yield* noteSetAside(id, record);
+        if (taken === "setAside") {
+          yield* writeWorkingCopy({ ...liveRecord(record), aside });
+          yield* noteSetAside(id, record);
+        } else {
+          yield* stayLive;
+        }
         return;
       }
       bytes = copied.size;
@@ -5777,11 +5848,12 @@ const make = Effect.gen(function* () {
           const shell = lookup.value;
           const gone = shell === null || shell.deletedAt !== null;
           if (record.state === "held") {
-            // A payload gone with its workspace (a removed worktree) leaves nothing to keep.
+            // A payload removed (with its workspace's files) leaves nothing to keep.
             if (
               gone ||
               now >= heldExpiry(record) ||
-              !(yield* fileSystem.exists(payloadOf(id, record)))
+              (!(yield* fileSystem.exists(payloadOf(id, record))) &&
+                (yield* filesReachable(record)))
             ) {
               yield* dropWorkingCopy(id);
             }
@@ -5843,8 +5915,9 @@ const make = Effect.gen(function* () {
           reason: moved === "inTheWay" ? "heldCopyInTheWay" : "restoreFailed",
         });
       }
+      // Returning until the held name is gone; one that can't be removed is tried again next time.
+      yield* removeHeldFile(id, record);
       yield* writeWorkingCopy(liveRecord(record));
-      yield* removeHeldFile(id, record).pipe(Effect.ignore);
       behindMaster.delete(id);
       heldStale = true;
       yield* publishNow();
@@ -5859,13 +5932,26 @@ const make = Effect.gen(function* () {
     ),
   );
 
+  /** A launch refused anyway leaves a held copy held: only one that can start takes it back. */
+  const launchPreflight = Effect.fnUntraced(function* (threadId: ThreadId, copyPath: string) {
+    yield* launchTools();
+    const running = instances.get(threadId);
+    if (running?.role === "working" && running.blendPath !== copyPath) {
+      return yield* new HostedBlenderError({ reason: "otherFileOpen" });
+    }
+  });
+
   const putBackHeld: HostedBlender["Service"]["putBackHeld"] = Effect.fn(
     "HostedBlender.putBackHeld",
   )(function* ({ threadId, path: copyPath }) {
     yield* afterSalvage;
     const id = workingCopyId(threadId, copyPath);
     return (
-      (yield* onCopy(id, (record) => putBack(id, record)).pipe(
+      (yield* onCopy(id, (record) =>
+        record.state === "held"
+          ? launchPreflight(threadId, copyPath).pipe(Effect.andThen(putBack(id, record)))
+          : putBack(id, record),
+      ).pipe(
         Effect.catchIf(
           (error) => !isHostedBlenderError(error),
           () => Effect.fail(new HostedBlenderError({ reason: "restoreFailed" })),
@@ -5898,12 +5984,7 @@ const make = Effect.gen(function* () {
         const id = workingCopyId(threadId, copyPath);
         const record = workingCopies.get(id);
         if (record !== undefined) {
-          // A launch refused anyway leaves a held copy held: only one that can start takes it back.
-          yield* launchTools();
-          const running = instances.get(threadId);
-          if (running?.role === "working" && running.blendPath !== copyPath) {
-            return yield* new HostedBlenderError({ reason: "otherFileOpen" });
-          }
+          yield* launchPreflight(threadId, copyPath);
           yield* putBack(id, record);
         }
         return yield* opening;

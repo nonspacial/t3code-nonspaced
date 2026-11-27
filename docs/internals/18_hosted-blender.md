@@ -41,15 +41,22 @@ Its thread settling or being archived holds it once the thread's Blender has rea
 and so does any later end of a Blender of a thread still finished (however long a held close
 keeps it open, and never while a Blender released at shutdown may still write it), then its
 `.blend1` backups removed. The record stays in T3's state, but the file is held in the
-workspace's own `.t3/held-working-copies` (its `.gitignore` of `*` keeps it out of git and the
-file index, which skip ignored paths), never on the OS drive the state is on: a scene can be
+workspace's own `.t3/held-working-copies` (so T3 creates `.t3/` in a person's project root; its
+`.gitignore` of `*` keeps it out of git, and out of file search only in a git repository: the
+Files panel lists it dimmed, and `git clean -fdx` deletes it), never on the OS drive the state is
+on. Storage cleanup keeps a worktree whose held folder has anything but
+that `.gitignore`, under every keep rule, since git status can't see it. A scene can be
 gigabytes, kept 30 days per finished thread. The record names where it is; one with no place is
 beside the record, as earlier builds held them. T3's lock doesn't stop another program (a
 desktop Blender) saving that path, so the copy is never deleted by name: it is renamed into the
-held folder, which takes whatever is there at that instant, and put back by hard link. Only
-across a mount inside the workspace (EXDEV), or with no known workspace, is it held in T3's
-state instead: copied through a synced temporary name, then the project's file renamed aside in
-its own folder and removed only if it is still the file that was copied. A save that slipped in goes
+held folder, which takes whatever is there at that instant, and put back by hard link, the
+record staying `returning` until the held name is gone (a second name would make the copy
+"linked" and never held again). Only across a mount inside the workspace (EXDEV), with no known
+workspace, or with a `.t3` or held folder that is a symlink out of the workspace, is it held in
+T3's state instead: copied through a synced temporary name, then the project's file renamed aside
+in its own folder (the record names the aside, and only a named one is ever put back) and removed
+only if it is still the file that was copied. Removing a held copy removes its file and partial,
+then its folder only if empty. A save that slipped in goes
 back to its place, never over a file there, and nothing is held; with a file there, it stays
 aside and Settings says where. The record says which way a move was going, and whatever acts
 on a copy next (a start, an open, a hold, an answer) first finishes it from the side that is
@@ -63,8 +70,10 @@ by when it was held, so an answer to an earlier hold never reaches a later one. 
 reload watcher reads one) differing from the one recorded at hold, read only when it costs
 nothing (start, a thread opening or saving that master, Settings, the daily pass); nothing
 watches it. The daily pass, the only timer, also deletes what is past 30 days and what a
-deleted or missing thread left, and records whose held file went with its workspace (a removed
-worktree). A held file can't be opened or chosen as a master. Agents can't delete held copies.
+deleted or missing thread left, and forgets a copy whose file is gone only while its workspace
+root and master are there: a drive not mounted looks like a removed worktree, and an empty mount
+point like an emptied folder, so those records wait for the drive or the 30 days. A held file
+can't be opened, chosen as a master or started by an agent. Agents can't delete held copies.
 
 ## A quit is one record
 

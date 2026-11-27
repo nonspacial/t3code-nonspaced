@@ -195,16 +195,20 @@ describe("startAgentWorkingCopy", () => {
     { path: "../outside.blend", reason: "workspace" },
     { path: "notes.txt", reason: ".blend" },
     { path: "missing.blend", reason: "not found" },
+    // Another thread's held working copy, which an agent listing the workspace can see.
+    { path: ".t3/held-working-copies/copy-id/copy.blend", reason: "Settings › Blender" },
   ])("refuses $path", ({ path, reason }) =>
     Effect.gen(function* () {
       const root = yield* tempWorkspace;
       writeMaster(root, "notes.txt");
+      const held = writeMaster(root, ".t3/held-working-copies/copy-id/copy.blend", "held");
       const error = yield* Effect.flip(
         startAgentWorkingCopy({ threadId, path }).pipe(
           Effect.provide(layerFor({ root, opened: [] })),
         ),
       );
       expect(error.reason).toContain(reason);
+      expect(NodeFS.readdirSync(NodePath.dirname(held))).toEqual(["copy.blend"]);
     }).pipe(Effect.scoped),
   );
 
