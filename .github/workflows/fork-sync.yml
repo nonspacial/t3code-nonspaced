@@ -1,0 +1,66 @@
+# Keeps this fork's main equal to upstream's latest nightly release, plus one
+# commit that adds this file (GitHub only schedules workflows that live on the
+# default branch). Needs the FORK_SYNC_TOKEN secret: a fine-grained PAT for this
+# repo with Contents and Workflows read/write, because the built-in token cannot
+# push commits that touch .github/workflows.
+name: Sync main to upstream nightly
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'nonspacial/t3code-nonspaced'
+    runs-on: ubuntu-24.04
+    env:
+      UPSTREAM: pingdotgg/t3code
+      GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
+    steps:
+      - name: Find latest upstream nightly
+        id: nightly
+        run: |
+          tag=$(gh api "repos/$UPSTREAM/releases?per_page=30" \
+            --jq '[.[] | select(.draft | not) | select(.tag_name | test("-nightly\\."))] | sort_by(.published_at) | last | .tag_name')
+          [ -n "$tag" ] && [ "$tag" != "null" ] || { echo "::error::No nightly release found"; exit 1; }
+          sha=$(git ls-remote "https://github.com/$UPSTREAM.git" "refs/tags/$tag^{}" "refs/tags/$tag" | sort -k2 -r | head -1 | cut -f1)
+          main=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          parent=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq '.parents[0].sha')
+          echo "tag=$tag sha=$sha main=$main main_parent=$parent"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "main=$main" >> "$GITHUB_OUTPUT"
+          if [ "$parent" = "$sha" ]; then echo "current=true" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Read this workflow from main
+        if: steps.nightly.outputs.current != 'true'
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/fork-sync.yml?ref=main" \
+            -H "Accept: application/vnd.github.raw" > "$RUNNER_TEMP/fork-sync.yml"
+
+      - name: Reset main to nightly plus this workflow
+        if: steps.nightly.outputs.current != 'true'
+        env:
+          TAG: ${{ steps.nightly.outputs.tag }}
+          SHA: ${{ steps.nightly.outputs.sha }}
+          OLD_MAIN: ${{ steps.nightly.outputs.main }}
+        run: |
+          git init -q repo && cd repo
+          git fetch -q --depth=1 "https://github.com/$UPSTREAM.git" "$SHA"
+          git checkout -q --detach FETCH_HEAD
+          mkdir -p .github/workflows
+          cp "$RUNNER_TEMP/fork-sync.yml" .github/workflows/fork-sync.yml
+          git add .github/workflows/fork-sync.yml
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898333+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "chore: sync main to $TAG [skip ci]"
+          git push --force-with-lease="main:$OLD_MAIN" \
+            "https://x-access-token:${GH_TOKEN}@github.com/$GITHUB_REPOSITORY.git" HEAD:refs/heads/main
+          echo "main -> $TAG ($SHA) + fork-sync.yml" >> "$GITHUB_STEP_SUMMARY"
